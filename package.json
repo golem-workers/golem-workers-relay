@@ -11,9 +11,18 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "test": "vitest run",
+    "test:e2e": "vitest run -c vitest.e2e.config.ts --reporter=verbose",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts",
-    "lint:fix": "eslint src --ext .ts --fix"
+    "lint:fix": "eslint src --ext .ts --fix",
+
+    "openclaw:setup": "bash scripts/openclaw/onboard-docker.sh openclaw.env",
+    "openclaw:up": "docker compose --env-file openclaw.env up -d --build openclaw-gateway",
+    "openclaw:down": "docker compose --env-file openclaw.env down --remove-orphans",
+    "openclaw:logs": "docker compose --env-file openclaw.env logs -f --tail=200 openclaw-gateway",
+    "openclaw:ps": "docker compose --env-file openclaw.env ps",
+    "openclaw:cli": "docker compose --env-file openclaw.env --profile cli run --rm --build openclaw-cli",
+    "openclaw:reset": "docker compose --env-file openclaw.env down --remove-orphans && rm -rf .openclaw openclaw-workspace"
   },
   "dependencies": {
     "dotenv": "^17.3.1",

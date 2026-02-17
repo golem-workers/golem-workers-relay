@@ -1,0 +1,59 @@
+services:
+  openclaw-gateway:
+    build:
+      context: ./docker/openclaw
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+
+      # Required: must match relay's OPENCLAW_GATEWAY_TOKEN.
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+
+      # LLM provider (OpenRouter). Used by OpenClaw when config selects openrouter/* models.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+
+      # Allow starting without any channel integrations configured.
+      OPENCLAW_SKIP_CHANNELS: ${OPENCLAW_SKIP_CHANNELS:-1}
+      CLAWDBOT_SKIP_CHANNELS: ${CLAWDBOT_SKIP_CHANNELS:-1}
+    volumes:
+      # Persist OpenClaw state + openclaw.json on the host.
+      - ./.openclaw:/home/node/.openclaw
+      - ./openclaw-workspace:/home/node/.openclaw/workspace
+    ports:
+      # Bind to localhost only; relay runs on the host.
+      - "127.0.0.1:${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+      - "127.0.0.1:${OPENCLAW_BRIDGE_PORT:-18790}:18790"
+    init: true
+    restart: unless-stopped
+    command:
+      [
+        "gateway",
+        "--bind",
+        "${OPENCLAW_GATEWAY_BIND:-lan}",
+        "--port",
+        "18789",
+        "--allow-unconfigured",
+      ]
+
+  # Optional helper to run interactive commands like `openclaw channels login`.
+  # Example:
+  #   docker compose --env-file openclaw.env run --rm openclaw-cli channels login
+  openclaw-cli:
+    profiles: ["cli"]
+    build:
+      context: ./docker/openclaw
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENCLAW_SKIP_CHANNELS: ${OPENCLAW_SKIP_CHANNELS:-1}
+      CLAWDBOT_SKIP_CHANNELS: ${CLAWDBOT_SKIP_CHANNELS:-1}
+      BROWSER: echo
+    volumes:
+      - ./.openclaw:/home/node/.openclaw
+      - ./openclaw-workspace:/home/node/.openclaw/workspace
+    stdin_open: true
+    tty: true
+    init: true
+

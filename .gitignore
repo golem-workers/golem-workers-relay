@@ -76,6 +76,11 @@ web_modules/
 .env.*
 !.env.example
 
+# OpenClaw local compose/env/state
+openclaw.env
+.openclaw/
+openclaw-workspace/
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache

@@ -18,6 +18,7 @@ import {
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
+  timeout: NodeJS.Timeout;
 };
 
 export type GatewayClientOptions = {
@@ -29,6 +30,7 @@ export type GatewayClientOptions = {
   scopes?: string[];
   minProtocol?: number;
   maxProtocol?: number;
+  requestTimeoutMs?: number;
   onEvent?: (evt: EventFrame) => void;
   onHelloOk?: (hello: HelloOk) => void;
 };
@@ -90,10 +92,18 @@ export class GatewayClient {
 
     const text = JSON.stringify(frame);
     return new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timeoutMs = this.opts.requestTimeoutMs ?? 15_000;
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Gateway request timed out: ${method}`));
+      }, timeoutMs);
+
+      this.pending.set(id, { resolve, reject, timeout });
       try {
         this.ws?.send(text);
       } catch (err) {
+        const p = this.pending.get(id);
+        if (p) clearTimeout(p.timeout);
         this.pending.delete(id);
         reject(err instanceof Error ? err : new Error(String(err)));
       }
@@ -131,7 +141,12 @@ export class GatewayClient {
     this.ws = new WebSocket(url, { maxPayload: 25 * 1024 * 1024 });
 
     this.ws.on("open", () => {
-      // Wait briefly for connect.challenge; local gateways may still emit it.
+      // Some gateways emit `connect.challenge` asynchronously; sending `connect`
+      // too early (without a nonce) can be rejected for non-local connects.
+      // Fallback: if no challenge arrives, send a nonce-less connect after a delay.
+      // Ensure we send `connect` promptly; gateways may close sockets that don't
+      // send a first frame quickly. If `connect.challenge` arrives first, it
+      // will trigger `sendConnectIfNeeded()` with a nonce.
       setTimeout(() => this.sendConnectIfNeeded(), 50);
     });
     this.ws.on("message", (data) => this.handleMessage(rawDataToString(data)));
@@ -140,10 +155,20 @@ export class GatewayClient {
       logger.warn({ code, reason: reasonText }, "Gateway websocket closed");
       this.ws = null;
       this.hello = null;
+      const closedErr = new Error(`gateway closed (${code}): ${reasonText}`);
+      // If we weren't ready yet, reject the pending `start()` promise so callers
+      // can retry instead of hanging forever.
+      if (this.readyReject) {
+        try {
+          this.readyReject(closedErr);
+        } catch {
+          // ignore
+        }
+      }
       this.readyPromise = null;
       this.readyResolve = null;
       this.readyReject = null;
-      this.flushPending(new Error(`gateway closed (${code}): ${reasonText}`));
+      this.flushPending(closedErr);
       this.scheduleReconnect();
     });
     this.ws.on("error", (err) => {
@@ -164,6 +189,7 @@ export class GatewayClient {
 
   private flushPending(err: Error): void {
     for (const pending of this.pending.values()) {
+      clearTimeout(pending.timeout);
       pending.reject(err);
     }
     this.pending.clear();
@@ -191,6 +217,7 @@ export class GatewayClient {
     if (frame.type === "res") {
       const pending = this.pending.get(frame.id);
       if (!pending) return;
+      clearTimeout(pending.timeout);
       this.pending.delete(frame.id);
       if (frame.ok) {
         pending.resolve(frame.payload);
@@ -294,13 +321,26 @@ export class GatewayClient {
 
     const id = randomUUID();
     const frame = { type: "req" as const, id, method: "connect", params: connectParams };
+    const timeoutMs = this.opts.requestTimeoutMs ?? 15_000;
+    const timeout = setTimeout(() => {
+      this.pending.delete(id);
+      this.onConnectError(new Error("Gateway connect timed out"));
+    }, timeoutMs);
     this.pending.set(id, {
-      resolve: (value) => this.onConnectResponse(value),
-      reject: (err) => this.onConnectError(err),
+      resolve: (value) => {
+        clearTimeout(timeout);
+        this.onConnectResponse(value);
+      },
+      reject: (err) => {
+        clearTimeout(timeout);
+        this.onConnectError(err);
+      },
+      timeout,
     });
     try {
       this.ws.send(JSON.stringify(frame));
     } catch (err) {
+      clearTimeout(timeout);
       this.pending.delete(id);
       this.onConnectError(err instanceof Error ? err : new Error(String(err)));
     }
