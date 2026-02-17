@@ -1,0 +1,219 @@
+import "dotenv/config";
+import { logger } from "./logger.js";
+import { loadRelayConfig } from "./config/env.js";
+import { resolveOpenclawConfig } from "./openclaw/openclawConfig.js";
+import { BackendClient } from "./backend/backendClient.js";
+import { GatewayClient } from "./openclaw/gatewayClient.js";
+import { ChatRunner } from "./openclaw/chatRunner.js";
+
+async function main(): Promise<void> {
+  const cfg = loadRelayConfig(process.env);
+  const openclaw = resolveOpenclawConfig(process.env, {
+    gatewayWsUrl: cfg.openclaw.gatewayWsUrl,
+  });
+  logger.info(
+    {
+      pid: process.pid,
+      relayInstanceId: cfg.relayInstanceId,
+      backendBaseUrl: cfg.backendBaseUrl,
+      gatewayWsUrl: openclaw.gateway.wsUrl,
+      openclawConfigPath: openclaw.configPath,
+      maxTasks: cfg.maxTasks,
+      waitSeconds: cfg.waitSeconds,
+      concurrency: cfg.concurrency,
+    },
+    "Relay starting"
+  );
+
+  const backend = new BackendClient({ baseUrl: cfg.backendBaseUrl, relayToken: cfg.relayToken });
+
+  let chatRunner: ChatRunner | null = null;
+  const gateway = new GatewayClient({
+    url: openclaw.gateway.wsUrl,
+    token: openclaw.gateway.auth.token,
+    password: openclaw.gateway.auth.password,
+    instanceId: cfg.relayInstanceId,
+    role: "operator",
+    scopes: cfg.openclaw.scopes,
+    onEvent: (evt) => chatRunner?.handleEvent(evt),
+  });
+  chatRunner = new ChatRunner(gateway);
+
+  const stop = createStopSignal();
+  await ensureGatewayConnected(gateway, stop);
+  const runner = chatRunner;
+  if (!runner) {
+    throw new Error("ChatRunner not initialized");
+  }
+
+  while (!stop.stopped) {
+    let pulled: Awaited<ReturnType<typeof backend.pull>>;
+    try {
+      pulled = await backend.pull({
+        relayInstanceId: cfg.relayInstanceId,
+        maxTasks: cfg.maxTasks,
+        waitSeconds: cfg.waitSeconds,
+      });
+    } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : String(err) }, "Pull failed; backing off");
+      await sleep(1000);
+      continue;
+    }
+
+    if (pulled.tasks.length === 0) {
+      continue;
+    }
+
+    await runWithConcurrency(pulled.tasks, cfg.concurrency, async (t) => {
+      const startedAt = Date.now();
+      try {
+        const { result, openclawMeta } = await runner.runChatTask({
+          taskId: t.taskId,
+          sessionKey: t.input.sessionKey,
+          messageText: t.input.messageText,
+          timeoutMs: cfg.taskTimeoutMs,
+        });
+
+        const finishedAtMs = Date.now();
+        if (result.outcome === "reply") {
+          await backend.submitResult({
+            taskId: t.taskId,
+            body: {
+              relayInstanceId: cfg.relayInstanceId,
+              attempt: t.attempt,
+              leaseId: t.leaseId,
+              finishedAtMs,
+              outcome: "reply",
+              reply: normalizeReply(result.reply.message),
+              openclawMeta,
+            },
+          });
+        } else if (result.outcome === "no_reply") {
+          await backend.submitResult({
+            taskId: t.taskId,
+            body: {
+              relayInstanceId: cfg.relayInstanceId,
+              attempt: t.attempt,
+              leaseId: t.leaseId,
+              finishedAtMs,
+              outcome: "no_reply",
+              noReply: result.noReply ?? { reason: "no_message" },
+              openclawMeta,
+            },
+          });
+        } else {
+          await backend.submitResult({
+            taskId: t.taskId,
+            body: {
+              relayInstanceId: cfg.relayInstanceId,
+              attempt: t.attempt,
+              leaseId: t.leaseId,
+              finishedAtMs,
+              outcome: "error",
+              error: result.error,
+              openclawMeta,
+            },
+          });
+        }
+
+        logger.info(
+          { taskId: t.taskId, attempt: t.attempt, durationMs: finishedAtMs - startedAt },
+          "Task processed"
+        );
+      } catch (err) {
+        const finishedAtMs = Date.now();
+        logger.warn(
+          { taskId: t.taskId, attempt: t.attempt, err: err instanceof Error ? err.message : String(err) },
+          "Task processing failed"
+        );
+        try {
+          await backend.submitResult({
+            taskId: t.taskId,
+            body: {
+              relayInstanceId: cfg.relayInstanceId,
+              attempt: t.attempt,
+              leaseId: t.leaseId,
+              finishedAtMs,
+              outcome: "error",
+              error: { code: "RELAY_INTERNAL_ERROR", message: "Relay failed to process task" },
+              openclawMeta: { method: "relay" },
+            },
+          });
+        } catch (submitErr) {
+          logger.warn(
+            { taskId: t.taskId, err: submitErr instanceof Error ? submitErr.message : String(submitErr) },
+            "Failed to submit error result"
+          );
+        }
+      }
+    });
+  }
+
+  gateway.stop();
+  logger.info("Relay stopped");
+}
+
+main().catch((err) => {
+  logger.error({ err: err instanceof Error ? err.message : String(err) }, "Relay crashed");
+  process.exit(1);
+});
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function createStopSignal() {
+  const state = { stopped: false };
+  const stop = () => {
+    state.stopped = true;
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+  return state;
+}
+
+async function ensureGatewayConnected(gateway: GatewayClient, stop: { stopped: boolean }) {
+  while (!stop.stopped) {
+    try {
+      await gateway.start();
+      return;
+    } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : String(err) }, "Gateway connect failed; retrying");
+      await sleep(1000);
+    }
+  }
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>
+): Promise<void> {
+  if (concurrency <= 1) {
+    for (const item of items) {
+      await fn(item);
+    }
+    return;
+  }
+
+  const queue = items.slice();
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    for (;;) {
+      const next = queue.shift();
+      if (!next) return;
+      await fn(next);
+    }
+  });
+  await Promise.all(workers);
+}
+
+function normalizeReply(message: unknown): unknown {
+  if (message && typeof message === "object") {
+    const text = (message as { text?: unknown }).text;
+    if (typeof text === "string" && text.trim()) {
+      return { text };
+    }
+  }
+  return { message };
+}
+

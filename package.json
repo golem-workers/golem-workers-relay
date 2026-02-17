@@ -1,0 +1,38 @@
+{
+  "name": "golem-workers-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix"
+  },
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "json5": "^2.2.3",
+    "pino": "^10.3.1",
+    "ws": "^8.18.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "@types/ws": "^8.18.1",
+    "@typescript-eslint/eslint-plugin": "^8.55.0",
+    "@typescript-eslint/parser": "^8.55.0",
+    "eslint": "^8.57.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}
+
