@@ -4,6 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Default service name for systemd restart. If the caller explicitly sets
+# SERVICE_NAME="" we treat that as "do not restart".
+if [[ -z "${SERVICE_NAME+x}" ]]; then
+  SERVICE_NAME="golem-workers-relay"
+fi
+
 # Relative paths (stored inside the repo).
 LOG_DIR="${ROOT_DIR}/logs"
 PID_DIR="${ROOT_DIR}/pids"
@@ -96,26 +102,29 @@ if [[ "${OLD_HEAD}" != "${NEW_HEAD}" ]]; then
   "${NPM_BIN}" ci
   "${NPM_BIN}" run build
 
-  # Optional systemd restart (set SERVICE_NAME in env when using on a server).
-  if [[ -n "${SERVICE_NAME:-}" ]]; then
+  # Optional systemd restart (defaults to "golem-workers-relay").
+  # Best-effort: missing systemd/sudo/unit should not fail the update.
+  if [[ -n "${SERVICE_NAME}" ]]; then
     if command -v systemctl >/dev/null 2>&1; then
-      echo "Restarting service: ${SERVICE_NAME}"
-      if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
-        systemctl restart "${SERVICE_NAME}"
-      else
-        if command -v sudo >/dev/null 2>&1; then
-          sudo systemctl restart "${SERVICE_NAME}"
+      if systemctl cat "${SERVICE_NAME}" >/dev/null 2>&1; then
+        echo "Restarting service: ${SERVICE_NAME}"
+        if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+          systemctl restart "${SERVICE_NAME}" || echo "Service restart failed (non-fatal)."
         else
-          echo "sudo not available and not running as root; cannot restart service."
-          exit 1
+          if command -v sudo >/dev/null 2>&1; then
+            sudo systemctl restart "${SERVICE_NAME}" || echo "Service restart failed (non-fatal)."
+          else
+            echo "sudo not available and not running as root; skipping service restart."
+          fi
         fi
+      else
+        echo "systemd unit '${SERVICE_NAME}' not found; skipping service restart."
       fi
-      echo "Service restarted."
     else
       echo "systemctl not available; skipping service restart."
     fi
   else
-    echo "SERVICE_NAME not set; skipping service restart."
+    echo "SERVICE_NAME is empty; skipping service restart."
   fi
 else
   echo "No changes detected. Nothing to do."
