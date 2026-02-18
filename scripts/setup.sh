@@ -65,6 +65,17 @@ fi
 NPM_DIR="$(cd "$(dirname "${NPM_BIN}")" && pwd)"
 NODE_DIR="$(cd "$(dirname "${NODE_BIN}")" && pwd)"
 
+# Ensure dependencies and build output exist before starting the service.
+cd "${ROOT_DIR}"
+echo "Installing npm dependencies..."
+if [[ -f "${ROOT_DIR}/package-lock.json" ]]; then
+  "${NPM_BIN}" ci
+else
+  "${NPM_BIN}" install
+fi
+echo "Building relay..."
+"${NPM_BIN}" run build
+
 # systemd service
 if command -v systemctl >/dev/null 2>&1; then
   echo "Installing systemd unit: ${UNIT_PATH}"
