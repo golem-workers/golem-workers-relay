@@ -9,6 +9,7 @@ import {
 export type BackendClientOptions = {
   baseUrl: string;
   relayToken: string;
+  devLogEnabled?: boolean;
 };
 
 export class BackendClient {
@@ -17,17 +18,29 @@ export class BackendClient {
   async pull(input: { relayInstanceId: string; maxTasks: number; waitSeconds: number }): Promise<PullResponse> {
     const url = `${this.opts.baseUrl}/api/v1/relays/pull`;
     const timeoutMs = input.waitSeconds * 1000 + 15_000;
+    if (this.opts.devLogEnabled) {
+      logger.debug({ url, ...input, timeoutMs }, "Backend pull request");
+    }
     const res = await retry(
       () => postJson(url, this.opts.relayToken, input, timeoutMs),
       { attempts: 3, minDelayMs: 500, maxDelayMs: 5000, label: "pull" }
     );
     const parsed = pullResponseSchema.parse(res);
+    if (this.opts.devLogEnabled) {
+      logger.debug({ url, tasksCount: parsed.tasks.length }, "Backend pull response");
+    }
     return parsed;
   }
 
   async submitResult(input: { taskId: string; body: TaskResultRequest }): Promise<{ accepted: true }> {
     const url = `${this.opts.baseUrl}/api/v1/relays/tasks/${encodeURIComponent(input.taskId)}/result`;
     const timeoutMs = 15_000;
+    if (this.opts.devLogEnabled) {
+      logger.debug(
+        { url, taskId: input.taskId, outcome: input.body.outcome, attempt: input.body.attempt, leaseId: input.body.leaseId },
+        "Backend submitResult request"
+      );
+    }
     const res = await retry(
       () => postJson(url, this.opts.relayToken, input.body, timeoutMs),
       { attempts: 5, minDelayMs: 500, maxDelayMs: 10_000, label: "submitResult" }
@@ -35,6 +48,9 @@ export class BackendClient {
     const parsed = acceptedResponseSchema.parse(res);
     if (!parsed.accepted) {
       throw new Error("Backend rejected relay result");
+    }
+    if (this.opts.devLogEnabled) {
+      logger.debug({ url, taskId: input.taskId, accepted: true }, "Backend submitResult accepted");
     }
     return { accepted: true };
   }

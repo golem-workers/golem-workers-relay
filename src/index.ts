@@ -6,6 +6,14 @@ import { BackendClient } from "./backend/backendClient.js";
 import { GatewayClient } from "./openclaw/gatewayClient.js";
 import { ChatRunner } from "./openclaw/chatRunner.js";
 
+function makeTextPreview(text: string, maxLen: number): string {
+  const normalized = String(text).replace(/\s+/g, " ").trim();
+  const n = Math.max(0, Math.min(5000, Math.trunc(maxLen)));
+  if (n === 0 || normalized.length === 0) return "";
+  if (normalized.length <= n) return normalized;
+  return `${normalized.slice(0, n)}...`;
+}
+
 async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
   const openclaw = resolveOpenclawConfig(process.env, {
@@ -25,7 +33,11 @@ async function main(): Promise<void> {
     "Relay starting"
   );
 
-  const backend = new BackendClient({ baseUrl: cfg.backendBaseUrl, relayToken: cfg.relayToken });
+  const backend = new BackendClient({
+    baseUrl: cfg.backendBaseUrl,
+    relayToken: cfg.relayToken,
+    devLogEnabled: cfg.devLogEnabled,
+  });
 
   let chatRunner: ChatRunner | null = null;
   const gateway = new GatewayClient({
@@ -36,8 +48,11 @@ async function main(): Promise<void> {
     role: "operator",
     scopes: cfg.openclaw.scopes,
     onEvent: (evt) => chatRunner?.handleEvent(evt),
+    devLogEnabled: cfg.devLogEnabled,
+    devLogTextMaxLen: cfg.devLogTextMaxLen,
+    devLogGatewayFrames: cfg.devLogGatewayFrames,
   });
-  chatRunner = new ChatRunner(gateway);
+  chatRunner = new ChatRunner(gateway, { devLogEnabled: cfg.devLogEnabled, devLogTextMaxLen: cfg.devLogTextMaxLen });
 
   const stop = createStopSignal();
   await ensureGatewayConnected(gateway, stop);
@@ -60,6 +75,17 @@ async function main(): Promise<void> {
       continue;
     }
 
+    if (cfg.devLogEnabled) {
+      logger.debug(
+        {
+          tasksCount: pulled.tasks.length,
+          tasks: pulled.tasks.slice(0, 50).map((t) => ({ taskId: t.taskId, kind: t.input.kind })),
+          truncated: pulled.tasks.length > 50,
+        },
+        "Pulled tasks from backend"
+      );
+    }
+
     if (pulled.tasks.length === 0) {
       continue;
     }
@@ -67,6 +93,23 @@ async function main(): Promise<void> {
     await runWithConcurrency(pulled.tasks, cfg.concurrency, async (t) => {
       const startedAt = Date.now();
       try {
+        if (cfg.devLogEnabled) {
+          logger.debug(
+            {
+              taskId: t.taskId,
+              attempt: t.attempt,
+              leaseId: t.leaseId,
+              kind: t.input.kind,
+              sessionKey: t.input.kind === "chat" ? t.input.sessionKey : null,
+              messageLen: t.input.kind === "chat" ? t.input.messageText.length : null,
+              messagePreview:
+                t.input.kind === "chat" ? makeTextPreview(t.input.messageText, cfg.devLogTextMaxLen) : null,
+              timeoutMs: cfg.taskTimeoutMs,
+            },
+            "Task started"
+          );
+        }
+
         if (t.input.kind === "handshake") {
           // Explicit health/handshake task: ensure we can connect and receive hello-ok.
           await withTimeout(gateway.start(), cfg.taskTimeoutMs, "gateway.start");

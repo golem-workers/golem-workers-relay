@@ -20,6 +20,11 @@ const envSchema = z.object({
   RELAY_TASK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(30 * 60_000).optional(),
   RELAY_CONCURRENCY: z.coerce.number().int().min(1).max(20).optional(),
 
+  // Dev logging (hard-disabled in production).
+  RELAY_DEV_LOG: z.coerce.boolean().optional(),
+  RELAY_DEV_LOG_TEXT_MAXLEN: z.coerce.number().int().min(0).max(5000).optional(),
+  RELAY_DEV_LOG_GATEWAY_FRAMES: z.coerce.boolean().optional(),
+
   OPENCLAW_GATEWAY_WS_URL: z.string().url().optional(),
   OPENCLAW_CONFIG_PATH: z.string().min(1).optional(),
   OPENCLAW_STATE_DIR: z.string().min(1).optional(),
@@ -38,6 +43,9 @@ export type RelayConfig = {
   waitSeconds: number;
   taskTimeoutMs: number;
   concurrency: number;
+  devLogEnabled: boolean;
+  devLogTextMaxLen: number;
+  devLogGatewayFrames: boolean;
   openclaw: {
     gatewayWsUrl?: string;
     configPath?: string;
@@ -50,6 +58,11 @@ export type RelayConfig = {
 
 export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConfig {
   const parsed = envSchema.parse(env) satisfies RelayEnv;
+  const nodeEnv = (env.NODE_ENV ?? "development").trim();
+  const devLogEnabled = nodeEnv !== "production" && (parsed.RELAY_DEV_LOG ?? false);
+  const devLogTextMaxLen = parsed.RELAY_DEV_LOG_TEXT_MAXLEN ?? 200;
+  const devLogGatewayFrames = devLogEnabled && (parsed.RELAY_DEV_LOG_GATEWAY_FRAMES ?? false);
+
   const relayInstanceId =
     parsed.RELAY_INSTANCE_ID ||
     `${os.hostname()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
@@ -62,6 +75,9 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     waitSeconds: parsed.RELAY_WAIT_SECONDS ?? 25,
     taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 120_000,
     concurrency: parsed.RELAY_CONCURRENCY ?? 1,
+    devLogEnabled,
+    devLogTextMaxLen,
+    devLogGatewayFrames,
     openclaw: {
       gatewayWsUrl: parsed.OPENCLAW_GATEWAY_WS_URL,
       configPath: parsed.OPENCLAW_CONFIG_PATH,
@@ -83,6 +99,9 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     waitSeconds: 0,
     taskTimeoutMs: 5000,
     concurrency: 1,
+    devLogEnabled: false,
+    devLogTextMaxLen: 200,
+    devLogGatewayFrames: false,
     openclaw: { scopes: ["operator.admin"] },
   };
   return {

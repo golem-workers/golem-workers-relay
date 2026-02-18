@@ -5,6 +5,7 @@ import { buildDeviceAuthPayload } from "./deviceAuthPayload.js";
 import {
   type EventFrame,
   type HelloOk,
+  chatEventSchema,
   connectChallengeEventSchema,
   frameSchema,
   helloOkSchema,
@@ -19,6 +20,7 @@ type Pending = {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
   timeout: NodeJS.Timeout;
+  method: string;
 };
 
 export type GatewayClientOptions = {
@@ -33,7 +35,44 @@ export type GatewayClientOptions = {
   requestTimeoutMs?: number;
   onEvent?: (evt: EventFrame) => void;
   onHelloOk?: (hello: HelloOk) => void;
+  devLogEnabled?: boolean;
+  devLogTextMaxLen?: number;
+  devLogGatewayFrames?: boolean;
 };
+
+function makeTextPreview(text: string, maxLen: number): string {
+  const normalized = String(text).replace(/\s+/g, " ").trim();
+  const n = Math.max(0, Math.min(5000, Math.trunc(maxLen)));
+  if (n === 0 || normalized.length === 0) return "";
+  if (normalized.length <= n) return normalized;
+  return `${normalized.slice(0, n)}...`;
+}
+
+function summarizeRequestParams(method: string, params: unknown, textMaxLen: number): unknown {
+  if (!params || typeof params !== "object") return null;
+  const p = params as Record<string, unknown>;
+  if (method === "chat.send") {
+    const message = typeof p.message === "string" ? p.message : "";
+    return {
+      sessionKey: typeof p.sessionKey === "string" ? p.sessionKey : null,
+      messageLen: message.length,
+      messagePreview: makeTextPreview(message, textMaxLen),
+      idempotencyKey: typeof p.idempotencyKey === "string" ? p.idempotencyKey : null,
+      timeoutMs: typeof p.timeoutMs === "number" ? p.timeoutMs : null,
+    };
+  }
+  if (method === "chat.abort") {
+    return {
+      sessionKey: typeof p.sessionKey === "string" ? p.sessionKey : null,
+      runId: typeof p.runId === "string" ? p.runId : null,
+    };
+  }
+  if (method === "connect") {
+    // Avoid logging full connect params; they contain signature/auth details.
+    return { keys: Object.keys(p).slice(0, 20) };
+  }
+  return { keys: Object.keys(p).slice(0, 20) };
+}
 
 export class GatewayClient {
   private ws: WebSocket | null = null;
@@ -95,6 +134,10 @@ export class GatewayClient {
     const frame = { type: "req" as const, id, method, params };
 
     const text = JSON.stringify(frame);
+    if (this.opts.devLogEnabled) {
+      const textMaxLen = this.opts.devLogTextMaxLen ?? 200;
+      logger.debug({ id, method, params: summarizeRequestParams(method, params, textMaxLen) }, "Gateway request send");
+    }
     return new Promise<unknown>((resolve, reject) => {
       const timeoutMs = this.opts.requestTimeoutMs ?? 15_000;
       const timeout = setTimeout(() => {
@@ -102,7 +145,7 @@ export class GatewayClient {
         reject(new Error(`Gateway request timed out: ${method}`));
       }, timeoutMs);
 
-      this.pending.set(id, { resolve, reject, timeout });
+      this.pending.set(id, { resolve, reject, timeout, method });
       try {
         this.ws?.send(text);
       } catch (err) {
@@ -185,6 +228,9 @@ export class GatewayClient {
     if (this.reconnectTimer) return;
     const delay = this.backoffMs;
     this.backoffMs = Math.min(30_000, Math.floor(this.backoffMs * 1.5));
+    if (this.opts.devLogEnabled) {
+      logger.debug({ delayMs: delay, nextBackoffMs: this.backoffMs }, "Gateway reconnect scheduled");
+    }
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.open();
@@ -200,6 +246,12 @@ export class GatewayClient {
   }
 
   private handleMessage(text: string): void {
+    if (this.opts.devLogGatewayFrames) {
+      logger.debug(
+        { size: text.length, preview: makeTextPreview(text, 500) },
+        "Gateway frame received"
+      );
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(text) as unknown;
@@ -224,10 +276,28 @@ export class GatewayClient {
       clearTimeout(pending.timeout);
       this.pending.delete(frame.id);
       if (frame.ok) {
+        if (this.opts.devLogEnabled) {
+          const runId =
+            pending.method === "chat.send" && frame.payload && typeof frame.payload === "object"
+              ? (frame.payload as { runId?: unknown }).runId
+              : undefined;
+          logger.debug(
+            {
+              id: frame.id,
+              method: pending.method,
+              ok: true,
+              runId: typeof runId === "string" ? runId : null,
+            },
+            "Gateway response ok"
+          );
+        }
         pending.resolve(frame.payload);
       } else {
         const code = frame.error?.code ?? "GATEWAY_ERROR";
         const msg = frame.error?.message ?? "Gateway request failed";
+        if (this.opts.devLogEnabled) {
+          logger.warn({ id: frame.id, method: pending.method, ok: false, code, message: msg }, "Gateway response error");
+        }
         pending.reject(new Error(`${code}: ${msg}`));
       }
     }
@@ -236,15 +306,36 @@ export class GatewayClient {
   private handleEvent(evt: EventFrame): void {
     if (evt.event === "tick") {
       this.lastTickMs = Date.now();
+      if (this.opts.devLogGatewayFrames) {
+        logger.debug({ event: "tick" }, "Gateway tick");
+      }
       return;
     }
     if (evt.event === "connect.challenge") {
       const challenge = connectChallengeEventSchema.safeParse(evt.payload);
       if (challenge.success) {
         this.connectNonce = challenge.data.nonce;
+        if (this.opts.devLogEnabled) {
+          logger.debug({ event: "connect.challenge", hasNonce: true }, "Gateway connect challenge received");
+        }
         this.sendConnectIfNeeded();
       }
       return;
+    }
+    if (this.opts.devLogEnabled) {
+      if (evt.event === "chat") {
+        const parsed = chatEventSchema.safeParse(evt.payload);
+        if (parsed.success) {
+          logger.debug(
+            { event: "chat", runId: parsed.data.runId, state: parsed.data.state },
+            "Gateway chat event"
+          );
+        } else {
+          logger.debug({ event: "chat" }, "Gateway chat event (unparsed)");
+        }
+      } else {
+        logger.debug({ event: evt.event }, "Gateway event");
+      }
     }
     this.opts.onEvent?.(evt);
   }
@@ -340,6 +431,7 @@ export class GatewayClient {
         this.onConnectError(err);
       },
       timeout,
+      method: "connect",
     });
     try {
       this.ws.send(JSON.stringify(frame));
