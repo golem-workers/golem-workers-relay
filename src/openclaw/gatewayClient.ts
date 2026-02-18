@@ -85,6 +85,10 @@ export class GatewayClient {
     return !!this.hello;
   }
 
+  getHello(): HelloOk | null {
+    return this.hello;
+  }
+
   async request(method: string, params?: unknown): Promise<unknown> {
     await this.ensureReady();
     const id = randomUUID();

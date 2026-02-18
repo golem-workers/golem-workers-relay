@@ -6,11 +6,28 @@ export const pullRequestSchema = z.object({
   waitSeconds: z.number().int().min(0).max(30),
 });
 
-export const taskInputSchema = z.object({
+const chatTaskInputSchema = z.object({
+  kind: z.literal("chat"),
   sessionKey: z.string().min(1),
   messageText: z.string().min(1),
   context: z.unknown().optional(),
 });
+
+const handshakeTaskInputSchema = z.object({
+  kind: z.literal("handshake"),
+  nonce: z.string().min(1),
+});
+
+export const taskInputSchema = z.preprocess((value) => {
+  // Back-compat: older backends send `{ sessionKey, messageText }` without a `kind`.
+  if (value && typeof value === "object" && (value as { constructor?: unknown }).constructor === Object) {
+    const obj = value as Record<string, unknown>;
+    if (typeof obj.kind !== "string" && typeof obj.sessionKey === "string" && typeof obj.messageText === "string") {
+      return { kind: "chat", ...obj };
+    }
+  }
+  return value;
+}, z.discriminatedUnion("kind", [chatTaskInputSchema, handshakeTaskInputSchema]));
 
 export const leasedTaskSchema = z.object({
   taskId: z.string().min(1),
@@ -27,6 +44,7 @@ export const pullResponseSchema = z.object({
 export type PullRequest = z.infer<typeof pullRequestSchema>;
 export type LeasedTask = z.infer<typeof leasedTaskSchema>;
 export type PullResponse = z.infer<typeof pullResponseSchema>;
+export type TaskInput = z.infer<typeof taskInputSchema>;
 
 export const taskResultRequestSchema = z.discriminatedUnion("outcome", [
   z.object({

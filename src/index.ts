@@ -67,15 +67,26 @@ async function main(): Promise<void> {
     await runWithConcurrency(pulled.tasks, cfg.concurrency, async (t) => {
       const startedAt = Date.now();
       try {
-        const { result, openclawMeta } = await runner.runChatTask({
-          taskId: t.taskId,
-          sessionKey: t.input.sessionKey,
-          messageText: t.input.messageText,
-          timeoutMs: cfg.taskTimeoutMs,
-        });
+        if (t.input.kind === "handshake") {
+          // Explicit health/handshake task: ensure we can connect and receive hello-ok.
+          await withTimeout(gateway.start(), cfg.taskTimeoutMs, "gateway.start");
+          const hello = gateway.getHello();
+          if (!hello) {
+            throw new Error("Gateway is not ready (missing hello-ok)");
+          }
 
-        const finishedAtMs = Date.now();
-        if (result.outcome === "reply") {
+          const reply = {
+            nonce: t.input.nonce,
+            helloType: hello.type,
+            protocol: hello.protocol,
+            policy: hello.policy,
+            features: hello.features
+              ? { methodsCount: hello.features.methods.length, eventsCount: hello.features.events.length }
+              : null,
+            auth: hello.auth ? { role: hello.auth.role, scopes: hello.auth.scopes } : null,
+          };
+
+          const finishedAtMs = Date.now();
           await backend.submitResult({
             taskId: t.taskId,
             body: {
@@ -84,40 +95,63 @@ async function main(): Promise<void> {
               leaseId: t.leaseId,
               finishedAtMs,
               outcome: "reply",
-              reply: normalizeReply(result.reply.message),
-              openclawMeta,
-            },
-          });
-        } else if (result.outcome === "no_reply") {
-          await backend.submitResult({
-            taskId: t.taskId,
-            body: {
-              relayInstanceId: cfg.relayInstanceId,
-              attempt: t.attempt,
-              leaseId: t.leaseId,
-              finishedAtMs,
-              outcome: "no_reply",
-              noReply: result.noReply ?? { reason: "no_message" },
-              openclawMeta,
+              reply,
+              openclawMeta: { method: "connect" },
             },
           });
         } else {
-          await backend.submitResult({
+          const { result, openclawMeta } = await runner.runChatTask({
             taskId: t.taskId,
-            body: {
-              relayInstanceId: cfg.relayInstanceId,
-              attempt: t.attempt,
-              leaseId: t.leaseId,
-              finishedAtMs,
-              outcome: "error",
-              error: result.error,
-              openclawMeta,
-            },
+            sessionKey: t.input.sessionKey,
+            messageText: t.input.messageText,
+            timeoutMs: cfg.taskTimeoutMs,
           });
+
+          const finishedAtMs = Date.now();
+          if (result.outcome === "reply") {
+            await backend.submitResult({
+              taskId: t.taskId,
+              body: {
+                relayInstanceId: cfg.relayInstanceId,
+                attempt: t.attempt,
+                leaseId: t.leaseId,
+                finishedAtMs,
+                outcome: "reply",
+                reply: normalizeReply(result.reply.message),
+                openclawMeta,
+              },
+            });
+          } else if (result.outcome === "no_reply") {
+            await backend.submitResult({
+              taskId: t.taskId,
+              body: {
+                relayInstanceId: cfg.relayInstanceId,
+                attempt: t.attempt,
+                leaseId: t.leaseId,
+                finishedAtMs,
+                outcome: "no_reply",
+                noReply: result.noReply ?? { reason: "no_message" },
+                openclawMeta,
+              },
+            });
+          } else {
+            await backend.submitResult({
+              taskId: t.taskId,
+              body: {
+                relayInstanceId: cfg.relayInstanceId,
+                attempt: t.attempt,
+                leaseId: t.leaseId,
+                finishedAtMs,
+                outcome: "error",
+                error: result.error,
+                openclawMeta,
+              },
+            });
+          }
         }
 
         logger.info(
-          { taskId: t.taskId, attempt: t.attempt, durationMs: finishedAtMs - startedAt },
+          { taskId: t.taskId, attempt: t.attempt, durationMs: Date.now() - startedAt },
           "Task processed"
         );
       } catch (err) {
@@ -215,5 +249,20 @@ function normalizeReply(message: unknown): unknown {
     }
   }
   return { message };
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  const ms = Math.max(1, timeoutMs);
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out: ${label}`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
