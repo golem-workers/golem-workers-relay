@@ -7,6 +7,12 @@ export type ChatRunResult =
   | { outcome: "no_reply"; noReply?: { reason?: string; runId: string } }
   | { outcome: "error"; error: { code: string; message: string; runId?: string } };
 
+type ChatRetryOptions = {
+  attempts: number;
+  baseDelayMs: number[];
+  jitterMs: number;
+};
+
 type Waiter = {
   resolve: (evt: ChatEvent) => void;
   reject: (err: Error) => void;
@@ -21,17 +27,107 @@ function makeTextPreview(text: string, maxLen: number): string {
   return `${normalized.slice(0, n)}...`;
 }
 
+type ParsedInjectedStreamError = {
+  code?: number;
+  status?: string;
+  message?: string;
+};
+
+function tryParseInjectedStreamJsonError(text: string): ParsedInjectedStreamError | null {
+  if (!text.includes("JSON error injected into SSE stream")) {
+    return null;
+  }
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) {
+    return null;
+  }
+  const candidate = text.slice(start, end + 1);
+  try {
+    const parsed = JSON.parse(candidate) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    const err = (parsed as { error?: unknown }).error;
+    if (!err || typeof err !== "object") {
+      return null;
+    }
+    const codeRaw = (err as { code?: unknown }).code;
+    const statusRaw = (err as { status?: unknown }).status;
+    const messageRaw = (err as { message?: unknown }).message;
+    const code =
+      typeof codeRaw === "number"
+        ? codeRaw
+        : typeof codeRaw === "string" && /^\d{3}$/.test(codeRaw.trim())
+          ? Number.parseInt(codeRaw.trim(), 10)
+          : undefined;
+    const status = typeof statusRaw === "string" ? statusRaw : undefined;
+    const message = typeof messageRaw === "string" ? messageRaw : undefined;
+    return { code, status, message };
+  } catch {
+    return null;
+  }
+}
+
+function classifyRetryableGatewayError(message: string): {
+  retryable: boolean;
+  reason: string;
+  upstream?: ParsedInjectedStreamError;
+} {
+  const upstream = tryParseInjectedStreamJsonError(message);
+  if (upstream?.code !== undefined) {
+    if (upstream.code >= 500 && upstream.code <= 599) {
+      return { retryable: true, reason: "upstream_5xx", upstream };
+    }
+    if (upstream.code === 429) {
+      return { retryable: true, reason: "upstream_429", upstream };
+    }
+  }
+  if (upstream?.status === "INTERNAL") {
+    return { retryable: true, reason: "upstream_internal", upstream };
+  }
+
+  // Fallback heuristics: some upstream providers embed JSON-ish text in the message.
+  if (/status"\s*:\s*"INTERNAL"/.test(message) && /"code"\s*:\s*5\d\d/.test(message)) {
+    return { retryable: true, reason: "heuristic_internal" };
+  }
+  return { retryable: false, reason: "non_retryable" };
+}
+
+function computeBackoffMs(schedule: number[], attemptIndex: number, jitterMs: number): number {
+  const base = schedule[Math.max(0, Math.min(schedule.length - 1, attemptIndex))] ?? 0;
+  const jitter = jitterMs > 0 ? Math.floor(Math.random() * jitterMs) : 0;
+  return Math.max(0, Math.trunc(base) + jitter);
+}
+
+async function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return;
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
 export class ChatRunner {
   private waitersByRunId = new Map<string, Waiter>();
   private readonly devLogEnabled: boolean;
   private readonly devLogTextMaxLen: number;
+  private readonly retry: ChatRetryOptions;
 
   constructor(
     private readonly gateway: GatewayClient,
-    opts?: { devLogEnabled?: boolean; devLogTextMaxLen?: number }
+    opts?: {
+      devLogEnabled?: boolean;
+      devLogTextMaxLen?: number;
+      retry?: Partial<ChatRetryOptions>;
+    }
   ) {
     this.devLogEnabled = opts?.devLogEnabled ?? false;
     this.devLogTextMaxLen = opts?.devLogTextMaxLen ?? 200;
+    this.retry = {
+      attempts: Math.max(1, Math.trunc(opts?.retry?.attempts ?? 3)),
+      baseDelayMs: Array.isArray(opts?.retry?.baseDelayMs)
+        ? opts?.retry?.baseDelayMs.map((n) => Math.max(0, Math.trunc(n)))
+        : [300, 800, 1500],
+      jitterMs: Math.max(0, Math.trunc(opts?.retry?.jitterMs ?? 250)),
+    };
   }
 
   handleEvent(evt: EventFrame): void {
@@ -58,6 +154,7 @@ export class ChatRunner {
     messageText: string;
     timeoutMs: number;
   }): Promise<{ result: ChatRunResult; openclawMeta: { method: string; runId?: string } }> {
+    const startedAtMs = Date.now();
     if (this.devLogEnabled) {
       logger.debug(
         {
@@ -71,106 +168,160 @@ export class ChatRunner {
       );
     }
 
-    // `chat.send` is side-effecting; idempotencyKey must be stable across retries.
-    const payload = await this.gateway.request("chat.send", {
-      sessionKey: input.sessionKey,
-      message: input.messageText,
-      idempotencyKey: input.taskId,
-      timeoutMs: input.timeoutMs,
-    });
-
-    // Server will emit chat events keyed by runId.
-    const runId = extractRunId(payload);
-    if (!runId) {
-      if (this.devLogEnabled) {
-        logger.warn({ taskId: input.taskId }, "Gateway did not return runId for chat.send");
+    for (let attempt = 1; attempt <= this.retry.attempts; attempt += 1) {
+      const elapsedMs = Date.now() - startedAtMs;
+      const remainingMs = Math.max(0, input.timeoutMs - elapsedMs);
+      if (remainingMs < 1000) {
+        return {
+          result: {
+            outcome: "error",
+            error: { code: "GATEWAY_TIMEOUT", message: "Timed out waiting for final" },
+          },
+          openclawMeta: { method: "chat.send" },
+        };
       }
-      return {
-        result: { outcome: "error", error: { code: "NO_RUN_ID", message: "Gateway did not return runId" } },
-        openclawMeta: { method: "chat.send" },
-      };
-    }
 
-    try {
-      if (this.devLogEnabled) {
-        logger.debug({ taskId: input.taskId, runId }, "Relay waiting for chat final event");
-      }
-      const finalEvt = await this.waitForFinal(runId, input.timeoutMs);
-      if (finalEvt.state === "final") {
-        if (finalEvt.message !== undefined) {
+      // `chat.send` is side-effecting; idempotencyKey must be stable across retries.
+      let runId: string | null = null;
+      try {
+        const payload = await this.gateway.request("chat.send", {
+          sessionKey: input.sessionKey,
+          message: input.messageText,
+          idempotencyKey: input.taskId,
+          timeoutMs: remainingMs,
+        });
+
+        // Server will emit chat events keyed by runId.
+        runId = extractRunId(payload);
+        if (!runId) {
           if (this.devLogEnabled) {
-            logger.debug({ taskId: input.taskId, runId, outcome: "reply" }, "Relay chat task completed");
+            logger.warn({ taskId: input.taskId }, "Gateway did not return runId for chat.send");
           }
           return {
-            result: { outcome: "reply", reply: { message: finalEvt.message, runId } },
+            result: { outcome: "error", error: { code: "NO_RUN_ID", message: "Gateway did not return runId" } },
+            openclawMeta: { method: "chat.send" },
+          };
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
+        const retryable = attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
+        logger.warn(
+          { taskId: input.taskId, attempt, retryable, backoffMs, err: msg },
+          "Gateway request failed"
+        );
+        if (!retryable) {
+          return {
+            result: { outcome: "error", error: { code: "GATEWAY_ERROR", message: `Gateway request failed: ${msg}` } },
+            openclawMeta: { method: "chat.send" },
+          };
+        }
+        await sleep(backoffMs);
+        continue;
+      }
+
+      try {
+        if (this.devLogEnabled) {
+          logger.debug({ taskId: input.taskId, runId, attempt }, "Relay waiting for chat final event");
+        }
+        const finalEvt = await this.waitForFinal(runId, remainingMs);
+        if (finalEvt.state === "final") {
+          if (finalEvt.message !== undefined) {
+            if (this.devLogEnabled) {
+              logger.debug({ taskId: input.taskId, runId, outcome: "reply" }, "Relay chat task completed");
+            }
+            return {
+              result: { outcome: "reply", reply: { message: finalEvt.message, runId } },
+              openclawMeta: { method: "chat.send", runId },
+            };
+          }
+          if (this.devLogEnabled) {
+            logger.debug({ taskId: input.taskId, runId, outcome: "no_reply" }, "Relay chat task completed");
+          }
+          return {
+            result: { outcome: "no_reply", noReply: { runId } },
             openclawMeta: { method: "chat.send", runId },
           };
         }
-        if (this.devLogEnabled) {
-          logger.debug({ taskId: input.taskId, runId, outcome: "no_reply" }, "Relay chat task completed");
+        if (finalEvt.state === "aborted") {
+          if (this.devLogEnabled) {
+            logger.warn({ taskId: input.taskId, runId }, "Relay chat aborted");
+          }
+          return {
+            result: { outcome: "error", error: { code: "ABORTED", message: "Chat aborted", runId } },
+            openclawMeta: { method: "chat.send", runId },
+          };
         }
-        return {
-          result: { outcome: "no_reply", noReply: { runId } },
-          openclawMeta: { method: "chat.send", runId },
-        };
-      }
-      if (finalEvt.state === "aborted") {
-        if (this.devLogEnabled) {
-          logger.warn({ taskId: input.taskId, runId }, "Relay chat aborted");
-        }
-        return {
-          result: { outcome: "error", error: { code: "ABORTED", message: "Chat aborted", runId } },
-          openclawMeta: { method: "chat.send", runId },
-        };
-      }
-      // Always log gateway-provided error messages (even in production) so we can
-      // debug issues like provider auth failures without enabling full dev logging.
-      // Do not include user message text; only include the gateway error string.
-      const gatewayErrorMessage = finalEvt.errorMessage ?? "Chat error";
-      logger.warn(
-        {
-          taskId: input.taskId,
-          runId,
-          errorMessageLen: gatewayErrorMessage.length,
-          errorMessagePreview: makeTextPreview(gatewayErrorMessage, 500),
-        },
-        "Relay chat gateway error"
-      );
-      return {
-        result: {
-          outcome: "error",
-          error: { code: "GATEWAY_ERROR", message: gatewayErrorMessage, runId },
-        },
-        openclawMeta: { method: "chat.send", runId },
-      };
-    } catch (err) {
-      // Best-effort abort.
-      try {
-        if (this.devLogEnabled) {
-          logger.warn(
-            { taskId: input.taskId, runId, err: err instanceof Error ? err.message : String(err) },
-            "Relay timed out waiting for chat final; aborting"
-          );
-        }
-        await this.gateway.request("chat.abort", { sessionKey: input.sessionKey, runId });
-      } catch {
-        if (this.devLogEnabled) {
-          logger.warn({ taskId: input.taskId, runId }, "Relay failed to abort chat after timeout");
-        }
-        // ignore
-      }
-      return {
-        result: {
-          outcome: "error",
-          error: {
-            code: "GATEWAY_TIMEOUT",
-            message: err instanceof Error ? err.message : "Timed out waiting for final",
+
+        // Always log gateway-provided error messages (even in production) so we can
+        // debug issues like provider auth failures without enabling full dev logging.
+        // Do not include user message text; only include the gateway error string.
+        const gatewayErrorMessage = finalEvt.errorMessage ?? "Chat error";
+        const classification = classifyRetryableGatewayError(gatewayErrorMessage);
+        logger.warn(
+          {
+            taskId: input.taskId,
             runId,
+            attempt,
+            retryable: classification.retryable,
+            reason: classification.reason,
+            upstreamCode: classification.upstream?.code ?? null,
+            upstreamStatus: classification.upstream?.status ?? null,
+            errorMessageLen: gatewayErrorMessage.length,
+            errorMessagePreview: makeTextPreview(gatewayErrorMessage, 500),
           },
-        },
-        openclawMeta: { method: "chat.send", runId },
-      };
+          "Relay chat gateway error"
+        );
+
+        const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
+        const retryable =
+          classification.retryable && attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
+        if (!retryable) {
+          return {
+            result: {
+              outcome: "error",
+              error: { code: "GATEWAY_ERROR", message: gatewayErrorMessage, runId },
+            },
+            openclawMeta: { method: "chat.send", runId },
+          };
+        }
+        await sleep(backoffMs);
+      } catch (err) {
+        // Best-effort abort, then optionally retry (timeouts can be transient).
+        try {
+          if (this.devLogEnabled) {
+            logger.warn(
+              { taskId: input.taskId, runId, attempt, err: err instanceof Error ? err.message : String(err) },
+              "Relay timed out waiting for chat final; aborting"
+            );
+          }
+          await this.gateway.request("chat.abort", { sessionKey: input.sessionKey, runId });
+        } catch {
+          if (this.devLogEnabled) {
+            logger.warn({ taskId: input.taskId, runId, attempt }, "Relay failed to abort chat after timeout");
+          }
+        }
+
+        const msg = err instanceof Error ? err.message : "Timed out waiting for final";
+        const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
+        const elapsedMs = Date.now() - startedAtMs;
+        const remainingMs = Math.max(0, input.timeoutMs - elapsedMs);
+        const retryable = attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
+        if (!retryable) {
+          return {
+            result: { outcome: "error", error: { code: "GATEWAY_TIMEOUT", message: msg, runId } },
+            openclawMeta: { method: "chat.send", runId },
+          };
+        }
+        await sleep(backoffMs);
+      }
     }
+
+    // Should be unreachable due to loop returns, but keep a safe fallback.
+    return {
+      result: { outcome: "error", error: { code: "GATEWAY_ERROR", message: "Chat failed" } },
+      openclawMeta: { method: "chat.send" },
+    };
   }
 
   private waitForFinal(runId: string, timeoutMs: number): Promise<ChatEvent> {
