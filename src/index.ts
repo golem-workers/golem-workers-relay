@@ -152,6 +152,7 @@ async function main(): Promise<void> {
 
           const finishedAtMs = Date.now();
           if (result.outcome === "reply") {
+            const reply = buildReplyPayload(result.reply);
             await backend.submitResult({
               taskId: t.taskId,
               body: {
@@ -160,7 +161,7 @@ async function main(): Promise<void> {
                 leaseId: t.leaseId,
                 finishedAtMs,
                 outcome: "reply",
-                reply: normalizeReply(result.reply.message),
+                reply,
                 openclawMeta,
               },
             });
@@ -292,6 +293,22 @@ function normalizeReply(message: unknown): unknown {
     }
   }
   return { message };
+}
+
+function buildReplyPayload(reply: { message: unknown; runId: string; media?: unknown[] }): unknown {
+  // Keep back-compat with the old `{ text }` short form, but never drop `message`/`media`.
+  const normalized = normalizeReply(reply.message) as { text?: unknown; message?: unknown };
+  const payload: Record<string, unknown> = {
+    runId: reply.runId,
+    message: reply.message,
+  };
+  if (typeof normalized.text === "string" && normalized.text.trim()) {
+    payload.text = normalized.text;
+  }
+  if (Array.isArray(reply.media) && reply.media.length > 0) {
+    payload.media = reply.media;
+  }
+  return payload;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
