@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { GatewayClient } from "./gatewayClient.js";
 import { ChatRunner } from "./chatRunner.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 function startServer(handler: (ws: import("ws").WebSocket) => void) {
   const wss = new WebSocketServer({ port: 0 });
@@ -73,6 +76,100 @@ describe("ChatRunner", () => {
       timeoutMs: 1000,
     });
     expect(result.outcome).toBe("reply");
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
+  it("attaches transcript MEDIA files as base64", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    // Create a minimal OpenClaw state layout with workspace + sessions map + transcript.
+    const workspaceRoot = path.join(stateDir, "workspace");
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    await fs.mkdir(path.join(workspaceRoot, "avatars"), { recursive: true });
+    await fs.mkdir(sessionsDir, { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, "avatars", "klava.svg"), "<svg/>", "utf8");
+
+    const sessionKey = "tg:449:server";
+    const sessionId = "sess-1";
+    const sessionFile = path.join(sessionsDir, `${sessionId}.jsonl`);
+    const sessionsMap = {
+      [`agent:main:${sessionKey}`]: {
+        sessionId,
+        updatedAt: Date.now(),
+        sessionFile,
+      },
+    };
+    await fs.writeFile(path.join(sessionsDir, "sessions.json"), JSON.stringify(sessionsMap), "utf8");
+    const line = JSON.stringify({
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "Here you go.\n\nMEDIA: avatars/klava.svg\n\n[[reply_to_current]]",
+          },
+        ],
+      },
+    });
+    await fs.writeFile(sessionFile, `${line}\n`, "utf8");
+
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: { type: "hello-ok", protocol: 3, policy: { tickIntervalMs: 5000 } },
+            }),
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          const runId = "run_1";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: { runId, sessionKey, seq: 1, state: "final", message: { text: "ok" } },
+              }),
+            );
+          }, 10);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "task_1",
+      sessionKey,
+      messageText: "hi",
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("reply");
+    if (result.outcome !== "reply") throw new Error("expected reply");
+    expect(Array.isArray(result.reply.media)).toBe(true);
+    expect(result.reply.media?.[0]?.fileName).toBe("klava.svg");
+    expect(result.reply.media?.[0]?.contentType).toBe("image/svg+xml");
+    expect(result.reply.media?.[0]?.dataB64).toBe(Buffer.from("<svg/>", "utf8").toString("base64"));
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));

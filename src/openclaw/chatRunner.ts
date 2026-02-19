@@ -1,9 +1,10 @@
 import { GatewayClient } from "./gatewayClient.js";
 import { type ChatEvent, chatEventSchema, type EventFrame } from "./protocol.js";
 import { logger } from "../logger.js";
+import { collectTranscriptMedia, type TranscriptMediaFile } from "./mediaDirectives.js";
 
 export type ChatRunResult =
-  | { outcome: "reply"; reply: { message: unknown; runId: string } }
+  | { outcome: "reply"; reply: { message: unknown; runId: string; media?: TranscriptMediaFile[] } }
   | { outcome: "no_reply"; noReply?: { reason?: string; runId: string } }
   | { outcome: "error"; error: { code: string; message: string; runId?: string } };
 
@@ -230,8 +231,24 @@ export class ChatRunner {
             if (this.devLogEnabled) {
               logger.debug({ taskId: input.taskId, runId, outcome: "reply" }, "Relay chat task completed");
             }
+            const media = await collectTranscriptMedia({ sessionKey: input.sessionKey }).catch((err) => {
+              if (this.devLogEnabled) {
+                logger.warn(
+                  { taskId: input.taskId, runId, err: err instanceof Error ? err.message : String(err) },
+                  "Failed to collect transcript media"
+                );
+              }
+              return [];
+            });
             return {
-              result: { outcome: "reply", reply: { message: finalEvt.message, runId } },
+              result: {
+                outcome: "reply",
+                reply: {
+                  message: finalEvt.message,
+                  runId,
+                  ...(media.length > 0 ? { media } : {}),
+                },
+              },
               openclawMeta: { method: "chat.send", runId },
             };
           }
