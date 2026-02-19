@@ -123,13 +123,23 @@ export class ChatRunner {
           openclawMeta: { method: "chat.send", runId },
         };
       }
-      if (this.devLogEnabled) {
-        logger.warn({ taskId: input.taskId, runId, errorMessage: finalEvt.errorMessage ?? null }, "Relay chat gateway error");
-      }
+      // Always log gateway-provided error messages (even in production) so we can
+      // debug issues like provider auth failures without enabling full dev logging.
+      // Do not include user message text; only include the gateway error string.
+      const gatewayErrorMessage = finalEvt.errorMessage ?? "Chat error";
+      logger.warn(
+        {
+          taskId: input.taskId,
+          runId,
+          errorMessageLen: gatewayErrorMessage.length,
+          errorMessagePreview: makeTextPreview(gatewayErrorMessage, 500),
+        },
+        "Relay chat gateway error"
+      );
       return {
         result: {
           outcome: "error",
-          error: { code: "GATEWAY_ERROR", message: finalEvt.errorMessage ?? "Chat error", runId },
+          error: { code: "GATEWAY_ERROR", message: gatewayErrorMessage, runId },
         },
         openclawMeta: { method: "chat.send", runId },
       };
