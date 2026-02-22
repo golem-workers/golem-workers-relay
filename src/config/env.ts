@@ -87,7 +87,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     backendBaseUrl: parsed.BACKEND_BASE_URL.replace(/\/+$/, ""),
     relayInstanceId,
     maxTasks: parsed.RELAY_MAX_TASKS ?? 5,
-    waitSeconds: parsed.RELAY_WAIT_SECONDS ?? 99_999_999,
+    waitSeconds: parsed.RELAY_WAIT_SECONDS ?? 2_147_468,
     taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 9_999_999,
     concurrency: parsed.RELAY_CONCURRENCY ?? 1,
     devLogEnabled,
