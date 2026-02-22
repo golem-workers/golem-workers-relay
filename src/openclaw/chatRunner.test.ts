@@ -226,6 +226,158 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("skips transcription when apiKey is empty", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+    let sentMessage = "";
+    const transcribeAudio = vi.fn().mockResolvedValue("should not be used");
+
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: { type: "hello-ok", protocol: 3, policy: { tickIntervalMs: 5000 } },
+            }),
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          const params = (frame.params ?? {}) as Record<string, unknown>;
+          sentMessage = typeof params.message === "string" ? params.message : "";
+          const runId = "run_audio_skip";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: { runId, sessionKey: "s-audio", seq: 1, state: "final", message: { text: "ok" } },
+              }),
+            );
+          }, 10);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client, {
+      transcription: { apiKey: "   ", timeoutMs: 1000 },
+      transcribeAudio,
+    });
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "task_audio_skip",
+      sessionKey: "s-audio",
+      messageText: "keep original",
+      media: [
+        {
+          type: "audio",
+          dataB64: Buffer.from("audio", "utf8").toString("base64"),
+          contentType: "audio/ogg",
+        },
+      ],
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("reply");
+    expect(sentMessage).toBe("keep original");
+    expect(transcribeAudio).not.toHaveBeenCalled();
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
+  it("passes language hint to injected transcriber (OpenAI-style config)", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+    const transcribeAudio = vi.fn().mockResolvedValue("voice text");
+    let sentMessage = "";
+
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: { type: "hello-ok", protocol: 3, policy: { tickIntervalMs: 5000 } },
+            }),
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          const params = (frame.params ?? {}) as Record<string, unknown>;
+          sentMessage = typeof params.message === "string" ? params.message : "";
+          const runId = "run_openai";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: { runId, sessionKey: "s-openai", seq: 1, state: "final", message: { text: "ok" } },
+              }),
+            );
+          }, 10);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client, {
+      transcription: { apiKey: "openai-key", language: "ru", timeoutMs: 1000 },
+      transcribeAudio,
+    });
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "task_openai_transcribe",
+      sessionKey: "s-openai",
+      messageText: "from voice:",
+      media: [
+        {
+          type: "audio",
+          dataB64: Buffer.from("audio", "utf8").toString("base64"),
+          contentType: "audio/ogg",
+        },
+      ],
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("reply");
+    expect(transcribeAudio).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: "openai-key",
+        language: "ru",
+      }),
+    );
+    expect(sentMessage).toContain("[Voice transcript]");
+    expect(sentMessage).toContain("voice text");
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("attaches transcript MEDIA files as base64", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);

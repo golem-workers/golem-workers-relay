@@ -32,7 +32,11 @@ const envSchema = z.object({
   OPENCLAW_GATEWAY_PASSWORD: z.string().min(1).optional(),
   OPENCLAW_SCOPES: z.string().optional(),
 
+  STT_PROVIDER: z.enum(["deepgram", "openai"]).optional(),
   DEEPGRAM_API_KEY: z.string().min(1).optional(),
+  OPENAI_API_KEY: z.string().min(1).optional(),
+  OPENAI_STT_MODEL: z.string().min(1).optional(),
+  OPENAI_STT_LANGUAGE: z.string().min(1).optional(),
   STT_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).optional(),
 });
 
@@ -58,7 +62,11 @@ export type RelayConfig = {
     scopes: string[];
   };
   stt: {
+    provider: "deepgram" | "openai";
     deepgramApiKey?: string;
+    openaiApiKey?: string;
+    openaiModel: string;
+    openaiLanguage?: string;
     timeoutMs: number;
   };
 };
@@ -94,7 +102,11 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
       scopes: parseCsv(parsed.OPENCLAW_SCOPES) ?? ["operator.admin"],
     },
     stt: {
+      provider: parsed.STT_PROVIDER ?? "deepgram",
       deepgramApiKey: parsed.DEEPGRAM_API_KEY,
+      openaiApiKey: parsed.OPENAI_API_KEY,
+      openaiModel: parsed.OPENAI_STT_MODEL ?? "whisper-1",
+      openaiLanguage: parsed.OPENAI_STT_LANGUAGE,
       timeoutMs: parsed.STT_TIMEOUT_MS ?? 15_000,
     },
   };
@@ -114,7 +126,11 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     devLogTextMaxLen: 200,
     devLogGatewayFrames: false,
     openclaw: { scopes: ["operator.admin"] },
-    stt: { timeoutMs: 15_000 },
+    stt: {
+      provider: "deepgram",
+      openaiModel: "whisper-1",
+      timeoutMs: 15_000,
+    },
   };
   return {
     ...base,

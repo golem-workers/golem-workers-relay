@@ -5,6 +5,8 @@ import { resolveOpenclawConfig } from "./openclaw/openclawConfig.js";
 import { BackendClient } from "./backend/backendClient.js";
 import { GatewayClient } from "./openclaw/gatewayClient.js";
 import { ChatRunner } from "./openclaw/chatRunner.js";
+import { type AudioTaskMedia, transcribeAudioWithDeepgram } from "./openclaw/transcription.js";
+import { transcribeAudioWithOpenAi } from "./openclaw/openaiTranscription.js";
 
 function makeTextPreview(text: string, maxLen: number): string {
   const normalized = String(text).replace(/\s+/g, " ").trim();
@@ -40,6 +42,23 @@ async function main(): Promise<void> {
   });
 
   let chatRunner: ChatRunner | null = null;
+  const transcribeAudio: (input: {
+    media: AudioTaskMedia;
+    apiKey: string;
+    language?: string;
+    timeoutMs: number;
+  }) => Promise<string> =
+    cfg.stt.provider === "openai"
+      ? (input) =>
+          transcribeAudioWithOpenAi({
+            ...input,
+            model: cfg.stt.openaiModel,
+          })
+      : transcribeAudioWithDeepgram;
+
+  const sttApiKey = cfg.stt.provider === "openai" ? cfg.stt.openaiApiKey : cfg.stt.deepgramApiKey;
+  const sttLanguage = cfg.stt.provider === "openai" ? cfg.stt.openaiLanguage : undefined;
+
   const gateway = new GatewayClient({
     url: openclaw.gateway.wsUrl,
     token: openclaw.gateway.auth.token,
@@ -56,9 +75,11 @@ async function main(): Promise<void> {
     devLogEnabled: cfg.devLogEnabled,
     devLogTextMaxLen: cfg.devLogTextMaxLen,
     transcription: {
-      apiKey: cfg.stt.deepgramApiKey,
+      apiKey: sttApiKey,
+      language: sttLanguage,
       timeoutMs: cfg.stt.timeoutMs,
     },
+    transcribeAudio,
   });
 
   const stop = createStopSignal();

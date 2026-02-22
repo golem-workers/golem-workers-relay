@@ -17,7 +17,9 @@ cp openclaw.env.example openclaw.env
 Set at least:
 - `OPENCLAW_GATEWAY_TOKEN` (must match relay `OPENCLAW_GATEWAY_TOKEN`)
 - `OPENROUTER_API_KEY` (LLM provider key)
-- `DEEPGRAM_API_KEY` (required for Telegram voice transcription)
+- one STT provider key for voice transcription:
+  - `DEEPGRAM_API_KEY` (for `STT_PROVIDER=deepgram`)
+  - `OPENAI_API_KEY` (for `STT_PROVIDER=openai`)
 
 2) One-command setup (build image, run `openclaw onboard`, start gateway):
 
@@ -104,7 +106,11 @@ Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 - `OPENCLAW_GATEWAY_TOKEN=<same as in openclaw.env>`
 - `OPENCLAW_GATEWAY_PASSWORD=` (optional; token is the baseline)
 - `OPENCLAW_SCOPES=operator.admin` (default)
-- `DEEPGRAM_API_KEY=` (optional; enables audio transcription when relay receives audio payload)
+- `STT_PROVIDER=deepgram|openai` (optional, default `deepgram`)
+- `DEEPGRAM_API_KEY=` (optional; used when `STT_PROVIDER=deepgram`)
+- `OPENAI_API_KEY=` (optional; used when `STT_PROVIDER=openai`)
+- `OPENAI_STT_MODEL=whisper-1` (optional; OpenAI transcription model)
+- `OPENAI_STT_LANGUAGE=` (optional; language hint, e.g. `ru`/`en`)
 - `STT_TIMEOUT_MS=15000` (optional, transcription timeout)
 
 Note: relay creates its own device identity on the host under `~/.openclaw` unless
