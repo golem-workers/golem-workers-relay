@@ -30,10 +30,29 @@ export class BackendClient {
     if (this.opts.devLogEnabled) {
       logger.debug({ url, ...input, timeoutMs }, "Backend pull request");
     }
-    const res = await retry(
-      () => postJson(url, this.opts.relayToken, input, timeoutMs),
-      { attempts: 3, minDelayMs: 500, maxDelayMs: 5000, label: "pull" }
-    );
+    let res: unknown;
+    try {
+      res = await retry(
+        () => postJson(url, this.opts.relayToken, input, timeoutMs),
+        { attempts: 3, minDelayMs: 500, maxDelayMs: 5000, label: "pull" }
+      );
+    } catch (err) {
+      const nonJson = asNonJsonError(err);
+      // Keep relay loop alive when upstream sends unexpected text/HTML with 2xx.
+      if (nonJson && nonJson.status >= 200 && nonJson.status <= 299) {
+        logger.warn(
+          {
+            url,
+            status: nonJson.status,
+            contentType: nonJson.contentType,
+            bodyPreview: nonJson.bodyPreview,
+          },
+          "Backend pull returned non-JSON 2xx response; treating as empty task batch"
+        );
+        return { tasks: [] };
+      }
+      throw err;
+    }
     const parsed = pullResponseSchema.parse(res);
     if (this.opts.devLogEnabled) {
       logger.debug({ url, tasksCount: parsed.tasks.length }, "Backend pull response");
@@ -80,15 +99,25 @@ async function postJson(url: string, token: string, body: unknown, timeoutMs: nu
     });
 
     const text = await resp.text();
-    const json = text ? (JSON.parse(text) as unknown) : null;
+    const json = safeParseJson(text);
+    if (json.ok === false) {
+      const err = new Error(
+        `Backend returned non-JSON response (status ${resp.status}, content-type ${resp.headers.get("content-type") ?? "unknown"}): ${previewText(text)}`
+      ) as Error & NonJsonResponseError;
+      err.status = resp.status;
+      err.nonJsonResponse = true;
+      err.contentType = resp.headers.get("content-type") ?? "unknown";
+      err.bodyPreview = previewText(text);
+      throw err;
+    }
 
     if (!resp.ok) {
       logger.warn({ url, status: resp.status }, "Backend returned non-2xx for relay request");
-      const err = new Error(`Backend HTTP ${resp.status}`);
-      (err as Error & { status?: number }).status = resp.status;
+      const err = new Error(`Backend HTTP ${resp.status}`) as Error & { status?: number };
+      err.status = resp.status;
       throw err;
     }
-    return json;
+    return json.value;
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       throw new Error("Backend request timed out");
@@ -97,6 +126,37 @@ async function postJson(url: string, token: string, body: unknown, timeoutMs: nu
   } finally {
     clearTimeout(timer);
   }
+}
+
+type NonJsonResponseError = {
+  status?: number;
+  nonJsonResponse?: boolean;
+  contentType?: string;
+  bodyPreview?: string;
+};
+
+function asNonJsonError(err: unknown): (Error & NonJsonResponseError) | null {
+  if (!(err instanceof Error)) return null;
+  const typed = err as Error & NonJsonResponseError;
+  return typed.nonJsonResponse ? typed : null;
+}
+
+function safeParseJson(
+  text: string
+): { ok: true; value: unknown } | { ok: false } {
+  if (!text.trim()) return { ok: true, value: null };
+  try {
+    return { ok: true, value: JSON.parse(text) as unknown };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function previewText(input: string): string {
+  const normalized = input.replace(/\s+/g, " ").trim();
+  if (!normalized) return "<empty>";
+  const maxLen = 200;
+  return normalized.length <= maxLen ? normalized : `${normalized.slice(0, maxLen)}...`;
 }
 
 async function retry<T>(
