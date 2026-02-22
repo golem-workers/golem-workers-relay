@@ -94,10 +94,10 @@ function extractAssistantTextFromTranscriptLine(obj: unknown): string | null {
   return parts.join("\n");
 }
 
-async function readLastAssistantTextFromTranscript(sessionFile: string): Promise<string | null> {
+async function readLatestAssistantMediaPathsFromTranscript(sessionFile: string): Promise<string[]> {
   const raw = await fs.readFile(sessionFile, "utf8").catch(() => "");
-  if (!raw.trim()) return null;
-  // Walk backwards for the most recent assistant message.
+  if (!raw.trim()) return [];
+  // Walk backwards and return the most recent assistant message that contains MEDIA: directives.
   const lines = raw.split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i];
@@ -109,9 +109,11 @@ async function readLastAssistantTextFromTranscript(sessionFile: string): Promise
       continue;
     }
     const text = extractAssistantTextFromTranscriptLine(obj);
-    if (text) return text;
+    if (!text) continue;
+    const paths = extractMediaDirectivePaths(text);
+    if (paths.length > 0) return paths;
   }
-  return null;
+  return [];
 }
 
 function sniffContentType(filePath: string): string {
@@ -124,31 +126,43 @@ function sniffContentType(filePath: string): string {
   return "application/octet-stream";
 }
 
-async function resolveWorkspaceFile(params: {
+async function resolveMediaFile(params: {
+  stateDir: string;
   workspaceRoot: string;
-  relativePath: string;
+  mediaPath: string;
 }): Promise<{ absPath: string; relPath: string }> {
-  const raw = params.relativePath.trim();
+  const raw = params.mediaPath.trim();
   if (!raw) {
     throw new Error("MEDIA path is empty");
   }
+  const stateReal = await fs.realpath(params.stateDir).catch(() => params.stateDir);
+  const workspaceReal = await fs.realpath(params.workspaceRoot).catch(() => params.workspaceRoot);
+  const statePrefix = stateReal.endsWith(path.sep) ? stateReal : stateReal + path.sep;
+  const workspacePrefix = workspaceReal.endsWith(path.sep) ? workspaceReal : workspaceReal + path.sep;
+
+  // OpenClaw can emit:
+  // - workspace-relative paths: MEDIA: avatars/foo.png
+  // - state absolute paths: MEDIA:/root/.openclaw/media/browser/foo.png
   if (path.isAbsolute(raw)) {
-    throw new Error("MEDIA path must be relative");
+    const absCandidate = path.resolve(raw);
+    const absReal = await fs.realpath(absCandidate).catch(() => absCandidate);
+    if (!(absReal === stateReal || absReal.startsWith(statePrefix))) {
+      throw new Error("MEDIA absolute path is outside stateDir");
+    }
+    const relToState = path.relative(stateReal, absReal).replace(/\\/g, "/");
+    return { absPath: absReal, relPath: relToState || path.basename(absReal) };
   }
-  // Block obvious traversal.
+
   const normalized = raw.replace(/\\/g, "/");
   if (normalized.split("/").some((seg) => seg === "..")) {
     throw new Error("MEDIA path traversal is not allowed");
   }
-
-  const workspaceReal = await fs.realpath(params.workspaceRoot).catch(() => params.workspaceRoot);
-  const candidate = path.resolve(workspaceReal, normalized);
-  const candidateReal = await fs.realpath(candidate).catch(() => candidate);
-  const prefix = workspaceReal.endsWith(path.sep) ? workspaceReal : workspaceReal + path.sep;
-  if (!(candidateReal === workspaceReal || candidateReal.startsWith(prefix))) {
+  const workspaceCandidate = path.resolve(workspaceReal, normalized);
+  const workspaceCandidateReal = await fs.realpath(workspaceCandidate).catch(() => workspaceCandidate);
+  if (!(workspaceCandidateReal === workspaceReal || workspaceCandidateReal.startsWith(workspacePrefix))) {
     throw new Error("MEDIA path is outside workspace");
   }
-  return { absPath: candidateReal, relPath: normalized };
+  return { absPath: workspaceCandidateReal, relPath: normalized };
 }
 
 export async function collectTranscriptMedia(params: {
@@ -167,17 +181,18 @@ export async function collectTranscriptMedia(params: {
   });
   if (!sessionFile) return [];
 
-  const assistantText = await readLastAssistantTextFromTranscript(sessionFile);
-  if (!assistantText) return [];
-
-  const mediaPaths = extractMediaDirectivePaths(assistantText);
+  const mediaPaths = await readLatestAssistantMediaPathsFromTranscript(sessionFile);
   if (mediaPaths.length === 0) return [];
 
   const results: TranscriptMediaFile[] = [];
   for (const p of mediaPaths) {
     if (results.length >= maxFiles) break;
     try {
-      const resolved = await resolveWorkspaceFile({ workspaceRoot, relativePath: p });
+      const resolved = await resolveMediaFile({
+        stateDir,
+        workspaceRoot,
+        mediaPath: p,
+      });
       const buf = await fs.readFile(resolved.absPath);
       if (buf.byteLength <= 0 || buf.byteLength > maxBytes) {
         continue;
