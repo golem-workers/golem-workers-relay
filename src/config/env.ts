@@ -16,8 +16,8 @@ const envSchema = z.object({
 
   RELAY_INSTANCE_ID: z.string().min(1).optional(),
   RELAY_MAX_TASKS: z.coerce.number().int().min(1).max(20).optional(),
-  RELAY_WAIT_SECONDS: z.coerce.number().int().min(0).max(30).optional(),
-  RELAY_TASK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(30 * 60_000).optional(),
+  RELAY_WAIT_SECONDS: z.coerce.number().int().min(0).max(100_000_000).optional(),
+  RELAY_TASK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(2_147_483_647).optional(),
   RELAY_CONCURRENCY: z.coerce.number().int().min(1).max(20).optional(),
 
   // Dev logging (hard-disabled in production).
@@ -87,8 +87,8 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     backendBaseUrl: parsed.BACKEND_BASE_URL.replace(/\/+$/, ""),
     relayInstanceId,
     maxTasks: parsed.RELAY_MAX_TASKS ?? 5,
-    waitSeconds: parsed.RELAY_WAIT_SECONDS ?? 25,
-    taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 120_000,
+    waitSeconds: parsed.RELAY_WAIT_SECONDS ?? 99_999_999,
+    taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 9_999_999,
     concurrency: parsed.RELAY_CONCURRENCY ?? 1,
     devLogEnabled,
     devLogTextMaxLen,

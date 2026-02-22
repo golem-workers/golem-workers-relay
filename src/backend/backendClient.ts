@@ -6,6 +6,8 @@ import {
   acceptedResponseSchema,
 } from "./types.js";
 
+const MAX_TIMER_MS = 2_147_483_647;
+
 export type BackendClientOptions = {
   baseUrl: string;
   relayToken: string;
@@ -17,7 +19,14 @@ export class BackendClient {
 
   async pull(input: { relayInstanceId: string; maxTasks: number; waitSeconds: number }): Promise<PullResponse> {
     const url = `${this.opts.baseUrl}/api/v1/relays/pull`;
-    const timeoutMs = input.waitSeconds * 1000 + 15_000;
+    const rawTimeoutMs = input.waitSeconds * 1000 + 15_000;
+    const timeoutMs = Math.min(MAX_TIMER_MS, Math.max(1, Math.trunc(rawTimeoutMs)));
+    if (timeoutMs !== rawTimeoutMs) {
+      logger.warn(
+        { url, waitSeconds: input.waitSeconds, rawTimeoutMs, timeoutMs },
+        "Backend pull timeout clamped to Node timer max"
+      );
+    }
     if (this.opts.devLogEnabled) {
       logger.debug({ url, ...input, timeoutMs }, "Backend pull request");
     }

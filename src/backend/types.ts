@@ -3,7 +3,7 @@ import { z } from "zod";
 export const pullRequestSchema = z.object({
   relayInstanceId: z.string().min(1),
   maxTasks: z.number().int().min(1).max(20),
-  waitSeconds: z.number().int().min(0).max(30),
+  waitSeconds: z.number().int().min(0).max(100_000_000),
 });
 
 const chatTaskInputSchema = z.object({
