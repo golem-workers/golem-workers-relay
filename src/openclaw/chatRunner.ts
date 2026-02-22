@@ -2,6 +2,12 @@ import { GatewayClient } from "./gatewayClient.js";
 import { type ChatEvent, chatEventSchema, type EventFrame } from "./protocol.js";
 import { logger } from "../logger.js";
 import { collectTranscriptMedia, type TranscriptMediaFile } from "./mediaDirectives.js";
+import {
+  composeMessageWithTranscript,
+  logTranscriptionFailure,
+  transcribeAudioWithDeepgram,
+  type AudioTaskMedia,
+} from "./transcription.js";
 
 export type ChatRunResult =
   | { outcome: "reply"; reply: { message: unknown; runId: string; media?: TranscriptMediaFile[] } }
@@ -12,6 +18,12 @@ type ChatRetryOptions = {
   attempts: number;
   baseDelayMs: number[];
   jitterMs: number;
+};
+
+type TranscriptionOptions = {
+  apiKey?: string;
+  language?: string;
+  timeoutMs: number;
 };
 
 type Waiter = {
@@ -111,6 +123,13 @@ export class ChatRunner {
   private readonly devLogEnabled: boolean;
   private readonly devLogTextMaxLen: number;
   private readonly retry: ChatRetryOptions;
+  private readonly transcription: TranscriptionOptions;
+  private readonly transcribeAudio: (input: {
+    media: AudioTaskMedia;
+    apiKey: string;
+    language?: string;
+    timeoutMs: number;
+  }) => Promise<string>;
 
   constructor(
     private readonly gateway: GatewayClient,
@@ -118,6 +137,13 @@ export class ChatRunner {
       devLogEnabled?: boolean;
       devLogTextMaxLen?: number;
       retry?: Partial<ChatRetryOptions>;
+      transcription?: Partial<TranscriptionOptions>;
+      transcribeAudio?: (input: {
+        media: AudioTaskMedia;
+        apiKey: string;
+        language?: string;
+        timeoutMs: number;
+      }) => Promise<string>;
     }
   ) {
     this.devLogEnabled = opts?.devLogEnabled ?? false;
@@ -129,6 +155,12 @@ export class ChatRunner {
         : [300, 800, 1500],
       jitterMs: Math.max(0, Math.trunc(opts?.retry?.jitterMs ?? 250)),
     };
+    this.transcription = {
+      apiKey: opts?.transcription?.apiKey,
+      language: opts?.transcription?.language,
+      timeoutMs: Math.max(1000, Math.trunc(opts?.transcription?.timeoutMs ?? 15_000)),
+    };
+    this.transcribeAudio = opts?.transcribeAudio ?? transcribeAudioWithDeepgram;
   }
 
   handleEvent(evt: EventFrame): void {
@@ -153,8 +185,10 @@ export class ChatRunner {
     taskId: string;
     sessionKey: string;
     messageText: string;
+    media?: AudioTaskMedia[];
     timeoutMs: number;
   }): Promise<{ result: ChatRunResult; openclawMeta: { method: string; runId?: string } }> {
+    const messageText = await this.resolveMessageText(input);
     const startedAtMs = Date.now();
     if (this.devLogEnabled) {
       logger.debug(
@@ -162,8 +196,8 @@ export class ChatRunner {
           taskId: input.taskId,
           sessionKey: input.sessionKey,
           timeoutMs: input.timeoutMs,
-          messageLen: input.messageText.length,
-          messagePreview: makeTextPreview(input.messageText, this.devLogTextMaxLen),
+          messageLen: messageText.length,
+          messagePreview: makeTextPreview(messageText, this.devLogTextMaxLen),
         },
         "Relay starting chat task"
       );
@@ -187,7 +221,7 @@ export class ChatRunner {
       try {
         const payload = await this.gateway.request("chat.send", {
           sessionKey: input.sessionKey,
-          message: input.messageText,
+          message: messageText,
           idempotencyKey: input.taskId,
           timeoutMs: remainingMs,
         });
@@ -339,6 +373,30 @@ export class ChatRunner {
       result: { outcome: "error", error: { code: "GATEWAY_ERROR", message: "Chat failed" } },
       openclawMeta: { method: "chat.send" },
     };
+  }
+
+  private async resolveMessageText(input: {
+    taskId: string;
+    messageText: string;
+    media?: AudioTaskMedia[];
+  }): Promise<string> {
+    const media = input.media?.find((item) => item.type === "audio");
+    if (!media) return input.messageText;
+    const apiKey = this.transcription.apiKey?.trim();
+    if (!apiKey) return input.messageText;
+
+    try {
+      const transcript = await this.transcribeAudio({
+        media,
+        apiKey,
+        language: this.transcription.language,
+        timeoutMs: this.transcription.timeoutMs,
+      });
+      return composeMessageWithTranscript({ messageText: input.messageText, transcript });
+    } catch (error) {
+      logTranscriptionFailure({ taskId: input.taskId, error });
+      return input.messageText;
+    }
   }
 
   private waitForFinal(runId: string, timeoutMs: number): Promise<ChatEvent> {

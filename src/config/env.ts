@@ -31,6 +31,9 @@ const envSchema = z.object({
   OPENCLAW_GATEWAY_TOKEN: z.string().min(1).optional(),
   OPENCLAW_GATEWAY_PASSWORD: z.string().min(1).optional(),
   OPENCLAW_SCOPES: z.string().optional(),
+
+  DEEPGRAM_API_KEY: z.string().min(1).optional(),
+  STT_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).optional(),
 });
 
 export type RelayEnv = z.infer<typeof envSchema>;
@@ -53,6 +56,10 @@ export type RelayConfig = {
     token?: string;
     password?: string;
     scopes: string[];
+  };
+  stt: {
+    deepgramApiKey?: string;
+    timeoutMs: number;
   };
 };
 
@@ -86,6 +93,10 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
       password: parsed.OPENCLAW_GATEWAY_PASSWORD,
       scopes: parseCsv(parsed.OPENCLAW_SCOPES) ?? ["operator.admin"],
     },
+    stt: {
+      deepgramApiKey: parsed.DEEPGRAM_API_KEY,
+      timeoutMs: parsed.STT_TIMEOUT_MS ?? 15_000,
+    },
   };
 }
 
@@ -103,6 +114,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     devLogTextMaxLen: 200,
     devLogGatewayFrames: false,
     openclaw: { scopes: ["operator.admin"] },
+    stt: { timeoutMs: 15_000 },
   };
   return {
     ...base,

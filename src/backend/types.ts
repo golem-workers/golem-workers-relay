@@ -10,6 +10,16 @@ const chatTaskInputSchema = z.object({
   kind: z.literal("chat"),
   sessionKey: z.string().min(1),
   messageText: z.string().min(1),
+  media: z
+    .array(
+      z.object({
+        type: z.literal("audio"),
+        dataB64: z.string().min(1),
+        contentType: z.string().min(1),
+        fileName: z.string().min(1).optional(),
+      })
+    )
+    .optional(),
   context: z.unknown().optional(),
 });
 

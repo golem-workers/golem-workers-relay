@@ -12,6 +12,9 @@ services:
       # LLM provider (OpenRouter). Used by OpenClaw when config selects openrouter/* models.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
 
+      # Optional STT provider key for OpenClaw media pipeline.
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY}
+
       # Allow starting without any channel integrations configured.
       OPENCLAW_SKIP_CHANNELS: ${OPENCLAW_SKIP_CHANNELS:-1}
       CLAWDBOT_SKIP_CHANNELS: ${CLAWDBOT_SKIP_CHANNELS:-1}
@@ -47,6 +50,7 @@ services:
       TERM: xterm-256color
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY}
       OPENCLAW_SKIP_CHANNELS: ${OPENCLAW_SKIP_CHANNELS:-1}
       CLAWDBOT_SKIP_CHANNELS: ${CLAWDBOT_SKIP_CHANNELS:-1}
       BROWSER: echo

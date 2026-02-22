@@ -52,7 +52,14 @@ async function main(): Promise<void> {
     devLogTextMaxLen: cfg.devLogTextMaxLen,
     devLogGatewayFrames: cfg.devLogGatewayFrames,
   });
-  chatRunner = new ChatRunner(gateway, { devLogEnabled: cfg.devLogEnabled, devLogTextMaxLen: cfg.devLogTextMaxLen });
+  chatRunner = new ChatRunner(gateway, {
+    devLogEnabled: cfg.devLogEnabled,
+    devLogTextMaxLen: cfg.devLogTextMaxLen,
+    transcription: {
+      apiKey: cfg.stt.deepgramApiKey,
+      timeoutMs: cfg.stt.timeoutMs,
+    },
+  });
 
   const stop = createStopSignal();
   await ensureGatewayConnected(gateway, stop);
@@ -147,6 +154,7 @@ async function main(): Promise<void> {
             taskId: t.taskId,
             sessionKey: t.input.sessionKey,
             messageText: t.input.messageText,
+            media: t.input.media,
             timeoutMs: cfg.taskTimeoutMs,
           });
 
