@@ -231,7 +231,7 @@ async function main(): Promise<void> {
     port: cfg.pushPort,
     path: cfg.pushPath,
     relayToken: cfg.relayToken,
-    onMessage: (message) => {
+    onMessage: async (message) => {
       queue.push(message);
       pump();
     },
