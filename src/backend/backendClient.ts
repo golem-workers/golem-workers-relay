@@ -38,12 +38,13 @@ export class BackendClient {
       );
     } catch (err) {
       const nonJson = asNonJsonError(err);
+      const status = nonJson?.status;
       // Keep relay loop alive when upstream sends unexpected text/HTML with 2xx.
-      if (nonJson && nonJson.status >= 200 && nonJson.status <= 299) {
+      if (nonJson && status !== undefined && status >= 200 && status <= 299) {
         logger.warn(
           {
             url,
-            status: nonJson.status,
+            status,
             contentType: nonJson.contentType,
             bodyPreview: nonJson.bodyPreview,
           },
