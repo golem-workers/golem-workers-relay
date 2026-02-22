@@ -175,6 +175,7 @@ async function main(): Promise<void> {
             taskId: t.taskId,
             sessionKey: t.input.sessionKey,
             messageText: t.input.messageText,
+            context: t.input.context,
             media: t.input.media,
             timeoutMs: cfg.taskTimeoutMs,
           });

@@ -185,6 +185,7 @@ export class ChatRunner {
     taskId: string;
     sessionKey: string;
     messageText: string;
+    context?: unknown;
     media?: AudioTaskMedia[];
     timeoutMs: number;
   }): Promise<{ result: ChatRunResult; openclawMeta: { method: string; runId?: string } }> {
@@ -222,6 +223,7 @@ export class ChatRunner {
         const payload = await this.gateway.request("chat.send", {
           sessionKey: input.sessionKey,
           message: messageText,
+          ...(input.context !== undefined ? { context: input.context } : {}),
           idempotencyKey: input.taskId,
           timeoutMs: remainingMs,
         });

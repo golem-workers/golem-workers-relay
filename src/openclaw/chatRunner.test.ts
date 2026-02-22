@@ -15,6 +15,76 @@ function startServer(handler: (ws: import("ws").WebSocket) => void) {
 }
 
 describe("ChatRunner", () => {
+  it("forwards task context to chat.send", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+    let capturedContext: unknown;
+
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          const params = (frame.params ?? {}) as Record<string, unknown>;
+          capturedContext = params.context;
+          const runId = "run_ctx";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: { runId, sessionKey: "s1", seq: 1, state: "final", message: { text: "ok" } },
+              })
+            );
+          }, 10);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const context = {
+      channel: "telegram",
+      telegram: { chatId: "123", messageId: "456" },
+    };
+    const { result } = await runner.runChatTask({
+      taskId: "task_ctx",
+      sessionKey: "s1",
+      messageText: "hi",
+      context,
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("reply");
+    expect(capturedContext).toEqual(context);
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("maps chat final event with message to reply", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
