@@ -3,6 +3,8 @@ import {
   type PullResponse,
   pullResponseSchema,
   type TaskResultRequest,
+  type RelayInboundMessageRequest,
+  relayInboundMessageRequestSchema,
   acceptedResponseSchema,
 } from "./types.js";
 
@@ -80,6 +82,27 @@ export class BackendClient {
     }
     if (this.opts.devLogEnabled) {
       logger.debug({ url, taskId: input.taskId, accepted: true }, "Backend submitResult accepted");
+    }
+    return { accepted: true };
+  }
+
+  async submitInboundMessage(input: { body: RelayInboundMessageRequest }): Promise<{ accepted: true }> {
+    const url = `${this.opts.baseUrl}/api/v1/relays/messages`;
+    const timeoutMs = 15_000;
+    const body = relayInboundMessageRequestSchema.parse(input.body);
+    if (this.opts.devLogEnabled) {
+      logger.debug(
+        { url, relayMessageId: body.relayMessageId, outcome: body.outcome },
+        "Backend submitInboundMessage request"
+      );
+    }
+    const res = await retry(
+      () => postJson(url, this.opts.relayToken, body, timeoutMs),
+      { attempts: 5, minDelayMs: 500, maxDelayMs: 10_000, label: "submitInboundMessage" }
+    );
+    const parsed = acceptedResponseSchema.parse(res);
+    if (!parsed.accepted) {
+      throw new Error("Backend rejected relay inbound message");
     }
     return { accepted: true };
   }

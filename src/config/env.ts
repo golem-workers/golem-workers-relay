@@ -19,6 +19,8 @@ const envSchema = z.object({
   RELAY_WAIT_SECONDS: z.coerce.number().int().min(0).max(100_000_000).optional(),
   RELAY_TASK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(2_147_483_647).optional(),
   RELAY_CONCURRENCY: z.coerce.number().int().min(1).max(20).optional(),
+  RELAY_PUSH_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+  RELAY_PUSH_PATH: z.string().min(1).optional(),
 
   // Dev logging (hard-disabled in production).
   RELAY_DEV_LOG: z.coerce.boolean().optional(),
@@ -51,6 +53,8 @@ export type RelayConfig = {
   waitSeconds: number;
   taskTimeoutMs: number;
   concurrency: number;
+  pushPort: number;
+  pushPath: string;
   devLogEnabled: boolean;
   devLogForce: boolean;
   devLogTextMaxLen: number;
@@ -93,6 +97,8 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     waitSeconds: parsed.RELAY_WAIT_SECONDS ?? 2_147_468,
     taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 9_999_999,
     concurrency: parsed.RELAY_CONCURRENCY ?? 1,
+    pushPort: parsed.RELAY_PUSH_PORT ?? 18790,
+    pushPath: parsed.RELAY_PUSH_PATH ?? "/relay/messages",
     devLogEnabled,
     devLogForce,
     devLogTextMaxLen,
@@ -126,6 +132,8 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     waitSeconds: 0,
     taskTimeoutMs: 5000,
     concurrency: 1,
+    pushPort: 18790,
+    pushPath: "/relay/messages",
     devLogEnabled: false,
     devLogForce: false,
     devLogTextMaxLen: 200,

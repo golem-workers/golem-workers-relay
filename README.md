@@ -1,6 +1,6 @@
 # golem-workers-relay
 
-Relay daemon that pulls tasks from `golem-workers-backend` and executes them via a **local**
+Relay daemon that accepts push messages from `golem-workers-backend` over HTTP and executes them via a **local**
 OpenClaw Gateway over WebSocket (`ws://127.0.0.1:18789` by default).
 
 ## Local OpenClaw Gateway (Docker Compose)
@@ -85,7 +85,7 @@ npm run openclaw:reset
 This repo includes an end-to-end test that:
 - starts a real OpenClaw Gateway via Docker Compose
 - starts the relay on the host (Node process)
-- uses a mock backend to verify `pull -> submitResult` works end-to-end
+- uses a mock backend to verify relay processing and backend result submission end-to-end
 
 Run:
 
@@ -112,6 +112,10 @@ Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 - `OPENAI_STT_MODEL=whisper-1` (optional; OpenAI transcription model)
 - `OPENAI_STT_LANGUAGE=` (optional; language hint, e.g. `ru`/`en`)
 - `STT_TIMEOUT_MS=15000` (optional, transcription timeout)
+
+Push transport settings:
+- `RELAY_PUSH_PORT=18790` (HTTP port where backend sends push messages)
+- `RELAY_PUSH_PATH=/relay/messages` (HTTP path for backend push endpoint)
 
 Note: relay creates its own device identity on the host under `~/.openclaw` unless
 `OPENCLAW_STATE_DIR` is set. This is separate from the gateway's container state.
