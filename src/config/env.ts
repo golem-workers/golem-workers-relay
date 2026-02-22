@@ -22,6 +22,7 @@ const envSchema = z.object({
 
   // Dev logging (hard-disabled in production).
   RELAY_DEV_LOG: z.coerce.boolean().optional(),
+  RELAY_DEV_LOG_FORCE: z.coerce.boolean().optional(),
   RELAY_DEV_LOG_TEXT_MAXLEN: z.coerce.number().int().min(0).max(5000).optional(),
   RELAY_DEV_LOG_GATEWAY_FRAMES: z.coerce.boolean().optional(),
 
@@ -51,6 +52,7 @@ export type RelayConfig = {
   taskTimeoutMs: number;
   concurrency: number;
   devLogEnabled: boolean;
+  devLogForce: boolean;
   devLogTextMaxLen: number;
   devLogGatewayFrames: boolean;
   openclaw: {
@@ -74,7 +76,8 @@ export type RelayConfig = {
 export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConfig {
   const parsed = envSchema.parse(env) satisfies RelayEnv;
   const nodeEnv = (env.NODE_ENV ?? "development").trim();
-  const devLogEnabled = nodeEnv !== "production" && (parsed.RELAY_DEV_LOG ?? false);
+  const devLogForce = parsed.RELAY_DEV_LOG_FORCE ?? false;
+  const devLogEnabled = (parsed.RELAY_DEV_LOG ?? false) && (nodeEnv !== "production" || devLogForce);
   const devLogTextMaxLen = parsed.RELAY_DEV_LOG_TEXT_MAXLEN ?? 200;
   const devLogGatewayFrames = devLogEnabled && (parsed.RELAY_DEV_LOG_GATEWAY_FRAMES ?? false);
 
@@ -91,6 +94,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 9_999_999,
     concurrency: parsed.RELAY_CONCURRENCY ?? 1,
     devLogEnabled,
+    devLogForce,
     devLogTextMaxLen,
     devLogGatewayFrames,
     openclaw: {
@@ -123,6 +127,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     taskTimeoutMs: 5000,
     concurrency: 1,
     devLogEnabled: false,
+    devLogForce: false,
     devLogTextMaxLen: 200,
     devLogGatewayFrames: false,
     openclaw: { scopes: ["operator.admin"] },

@@ -115,3 +115,17 @@ Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 
 Note: relay creates its own device identity on the host under `~/.openclaw` unless
 `OPENCLAW_STATE_DIR` is set. This is separate from the gateway's container state.
+
+## Verbose / trace-like logging
+
+To log all gateway events plus request/response summaries:
+
+- `RELAY_DEV_LOG=1`
+- `RELAY_DEV_LOG_GATEWAY_FRAMES=1` (very noisy; logs raw frame previews and parse/schema failures)
+- `RELAY_DEV_LOG_TEXT_MAXLEN=5000`
+- `LOG_LEVEL=debug` (optional; auto-defaults to `debug` when `RELAY_DEV_LOG=1`)
+
+Important: if relay runs with `NODE_ENV=production`, dev logs are disabled by default.
+To explicitly override this in production, set:
+
+- `RELAY_DEV_LOG_FORCE=1`

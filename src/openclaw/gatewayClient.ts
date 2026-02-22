@@ -74,6 +74,86 @@ function summarizeRequestParams(method: string, params: unknown, textMaxLen: num
   return { keys: Object.keys(p).slice(0, 20) };
 }
 
+function summarizeChatMessage(message: unknown, textMaxLen: number): unknown {
+  if (typeof message === "string") {
+    return {
+      type: "string",
+      messageLen: message.length,
+      messagePreview: makeTextPreview(message, textMaxLen),
+    };
+  }
+  if (message && typeof message === "object") {
+    const text = (message as { text?: unknown }).text;
+    return {
+      type: "object",
+      keys: Object.keys(message as Record<string, unknown>).slice(0, 20),
+      textLen: typeof text === "string" ? text.length : null,
+      textPreview: typeof text === "string" ? makeTextPreview(text, textMaxLen) : null,
+    };
+  }
+  return {
+    type: typeof message,
+    value: message ?? null,
+  };
+}
+
+function summarizeResponsePayload(method: string, payload: unknown, textMaxLen: number): unknown {
+  if (method === "chat.send" && payload && typeof payload === "object") {
+    const p = payload as Record<string, unknown>;
+    return {
+      runId: typeof p.runId === "string" ? p.runId : null,
+      accepted: p.accepted === true,
+      keys: Object.keys(p).slice(0, 20),
+    };
+  }
+  if (method === "connect" && payload && typeof payload === "object") {
+    const p = payload as Record<string, unknown>;
+    const policy = p.policy && typeof p.policy === "object" ? (p.policy as Record<string, unknown>) : null;
+    return {
+      protocol: typeof p.protocol === "number" ? p.protocol : null,
+      tickIntervalMs: typeof policy?.tickIntervalMs === "number" ? policy.tickIntervalMs : null,
+      keys: Object.keys(p).slice(0, 20),
+    };
+  }
+  if (payload && typeof payload === "object") {
+    return { keys: Object.keys(payload as Record<string, unknown>).slice(0, 20) };
+  }
+  if (typeof payload === "string") {
+    return { textLen: payload.length, textPreview: makeTextPreview(payload, textMaxLen) };
+  }
+  return payload ?? null;
+}
+
+function summarizeEventPayload(evt: EventFrame, textMaxLen: number): unknown {
+  if (evt.event === "chat") {
+    const parsed = chatEventSchema.safeParse(evt.payload);
+    if (!parsed.success) {
+      return { parsed: false };
+    }
+    const chat = parsed.data;
+    return {
+      parsed: true,
+      runId: chat.runId,
+      state: chat.state,
+      message: chat.message !== undefined ? summarizeChatMessage(chat.message, textMaxLen) : null,
+      errorMessage:
+        typeof chat.errorMessage === "string"
+          ? {
+              len: chat.errorMessage.length,
+              preview: makeTextPreview(chat.errorMessage, textMaxLen),
+            }
+          : null,
+    };
+  }
+  if (evt.payload && typeof evt.payload === "object") {
+    return { keys: Object.keys(evt.payload as Record<string, unknown>).slice(0, 20) };
+  }
+  if (typeof evt.payload === "string") {
+    return { textLen: evt.payload.length, textPreview: makeTextPreview(evt.payload, textMaxLen) };
+  }
+  return evt.payload ?? null;
+}
+
 export class GatewayClient {
   private ws: WebSocket | null = null;
   private opts: GatewayClientOptions;
@@ -246,21 +326,41 @@ export class GatewayClient {
   }
 
   private handleMessage(text: string): void {
+    const textMaxLen = this.opts.devLogTextMaxLen ?? 200;
     if (this.opts.devLogGatewayFrames) {
       logger.debug(
-        { size: text.length, preview: makeTextPreview(text, 500) },
+        { size: text.length, preview: makeTextPreview(text, textMaxLen) },
         "Gateway frame received"
       );
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(text) as unknown;
-    } catch {
+    } catch (err) {
+      if (this.opts.devLogGatewayFrames) {
+        logger.warn(
+          {
+            err: err instanceof Error ? err.message : String(err),
+            size: text.length,
+            preview: makeTextPreview(text, textMaxLen),
+          },
+          "Gateway frame parse failed"
+        );
+      }
       return;
     }
 
     const frameResult = frameSchema.safeParse(parsed);
     if (!frameResult.success) {
+      if (this.opts.devLogGatewayFrames) {
+        logger.warn(
+          {
+            size: text.length,
+            preview: makeTextPreview(text, textMaxLen),
+          },
+          "Gateway frame schema mismatch"
+        );
+      }
       return;
     }
     const frame = frameResult.data;
@@ -277,16 +377,12 @@ export class GatewayClient {
       this.pending.delete(frame.id);
       if (frame.ok) {
         if (this.opts.devLogEnabled) {
-          const runId =
-            pending.method === "chat.send" && frame.payload && typeof frame.payload === "object"
-              ? (frame.payload as { runId?: unknown }).runId
-              : undefined;
           logger.debug(
             {
               id: frame.id,
               method: pending.method,
               ok: true,
-              runId: typeof runId === "string" ? runId : null,
+              payload: summarizeResponsePayload(pending.method, frame.payload, textMaxLen),
             },
             "Gateway response ok"
           );
@@ -323,19 +419,8 @@ export class GatewayClient {
       return;
     }
     if (this.opts.devLogEnabled) {
-      if (evt.event === "chat") {
-        const parsed = chatEventSchema.safeParse(evt.payload);
-        if (parsed.success) {
-          logger.debug(
-            { event: "chat", runId: parsed.data.runId, state: parsed.data.state },
-            "Gateway chat event"
-          );
-        } else {
-          logger.debug({ event: "chat" }, "Gateway chat event (unparsed)");
-        }
-      } else {
-        logger.debug({ event: evt.event }, "Gateway event");
-      }
+      const textMaxLen = this.opts.devLogTextMaxLen ?? 200;
+      logger.debug({ event: evt.event, payload: summarizeEventPayload(evt, textMaxLen) }, "Gateway event");
     }
     this.opts.onEvent?.(evt);
   }
