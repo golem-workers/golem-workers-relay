@@ -281,6 +281,92 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("collects outgoing usage when hello features are missing", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (frame.type === "req" && frame.method === "connect") {
+          // Intentionally omit hello.features to emulate older gateway shape.
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type !== "req") return;
+        if (frame.method === "chat.send") {
+          const runId = "run_snapshot_legacy";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: {
+                  runId,
+                  sessionKey: "s-legacy",
+                  seq: 1,
+                  state: "final",
+                  message: { text: "ok" },
+                },
+              })
+            );
+          }, 10);
+          return;
+        }
+        if (frame.method === "sessions.usage") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                source: "sessions.usage",
+                totals: { input: 12, output: 5, totalTokens: 17 },
+              },
+            })
+          );
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const { result, openclawMeta } = await runner.runChatTask({
+      taskId: "task_snapshot_legacy",
+      sessionKey: "s-legacy",
+      messageText: "hi",
+      timeoutMs: 2000,
+    });
+    expect(result.outcome).toBe("reply");
+    const statsMeta = openclawMeta as { usageIncoming?: unknown; usageOutgoing?: { totals?: { totalTokens?: number } } };
+    expect(statsMeta.usageIncoming).toBeUndefined();
+    expect(statsMeta.usageOutgoing?.totals?.totalTokens).toBe(17);
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("transcribes audio and appends transcript before chat.send", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);

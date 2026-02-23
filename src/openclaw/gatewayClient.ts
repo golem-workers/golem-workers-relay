@@ -53,6 +53,10 @@ export type GatewaySessionsUsageParams = {
   endDate?: string;
 };
 
+type GatewayRequestOptions = {
+  timeoutMs?: number;
+};
+
 function makeTextPreview(text: string, maxLen: number): string {
   const normalized = String(text).replace(/\s+/g, " ").trim();
   const n = Math.max(0, Math.min(5000, Math.trunc(maxLen)));
@@ -229,8 +233,8 @@ export class GatewayClient {
     return this.request("usage.cost", params ?? {});
   }
 
-  async getSessionsUsage(params: GatewaySessionsUsageParams): Promise<unknown> {
-    return this.request("sessions.usage", params);
+  async getSessionsUsage(params: GatewaySessionsUsageParams, options?: GatewayRequestOptions): Promise<unknown> {
+    return this.request("sessions.usage", params, options);
   }
 
   async getSessionsUsageLogs(params: { key: string; limit?: number }): Promise<unknown> {
@@ -241,7 +245,7 @@ export class GatewayClient {
     return this.request("chat.history", params);
   }
 
-  async request(method: string, params?: unknown): Promise<unknown> {
+  async request(method: string, params?: unknown, options?: GatewayRequestOptions): Promise<unknown> {
     await this.ensureReady();
     const id = randomUUID();
     const frame = { type: "req" as const, id, method, params };
@@ -252,7 +256,7 @@ export class GatewayClient {
       logger.debug({ id, method, params: summarizeRequestParams(method, params, textMaxLen) }, "Gateway request send");
     }
     return new Promise<unknown>((resolve, reject) => {
-      const timeoutMs = this.opts.requestTimeoutMs ?? 15_000;
+      const timeoutMs = options?.timeoutMs ?? this.opts.requestTimeoutMs ?? 15_000;
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Gateway request timed out: ${method}`));

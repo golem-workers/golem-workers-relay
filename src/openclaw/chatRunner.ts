@@ -307,6 +307,7 @@ export class ChatRunner {
         const usageOutgoing = await this.collectSessionsUsageStats({
           sessionKey: input.sessionKey,
           timeoutMs: Math.min(2_000, Math.max(400, remainingMs - 200)),
+          allowWhenMethodsMissing: true,
         });
         if (this.devLogEnabled) {
           logger.debug(
@@ -510,22 +511,20 @@ export class ChatRunner {
   private async collectSessionsUsageStats(input: {
     sessionKey: string;
     timeoutMs: number;
+    allowWhenMethodsMissing?: boolean;
   }): Promise<OpenclawSessionsUsageStats | undefined> {
     const hello = this.gateway.getHello();
     const supportedMethods = Array.isArray(hello?.features?.methods) ? new Set(hello.features.methods) : null;
-    if (!supportedMethods) {
+    if (!supportedMethods && !input.allowWhenMethodsMissing) {
       return undefined;
     }
     if (supportedMethods && !supportedMethods.has("sessions.usage")) {
       return undefined;
     }
-    const perCallTimeoutMs = Math.max(300, Math.min(1500, Math.trunc(input.timeoutMs)));
-    const payload = await Promise.race([
-      this.gateway.getSessionsUsage({ limit: 50 }),
-      new Promise<unknown>((_, reject) =>
-        setTimeout(() => reject(new Error(`sessions.usage timeout (${perCallTimeoutMs}ms)`)), perCallTimeoutMs)
-      ),
-    ]).catch(() => undefined);
+    const perCallTimeoutMs = supportedMethods
+      ? Math.max(300, Math.min(1500, Math.trunc(input.timeoutMs)))
+      : Math.max(80, Math.min(250, Math.trunc(input.timeoutMs / 8)));
+    const payload = await this.gateway.getSessionsUsage({ limit: 50 }, { timeoutMs: perCallTimeoutMs }).catch(() => undefined);
     if (!isPlainObject(payload)) {
       return undefined;
     }
