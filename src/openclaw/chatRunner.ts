@@ -232,7 +232,6 @@ export class ChatRunner {
       );
     }
     const usageIncoming = await this.collectSessionsUsageStats({
-      sessionKey: input.sessionKey,
       timeoutMs: Math.min(2_000, Math.max(400, Math.trunc(input.timeoutMs / 3))),
       allowWhenMethodsMissing: true,
       attempts: 3,
@@ -319,7 +318,6 @@ export class ChatRunner {
         }
         const finalEvt = await this.waitForFinal(runId, remainingMs);
         const usageOutgoing = await this.collectSessionsUsageStats({
-          sessionKey: input.sessionKey,
           timeoutMs: Math.min(2_000, Math.max(400, remainingMs - 200)),
           allowWhenMethodsMissing: true,
           attempts: 3,
@@ -531,7 +529,6 @@ export class ChatRunner {
   }
 
   private async collectSessionsUsageStats(input: {
-    sessionKey: string;
     timeoutMs: number;
     allowWhenMethodsMissing?: boolean;
     attempts?: number;
@@ -547,9 +544,9 @@ export class ChatRunner {
     const perCallTimeoutMs = Math.max(300, Math.min(1500, Math.trunc(input.timeoutMs)));
     const attempts = Math.max(1, Math.min(3, Math.trunc(input.attempts ?? 3)));
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      const payload = await this.gateway
-        .getSessionsUsage({ key: input.sessionKey, limit: 50 }, { timeoutMs: perCallTimeoutMs })
-        .catch(() => undefined);
+      // Request global usage snapshot so totals/aggregates include all sessions,
+      // all models, and the full available period.
+      const payload = await this.gateway.getSessionsUsage({}, { timeoutMs: perCallTimeoutMs }).catch(() => undefined);
       if (!isPlainObject(payload)) {
         if (attempt < attempts) await sleep(attempt * 120);
         continue;

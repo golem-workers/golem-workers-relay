@@ -128,12 +128,40 @@ describe("ChatRunner", () => {
   it("includes usageIncoming and usageOutgoing from sessions.usage", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+    const sessionsUsageParamsSeen: unknown[] = [];
 
     const { wss, port } = startServer((ws) => {
       ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
       ws.on("message", (data) => {
         const text = rawDataToString(data);
         const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (frame.type === "req" && frame.method === "sessions.usage") {
+          sessionsUsageParamsSeen.push(frame.params);
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                updatedAt: 123456,
+                startDate: "2026-02-23",
+                endDate: "2026-02-23",
+                totals: { input: 20, output: 7, totalTokens: 27, totalCost: 0.002 },
+                aggregates: {
+                  byModel: [
+                    {
+                      provider: "moonshot",
+                      model: "moonshot/kimi-k2.5",
+                      count: 2,
+                      totals: { input: 20, output: 7, totalTokens: 27, totalCost: 0.002 },
+                    },
+                  ],
+                },
+              },
+            })
+          );
+          return;
+        }
         if (maybeHandleSessionsUsage(ws, frame)) return;
         if (frame.type === "req" && frame.method === "connect") {
           ws.send(
@@ -178,32 +206,6 @@ describe("ChatRunner", () => {
           }, 10);
           return;
         }
-        if (frame.method === "sessions.usage") {
-          ws.send(
-            JSON.stringify({
-              type: "res",
-              id: frame.id,
-              ok: true,
-              payload: {
-                updatedAt: 123456,
-                startDate: "2026-02-23",
-                endDate: "2026-02-23",
-                totals: { input: 20, output: 7, totalTokens: 27, totalCost: 0.002 },
-                aggregates: {
-                  byModel: [
-                    {
-                      provider: "moonshot",
-                      model: "moonshot/kimi-k2.5",
-                      count: 2,
-                      totals: { input: 20, output: 7, totalTokens: 27, totalCost: 0.002 },
-                    },
-                  ],
-                },
-              },
-            })
-          );
-          return;
-        }
       });
     });
 
@@ -232,6 +234,10 @@ describe("ChatRunner", () => {
     expect(statsMeta.usageIncoming?.aggregates?.byModel?.[0]?.model).toBe("moonshot/kimi-k2.5");
     expect(statsMeta.usageOutgoing?.source).toBe("sessions.usage");
     expect(statsMeta.usageOutgoing?.totals?.totalTokens).toBe(27);
+    expect(sessionsUsageParamsSeen.length).toBeGreaterThanOrEqual(2);
+    expect(sessionsUsageParamsSeen).toEqual(
+      expect.arrayContaining([{}, {}])
+    );
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
