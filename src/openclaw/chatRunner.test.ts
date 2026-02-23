@@ -32,7 +32,7 @@ function maybeHandleSessionsUsage(
             byModel: [
               {
                 provider: "moonshot",
-                model: "moonshot/kimi-k2.5",
+                model: "kimi-k2.5",
                 count: 2,
                 totals: { input: 20, output: 7, totalTokens: 27, totalCost: 0.002 },
               },
@@ -151,7 +151,7 @@ describe("ChatRunner", () => {
                   byModel: [
                     {
                       provider: "moonshot",
-                      model: "moonshot/kimi-k2.5",
+                      model: "kimi-k2.5",
                       count: 2,
                       totals: { input: 20, output: 7, totalTokens: 27, totalCost: 0.002 },
                     },

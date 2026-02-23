@@ -73,6 +73,22 @@ type OpenclawSessionsUsageStats = {
   };
 };
 
+function composeProviderModelName(input: {
+  provider?: unknown;
+  model?: unknown;
+}): { provider?: string; model?: string } {
+  const provider =
+    typeof input.provider === "string" && input.provider.trim().length > 0 ? input.provider.trim() : undefined;
+  const model = typeof input.model === "string" && input.model.trim().length > 0 ? input.model.trim() : undefined;
+  if (!provider && !model) return {};
+  if (!provider) return { model };
+  if (!model) return { provider };
+  if (model.startsWith(`${provider}/`)) {
+    return { provider, model };
+  }
+  return { provider, model: `${provider}/${model}` };
+}
+
 function tryParseInjectedStreamJsonError(text: string): ParsedInjectedStreamError | null {
   if (!text.includes("JSON error injected into SSE stream")) {
     return null;
@@ -568,12 +584,17 @@ export class ChatRunner {
         out.aggregates = {
           byModel: payload.aggregates.byModel
             .filter((row): row is Record<string, unknown> => isPlainObject(row))
-            .map((row) => ({
-              ...(typeof row.provider === "string" ? { provider: row.provider } : {}),
-              ...(typeof row.model === "string" ? { model: row.model } : {}),
-              ...(typeof row.count === "number" && Number.isFinite(row.count) ? { count: row.count } : {}),
-              ...(isPlainObject(row.totals) ? { totals: row.totals } : {}),
-            })),
+            .map((row) => {
+              const normalizedModel = composeProviderModelName({
+                provider: row.provider,
+                model: row.model,
+              });
+              return {
+                ...normalizedModel,
+                ...(typeof row.count === "number" && Number.isFinite(row.count) ? { count: row.count } : {}),
+                ...(isPlainObject(row.totals) ? { totals: row.totals } : {}),
+              };
+            }),
         };
       }
       return out;
