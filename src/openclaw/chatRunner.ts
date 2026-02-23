@@ -273,6 +273,19 @@ export class ChatRunner {
         const finalEvt = await this.waitForFinal(runId, remainingMs);
         const usageMeta = finalEvt.usage;
         const modelMeta = extractModelFromFinalEvent(finalEvt);
+        if (this.devLogEnabled) {
+          logger.debug(
+            {
+              taskId: input.taskId,
+              runId,
+              state: finalEvt.state,
+              stopReason: finalEvt.stopReason ?? null,
+              usage: summarizeUsageForDebug(usageMeta),
+              modelMeta: modelMeta ?? null,
+            },
+            "Relay final chat usage snapshot"
+          );
+        }
         if (finalEvt.state === "final") {
           if (finalEvt.message !== undefined) {
             if (this.devLogEnabled) {
@@ -448,6 +461,64 @@ function readString(source: Record<string, unknown>, key: string): string | unde
   if (typeof raw !== "string") return undefined;
   const next = raw.trim();
   return next.length > 0 ? next : undefined;
+}
+
+function readUsageNumber(source: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.max(0, Math.trunc(value));
+    }
+    if (typeof value === "string" && value.trim().length > 0) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return Math.max(0, Math.trunc(parsed));
+      }
+    }
+  }
+  return null;
+}
+
+function summarizeUsageForDebug(usageMeta: unknown): {
+  hasUsage: boolean;
+  type: string;
+  keys: string[];
+  model: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+} {
+  if (!usageMeta || typeof usageMeta !== "object" || (usageMeta as { constructor?: unknown }).constructor !== Object) {
+    return {
+      hasUsage: false,
+      type: usageMeta === null ? "null" : typeof usageMeta,
+      keys: [],
+      model: null,
+      inputTokens: null,
+      outputTokens: null,
+      totalTokens: null,
+    };
+  }
+  const usage = usageMeta as Record<string, unknown>;
+  return {
+    hasUsage: true,
+    type: "object",
+    keys: Object.keys(usage).slice(0, 20),
+    model:
+      readString(usage, "model") ??
+      readString(usage, "modelId") ??
+      readString(usage, "providerModel") ??
+      readString(usage, "llmModel") ??
+      null,
+    inputTokens: readUsageNumber(usage, ["inputTokens", "promptTokens", "input_tokens", "prompt_tokens"]),
+    outputTokens: readUsageNumber(usage, [
+      "outputTokens",
+      "completionTokens",
+      "output_tokens",
+      "completion_tokens",
+    ]),
+    totalTokens: readUsageNumber(usage, ["totalTokens", "total_tokens"]),
+  };
 }
 
 function extractModelFromFinalEvent(evt: ChatEvent): string | undefined {
