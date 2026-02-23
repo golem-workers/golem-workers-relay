@@ -53,45 +53,25 @@ type OpenclawChatMeta = {
   runId?: string;
   usage?: unknown;
   model?: string;
-  usageSnapshot?: unknown;
+  usageIncoming?: unknown;
+  usageOutgoing?: unknown;
 };
 
-type OpenclawUsageSnapshot = {
-  collectedAtMs: number;
-  runId: string;
-  sessionKey: string;
-  sources: Record<string, unknown>;
-  errors: Record<string, string>;
-  summary: Record<string, unknown>;
+type OpenclawSessionsUsageStats = {
+  source: "sessions.usage";
+  updatedAt?: number;
+  startDate?: string;
+  endDate?: string;
+  totals?: Record<string, unknown>;
+  aggregates?: {
+    byModel?: Array<{
+      provider?: string;
+      model?: string;
+      count?: number;
+      totals?: Record<string, unknown>;
+    }>;
+  };
 };
-
-const SNAPSHOT_SOURCE_ORDER = [
-  "usageStatus",
-  "usageCost",
-  "sessionsUsage",
-  "sessionsUsageLogs",
-  "chatHistory",
-] as const;
-
-function isSourceMethodSupported(
-  source: (typeof SNAPSHOT_SOURCE_ORDER)[number],
-  methods: Set<string>
-): boolean {
-  switch (source) {
-    case "usageStatus":
-      return methods.has("usage.status");
-    case "usageCost":
-      return methods.has("usage.cost");
-    case "sessionsUsage":
-      return methods.has("sessions.usage");
-    case "sessionsUsageLogs":
-      return methods.has("sessions.usage.logs");
-    case "chatHistory":
-      return methods.has("chat.history");
-    default:
-      return false;
-  }
-}
 
 function tryParseInjectedStreamJsonError(text: string): ParsedInjectedStreamError | null {
   if (!text.includes("JSON error injected into SSE stream")) {
@@ -251,6 +231,10 @@ export class ChatRunner {
         "Relay starting chat task"
       );
     }
+    const usageIncoming = await this.collectSessionsUsageStats({
+      sessionKey: input.sessionKey,
+      timeoutMs: Math.min(2_000, Math.max(400, Math.trunc(input.timeoutMs / 3))),
+    });
 
     for (let attempt = 1; attempt <= this.retry.attempts; attempt += 1) {
       const elapsedMs = Date.now() - startedAtMs;
@@ -261,7 +245,10 @@ export class ChatRunner {
             outcome: "error",
             error: { code: "GATEWAY_TIMEOUT", message: "Timed out waiting for final" },
           },
-          openclawMeta: { method: "chat.send" },
+          openclawMeta: {
+            method: "chat.send",
+            ...(usageIncoming ? { usageIncoming } : {}),
+          },
         };
       }
 
@@ -283,7 +270,10 @@ export class ChatRunner {
           }
           return {
             result: { outcome: "error", error: { code: "NO_RUN_ID", message: "Gateway did not return runId" } },
-            openclawMeta: { method: "chat.send" },
+            openclawMeta: {
+              method: "chat.send",
+              ...(usageIncoming ? { usageIncoming } : {}),
+            },
           };
         }
       } catch (err) {
@@ -297,7 +287,10 @@ export class ChatRunner {
         if (!retryable) {
           return {
             result: { outcome: "error", error: { code: "GATEWAY_ERROR", message: `Gateway request failed: ${msg}` } },
-            openclawMeta: { method: "chat.send" },
+            openclawMeta: {
+              method: "chat.send",
+              ...(usageIncoming ? { usageIncoming } : {}),
+            },
           };
         }
         await sleep(backoffMs);
@@ -311,10 +304,9 @@ export class ChatRunner {
         const finalEvt = await this.waitForFinal(runId, remainingMs);
         const usageMeta = finalEvt.usage;
         const modelMeta = extractModelFromFinalEvent(finalEvt);
-        const usageSnapshot = await this.collectUsageSnapshot({
-          runId,
+        const usageOutgoing = await this.collectSessionsUsageStats({
           sessionKey: input.sessionKey,
-          timeoutMs: Math.min(2500, Math.max(500, remainingMs - 200)),
+          timeoutMs: Math.min(2_000, Math.max(400, remainingMs - 200)),
         });
         if (this.devLogEnabled) {
           logger.debug(
@@ -325,9 +317,10 @@ export class ChatRunner {
               stopReason: finalEvt.stopReason ?? null,
               usage: summarizeUsageForDebug(usageMeta),
               modelMeta: modelMeta ?? null,
-              usageSnapshot: summarizeUsageSnapshotForDebug(usageSnapshot),
+              usageIncoming: summarizeSessionsUsageForDebug(usageIncoming),
+              usageOutgoing: summarizeSessionsUsageForDebug(usageOutgoing),
             },
-            "Relay final chat usage snapshot"
+            "Relay final chat usage report"
           );
         }
         if (finalEvt.state === "final") {
@@ -358,7 +351,8 @@ export class ChatRunner {
                 runId,
                 ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
                 ...(modelMeta ? { model: modelMeta } : {}),
-                usageSnapshot,
+                ...(usageIncoming ? { usageIncoming } : {}),
+                ...(usageOutgoing ? { usageOutgoing } : {}),
               },
             };
           }
@@ -372,7 +366,8 @@ export class ChatRunner {
               runId,
               ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
               ...(modelMeta ? { model: modelMeta } : {}),
-              usageSnapshot,
+              ...(usageIncoming ? { usageIncoming } : {}),
+              ...(usageOutgoing ? { usageOutgoing } : {}),
             },
           };
         }
@@ -387,7 +382,8 @@ export class ChatRunner {
               runId,
               ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
               ...(modelMeta ? { model: modelMeta } : {}),
-              usageSnapshot,
+              ...(usageIncoming ? { usageIncoming } : {}),
+              ...(usageOutgoing ? { usageOutgoing } : {}),
             },
           };
         }
@@ -426,7 +422,8 @@ export class ChatRunner {
               runId,
               ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
               ...(modelMeta ? { model: modelMeta } : {}),
-              usageSnapshot,
+              ...(usageIncoming ? { usageIncoming } : {}),
+              ...(usageOutgoing ? { usageOutgoing } : {}),
             },
           };
         }
@@ -455,7 +452,11 @@ export class ChatRunner {
         if (!retryable) {
           return {
             result: { outcome: "error", error: { code: "GATEWAY_TIMEOUT", message: msg, runId } },
-            openclawMeta: { method: "chat.send", runId },
+            openclawMeta: {
+              method: "chat.send",
+              runId,
+              ...(usageIncoming ? { usageIncoming } : {}),
+            },
           };
         }
         await sleep(backoffMs);
@@ -465,7 +466,10 @@ export class ChatRunner {
     // Should be unreachable due to loop returns, but keep a safe fallback.
     return {
       result: { outcome: "error", error: { code: "GATEWAY_ERROR", message: "Chat failed" } },
-      openclawMeta: { method: "chat.send" },
+      openclawMeta: {
+        method: "chat.send",
+        ...(usageIncoming ? { usageIncoming } : {}),
+      },
     };
   }
 
@@ -503,96 +507,54 @@ export class ChatRunner {
     });
   }
 
-  private async collectUsageSnapshot(input: {
-    runId: string;
+  private async collectSessionsUsageStats(input: {
     sessionKey: string;
     timeoutMs: number;
-  }): Promise<OpenclawUsageSnapshot> {
+  }): Promise<OpenclawSessionsUsageStats | undefined> {
     const hello = this.gateway.getHello();
     const supportedMethods = Array.isArray(hello?.features?.methods) ? new Set(hello.features.methods) : null;
     if (!supportedMethods) {
-      return {
-        collectedAtMs: Date.now(),
-        runId: input.runId,
-        sessionKey: input.sessionKey,
-        sources: {},
-        errors: { gateway: "hello-ok did not include features.methods for usage snapshot" },
-        summary: {},
-      };
+      return undefined;
     }
-    if (!SNAPSHOT_SOURCE_ORDER.some((source) => isSourceMethodSupported(source, supportedMethods))) {
-      return {
-        collectedAtMs: Date.now(),
-        runId: input.runId,
-        sessionKey: input.sessionKey,
-        sources: {},
-        errors: { gateway: "usage snapshot methods are not advertised by hello-ok" },
-        summary: {},
-      };
+    if (supportedMethods && !supportedMethods.has("sessions.usage")) {
+      return undefined;
     }
-
     const perCallTimeoutMs = Math.max(300, Math.min(1500, Math.trunc(input.timeoutMs)));
-    const call = async <T>(fn: () => Promise<T>): Promise<T> =>
-      await Promise.race([
-        fn(),
-        new Promise<T>((_, reject) =>
-          setTimeout(() => reject(new Error(`usage snapshot timeout (${perCallTimeoutMs}ms)`)), perCallTimeoutMs)
-        ),
-      ]);
-
-    const sourceCalls: Partial<Record<(typeof SNAPSHOT_SOURCE_ORDER)[number], Promise<unknown>>> = {};
-    if (!supportedMethods || isSourceMethodSupported("usageStatus", supportedMethods)) {
-      sourceCalls.usageStatus = call(() => this.gateway.getUsageStatus());
+    const payload = await Promise.race([
+      this.gateway.getSessionsUsage({ limit: 50 }),
+      new Promise<unknown>((_, reject) =>
+        setTimeout(() => reject(new Error(`sessions.usage timeout (${perCallTimeoutMs}ms)`)), perCallTimeoutMs)
+      ),
+    ]).catch(() => undefined);
+    if (!isPlainObject(payload)) {
+      return undefined;
     }
-    if (!supportedMethods || isSourceMethodSupported("usageCost", supportedMethods)) {
-      sourceCalls.usageCost = call(() => this.gateway.getUsageCost({ days: 1 }));
+    const out: OpenclawSessionsUsageStats = { source: "sessions.usage" };
+    if (typeof payload.updatedAt === "number" && Number.isFinite(payload.updatedAt)) {
+      out.updatedAt = payload.updatedAt;
     }
-    if (!supportedMethods || isSourceMethodSupported("sessionsUsage", supportedMethods)) {
-      sourceCalls.sessionsUsage = call(() => this.gateway.getSessionsUsage({ limit: 10 }));
+    if (typeof payload.startDate === "string" && payload.startDate.trim().length > 0) {
+      out.startDate = payload.startDate;
     }
-    if (!supportedMethods || isSourceMethodSupported("sessionsUsageLogs", supportedMethods)) {
-      sourceCalls.sessionsUsageLogs = call(() =>
-        this.gateway.getSessionsUsageLogs({ key: input.sessionKey, limit: 20 })
-      );
+    if (typeof payload.endDate === "string" && payload.endDate.trim().length > 0) {
+      out.endDate = payload.endDate;
     }
-    if (!supportedMethods || isSourceMethodSupported("chatHistory", supportedMethods)) {
-      sourceCalls.chatHistory = call(() => this.gateway.getChatHistory({ sessionKey: input.sessionKey, limit: 20 }));
+    if (isPlainObject(payload.totals)) {
+      out.totals = payload.totals;
     }
-
-    const entries = await Promise.all(
-      SNAPSHOT_SOURCE_ORDER.map(async (source) => {
-        try {
-          const sourceCall = sourceCalls[source];
-          if (!sourceCall) {
-            return { source, ok: false as const, error: "method_not_supported" };
-          }
-          const payload = await sourceCall;
-          return { source, ok: true as const, payload };
-        } catch (error) {
-          const msg = error instanceof Error ? error.message : String(error);
-          return { source, ok: false as const, error: msg };
-        }
-      })
-    );
-
-    const sources: Record<string, unknown> = {};
-    const errors: Record<string, string> = {};
-    for (const entry of entries) {
-      if (entry.ok) {
-        sources[entry.source] = limitSnapshotValue(entry.payload);
-      } else {
-        errors[entry.source] = entry.error;
-      }
+    if (isPlainObject(payload.aggregates) && Array.isArray(payload.aggregates.byModel)) {
+      out.aggregates = {
+        byModel: payload.aggregates.byModel
+          .filter((row): row is Record<string, unknown> => isPlainObject(row))
+          .map((row) => ({
+            ...(typeof row.provider === "string" ? { provider: row.provider } : {}),
+            ...(typeof row.model === "string" ? { model: row.model } : {}),
+            ...(typeof row.count === "number" && Number.isFinite(row.count) ? { count: row.count } : {}),
+            ...(isPlainObject(row.totals) ? { totals: row.totals } : {}),
+          })),
+      };
     }
-
-    return {
-      collectedAtMs: Date.now(),
-      runId: input.runId,
-      sessionKey: input.sessionKey,
-      sources,
-      errors,
-      summary: summarizeSnapshotSources(sources),
-    };
+    return out;
   }
 }
 
@@ -661,14 +623,18 @@ function summarizeUsageForDebug(usageMeta: unknown): {
   };
 }
 
-function summarizeUsageSnapshotForDebug(snapshot: OpenclawUsageSnapshot): Record<string, unknown> {
-  const summary = snapshot.summary;
+function summarizeSessionsUsageForDebug(snapshot: OpenclawSessionsUsageStats | undefined): Record<string, unknown> | null {
+  if (!snapshot) return null;
+  const byModel = Array.isArray(snapshot.aggregates?.byModel) ? snapshot.aggregates.byModel : [];
   return {
-    sourceCount: Object.keys(snapshot.sources).length,
-    errorCount: Object.keys(snapshot.errors).length,
-    sourceKeys: Object.keys(snapshot.sources),
-    errorKeys: Object.keys(snapshot.errors),
-    summaryKeys: isPlainObject(summary) ? Object.keys(summary).slice(0, 20) : [],
+    source: snapshot.source,
+    hasTotals: !!snapshot.totals,
+    byModelCount: byModel.length,
+    models: byModel
+      .slice(0, 20)
+      .map((row) => (typeof row.model === "string" ? row.model : null))
+      .filter((row) => row !== null),
+    updatedAt: snapshot.updatedAt ?? null,
   };
 }
 
@@ -700,95 +666,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
     value !== null &&
     (value as { constructor?: unknown }).constructor === Object
   );
-}
-
-function limitSnapshotValue(value: unknown, depth = 0): unknown {
-  if (depth >= 4) return "<max_depth>";
-  if (typeof value === "string") {
-    return value.length > 2000 ? `${value.slice(0, 2000)}...` : value;
-  }
-  if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
-  if (Array.isArray(value)) {
-    const trimmed = value.slice(0, 40).map((item) => limitSnapshotValue(item, depth + 1));
-    return value.length > 40 ? [...trimmed, "<truncated_array>"] : trimmed;
-  }
-  if (isPlainObject(value)) {
-    const out: Record<string, unknown> = {};
-    const entries = Object.entries(value);
-    for (const [key, item] of entries.slice(0, 40)) {
-      out[key] = limitSnapshotValue(item, depth + 1);
-    }
-    if (entries.length > 40) {
-      out.__truncated_keys = entries.length - 40;
-    }
-    return out;
-  }
-  return Object.prototype.toString.call(value);
-}
-
-function extractLastAssistantHistoryUsage(chatHistory: unknown): Record<string, unknown> | null {
-  if (!isPlainObject(chatHistory)) return null;
-  const messages = chatHistory.messages;
-  if (!Array.isArray(messages)) return null;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message: unknown = messages[i];
-    if (!isPlainObject(message)) continue;
-    if (message.role !== "assistant") continue;
-    const usage = message.usage;
-    if (isPlainObject(usage)) return usage;
-  }
-  return null;
-}
-
-function extractLatestAssistantLog(logsPayload: unknown): Record<string, unknown> | null {
-  if (!isPlainObject(logsPayload)) return null;
-  const logs = logsPayload.logs;
-  if (!Array.isArray(logs)) return null;
-  for (let i = logs.length - 1; i >= 0; i -= 1) {
-    const row: unknown = logs[i];
-    if (!isPlainObject(row)) continue;
-    if (row.role !== "assistant") continue;
-    return row;
-  }
-  return null;
-}
-
-function summarizeSnapshotSources(sources: Record<string, unknown>): Record<string, unknown> {
-  const summary: Record<string, unknown> = {};
-
-  const usageStatus = sources.usageStatus;
-  if (isPlainObject(usageStatus) && Array.isArray(usageStatus.providers)) {
-    summary.providers = usageStatus.providers
-      .slice(0, 20)
-      .map((p) => (isPlainObject(p) ? { provider: p.provider ?? null, displayName: p.displayName ?? null } : null))
-      .filter((p) => p !== null);
-  }
-
-  const usageCost = sources.usageCost;
-  if (isPlainObject(usageCost) && isPlainObject(usageCost.totals)) {
-    summary.usageCostTotals = usageCost.totals;
-  }
-
-  const sessionsUsage = sources.sessionsUsage;
-  if (isPlainObject(sessionsUsage) && isPlainObject(sessionsUsage.totals)) {
-    summary.sessionsUsageTotals = sessionsUsage.totals;
-  }
-
-  const latestLog = extractLatestAssistantLog(sources.sessionsUsageLogs);
-  if (latestLog) {
-    summary.latestAssistantLog = {
-      timestamp: latestLog.timestamp ?? null,
-      tokens: latestLog.tokens ?? null,
-      cost: latestLog.cost ?? null,
-    };
-  }
-
-  const historyUsage = extractLastAssistantHistoryUsage(sources.chatHistory);
-  if (historyUsage) {
-    summary.lastAssistantHistoryUsage = historyUsage;
-  }
-
-  return summary;
 }
 
 function composeMessageWithUploadedFiles(messageText: string, uploadedPaths: string[]): string {

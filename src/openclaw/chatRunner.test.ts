@@ -94,7 +94,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("collects rich usage snapshot from gateway APIs", async () => {
+  it("includes usageIncoming and usageOutgoing from sessions.usage", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
 
@@ -116,11 +116,7 @@ describe("ChatRunner", () => {
                 features: {
                   methods: [
                     "chat.send",
-                    "usage.status",
-                    "usage.cost",
                     "sessions.usage",
-                    "sessions.usage.logs",
-                    "chat.history",
                   ],
                   events: ["chat"],
                 },
@@ -150,61 +146,27 @@ describe("ChatRunner", () => {
           }, 10);
           return;
         }
-        if (frame.method === "usage.status") {
-          ws.send(
-            JSON.stringify({
-              type: "res",
-              id: frame.id,
-              ok: true,
-              payload: { updatedAt: Date.now(), providers: [{ provider: "openai-codex", displayName: "Codex", windows: [] }] },
-            })
-          );
-          return;
-        }
-        if (frame.method === "usage.cost") {
-          ws.send(
-            JSON.stringify({
-              type: "res",
-              id: frame.id,
-              ok: true,
-              payload: { totals: { input: 10, output: 4, totalTokens: 14, totalCost: 0.001 } },
-            })
-          );
-          return;
-        }
         if (frame.method === "sessions.usage") {
           ws.send(
             JSON.stringify({
               type: "res",
               id: frame.id,
               ok: true,
-              payload: { totals: { input: 20, output: 7, totalTokens: 27, totalCost: 0.002 } },
-            })
-          );
-          return;
-        }
-        if (frame.method === "sessions.usage.logs") {
-          ws.send(
-            JSON.stringify({
-              type: "res",
-              id: frame.id,
-              ok: true,
-              payload: { logs: [{ role: "assistant", timestamp: 123, tokens: 33, cost: 0.003 }] },
-            })
-          );
-          return;
-        }
-        if (frame.method === "chat.history") {
-          ws.send(
-            JSON.stringify({
-              type: "res",
-              id: frame.id,
-              ok: true,
               payload: {
-                messages: [
-                  { role: "user", content: "hi" },
-                  { role: "assistant", content: "ok", usage: { inputTokens: 99, outputTokens: 11, totalTokens: 110 } },
-                ],
+                updatedAt: 123456,
+                startDate: "2026-02-23",
+                endDate: "2026-02-23",
+                totals: { input: 20, output: 7, totalTokens: 27, totalCost: 0.002 },
+                aggregates: {
+                  byModel: [
+                    {
+                      provider: "moonshot",
+                      model: "moonshot/kimi-k2.5",
+                      count: 2,
+                      totals: { input: 20, output: 7, totalTokens: 27, totalCost: 0.002 },
+                    },
+                  ],
+                },
               },
             })
           );
@@ -230,28 +192,22 @@ describe("ChatRunner", () => {
     });
     expect(result.outcome).toBe("reply");
 
-    const snapshot = (openclawMeta as { usageSnapshot?: unknown }).usageSnapshot as {
-      sources?: Record<string, unknown>;
-      errors?: Record<string, unknown>;
-      summary?: Record<string, unknown>;
+    const statsMeta = openclawMeta as {
+      usageIncoming?: { source?: string; aggregates?: { byModel?: Array<{ model?: string }> } };
+      usageOutgoing?: { source?: string; totals?: { totalTokens?: number } };
     };
-    expect(snapshot).toBeTruthy();
-    expect(snapshot.sources?.usageStatus).toBeTruthy();
-    expect(snapshot.sources?.usageCost).toBeTruthy();
-    expect(snapshot.sources?.sessionsUsage).toBeTruthy();
-    expect(snapshot.sources?.sessionsUsageLogs).toBeTruthy();
-    expect(snapshot.sources?.chatHistory).toBeTruthy();
-    expect(snapshot.errors).toEqual({});
-    expect(snapshot.summary?.sessionsUsageTotals).toMatchObject({ input: 20, output: 7, totalTokens: 27 });
+    expect(statsMeta.usageIncoming?.source).toBe("sessions.usage");
+    expect(statsMeta.usageIncoming?.aggregates?.byModel?.[0]?.model).toBe("moonshot/kimi-k2.5");
+    expect(statsMeta.usageOutgoing?.source).toBe("sessions.usage");
+    expect(statsMeta.usageOutgoing?.totals?.totalTokens).toBe(27);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("keeps processing when some snapshot sources fail and truncates long payloads", async () => {
+  it("keeps processing when sessions.usage is not supported", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
-    const longText = "x".repeat(5000);
 
     const { wss, port } = startServer((ws) => {
       ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
@@ -269,7 +225,7 @@ describe("ChatRunner", () => {
                 protocol: 3,
                 policy: { tickIntervalMs: 5000 },
                 features: {
-                  methods: ["chat.send", "usage.status", "usage.cost"],
+                  methods: ["chat.send"],
                   events: ["chat"],
                 },
               },
@@ -298,28 +254,6 @@ describe("ChatRunner", () => {
           }, 10);
           return;
         }
-        if (frame.method === "usage.status") {
-          ws.send(
-            JSON.stringify({
-              type: "res",
-              id: frame.id,
-              ok: true,
-              payload: { note: longText },
-            })
-          );
-          return;
-        }
-        if (frame.method === "usage.cost") {
-          ws.send(
-            JSON.stringify({
-              type: "res",
-              id: frame.id,
-              ok: false,
-              error: { code: "BAD", message: "failed usage.cost" },
-            })
-          );
-          return;
-        }
       });
     });
 
@@ -340,17 +274,8 @@ describe("ChatRunner", () => {
     });
     expect(result.outcome).toBe("reply");
 
-    const snapshot = (openclawMeta as { usageSnapshot?: unknown }).usageSnapshot as {
-      sources?: Record<string, unknown>;
-      errors?: Record<string, string>;
-    };
-    const usageStatus = snapshot.sources?.usageStatus as { note?: string };
-    expect(typeof usageStatus?.note).toBe("string");
-    expect((usageStatus.note ?? "").length).toBeLessThanOrEqual(2003);
-    expect(snapshot.errors?.usageCost).toContain("failed usage.cost");
-    expect(snapshot.errors?.sessionsUsage).toBe("method_not_supported");
-    expect(snapshot.errors?.sessionsUsageLogs).toBe("method_not_supported");
-    expect(snapshot.errors?.chatHistory).toBe("method_not_supported");
+    expect((openclawMeta as { usageIncoming?: unknown }).usageIncoming).toBeUndefined();
+    expect((openclawMeta as { usageOutgoing?: unknown }).usageOutgoing).toBeUndefined();
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
