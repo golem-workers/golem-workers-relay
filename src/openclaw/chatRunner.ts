@@ -234,12 +234,28 @@ export class ChatRunner {
     const usageIncoming = await this.collectSessionsUsageStats({
       sessionKey: input.sessionKey,
       timeoutMs: Math.min(2_000, Math.max(400, Math.trunc(input.timeoutMs / 3))),
+      allowWhenMethodsMissing: true,
+      attempts: 3,
     });
+    if (!usageIncoming) {
+      return {
+        result: {
+          outcome: "error",
+          error: {
+            code: "USAGE_REQUIRED",
+            message: "sessions.usage is required before chat.send",
+          },
+        },
+        openclawMeta: {
+          method: "chat.send",
+        },
+      };
+    }
 
     for (let attempt = 1; attempt <= this.retry.attempts; attempt += 1) {
       const elapsedMs = Date.now() - startedAtMs;
       const remainingMs = Math.max(0, input.timeoutMs - elapsedMs);
-      if (remainingMs < 1000) {
+      if (remainingMs < 300) {
         return {
           result: {
             outcome: "error",
@@ -302,13 +318,29 @@ export class ChatRunner {
           logger.debug({ taskId: input.taskId, runId, attempt }, "Relay waiting for chat final event");
         }
         const finalEvt = await this.waitForFinal(runId, remainingMs);
-        const usageMeta = finalEvt.usage;
-        const modelMeta = extractModelFromFinalEvent(finalEvt);
         const usageOutgoing = await this.collectSessionsUsageStats({
           sessionKey: input.sessionKey,
           timeoutMs: Math.min(2_000, Math.max(400, remainingMs - 200)),
           allowWhenMethodsMissing: true,
+          attempts: 3,
         });
+        if (!usageOutgoing) {
+          return {
+            result: {
+              outcome: "error",
+              error: {
+                code: "USAGE_REQUIRED",
+                message: "sessions.usage is required after chat.send",
+                runId,
+              },
+            },
+            openclawMeta: {
+              method: "chat.send",
+              runId,
+              usageIncoming,
+            },
+          };
+        }
         if (this.devLogEnabled) {
           logger.debug(
             {
@@ -316,8 +348,6 @@ export class ChatRunner {
               runId,
               state: finalEvt.state,
               stopReason: finalEvt.stopReason ?? null,
-              usage: summarizeUsageForDebug(usageMeta),
-              modelMeta: modelMeta ?? null,
               usageIncoming: summarizeSessionsUsageForDebug(usageIncoming),
               usageOutgoing: summarizeSessionsUsageForDebug(usageOutgoing),
             },
@@ -350,10 +380,8 @@ export class ChatRunner {
               openclawMeta: {
                 method: "chat.send",
                 runId,
-                ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
-                ...(modelMeta ? { model: modelMeta } : {}),
-                ...(usageIncoming ? { usageIncoming } : {}),
-                ...(usageOutgoing ? { usageOutgoing } : {}),
+                usageIncoming,
+                usageOutgoing,
               },
             };
           }
@@ -365,10 +393,8 @@ export class ChatRunner {
             openclawMeta: {
               method: "chat.send",
               runId,
-              ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
-              ...(modelMeta ? { model: modelMeta } : {}),
-              ...(usageIncoming ? { usageIncoming } : {}),
-              ...(usageOutgoing ? { usageOutgoing } : {}),
+              usageIncoming,
+              usageOutgoing,
             },
           };
         }
@@ -381,10 +407,8 @@ export class ChatRunner {
             openclawMeta: {
               method: "chat.send",
               runId,
-              ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
-              ...(modelMeta ? { model: modelMeta } : {}),
-              ...(usageIncoming ? { usageIncoming } : {}),
-              ...(usageOutgoing ? { usageOutgoing } : {}),
+              usageIncoming,
+              usageOutgoing,
             },
           };
         }
@@ -421,10 +445,8 @@ export class ChatRunner {
             openclawMeta: {
               method: "chat.send",
               runId,
-              ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
-              ...(modelMeta ? { model: modelMeta } : {}),
-              ...(usageIncoming ? { usageIncoming } : {}),
-              ...(usageOutgoing ? { usageOutgoing } : {}),
+              usageIncoming,
+              usageOutgoing,
             },
           };
         }
@@ -512,114 +534,55 @@ export class ChatRunner {
     sessionKey: string;
     timeoutMs: number;
     allowWhenMethodsMissing?: boolean;
+    attempts?: number;
   }): Promise<OpenclawSessionsUsageStats | undefined> {
     const hello = this.gateway.getHello();
     const supportedMethods = Array.isArray(hello?.features?.methods) ? new Set(hello.features.methods) : null;
     if (!supportedMethods && !input.allowWhenMethodsMissing) {
       return undefined;
     }
-    if (supportedMethods && !supportedMethods.has("sessions.usage")) {
+    if (supportedMethods && !supportedMethods.has("sessions.usage") && !input.allowWhenMethodsMissing) {
       return undefined;
     }
-    const perCallTimeoutMs = supportedMethods
-      ? Math.max(300, Math.min(1500, Math.trunc(input.timeoutMs)))
-      : Math.max(80, Math.min(250, Math.trunc(input.timeoutMs / 8)));
-    const payload = await this.gateway.getSessionsUsage({ limit: 50 }, { timeoutMs: perCallTimeoutMs }).catch(() => undefined);
-    if (!isPlainObject(payload)) {
-      return undefined;
-    }
-    const out: OpenclawSessionsUsageStats = { source: "sessions.usage" };
-    if (typeof payload.updatedAt === "number" && Number.isFinite(payload.updatedAt)) {
-      out.updatedAt = payload.updatedAt;
-    }
-    if (typeof payload.startDate === "string" && payload.startDate.trim().length > 0) {
-      out.startDate = payload.startDate;
-    }
-    if (typeof payload.endDate === "string" && payload.endDate.trim().length > 0) {
-      out.endDate = payload.endDate;
-    }
-    if (isPlainObject(payload.totals)) {
-      out.totals = payload.totals;
-    }
-    if (isPlainObject(payload.aggregates) && Array.isArray(payload.aggregates.byModel)) {
-      out.aggregates = {
-        byModel: payload.aggregates.byModel
-          .filter((row): row is Record<string, unknown> => isPlainObject(row))
-          .map((row) => ({
-            ...(typeof row.provider === "string" ? { provider: row.provider } : {}),
-            ...(typeof row.model === "string" ? { model: row.model } : {}),
-            ...(typeof row.count === "number" && Number.isFinite(row.count) ? { count: row.count } : {}),
-            ...(isPlainObject(row.totals) ? { totals: row.totals } : {}),
-          })),
-      };
-    }
-    return out;
-  }
-}
-
-function readString(source: Record<string, unknown>, key: string): string | undefined {
-  const raw = source[key];
-  if (typeof raw !== "string") return undefined;
-  const next = raw.trim();
-  return next.length > 0 ? next : undefined;
-}
-
-function readUsageNumber(source: Record<string, unknown>, keys: string[]): number | null {
-  for (const key of keys) {
-    const value = source[key];
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return Math.max(0, Math.trunc(value));
-    }
-    if (typeof value === "string" && value.trim().length > 0) {
-      const parsed = Number(value);
-      if (Number.isFinite(parsed)) {
-        return Math.max(0, Math.trunc(parsed));
+    const perCallTimeoutMs = Math.max(300, Math.min(1500, Math.trunc(input.timeoutMs)));
+    const attempts = Math.max(1, Math.min(3, Math.trunc(input.attempts ?? 3)));
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const payload = await this.gateway
+        .getSessionsUsage({ key: input.sessionKey, limit: 50 }, { timeoutMs: perCallTimeoutMs })
+        .catch(() => undefined);
+      if (!isPlainObject(payload)) {
+        if (attempt < attempts) await sleep(attempt * 120);
+        continue;
       }
+      const out: OpenclawSessionsUsageStats = { source: "sessions.usage" };
+      if (typeof payload.updatedAt === "number" && Number.isFinite(payload.updatedAt)) {
+        out.updatedAt = payload.updatedAt;
+      }
+      if (typeof payload.startDate === "string" && payload.startDate.trim().length > 0) {
+        out.startDate = payload.startDate;
+      }
+      if (typeof payload.endDate === "string" && payload.endDate.trim().length > 0) {
+        out.endDate = payload.endDate;
+      }
+      if (isPlainObject(payload.totals)) {
+        out.totals = payload.totals;
+      }
+      if (isPlainObject(payload.aggregates) && Array.isArray(payload.aggregates.byModel)) {
+        out.aggregates = {
+          byModel: payload.aggregates.byModel
+            .filter((row): row is Record<string, unknown> => isPlainObject(row))
+            .map((row) => ({
+              ...(typeof row.provider === "string" ? { provider: row.provider } : {}),
+              ...(typeof row.model === "string" ? { model: row.model } : {}),
+              ...(typeof row.count === "number" && Number.isFinite(row.count) ? { count: row.count } : {}),
+              ...(isPlainObject(row.totals) ? { totals: row.totals } : {}),
+            })),
+        };
+      }
+      return out;
     }
+    return undefined;
   }
-  return null;
-}
-
-function summarizeUsageForDebug(usageMeta: unknown): {
-  hasUsage: boolean;
-  type: string;
-  keys: string[];
-  model: string | null;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  totalTokens: number | null;
-} {
-  if (!usageMeta || typeof usageMeta !== "object" || (usageMeta as { constructor?: unknown }).constructor !== Object) {
-    return {
-      hasUsage: false,
-      type: usageMeta === null ? "null" : typeof usageMeta,
-      keys: [],
-      model: null,
-      inputTokens: null,
-      outputTokens: null,
-      totalTokens: null,
-    };
-  }
-  const usage = usageMeta as Record<string, unknown>;
-  return {
-    hasUsage: true,
-    type: "object",
-    keys: Object.keys(usage).slice(0, 20),
-    model:
-      readString(usage, "model") ??
-      readString(usage, "modelId") ??
-      readString(usage, "providerModel") ??
-      readString(usage, "llmModel") ??
-      null,
-    inputTokens: readUsageNumber(usage, ["inputTokens", "promptTokens", "input_tokens", "prompt_tokens"]),
-    outputTokens: readUsageNumber(usage, [
-      "outputTokens",
-      "completionTokens",
-      "output_tokens",
-      "completion_tokens",
-    ]),
-    totalTokens: readUsageNumber(usage, ["totalTokens", "total_tokens"]),
-  };
 }
 
 function summarizeSessionsUsageForDebug(snapshot: OpenclawSessionsUsageStats | undefined): Record<string, unknown> | null {
@@ -635,28 +598,6 @@ function summarizeSessionsUsageForDebug(snapshot: OpenclawSessionsUsageStats | u
       .filter((row) => row !== null),
     updatedAt: snapshot.updatedAt ?? null,
   };
-}
-
-function extractModelFromFinalEvent(evt: ChatEvent): string | undefined {
-  if (evt.usage && typeof evt.usage === "object" && (evt.usage as { constructor?: unknown }).constructor === Object) {
-    const usage = evt.usage as Record<string, unknown>;
-    return (
-      readString(usage, "model") ??
-      readString(usage, "modelId") ??
-      readString(usage, "providerModel") ??
-      readString(usage, "llmModel")
-    );
-  }
-  if (evt.message && typeof evt.message === "object" && (evt.message as { constructor?: unknown }).constructor === Object) {
-    const message = evt.message as Record<string, unknown>;
-    return (
-      readString(message, "model") ??
-      readString(message, "modelId") ??
-      readString(message, "providerModel") ??
-      readString(message, "llmModel")
-    );
-  }
-  return undefined;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

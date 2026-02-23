@@ -14,6 +14,38 @@ function startServer(handler: (ws: import("ws").WebSocket) => void) {
   return { wss, port: addr.port };
 }
 
+function maybeHandleSessionsUsage(
+  ws: import("ws").WebSocket,
+  frame: { type: string; id: string; method: string; params?: unknown }
+): boolean {
+  if (frame.type === "req" && frame.method === "sessions.usage") {
+    ws.send(
+      JSON.stringify({
+        type: "res",
+        id: frame.id,
+        ok: true,
+        payload: {
+          source: "sessions.usage",
+          updatedAt: 123456,
+          totals: { input: 20, output: 7, totalTokens: 27, totalCost: 0.002 },
+          aggregates: {
+            byModel: [
+              {
+                provider: "moonshot",
+                model: "moonshot/kimi-k2.5",
+                count: 2,
+                totals: { input: 20, output: 7, totalTokens: 27, totalCost: 0.002 },
+              },
+            ],
+          },
+        },
+      })
+    );
+    return true;
+  }
+  return false;
+}
+
 describe("ChatRunner", () => {
   it("maps chat final event with message to reply", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -24,6 +56,7 @@ describe("ChatRunner", () => {
       ws.on("message", (data) => {
         const text = rawDataToString(data);
         const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
         if (frame.type === "req" && frame.method === "connect") {
           ws.send(
             JSON.stringify({
@@ -86,8 +119,6 @@ describe("ChatRunner", () => {
     expect(openclawMeta).toMatchObject({
       method: "chat.send",
       runId: "run_1",
-      model: "moonshot/kimi-k2.5",
-      usage: { inputTokens: 120, outputTokens: 30, model: "moonshot/kimi-k2.5" },
     });
 
     client.stop();
@@ -103,6 +134,7 @@ describe("ChatRunner", () => {
       ws.on("message", (data) => {
         const text = rawDataToString(data);
         const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
         if (frame.type === "req" && frame.method === "connect") {
           ws.send(
             JSON.stringify({
@@ -205,7 +237,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("keeps processing when sessions.usage is not supported", async () => {
+  it("uses sessions.usage even when method is not advertised", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
 
@@ -214,6 +246,7 @@ describe("ChatRunner", () => {
       ws.on("message", (data) => {
         const text = rawDataToString(data);
         const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
         if (frame.type === "req" && frame.method === "connect") {
           ws.send(
             JSON.stringify({
@@ -274,8 +307,8 @@ describe("ChatRunner", () => {
     });
     expect(result.outcome).toBe("reply");
 
-    expect((openclawMeta as { usageIncoming?: unknown }).usageIncoming).toBeUndefined();
-    expect((openclawMeta as { usageOutgoing?: unknown }).usageOutgoing).toBeUndefined();
+    expect((openclawMeta as { usageIncoming?: unknown }).usageIncoming).toBeDefined();
+    expect((openclawMeta as { usageOutgoing?: unknown }).usageOutgoing).toBeDefined();
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
@@ -290,6 +323,7 @@ describe("ChatRunner", () => {
       ws.on("message", (data) => {
         const text = rawDataToString(data);
         const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
         if (frame.type === "req" && frame.method === "connect") {
           // Intentionally omit hello.features to emulate older gateway shape.
           ws.send(
@@ -359,9 +393,12 @@ describe("ChatRunner", () => {
       timeoutMs: 2000,
     });
     expect(result.outcome).toBe("reply");
-    const statsMeta = openclawMeta as { usageIncoming?: unknown; usageOutgoing?: { totals?: { totalTokens?: number } } };
-    expect(statsMeta.usageIncoming).toBeUndefined();
-    expect(statsMeta.usageOutgoing?.totals?.totalTokens).toBe(17);
+    const statsMeta = openclawMeta as {
+      usageIncoming?: { totals?: { totalTokens?: number } };
+      usageOutgoing?: { totals?: { totalTokens?: number } };
+    };
+    expect(statsMeta.usageIncoming?.totals?.totalTokens).toBe(27);
+    expect(statsMeta.usageOutgoing?.totals?.totalTokens).toBe(27);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
@@ -377,6 +414,7 @@ describe("ChatRunner", () => {
       ws.on("message", (data) => {
         const text = rawDataToString(data);
         const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
         if (frame.type === "req" && frame.method === "connect") {
           ws.send(
             JSON.stringify({
@@ -451,6 +489,7 @@ describe("ChatRunner", () => {
       ws.on("message", (data) => {
         const text = rawDataToString(data);
         const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
         if (frame.type === "req" && frame.method === "connect") {
           ws.send(
             JSON.stringify({
@@ -523,6 +562,7 @@ describe("ChatRunner", () => {
       ws.on("message", (data) => {
         const text = rawDataToString(data);
         const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
         if (frame.type === "req" && frame.method === "connect") {
           ws.send(
             JSON.stringify({
@@ -596,6 +636,7 @@ describe("ChatRunner", () => {
       ws.on("message", (data) => {
         const text = rawDataToString(data);
         const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
         if (frame.type === "req" && frame.method === "connect") {
           ws.send(
             JSON.stringify({
@@ -681,6 +722,7 @@ describe("ChatRunner", () => {
       ws.on("message", (data) => {
         const text = rawDataToString(data);
         const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
         if (frame.type === "req" && frame.method === "connect") {
           ws.send(
             JSON.stringify({
@@ -795,6 +837,7 @@ describe("ChatRunner", () => {
       ws.on("message", (data) => {
         const text = rawDataToString(data);
         const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
         if (frame.type === "req" && frame.method === "connect") {
           ws.send(
             JSON.stringify({
@@ -860,6 +903,7 @@ describe("ChatRunner", () => {
       ws.on("message", (data) => {
         const text = rawDataToString(data);
         const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
         if (frame.type === "req" && frame.method === "connect") {
           ws.send(
             JSON.stringify({
