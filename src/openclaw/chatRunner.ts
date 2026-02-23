@@ -53,7 +53,45 @@ type OpenclawChatMeta = {
   runId?: string;
   usage?: unknown;
   model?: string;
+  usageSnapshot?: unknown;
 };
+
+type OpenclawUsageSnapshot = {
+  collectedAtMs: number;
+  runId: string;
+  sessionKey: string;
+  sources: Record<string, unknown>;
+  errors: Record<string, string>;
+  summary: Record<string, unknown>;
+};
+
+const SNAPSHOT_SOURCE_ORDER = [
+  "usageStatus",
+  "usageCost",
+  "sessionsUsage",
+  "sessionsUsageLogs",
+  "chatHistory",
+] as const;
+
+function isSourceMethodSupported(
+  source: (typeof SNAPSHOT_SOURCE_ORDER)[number],
+  methods: Set<string>
+): boolean {
+  switch (source) {
+    case "usageStatus":
+      return methods.has("usage.status");
+    case "usageCost":
+      return methods.has("usage.cost");
+    case "sessionsUsage":
+      return methods.has("sessions.usage");
+    case "sessionsUsageLogs":
+      return methods.has("sessions.usage.logs");
+    case "chatHistory":
+      return methods.has("chat.history");
+    default:
+      return false;
+  }
+}
 
 function tryParseInjectedStreamJsonError(text: string): ParsedInjectedStreamError | null {
   if (!text.includes("JSON error injected into SSE stream")) {
@@ -273,6 +311,11 @@ export class ChatRunner {
         const finalEvt = await this.waitForFinal(runId, remainingMs);
         const usageMeta = finalEvt.usage;
         const modelMeta = extractModelFromFinalEvent(finalEvt);
+        const usageSnapshot = await this.collectUsageSnapshot({
+          runId,
+          sessionKey: input.sessionKey,
+          timeoutMs: Math.min(2500, Math.max(500, remainingMs - 200)),
+        });
         if (this.devLogEnabled) {
           logger.debug(
             {
@@ -282,6 +325,7 @@ export class ChatRunner {
               stopReason: finalEvt.stopReason ?? null,
               usage: summarizeUsageForDebug(usageMeta),
               modelMeta: modelMeta ?? null,
+              usageSnapshot: summarizeUsageSnapshotForDebug(usageSnapshot),
             },
             "Relay final chat usage snapshot"
           );
@@ -314,6 +358,7 @@ export class ChatRunner {
                 runId,
                 ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
                 ...(modelMeta ? { model: modelMeta } : {}),
+                usageSnapshot,
               },
             };
           }
@@ -327,6 +372,7 @@ export class ChatRunner {
               runId,
               ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
               ...(modelMeta ? { model: modelMeta } : {}),
+              usageSnapshot,
             },
           };
         }
@@ -341,6 +387,7 @@ export class ChatRunner {
               runId,
               ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
               ...(modelMeta ? { model: modelMeta } : {}),
+              usageSnapshot,
             },
           };
         }
@@ -379,6 +426,7 @@ export class ChatRunner {
               runId,
               ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
               ...(modelMeta ? { model: modelMeta } : {}),
+              usageSnapshot,
             },
           };
         }
@@ -454,6 +502,98 @@ export class ChatRunner {
       this.waitersByRunId.set(runId, { resolve, reject, timeout });
     });
   }
+
+  private async collectUsageSnapshot(input: {
+    runId: string;
+    sessionKey: string;
+    timeoutMs: number;
+  }): Promise<OpenclawUsageSnapshot> {
+    const hello = this.gateway.getHello();
+    const supportedMethods = Array.isArray(hello?.features?.methods) ? new Set(hello.features.methods) : null;
+    if (!supportedMethods) {
+      return {
+        collectedAtMs: Date.now(),
+        runId: input.runId,
+        sessionKey: input.sessionKey,
+        sources: {},
+        errors: { gateway: "hello-ok did not include features.methods for usage snapshot" },
+        summary: {},
+      };
+    }
+    if (!SNAPSHOT_SOURCE_ORDER.some((source) => isSourceMethodSupported(source, supportedMethods))) {
+      return {
+        collectedAtMs: Date.now(),
+        runId: input.runId,
+        sessionKey: input.sessionKey,
+        sources: {},
+        errors: { gateway: "usage snapshot methods are not advertised by hello-ok" },
+        summary: {},
+      };
+    }
+
+    const perCallTimeoutMs = Math.max(300, Math.min(1500, Math.trunc(input.timeoutMs)));
+    const call = async <T>(fn: () => Promise<T>): Promise<T> =>
+      await Promise.race([
+        fn(),
+        new Promise<T>((_, reject) =>
+          setTimeout(() => reject(new Error(`usage snapshot timeout (${perCallTimeoutMs}ms)`)), perCallTimeoutMs)
+        ),
+      ]);
+
+    const sourceCalls: Partial<Record<(typeof SNAPSHOT_SOURCE_ORDER)[number], Promise<unknown>>> = {};
+    if (!supportedMethods || isSourceMethodSupported("usageStatus", supportedMethods)) {
+      sourceCalls.usageStatus = call(() => this.gateway.getUsageStatus());
+    }
+    if (!supportedMethods || isSourceMethodSupported("usageCost", supportedMethods)) {
+      sourceCalls.usageCost = call(() => this.gateway.getUsageCost({ days: 1 }));
+    }
+    if (!supportedMethods || isSourceMethodSupported("sessionsUsage", supportedMethods)) {
+      sourceCalls.sessionsUsage = call(() => this.gateway.getSessionsUsage({ limit: 10 }));
+    }
+    if (!supportedMethods || isSourceMethodSupported("sessionsUsageLogs", supportedMethods)) {
+      sourceCalls.sessionsUsageLogs = call(() =>
+        this.gateway.getSessionsUsageLogs({ key: input.sessionKey, limit: 20 })
+      );
+    }
+    if (!supportedMethods || isSourceMethodSupported("chatHistory", supportedMethods)) {
+      sourceCalls.chatHistory = call(() => this.gateway.getChatHistory({ sessionKey: input.sessionKey, limit: 20 }));
+    }
+
+    const entries = await Promise.all(
+      SNAPSHOT_SOURCE_ORDER.map(async (source) => {
+        try {
+          const sourceCall = sourceCalls[source];
+          if (!sourceCall) {
+            return { source, ok: false as const, error: "method_not_supported" };
+          }
+          const payload = await sourceCall;
+          return { source, ok: true as const, payload };
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          return { source, ok: false as const, error: msg };
+        }
+      })
+    );
+
+    const sources: Record<string, unknown> = {};
+    const errors: Record<string, string> = {};
+    for (const entry of entries) {
+      if (entry.ok) {
+        sources[entry.source] = limitSnapshotValue(entry.payload);
+      } else {
+        errors[entry.source] = entry.error;
+      }
+    }
+
+    return {
+      collectedAtMs: Date.now(),
+      runId: input.runId,
+      sessionKey: input.sessionKey,
+      sources,
+      errors,
+      summary: summarizeSnapshotSources(sources),
+    };
+  }
 }
 
 function readString(source: Record<string, unknown>, key: string): string | undefined {
@@ -521,6 +661,17 @@ function summarizeUsageForDebug(usageMeta: unknown): {
   };
 }
 
+function summarizeUsageSnapshotForDebug(snapshot: OpenclawUsageSnapshot): Record<string, unknown> {
+  const summary = snapshot.summary;
+  return {
+    sourceCount: Object.keys(snapshot.sources).length,
+    errorCount: Object.keys(snapshot.errors).length,
+    sourceKeys: Object.keys(snapshot.sources),
+    errorKeys: Object.keys(snapshot.errors),
+    summaryKeys: isPlainObject(summary) ? Object.keys(summary).slice(0, 20) : [],
+  };
+}
+
 function extractModelFromFinalEvent(evt: ChatEvent): string | undefined {
   if (evt.usage && typeof evt.usage === "object" && (evt.usage as { constructor?: unknown }).constructor === Object) {
     const usage = evt.usage as Record<string, unknown>;
@@ -541,6 +692,103 @@ function extractModelFromFinalEvent(evt: ChatEvent): string | undefined {
     );
   }
   return undefined;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { constructor?: unknown }).constructor === Object
+  );
+}
+
+function limitSnapshotValue(value: unknown, depth = 0): unknown {
+  if (depth >= 4) return "<max_depth>";
+  if (typeof value === "string") {
+    return value.length > 2000 ? `${value.slice(0, 2000)}...` : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
+  if (Array.isArray(value)) {
+    const trimmed = value.slice(0, 40).map((item) => limitSnapshotValue(item, depth + 1));
+    return value.length > 40 ? [...trimmed, "<truncated_array>"] : trimmed;
+  }
+  if (isPlainObject(value)) {
+    const out: Record<string, unknown> = {};
+    const entries = Object.entries(value);
+    for (const [key, item] of entries.slice(0, 40)) {
+      out[key] = limitSnapshotValue(item, depth + 1);
+    }
+    if (entries.length > 40) {
+      out.__truncated_keys = entries.length - 40;
+    }
+    return out;
+  }
+  return Object.prototype.toString.call(value);
+}
+
+function extractLastAssistantHistoryUsage(chatHistory: unknown): Record<string, unknown> | null {
+  if (!isPlainObject(chatHistory)) return null;
+  const messages = chatHistory.messages;
+  if (!Array.isArray(messages)) return null;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message: unknown = messages[i];
+    if (!isPlainObject(message)) continue;
+    if (message.role !== "assistant") continue;
+    const usage = message.usage;
+    if (isPlainObject(usage)) return usage;
+  }
+  return null;
+}
+
+function extractLatestAssistantLog(logsPayload: unknown): Record<string, unknown> | null {
+  if (!isPlainObject(logsPayload)) return null;
+  const logs = logsPayload.logs;
+  if (!Array.isArray(logs)) return null;
+  for (let i = logs.length - 1; i >= 0; i -= 1) {
+    const row: unknown = logs[i];
+    if (!isPlainObject(row)) continue;
+    if (row.role !== "assistant") continue;
+    return row;
+  }
+  return null;
+}
+
+function summarizeSnapshotSources(sources: Record<string, unknown>): Record<string, unknown> {
+  const summary: Record<string, unknown> = {};
+
+  const usageStatus = sources.usageStatus;
+  if (isPlainObject(usageStatus) && Array.isArray(usageStatus.providers)) {
+    summary.providers = usageStatus.providers
+      .slice(0, 20)
+      .map((p) => (isPlainObject(p) ? { provider: p.provider ?? null, displayName: p.displayName ?? null } : null))
+      .filter((p) => p !== null);
+  }
+
+  const usageCost = sources.usageCost;
+  if (isPlainObject(usageCost) && isPlainObject(usageCost.totals)) {
+    summary.usageCostTotals = usageCost.totals;
+  }
+
+  const sessionsUsage = sources.sessionsUsage;
+  if (isPlainObject(sessionsUsage) && isPlainObject(sessionsUsage.totals)) {
+    summary.sessionsUsageTotals = sessionsUsage.totals;
+  }
+
+  const latestLog = extractLatestAssistantLog(sources.sessionsUsageLogs);
+  if (latestLog) {
+    summary.latestAssistantLog = {
+      timestamp: latestLog.timestamp ?? null,
+      tokens: latestLog.tokens ?? null,
+      cost: latestLog.cost ?? null,
+    };
+  }
+
+  const historyUsage = extractLastAssistantHistoryUsage(sources.chatHistory);
+  if (historyUsage) {
+    summary.lastAssistantHistoryUsage = historyUsage;
+  }
+
+  return summary;
 }
 
 function composeMessageWithUploadedFiles(messageText: string, uploadedPaths: string[]): string {

@@ -40,6 +40,19 @@ export type GatewayClientOptions = {
   devLogGatewayFrames?: boolean;
 };
 
+export type GatewayUsageCostParams = {
+  days?: number;
+  startDate?: string;
+  endDate?: string;
+};
+
+export type GatewaySessionsUsageParams = {
+  key?: string;
+  limit?: number;
+  startDate?: string;
+  endDate?: string;
+};
+
 function makeTextPreview(text: string, maxLen: number): string {
   const normalized = String(text).replace(/\s+/g, " ").trim();
   const n = Math.max(0, Math.min(5000, Math.trunc(maxLen)));
@@ -206,6 +219,26 @@ export class GatewayClient {
 
   getHello(): HelloOk | null {
     return this.hello;
+  }
+
+  async getUsageStatus(): Promise<unknown> {
+    return this.request("usage.status");
+  }
+
+  async getUsageCost(params?: GatewayUsageCostParams): Promise<unknown> {
+    return this.request("usage.cost", params ?? {});
+  }
+
+  async getSessionsUsage(params: GatewaySessionsUsageParams): Promise<unknown> {
+    return this.request("sessions.usage", params);
+  }
+
+  async getSessionsUsageLogs(params: { key: string; limit?: number }): Promise<unknown> {
+    return this.request("sessions.usage.logs", params);
+  }
+
+  async getChatHistory(params: { sessionKey: string; limit?: number }): Promise<unknown> {
+    return this.request("chat.history", params);
   }
 
   async request(method: string, params?: unknown): Promise<unknown> {
