@@ -48,6 +48,13 @@ type ParsedInjectedStreamError = {
   message?: string;
 };
 
+type OpenclawChatMeta = {
+  method: string;
+  runId?: string;
+  usage?: unknown;
+  model?: string;
+};
+
 function tryParseInjectedStreamJsonError(text: string): ParsedInjectedStreamError | null {
   if (!text.includes("JSON error injected into SSE stream")) {
     return null;
@@ -189,7 +196,7 @@ export class ChatRunner {
     messageText: string;
     media?: TaskMedia[];
     timeoutMs: number;
-  }): Promise<{ result: ChatRunResult; openclawMeta: { method: string; runId?: string } }> {
+  }): Promise<{ result: ChatRunResult; openclawMeta: OpenclawChatMeta }> {
     const baseMessageText = await this.resolveMessageText(input);
     const uploadedPaths = await saveUploadedFiles({ media: input.media });
     const messageText = composeMessageWithUploadedFiles(baseMessageText, uploadedPaths);
@@ -264,6 +271,8 @@ export class ChatRunner {
           logger.debug({ taskId: input.taskId, runId, attempt }, "Relay waiting for chat final event");
         }
         const finalEvt = await this.waitForFinal(runId, remainingMs);
+        const usageMeta = finalEvt.usage;
+        const modelMeta = extractModelFromFinalEvent(finalEvt);
         if (finalEvt.state === "final") {
           if (finalEvt.message !== undefined) {
             if (this.devLogEnabled) {
@@ -287,7 +296,12 @@ export class ChatRunner {
                   ...(media.length > 0 ? { media } : {}),
                 },
               },
-              openclawMeta: { method: "chat.send", runId },
+              openclawMeta: {
+                method: "chat.send",
+                runId,
+                ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
+                ...(modelMeta ? { model: modelMeta } : {}),
+              },
             };
           }
           if (this.devLogEnabled) {
@@ -295,7 +309,12 @@ export class ChatRunner {
           }
           return {
             result: { outcome: "no_reply", noReply: { runId } },
-            openclawMeta: { method: "chat.send", runId },
+            openclawMeta: {
+              method: "chat.send",
+              runId,
+              ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
+              ...(modelMeta ? { model: modelMeta } : {}),
+            },
           };
         }
         if (finalEvt.state === "aborted") {
@@ -304,7 +323,12 @@ export class ChatRunner {
           }
           return {
             result: { outcome: "error", error: { code: "ABORTED", message: "Chat aborted", runId } },
-            openclawMeta: { method: "chat.send", runId },
+            openclawMeta: {
+              method: "chat.send",
+              runId,
+              ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
+              ...(modelMeta ? { model: modelMeta } : {}),
+            },
           };
         }
 
@@ -337,7 +361,12 @@ export class ChatRunner {
               outcome: "error",
               error: { code: "GATEWAY_ERROR", message: gatewayErrorMessage, runId },
             },
-            openclawMeta: { method: "chat.send", runId },
+            openclawMeta: {
+              method: "chat.send",
+              runId,
+              ...(usageMeta !== undefined ? { usage: usageMeta } : {}),
+              ...(modelMeta ? { model: modelMeta } : {}),
+            },
           };
         }
         await sleep(backoffMs);
@@ -412,6 +441,35 @@ export class ChatRunner {
       this.waitersByRunId.set(runId, { resolve, reject, timeout });
     });
   }
+}
+
+function readString(source: Record<string, unknown>, key: string): string | undefined {
+  const raw = source[key];
+  if (typeof raw !== "string") return undefined;
+  const next = raw.trim();
+  return next.length > 0 ? next : undefined;
+}
+
+function extractModelFromFinalEvent(evt: ChatEvent): string | undefined {
+  if (evt.usage && typeof evt.usage === "object" && (evt.usage as { constructor?: unknown }).constructor === Object) {
+    const usage = evt.usage as Record<string, unknown>;
+    return (
+      readString(usage, "model") ??
+      readString(usage, "modelId") ??
+      readString(usage, "providerModel") ??
+      readString(usage, "llmModel")
+    );
+  }
+  if (evt.message && typeof evt.message === "object" && (evt.message as { constructor?: unknown }).constructor === Object) {
+    const message = evt.message as Record<string, unknown>;
+    return (
+      readString(message, "model") ??
+      readString(message, "modelId") ??
+      readString(message, "providerModel") ??
+      readString(message, "llmModel")
+    );
+  }
+  return undefined;
 }
 
 function composeMessageWithUploadedFiles(messageText: string, uploadedPaths: string[]): string {

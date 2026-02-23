@@ -52,7 +52,14 @@ describe("ChatRunner", () => {
               JSON.stringify({
                 type: "event",
                 event: "chat",
-                payload: { runId, sessionKey, seq: 1, state: "final", message: { text: "ok" } },
+                payload: {
+                  runId,
+                  sessionKey,
+                  seq: 1,
+                  state: "final",
+                  message: { text: "ok" },
+                  usage: { inputTokens: 120, outputTokens: 30, model: "moonshot/kimi-k2.5" },
+                },
               })
             );
           }, 10);
@@ -69,13 +76,19 @@ describe("ChatRunner", () => {
     runner = new ChatRunner(client);
 
     await client.start();
-    const { result } = await runner.runChatTask({
+    const { result, openclawMeta } = await runner.runChatTask({
       taskId: "task_1",
       sessionKey: "s1",
       messageText: "hi",
       timeoutMs: 1000,
     });
     expect(result.outcome).toBe("reply");
+    expect(openclawMeta).toMatchObject({
+      method: "chat.send",
+      runId: "run_1",
+      model: "moonshot/kimi-k2.5",
+      usage: { inputTokens: 120, outputTokens: 30, model: "moonshot/kimi-k2.5" },
+    });
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
