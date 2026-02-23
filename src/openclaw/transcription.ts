@@ -7,6 +7,15 @@ export type AudioTaskMedia = {
   fileName?: string;
 };
 
+export type FileTaskMedia = {
+  type: "file";
+  dataB64: string;
+  contentType: string;
+  fileName?: string;
+};
+
+export type TaskMedia = AudioTaskMedia | FileTaskMedia;
+
 export async function transcribeAudioWithDeepgram(input: {
   media: AudioTaskMedia;
   apiKey: string;

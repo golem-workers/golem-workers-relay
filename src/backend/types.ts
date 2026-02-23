@@ -12,12 +12,20 @@ const chatTaskInputSchema = z.object({
   messageText: z.string().min(1),
   media: z
     .array(
-      z.object({
-        type: z.literal("audio"),
-        dataB64: z.string().min(1),
-        contentType: z.string().min(1),
-        fileName: z.string().min(1).optional(),
-      })
+      z.discriminatedUnion("type", [
+        z.object({
+          type: z.literal("audio"),
+          dataB64: z.string().min(1),
+          contentType: z.string().min(1),
+          fileName: z.string().min(1).optional(),
+        }),
+        z.object({
+          type: z.literal("file"),
+          dataB64: z.string().min(1),
+          contentType: z.string().min(1),
+          fileName: z.string().min(1).optional(),
+        }),
+      ])
     )
     .optional(),
   context: z.unknown().optional(),

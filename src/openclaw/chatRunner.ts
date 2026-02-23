@@ -2,11 +2,13 @@ import { GatewayClient } from "./gatewayClient.js";
 import { type ChatEvent, chatEventSchema, type EventFrame } from "./protocol.js";
 import { logger } from "../logger.js";
 import { collectTranscriptMedia, type TranscriptMediaFile } from "./mediaDirectives.js";
+import { saveUploadedFiles } from "./fileUploads.js";
 import {
   composeMessageWithTranscript,
   logTranscriptionFailure,
   transcribeAudioWithDeepgram,
   type AudioTaskMedia,
+  type TaskMedia,
 } from "./transcription.js";
 
 export type ChatRunResult =
@@ -185,10 +187,12 @@ export class ChatRunner {
     taskId: string;
     sessionKey: string;
     messageText: string;
-    media?: AudioTaskMedia[];
+    media?: TaskMedia[];
     timeoutMs: number;
   }): Promise<{ result: ChatRunResult; openclawMeta: { method: string; runId?: string } }> {
-    const messageText = await this.resolveMessageText(input);
+    const baseMessageText = await this.resolveMessageText(input);
+    const uploadedPaths = await saveUploadedFiles({ media: input.media });
+    const messageText = composeMessageWithUploadedFiles(baseMessageText, uploadedPaths);
     const startedAtMs = Date.now();
     if (this.devLogEnabled) {
       logger.debug(
@@ -378,9 +382,9 @@ export class ChatRunner {
   private async resolveMessageText(input: {
     taskId: string;
     messageText: string;
-    media?: AudioTaskMedia[];
+    media?: TaskMedia[];
   }): Promise<string> {
-    const media = input.media?.find((item) => item.type === "audio");
+    const media = input.media?.find((item): item is AudioTaskMedia => item.type === "audio");
     if (!media) return input.messageText;
     const apiKey = this.transcription.apiKey?.trim();
     if (!apiKey) return input.messageText;
@@ -408,6 +412,13 @@ export class ChatRunner {
       this.waitersByRunId.set(runId, { resolve, reject, timeout });
     });
   }
+}
+
+function composeMessageWithUploadedFiles(messageText: string, uploadedPaths: string[]): string {
+  if (!Array.isArray(uploadedPaths) || uploadedPaths.length === 0) return messageText;
+  const suffix = uploadedPaths.map((filePath) => `File uploaded to: ${filePath}`).join("\n");
+  const text = messageText.trim();
+  return text ? `${text}\n${suffix}` : suffix;
 }
 
 function extractRunId(payload: unknown): string | null {

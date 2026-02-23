@@ -232,6 +232,7 @@ async function main(): Promise<void> {
     path: cfg.pushPath,
     relayToken: cfg.relayToken,
     onMessage: async (message) => {
+      await Promise.resolve();
       queue.push(message);
       pump();
     },

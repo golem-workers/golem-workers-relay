@@ -378,6 +378,96 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("stores uploaded files, appends file paths, and rotates old files", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-uploads-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    const uploadsDir = path.join(stateDir, "workspace", "files");
+    await fs.mkdir(uploadsDir, { recursive: true });
+
+    const oldFilePath = path.join(uploadsDir, "old-file.txt");
+    await fs.writeFile(oldFilePath, "old", "utf8");
+    const oldDate = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+    await fs.utimes(oldFilePath, oldDate, oldDate);
+
+    let sentMessage = "";
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: { type: "hello-ok", protocol: 3, policy: { tickIntervalMs: 5000 } },
+            }),
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          const params = (frame.params ?? {}) as Record<string, unknown>;
+          sentMessage = typeof params.message === "string" ? params.message : "";
+          const runId = "run_file_upload";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: { runId, sessionKey: "s-files", seq: 1, state: "final", message: { text: "ok" } },
+              }),
+            );
+          }, 10);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "task_file_upload",
+      sessionKey: "s-files",
+      messageText: "Process uploaded files",
+      media: [
+        {
+          type: "file",
+          dataB64: Buffer.from("first-file", "utf8").toString("base64"),
+          contentType: "text/plain",
+          fileName: "first.txt",
+        },
+        {
+          type: "file",
+          dataB64: Buffer.from("second-file", "utf8").toString("base64"),
+          contentType: "text/plain",
+          fileName: "second.txt",
+        },
+      ],
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("reply");
+
+    const uploadedEntries = await fs.readdir(uploadsDir);
+    expect(uploadedEntries.some((name) => name.includes("old-file.txt"))).toBe(false);
+    expect(uploadedEntries.filter((name) => name.endsWith("-first.txt")).length).toBe(1);
+    expect(uploadedEntries.filter((name) => name.endsWith("-second.txt")).length).toBe(1);
+    const uploadedLines = sentMessage.split("\n").filter((line) => line.startsWith("File uploaded to: "));
+    expect(uploadedLines).toHaveLength(2);
+    expect(uploadedLines[0]).toContain(path.join("workspace", "files"));
+    expect(uploadedLines[1]).toContain(path.join("workspace", "files"));
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("attaches transcript MEDIA files as base64", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
