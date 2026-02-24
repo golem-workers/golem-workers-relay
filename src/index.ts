@@ -142,6 +142,19 @@ async function main(): Promise<void> {
             openclawMeta: { method: "connect", backendMessageId: msg.messageId },
           },
         });
+      } else if (msg.input.kind === "session_reset_all") {
+        const reset = await runner.resetAllSessions()
+        const finishedAtMs = Date.now()
+        await backend.submitInboundMessage({
+          body: {
+            relayInstanceId: cfg.relayInstanceId,
+            relayMessageId,
+            finishedAtMs,
+            outcome: "reply",
+            reply: reset,
+            openclawMeta: { method: "session_reset_all", backendMessageId: msg.messageId },
+          },
+        })
       } else {
         const { result, openclawMeta } = await runner.runChatTask({
           taskId: msg.messageId,

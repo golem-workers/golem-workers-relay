@@ -1,5 +1,8 @@
 import { GatewayClient } from "./gatewayClient.js";
 import { type ChatEvent, chatEventSchema, type EventFrame } from "./protocol.js";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { logger } from "../logger.js";
 import { collectTranscriptMedia, type TranscriptMediaFile } from "./mediaDirectives.js";
 import { saveUploadedFiles } from "./fileUploads.js";
@@ -163,6 +166,8 @@ async function sleep(ms: number): Promise<void> {
 
 export class ChatRunner {
   private waitersByRunId = new Map<string, Waiter>();
+  private runSessionByRunId = new Map<string, string>();
+  private sessionMaintenanceLock: Promise<void> | null = null;
   private readonly devLogEnabled: boolean;
   private readonly devLogTextMaxLen: number;
   private readonly retry: ChatRetryOptions;
@@ -221,6 +226,7 @@ export class ChatRunner {
     if (!waiter) return;
     clearTimeout(waiter.timeout);
     this.waitersByRunId.delete(chatEvt.runId);
+    this.runSessionByRunId.delete(chatEvt.runId);
     waiter.resolve(chatEvt);
   }
 
@@ -231,6 +237,7 @@ export class ChatRunner {
     media?: TaskMedia[];
     timeoutMs: number;
   }): Promise<{ result: ChatRunResult; openclawMeta: OpenclawChatMeta }> {
+    await this.waitForSessionMaintenance();
     const baseMessageText = await this.resolveMessageText(input);
     const uploadedPaths = await saveUploadedFiles({ media: input.media });
     const messageText = composeMessageWithUploadedFiles(baseMessageText, uploadedPaths);
@@ -332,7 +339,9 @@ export class ChatRunner {
         if (this.devLogEnabled) {
           logger.debug({ taskId: input.taskId, runId, attempt }, "Relay waiting for chat final event");
         }
+        this.runSessionByRunId.set(runId, input.sessionKey);
         const finalEvt = await this.waitForFinal(runId, remainingMs);
+        this.runSessionByRunId.delete(runId);
         const usageOutgoing = await this.collectSessionsUsageStats({
           timeoutMs: Math.min(2_000, Math.max(400, remainingMs - 200)),
           allowWhenMethodsMissing: true,
@@ -481,6 +490,7 @@ export class ChatRunner {
           }
         }
 
+        this.runSessionByRunId.delete(runId);
         const msg = err instanceof Error ? err.message : "Timed out waiting for final";
         const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
         const elapsedMs = Date.now() - startedAtMs;
@@ -508,6 +518,29 @@ export class ChatRunner {
         ...(usageIncoming ? { usageIncoming } : {}),
       },
     };
+  }
+
+  async resetAllSessions(): Promise<{ reset: true; deletedTranscriptFiles: number }> {
+    return this.withSessionMaintenanceLock(async () => {
+      // Best-effort: abort active runs so we don't keep writing into deleted session files.
+      const abortTargets = Array.from(this.runSessionByRunId.entries());
+      for (const [runId, sessionKey] of abortTargets) {
+        await this.gateway.request("chat.abort", { sessionKey, runId }).catch(() => undefined);
+      }
+
+      const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || path.join(os.homedir(), ".openclaw");
+      const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+      await fs.mkdir(sessionsDir, { recursive: true });
+      const entries = await fs.readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
+      let deletedTranscriptFiles = 0;
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+        await fs.unlink(path.join(sessionsDir, entry.name)).catch(() => undefined);
+        deletedTranscriptFiles += 1;
+      }
+      await fs.writeFile(path.join(sessionsDir, "sessions.json"), "{}\n", "utf8");
+      return { reset: true as const, deletedTranscriptFiles };
+    });
   }
 
   private async resolveMessageText(input: {
@@ -538,10 +571,32 @@ export class ChatRunner {
     return new Promise<ChatEvent>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.waitersByRunId.delete(runId);
+        this.runSessionByRunId.delete(runId);
         reject(new Error("Timed out waiting for final"));
       }, timeoutMs);
       this.waitersByRunId.set(runId, { resolve, reject, timeout });
     });
+  }
+
+  private async waitForSessionMaintenance(): Promise<void> {
+    if (!this.sessionMaintenanceLock) return;
+    await this.sessionMaintenanceLock;
+  }
+
+  private async withSessionMaintenanceLock<T>(fn: () => Promise<T>): Promise<T> {
+    while (this.sessionMaintenanceLock) {
+      await this.sessionMaintenanceLock;
+    }
+    let release!: () => void;
+    this.sessionMaintenanceLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    try {
+      return await fn();
+    } finally {
+      this.sessionMaintenanceLock = null;
+      release();
+    }
   }
 
   private async collectSessionsUsageStats(input: {

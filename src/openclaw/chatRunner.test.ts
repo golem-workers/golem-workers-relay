@@ -987,6 +987,52 @@ describe("ChatRunner", () => {
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
   });
+
+  it("resetAllSessions clears sessions map and transcript files", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-reset-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    await fs.writeFile(path.join(sessionsDir, "sessions.json"), '{"agent:main:s1":{"sessionFile":"a.jsonl"}}\n', "utf8");
+    await fs.writeFile(path.join(sessionsDir, "a.jsonl"), '{"event":"x"}\n', "utf8");
+    await fs.writeFile(path.join(sessionsDir, "b.jsonl"), '{"event":"y"}\n', "utf8");
+
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string };
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+              },
+            })
+          );
+        }
+      });
+    });
+
+    const client = new GatewayClient({ url: `ws://127.0.0.1:${port}`, token: "t" });
+    const runner = new ChatRunner(client);
+    await client.start();
+    const result = await runner.resetAllSessions();
+
+    expect(result).toMatchObject({ reset: true, deletedTranscriptFiles: 2 });
+    await expect(fs.access(path.join(sessionsDir, "a.jsonl"))).rejects.toBeDefined();
+    await expect(fs.access(path.join(sessionsDir, "b.jsonl"))).rejects.toBeDefined();
+    const mapAfter = await fs.readFile(path.join(sessionsDir, "sessions.json"), "utf8");
+    expect(mapAfter).toBe("{}\n");
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
 });
 
 function rawDataToString(data: unknown): string {

@@ -36,6 +36,10 @@ const handshakeTaskInputSchema = z.object({
   nonce: z.string().min(1),
 });
 
+const sessionResetAllTaskInputSchema = z.object({
+  kind: z.literal("session_reset_all"),
+});
+
 export const taskInputSchema = z.preprocess((value) => {
   // Back-compat: older backends send `{ sessionKey, messageText }` without a `kind`.
   if (value && typeof value === "object" && (value as { constructor?: unknown }).constructor === Object) {
@@ -45,7 +49,7 @@ export const taskInputSchema = z.preprocess((value) => {
     }
   }
   return value;
-}, z.discriminatedUnion("kind", [chatTaskInputSchema, handshakeTaskInputSchema]));
+}, z.discriminatedUnion("kind", [chatTaskInputSchema, handshakeTaskInputSchema, sessionResetAllTaskInputSchema]));
 
 export const leasedTaskSchema = z.object({
   taskId: z.string().min(1),
