@@ -988,20 +988,25 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("resetAllSessions clears sessions map and transcript files", async () => {
+  it("startNewSessionForAll sends /new to known sessions and preserves files", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-reset-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
-    await fs.writeFile(path.join(sessionsDir, "sessions.json"), '{"agent:main:s1":{"sessionFile":"a.jsonl"}}\n', "utf8");
+    await fs.writeFile(
+      path.join(sessionsDir, "sessions.json"),
+      '{"agent:main:s1":{"sessionFile":"a.jsonl"},"agent:main:s2":{"sessionFile":"b.jsonl"}}\n',
+      "utf8"
+    );
     await fs.writeFile(path.join(sessionsDir, "a.jsonl"), '{"event":"x"}\n', "utf8");
     await fs.writeFile(path.join(sessionsDir, "b.jsonl"), '{"event":"y"}\n', "utf8");
+    const sentSessionKeys: string[] = [];
 
     const { wss, port } = startServer((ws) => {
       ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
       ws.on("message", (data) => {
         const text = rawDataToString(data);
-        const frame = JSON.parse(text) as { type: string; id: string; method: string };
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
         if (frame.type === "req" && frame.method === "connect") {
           ws.send(
             JSON.stringify({
@@ -1015,20 +1020,50 @@ describe("ChatRunner", () => {
               },
             })
           );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          const params = (frame.params ?? {}) as Record<string, unknown>;
+          const sessionKey = typeof params.sessionKey === "string" ? params.sessionKey : "unknown";
+          sentSessionKeys.push(sessionKey);
+          const runId = `run_reset_${sessionKey}`;
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: {
+                  runId,
+                  sessionKey,
+                  seq: 1,
+                  state: "final",
+                  message: { text: "started new session" },
+                },
+              })
+            );
+          }, 5);
         }
       });
     });
 
-    const client = new GatewayClient({ url: `ws://127.0.0.1:${port}`, token: "t" });
-    const runner = new ChatRunner(client);
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
     await client.start();
-    const result = await runner.resetAllSessions();
+    const result = await runner.startNewSessionForAll();
 
-    expect(result).toMatchObject({ reset: true, deletedTranscriptFiles: 2 });
-    await expect(fs.access(path.join(sessionsDir, "a.jsonl"))).rejects.toBeDefined();
-    await expect(fs.access(path.join(sessionsDir, "b.jsonl"))).rejects.toBeDefined();
+    expect(result).toMatchObject({ reset: true, sessionsRotated: 2, sessionsFailed: 0 });
+    expect(sentSessionKeys.sort()).toEqual(["s1", "s2"]);
+    await expect(fs.access(path.join(sessionsDir, "a.jsonl"))).resolves.toBeUndefined();
+    await expect(fs.access(path.join(sessionsDir, "b.jsonl"))).resolves.toBeUndefined();
     const mapAfter = await fs.readFile(path.join(sessionsDir, "sessions.json"), "utf8");
-    expect(mapAfter).toBe("{}\n");
+    expect(mapAfter).toContain('"agent:main:s1"');
+    expect(mapAfter).toContain('"agent:main:s2"');
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));

@@ -164,6 +164,37 @@ async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
+function resolveDefaultStateDir(): string {
+  const env = process.env.OPENCLAW_STATE_DIR?.trim();
+  if (env) return env;
+  return path.join(os.homedir(), ".openclaw");
+}
+
+async function listKnownSessionKeysFromState(): Promise<string[]> {
+  const sessionsMapFile = path.join(resolveDefaultStateDir(), "agents", "main", "sessions", "sessions.json");
+  const raw = await fs.readFile(sessionsMapFile, "utf8").catch(() => "");
+  if (!raw.trim()) return [];
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return [];
+  }
+
+  if (!parsed || typeof parsed !== "object" || (parsed as { constructor?: unknown }).constructor !== Object) {
+    return [];
+  }
+
+  const out: string[] = [];
+  for (const key of Object.keys(parsed as Record<string, unknown>)) {
+    if (!key.startsWith("agent:main:")) continue;
+    const sessionKey = key.slice("agent:main:".length).trim();
+    if (sessionKey) out.push(sessionKey);
+  }
+  return out;
+}
+
 export class ChatRunner {
   private waitersByRunId = new Map<string, Waiter>();
   private runSessionByRunId = new Map<string, string>();
@@ -520,26 +551,50 @@ export class ChatRunner {
     };
   }
 
-  async resetAllSessions(): Promise<{ reset: true; deletedTranscriptFiles: number }> {
+  async startNewSessionForAll(): Promise<{ reset: true; sessionsRotated: number; sessionsFailed: number }> {
     return this.withSessionMaintenanceLock(async () => {
-      // Best-effort: abort active runs so we don't keep writing into deleted session files.
+      // Best-effort: abort active runs before rotating sessions with `/new`.
       const abortTargets = Array.from(this.runSessionByRunId.entries());
       for (const [runId, sessionKey] of abortTargets) {
         await this.gateway.request("chat.abort", { sessionKey, runId }).catch(() => undefined);
       }
 
-      const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || path.join(os.homedir(), ".openclaw");
-      const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
-      await fs.mkdir(sessionsDir, { recursive: true });
-      const entries = await fs.readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
-      let deletedTranscriptFiles = 0;
-      for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
-        await fs.unlink(path.join(sessionsDir, entry.name)).catch(() => undefined);
-        deletedTranscriptFiles += 1;
+      const knownFromState = await listKnownSessionKeysFromState();
+      const knownFromActiveRuns = abortTargets.map(([, sessionKey]) => sessionKey);
+      const sessionKeys = Array.from(new Set([...knownFromState, ...knownFromActiveRuns]));
+
+      let sessionsRotated = 0;
+      let sessionsFailed = 0;
+      for (const sessionKey of sessionKeys) {
+        try {
+          const payload = await this.gateway.request("chat.send", {
+            sessionKey,
+            message: "/new",
+            idempotencyKey: `session_new_${sessionKey}_${Date.now()}`,
+            timeoutMs: 15_000,
+          });
+          const runId = extractRunId(payload);
+          if (!runId) {
+            throw new Error("Gateway did not return runId for /new");
+          }
+          this.runSessionByRunId.set(runId, sessionKey);
+          try {
+            const finalEvt = await this.waitForFinal(runId, 15_000);
+            if (finalEvt.state === "error") {
+              throw new Error(finalEvt.errorMessage ?? "Session rotation failed");
+            }
+            if (finalEvt.state === "aborted") {
+              throw new Error("Session rotation was aborted");
+            }
+            sessionsRotated += 1;
+          } finally {
+            this.runSessionByRunId.delete(runId);
+          }
+        } catch {
+          sessionsFailed += 1;
+        }
       }
-      await fs.writeFile(path.join(sessionsDir, "sessions.json"), "{}\n", "utf8");
-      return { reset: true as const, deletedTranscriptFiles };
+      return { reset: true as const, sessionsRotated, sessionsFailed };
     });
   }
 

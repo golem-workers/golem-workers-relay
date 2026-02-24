@@ -36,8 +36,8 @@ const handshakeTaskInputSchema = z.object({
   nonce: z.string().min(1),
 });
 
-const sessionResetAllTaskInputSchema = z.object({
-  kind: z.literal("session_reset_all"),
+const sessionNewTaskInputSchema = z.object({
+  kind: z.literal("session_new"),
 });
 
 export const taskInputSchema = z.preprocess((value) => {
@@ -49,7 +49,7 @@ export const taskInputSchema = z.preprocess((value) => {
     }
   }
   return value;
-}, z.discriminatedUnion("kind", [chatTaskInputSchema, handshakeTaskInputSchema, sessionResetAllTaskInputSchema]));
+}, z.discriminatedUnion("kind", [chatTaskInputSchema, handshakeTaskInputSchema, sessionNewTaskInputSchema]));
 
 export const leasedTaskSchema = z.object({
   taskId: z.string().min(1),

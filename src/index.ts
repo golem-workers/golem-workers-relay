@@ -142,8 +142,8 @@ async function main(): Promise<void> {
             openclawMeta: { method: "connect", backendMessageId: msg.messageId },
           },
         });
-      } else if (msg.input.kind === "session_reset_all") {
-        const reset = await runner.resetAllSessions()
+      } else if (msg.input.kind === "session_new") {
+        const reset = await runner.startNewSessionForAll()
         const finishedAtMs = Date.now()
         await backend.submitInboundMessage({
           body: {
@@ -152,7 +152,7 @@ async function main(): Promise<void> {
             finishedAtMs,
             outcome: "reply",
             reply: reset,
-            openclawMeta: { method: "session_reset_all", backendMessageId: msg.messageId },
+            openclawMeta: { method: "session_new", backendMessageId: msg.messageId },
           },
         })
       } else {
