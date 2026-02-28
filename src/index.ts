@@ -116,6 +116,7 @@ async function main(): Promise<void> {
         );
       }
 
+      const correlationMessageId = String(msg.messageId);
       if (msg.input.kind === "handshake") {
         await withTimeout(gateway.start(), cfg.taskTimeoutMs, "gateway.start");
         const hello = gateway.getHello();
@@ -139,7 +140,7 @@ async function main(): Promise<void> {
                 : null,
               auth: hello.auth ? { role: hello.auth.role, scopes: hello.auth.scopes } : null,
             },
-            openclawMeta: { method: "connect", backendMessageId: msg.messageId },
+            openclawMeta: { method: "connect", backendMessageId: correlationMessageId },
           },
         });
       } else if (msg.input.kind === "session_new") {
@@ -152,7 +153,7 @@ async function main(): Promise<void> {
             finishedAtMs,
             outcome: "reply",
             reply: reset,
-            openclawMeta: { method: "session_new", backendMessageId: msg.messageId },
+            openclawMeta: { method: "session_new", backendMessageId: correlationMessageId },
           },
         })
       } else {
@@ -172,7 +173,7 @@ async function main(): Promise<void> {
               finishedAtMs,
               outcome: "reply",
               reply: buildReplyPayload(result.reply),
-              openclawMeta: { ...((openclawMeta as Record<string, unknown>) ?? {}), backendMessageId: msg.messageId },
+              openclawMeta: { ...((openclawMeta as Record<string, unknown>) ?? {}), backendMessageId: correlationMessageId },
             },
           });
         } else if (result.outcome === "no_reply") {
@@ -183,7 +184,7 @@ async function main(): Promise<void> {
               finishedAtMs,
               outcome: "no_reply",
               noReply: result.noReply ?? { reason: "no_message" },
-              openclawMeta: { ...((openclawMeta as Record<string, unknown>) ?? {}), backendMessageId: msg.messageId },
+              openclawMeta: { ...((openclawMeta as Record<string, unknown>) ?? {}), backendMessageId: correlationMessageId },
             },
           });
         } else {
@@ -194,7 +195,7 @@ async function main(): Promise<void> {
               finishedAtMs,
               outcome: "error",
               error: result.error,
-              openclawMeta: { ...((openclawMeta as Record<string, unknown>) ?? {}), backendMessageId: msg.messageId },
+              openclawMeta: { ...((openclawMeta as Record<string, unknown>) ?? {}), backendMessageId: correlationMessageId },
             },
           });
         }
@@ -215,7 +216,7 @@ async function main(): Promise<void> {
             finishedAtMs,
             outcome: "error",
             error: { code: "RELAY_INTERNAL_ERROR", message: "Relay failed to process message" },
-            openclawMeta: { method: "relay", backendMessageId: msg.messageId },
+            openclawMeta: { method: "relay" },
           },
         });
       } catch (submitErr) {
