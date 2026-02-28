@@ -1,15 +1,9 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { type FileTaskMedia, type TaskMedia } from "./transcription.js";
+import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 
 const FILE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-
-function resolveOpenclawStateDir(env: NodeJS.ProcessEnv = process.env): string {
-  const override = env.OPENCLAW_STATE_DIR?.trim();
-  if (override) return path.resolve(override);
-  return path.join(os.homedir(), ".openclaw");
-}
 
 function resolveUploadsDir(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(resolveOpenclawStateDir(env), "workspace", "files");

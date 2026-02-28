@@ -21,6 +21,9 @@ const envSchema = z.object({
   RELAY_CONCURRENCY: z.coerce.number().int().min(1).max(20).optional(),
   RELAY_PUSH_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_PUSH_PATH: z.string().min(1).optional(),
+  RELAY_PUSH_RATE_LIMIT_PER_SEC: z.coerce.number().int().min(1).max(100_000).optional(),
+  RELAY_PUSH_MAX_CONCURRENT_REQUESTS: z.coerce.number().int().min(1).max(10_000).optional(),
+  RELAY_PUSH_MAX_QUEUE: z.coerce.number().int().min(1).max(1_000_000).optional(),
 
   // Dev logging (hard-disabled in production).
   RELAY_DEV_LOG: z.coerce.boolean().optional(),
@@ -55,6 +58,9 @@ export type RelayConfig = {
   concurrency: number;
   pushPort: number;
   pushPath: string;
+  pushRateLimitPerSecond: number;
+  pushMaxConcurrentRequests: number;
+  pushMaxQueue: number;
   devLogEnabled: boolean;
   devLogForce: boolean;
   devLogTextMaxLen: number;
@@ -99,6 +105,9 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     concurrency: parsed.RELAY_CONCURRENCY ?? 1,
     pushPort: parsed.RELAY_PUSH_PORT ?? 18790,
     pushPath: parsed.RELAY_PUSH_PATH ?? "/relay/messages",
+    pushRateLimitPerSecond: parsed.RELAY_PUSH_RATE_LIMIT_PER_SEC ?? 100,
+    pushMaxConcurrentRequests: parsed.RELAY_PUSH_MAX_CONCURRENT_REQUESTS ?? 100,
+    pushMaxQueue: parsed.RELAY_PUSH_MAX_QUEUE ?? 2000,
     devLogEnabled,
     devLogForce,
     devLogTextMaxLen,
@@ -134,6 +143,9 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     concurrency: 1,
     pushPort: 18790,
     pushPath: "/relay/messages",
+    pushRateLimitPerSecond: 100,
+    pushMaxConcurrentRequests: 100,
+    pushMaxQueue: 2000,
     devLogEnabled: false,
     devLogForce: false,
     devLogTextMaxLen: 200,

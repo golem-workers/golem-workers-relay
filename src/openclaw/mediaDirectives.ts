@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 
 export type TranscriptMediaFile = {
   /** The MEDIA: path as found in the transcript (relative). */
@@ -17,10 +18,7 @@ export type CollectTranscriptMediaOpts = {
 };
 
 function resolveDefaultStateDir(): string {
-  const env = process.env.OPENCLAW_STATE_DIR?.trim();
-  if (env) return env;
-  // OpenClaw defaults to ~/.openclaw; on the agent server we run as root.
-  return path.join(process.env.HOME || "/root", ".openclaw");
+  return resolveOpenclawStateDir(process.env);
 }
 
 function resolveStatePaths(stateDir: string) {

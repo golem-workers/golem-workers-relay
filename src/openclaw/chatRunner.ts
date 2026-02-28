@@ -1,11 +1,13 @@
 import { GatewayClient } from "./gatewayClient.js";
 import { type ChatEvent, chatEventSchema, type EventFrame } from "./protocol.js";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { logger } from "../logger.js";
 import { collectTranscriptMedia, type TranscriptMediaFile } from "./mediaDirectives.js";
 import { saveUploadedFiles } from "./fileUploads.js";
+import { makeTextPreview } from "../common/utils/text.js";
+import { resolveOpenclawStateDir } from "../common/utils/paths.js";
+import { computeBackoffMs, sleep } from "../common/resilience/backoff.js";
 import {
   composeMessageWithTranscript,
   logTranscriptionFailure,
@@ -36,14 +38,6 @@ type Waiter = {
   reject: (err: Error) => void;
   timeout: NodeJS.Timeout;
 };
-
-function makeTextPreview(text: string, maxLen: number): string {
-  const normalized = String(text).replace(/\s+/g, " ").trim();
-  const n = Math.max(0, Math.min(5000, Math.trunc(maxLen)));
-  if (n === 0 || normalized.length === 0) return "";
-  if (normalized.length <= n) return normalized;
-  return `${normalized.slice(0, n)}...`;
-}
 
 type ParsedInjectedStreamError = {
   code?: number;
@@ -153,21 +147,8 @@ function classifyRetryableGatewayError(message: string): {
   return { retryable: false, reason: "non_retryable" };
 }
 
-function computeBackoffMs(schedule: number[], attemptIndex: number, jitterMs: number): number {
-  const base = schedule[Math.max(0, Math.min(schedule.length - 1, attemptIndex))] ?? 0;
-  const jitter = jitterMs > 0 ? Math.floor(Math.random() * jitterMs) : 0;
-  return Math.max(0, Math.trunc(base) + jitter);
-}
-
-async function sleep(ms: number): Promise<void> {
-  if (ms <= 0) return;
-  await new Promise<void>((resolve) => setTimeout(resolve, ms));
-}
-
 function resolveDefaultStateDir(): string {
-  const env = process.env.OPENCLAW_STATE_DIR?.trim();
-  if (env) return env;
-  return path.join(os.homedir(), ".openclaw");
+  return resolveOpenclawStateDir(process.env);
 }
 
 async function listKnownSessionKeysFromState(): Promise<string[]> {

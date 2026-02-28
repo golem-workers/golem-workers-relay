@@ -1,4 +1,6 @@
 import { logger } from "../logger.js";
+import { retryWithBackoff } from "../common/resilience/retry.js";
+import { CircuitBreaker, CircuitBreakerOpenError } from "../common/resilience/circuitBreaker.js";
 import {
   type PullResponse,
   pullResponseSchema,
@@ -14,10 +16,28 @@ export type BackendClientOptions = {
   baseUrl: string;
   relayToken: string;
   devLogEnabled?: boolean;
+  circuitBreaker?: {
+    pullFailureThreshold?: number;
+    pullOpenForMs?: number;
+    writeFailureThreshold?: number;
+    writeOpenForMs?: number;
+  };
 };
 
 export class BackendClient {
-  constructor(private readonly opts: BackendClientOptions) {}
+  private readonly pullBreaker: CircuitBreaker;
+  private readonly writeBreaker: CircuitBreaker;
+
+  constructor(private readonly opts: BackendClientOptions) {
+    this.pullBreaker = new CircuitBreaker({
+      failureThreshold: opts.circuitBreaker?.pullFailureThreshold ?? 5,
+      openForMs: opts.circuitBreaker?.pullOpenForMs ?? 5_000,
+    });
+    this.writeBreaker = new CircuitBreaker({
+      failureThreshold: opts.circuitBreaker?.writeFailureThreshold ?? 8,
+      openForMs: opts.circuitBreaker?.writeOpenForMs ?? 5_000,
+    });
+  }
 
   async pull(input: { relayInstanceId: string; maxTasks: number; waitSeconds: number }): Promise<PullResponse> {
     const url = `${this.opts.baseUrl}/api/v1/relays/pull`;
@@ -32,31 +52,51 @@ export class BackendClient {
     if (this.opts.devLogEnabled) {
       logger.debug({ url, ...input, timeoutMs }, "Backend pull request");
     }
-    let res: unknown;
+    let parsed: PullResponse;
     try {
-      res = await retry(
-        () => postJson(url, this.opts.relayToken, input, timeoutMs),
-        { attempts: 3, minDelayMs: 500, maxDelayMs: 5000, label: "pull" }
-      );
-    } catch (err) {
-      const nonJson = asNonJsonError(err);
-      const status = nonJson?.status;
-      // Keep relay loop alive when upstream sends unexpected text/HTML with 2xx.
-      if (nonJson && status !== undefined && status >= 200 && status <= 299) {
-        logger.warn(
-          {
-            url,
-            status,
-            contentType: nonJson.contentType,
-            bodyPreview: nonJson.bodyPreview,
-          },
-          "Backend pull returned non-JSON 2xx response; treating as empty task batch"
-        );
+      parsed = await this.pullBreaker.execute(async () => {
+        let res: unknown;
+        try {
+          res = await retryWithBackoff(
+            () => postJson(url, this.opts.relayToken, input, timeoutMs),
+            {
+              attempts: 3,
+              baseDelayMs: [500, 900, 1500, 2500, 5000],
+              jitterMs: 250,
+              shouldRetry: (err) => isRetryableBackendError(err),
+              onRetry: ({ error, attempt, sleepMs }) => {
+                const status = error instanceof Error ? (error as Error & { status?: number }).status : undefined;
+                logger.warn({ attempt, sleepMs, label: "pull", status: status ?? null }, "Retrying backend request");
+              },
+            }
+          );
+        } catch (err) {
+          const nonJson = asNonJsonError(err);
+          const status = nonJson?.status;
+          // Keep relay loop alive when upstream sends unexpected text/HTML with 2xx.
+          if (nonJson && status !== undefined && status >= 200 && status <= 299) {
+            logger.warn(
+              {
+                url,
+                status,
+                contentType: nonJson.contentType,
+                bodyPreview: nonJson.bodyPreview,
+              },
+              "Backend pull returned non-JSON 2xx response; treating as empty task batch"
+            );
+            return { tasks: [] };
+          }
+          throw err;
+        }
+        return pullResponseSchema.parse(res);
+      });
+    } catch (error) {
+      if (error instanceof CircuitBreakerOpenError) {
+        logger.warn({ retryAfterMs: error.retryAfterMs }, "Backend pull circuit breaker is open; returning empty task batch");
         return { tasks: [] };
       }
-      throw err;
+      throw error;
     }
-    const parsed = pullResponseSchema.parse(res);
     if (this.opts.devLogEnabled) {
       logger.debug({ url, tasksCount: parsed.tasks.length }, "Backend pull response");
     }
@@ -72,14 +112,25 @@ export class BackendClient {
         "Backend submitResult request"
       );
     }
-    const res = await retry(
-      () => postJson(url, this.opts.relayToken, input.body, timeoutMs),
-      { attempts: 5, minDelayMs: 500, maxDelayMs: 10_000, label: "submitResult" }
-    );
-    const parsed = acceptedResponseSchema.parse(res);
-    if (!parsed.accepted) {
-      throw new Error("Backend rejected relay result");
-    }
+    await this.writeBreaker.execute(async () => {
+      const res = await retryWithBackoff(
+        () => postJson(url, this.opts.relayToken, input.body, timeoutMs),
+        {
+          attempts: 5,
+          baseDelayMs: [500, 900, 1600, 3000, 6000, 10_000],
+          jitterMs: 250,
+          shouldRetry: (err) => isRetryableBackendError(err),
+          onRetry: ({ error, attempt, sleepMs }) => {
+            const status = error instanceof Error ? (error as Error & { status?: number }).status : undefined;
+            logger.warn({ attempt, sleepMs, label: "submitResult", status: status ?? null }, "Retrying backend request");
+          },
+        }
+      );
+      const parsed = acceptedResponseSchema.parse(res);
+      if (!parsed.accepted) {
+        throw new Error("Backend rejected relay result");
+      }
+    });
     if (this.opts.devLogEnabled) {
       logger.debug({ url, taskId: input.taskId, accepted: true }, "Backend submitResult accepted");
     }
@@ -96,15 +147,36 @@ export class BackendClient {
         "Backend submitInboundMessage request"
       );
     }
-    const res = await retry(
-      () => postJson(url, this.opts.relayToken, body, timeoutMs),
-      { attempts: 5, minDelayMs: 500, maxDelayMs: 10_000, label: "submitInboundMessage" }
-    );
-    const parsed = acceptedResponseSchema.parse(res);
-    if (!parsed.accepted) {
-      throw new Error("Backend rejected relay inbound message");
-    }
+    await this.writeBreaker.execute(async () => {
+      const res = await retryWithBackoff(
+        () => postJson(url, this.opts.relayToken, body, timeoutMs),
+        {
+          attempts: 5,
+          baseDelayMs: [500, 900, 1600, 3000, 6000, 10_000],
+          jitterMs: 250,
+          shouldRetry: (err) => isRetryableBackendError(err),
+          onRetry: ({ error, attempt, sleepMs }) => {
+            const status = error instanceof Error ? (error as Error & { status?: number }).status : undefined;
+            logger.warn({ attempt, sleepMs, label: "submitInboundMessage", status: status ?? null }, "Retrying backend request");
+          },
+        }
+      );
+      const parsed = acceptedResponseSchema.parse(res);
+      if (!parsed.accepted) {
+        throw new Error("Backend rejected relay inbound message");
+      }
+    });
     return { accepted: true };
+  }
+
+  getResilienceState(): {
+    pullBreaker: { state: "closed" | "open" | "half_open"; consecutiveFailures: number; retryAfterMs: number };
+    writeBreaker: { state: "closed" | "open" | "half_open"; consecutiveFailures: number; retryAfterMs: number };
+  } {
+    return {
+      pullBreaker: this.pullBreaker.getState(),
+      writeBreaker: this.writeBreaker.getState(),
+    };
   }
 }
 
@@ -183,28 +255,8 @@ function previewText(input: string): string {
   return normalized.length <= maxLen ? normalized : `${normalized.slice(0, maxLen)}...`;
 }
 
-async function retry<T>(
-  fn: () => Promise<T>,
-  opts: { attempts: number; minDelayMs: number; maxDelayMs: number; label: string }
-): Promise<T> {
-  let attempt = 0;
-  let delay = opts.minDelayMs;
-  for (;;) {
-    attempt += 1;
-    try {
-      return await fn();
-    } catch (err) {
-      const status = err instanceof Error ? (err as Error & { status?: number }).status : undefined;
-      const retryable = status === undefined || (status >= 500 && status <= 599) || status === 429;
-      if (!retryable || attempt >= opts.attempts) {
-        throw err instanceof Error ? err : new Error(String(err));
-      }
-      const jitter = Math.floor(Math.random() * 250);
-      const sleepMs = Math.min(opts.maxDelayMs, delay) + jitter;
-      logger.warn({ attempt, sleepMs, label: opts.label, status: status ?? null }, "Retrying backend request");
-      await new Promise((r) => setTimeout(r, sleepMs));
-      delay = Math.min(opts.maxDelayMs, Math.floor(delay * 1.8));
-    }
-  }
+function isRetryableBackendError(err: unknown): boolean {
+  const status = err instanceof Error ? (err as Error & { status?: number }).status : undefined;
+  return status === undefined || (status >= 500 && status <= 599) || status === 429;
 }
 

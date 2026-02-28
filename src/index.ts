@@ -1,5 +1,4 @@
 import "dotenv/config";
-import { randomUUID } from "node:crypto";
 import { logger } from "./logger.js";
 import { loadRelayConfig } from "./config/env.js";
 import { resolveOpenclawConfig } from "./openclaw/openclawConfig.js";
@@ -9,15 +8,9 @@ import { GatewayClient } from "./openclaw/gatewayClient.js";
 import { ChatRunner } from "./openclaw/chatRunner.js";
 import { type AudioTaskMedia, transcribeAudioWithDeepgram } from "./openclaw/transcription.js";
 import { transcribeAudioWithOpenAi } from "./openclaw/openaiTranscription.js";
-import { startPushServer } from "./push/pushServer.js";
-
-function makeTextPreview(text: string, maxLen: number): string {
-  const normalized = String(text).replace(/\s+/g, " ").trim();
-  const n = Math.max(0, Math.min(5000, Math.trunc(maxLen)));
-  if (n === 0 || normalized.length === 0) return "";
-  if (normalized.length <= n) return normalized;
-  return `${normalized.slice(0, n)}...`;
-}
+import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
+import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inMemoryTaskQueue.js";
+import { createMessageProcessor } from "./processor/messageProcessor.js";
 
 async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
@@ -36,6 +29,9 @@ async function main(): Promise<void> {
       concurrency: cfg.concurrency,
       pushPort: cfg.pushPort,
       pushPath: cfg.pushPath,
+      pushRateLimitPerSecond: cfg.pushRateLimitPerSecond,
+      pushMaxConcurrentRequests: cfg.pushMaxConcurrentRequests,
+      pushMaxQueue: cfg.pushMaxQueue,
     },
     "Relay starting"
   );
@@ -94,167 +90,87 @@ async function main(): Promise<void> {
     throw new Error("ChatRunner not initialized");
   }
 
-  const queue: InboundPushMessage[] = [];
-  let inFlight = 0;
   let shuttingDown = false;
+  const processOne = createMessageProcessor({
+    cfg: {
+      relayInstanceId: cfg.relayInstanceId,
+      taskTimeoutMs: cfg.taskTimeoutMs,
+      devLogEnabled: cfg.devLogEnabled,
+      devLogTextMaxLen: cfg.devLogTextMaxLen,
+    },
+    gateway,
+    runner,
+    backend,
+  });
 
-  const processOne = async (msg: InboundPushMessage): Promise<void> => {
-    const startedAt = Date.now();
-    const relayMessageId = `relay_${randomUUID()}`;
-    try {
-      if (cfg.devLogEnabled) {
-        logger.debug(
-          {
-            messageId: msg.messageId,
-            relayMessageId,
-            kind: msg.input.kind,
-            sessionKey: msg.input.kind === "chat" ? msg.input.sessionKey : null,
-            messageLen: msg.input.kind === "chat" ? msg.input.messageText.length : null,
-            messagePreview: msg.input.kind === "chat" ? makeTextPreview(msg.input.messageText, cfg.devLogTextMaxLen) : null,
-          },
-          "Push message received for processing"
-        );
-      }
-
-      const correlationMessageId = String(msg.messageId);
-      if (msg.input.kind === "handshake") {
-        await withTimeout(gateway.start(), cfg.taskTimeoutMs, "gateway.start");
-        const hello = gateway.getHello();
-        if (!hello) {
-          throw new Error("Gateway is not ready (missing hello-ok)");
-        }
-        const finishedAtMs = Date.now();
-        await backend.submitInboundMessage({
-          body: {
-            relayInstanceId: cfg.relayInstanceId,
-            relayMessageId,
-            finishedAtMs,
-            outcome: "reply",
-            reply: {
-              nonce: msg.input.nonce,
-              helloType: hello.type,
-              protocol: hello.protocol,
-              policy: hello.policy,
-              features: hello.features
-                ? { methodsCount: hello.features.methods.length, eventsCount: hello.features.events.length }
-                : null,
-              auth: hello.auth ? { role: hello.auth.role, scopes: hello.auth.scopes } : null,
-            },
-            openclawMeta: { method: "connect", backendMessageId: correlationMessageId },
-          },
-        });
-      } else if (msg.input.kind === "session_new") {
-        const reset = await runner.startNewSessionForAll()
-        const finishedAtMs = Date.now()
-        await backend.submitInboundMessage({
-          body: {
-            relayInstanceId: cfg.relayInstanceId,
-            relayMessageId,
-            finishedAtMs,
-            outcome: "reply",
-            reply: reset,
-            openclawMeta: { method: "session_new", backendMessageId: correlationMessageId },
-          },
-        })
-      } else {
-        const { result, openclawMeta } = await runner.runChatTask({
-          taskId: msg.messageId,
-          sessionKey: msg.input.sessionKey,
-          messageText: msg.input.messageText,
-          media: msg.input.media,
-          timeoutMs: cfg.taskTimeoutMs,
-        });
-        const finishedAtMs = Date.now();
-        if (result.outcome === "reply") {
-          await backend.submitInboundMessage({
-            body: {
-              relayInstanceId: cfg.relayInstanceId,
-              relayMessageId,
-              finishedAtMs,
-              outcome: "reply",
-              reply: buildReplyPayload(result.reply),
-              openclawMeta: { ...((openclawMeta as Record<string, unknown>) ?? {}), backendMessageId: correlationMessageId },
-            },
-          });
-        } else if (result.outcome === "no_reply") {
-          await backend.submitInboundMessage({
-            body: {
-              relayInstanceId: cfg.relayInstanceId,
-              relayMessageId,
-              finishedAtMs,
-              outcome: "no_reply",
-              noReply: result.noReply ?? { reason: "no_message" },
-              openclawMeta: { ...((openclawMeta as Record<string, unknown>) ?? {}), backendMessageId: correlationMessageId },
-            },
-          });
-        } else {
-          await backend.submitInboundMessage({
-            body: {
-              relayInstanceId: cfg.relayInstanceId,
-              relayMessageId,
-              finishedAtMs,
-              outcome: "error",
-              error: result.error,
-              openclawMeta: { ...((openclawMeta as Record<string, unknown>) ?? {}), backendMessageId: correlationMessageId },
-            },
-          });
-        }
-      }
-
-      logger.info({ messageId: msg.messageId, relayMessageId, durationMs: Date.now() - startedAt }, "Push message processed");
-    } catch (err) {
-      const finishedAtMs = Date.now();
-      logger.warn(
-        { messageId: msg.messageId, relayMessageId, err: err instanceof Error ? err.message : String(err) },
-        "Push message processing failed"
-      );
-      try {
-        await backend.submitInboundMessage({
-          body: {
-            relayInstanceId: cfg.relayInstanceId,
-            relayMessageId,
-            finishedAtMs,
-            outcome: "error",
-            error: { code: "RELAY_INTERNAL_ERROR", message: "Relay failed to process message" },
-            openclawMeta: { method: "relay" },
-          },
-        });
-      } catch (submitErr) {
-        logger.warn(
-          { messageId: msg.messageId, err: submitErr instanceof Error ? submitErr.message : String(submitErr) },
-          "Failed to submit push error result"
-        );
-      }
-    }
-  };
-
-  const pump = () => {
-    if (shuttingDown) return;
-    while (inFlight < cfg.concurrency && queue.length > 0) {
-      const next = queue.shift();
-      if (!next) return;
-      inFlight += 1;
-      void processOne(next).finally(() => {
-        inFlight -= 1;
-        pump();
-      });
-    }
-  };
+  const queue = new InMemoryTaskQueue<InboundPushMessage>({
+    concurrency: cfg.concurrency,
+    maxQueue: cfg.pushMaxQueue,
+    processor: processOne,
+  });
 
   const server = startPushServer({
     port: cfg.pushPort,
     path: cfg.pushPath,
     relayToken: cfg.relayToken,
-    onMessage: async (message) => {
-      await Promise.resolve();
-      queue.push(message);
-      pump();
+    rateLimitPerSecond: cfg.pushRateLimitPerSecond,
+    maxConcurrentRequests: cfg.pushMaxConcurrentRequests,
+    getHealth: () => {
+      const queueState = queue.getState();
+      const backendResilience = backend.getResilienceState();
+      const pullBreakerOpen = backendResilience.pullBreaker.state === "open";
+      return {
+        ok: true,
+        ready: !shuttingDown && gateway.isReady() && queueState.queueLength < queueState.maxQueue && !pullBreakerOpen,
+        details: {
+          shuttingDown,
+          gatewayReady: gateway.isReady(),
+          queueLength: queueState.queueLength,
+          inFlight: queueState.inFlight,
+          maxQueue: queueState.maxQueue,
+          backendResilience,
+        },
+      };
+    },
+    onMessage: (message) => {
+      try {
+        queue.enqueue(message);
+      } catch (error) {
+        if (error instanceof QueueClosedError) {
+          throw new PushServerHttpError({
+            statusCode: 503,
+            code: "SHUTTING_DOWN",
+            message: "Relay is shutting down",
+          });
+        }
+        if (error instanceof QueueFullError) {
+          throw new PushServerHttpError({
+            statusCode: 429,
+            code: "QUEUE_FULL",
+            message: "Relay queue is full",
+            details: { maxQueue: error.maxQueue },
+          });
+        }
+        throw error;
+      }
+      return Promise.resolve();
     },
   });
 
   await waitForStop(stop);
   shuttingDown = true;
-  server.close();
+  queue.stopAccepting();
+  const drainState = queue.getState();
+  logger.info({ inFlight: drainState.inFlight, queueLength: drainState.queueLength }, "Stop signal received; draining relay queue");
+  await closeServer(server);
+  const drained = await queue.drain(Math.max(15_000, cfg.taskTimeoutMs * 2));
+  if (!drained) {
+    const finalState = queue.getState();
+    logger.warn(
+      { inFlight: finalState.inFlight, queueLength: finalState.queueLength },
+      "Relay drain timeout reached; forcing shutdown"
+    );
+  }
   gateway.stop();
   logger.info("Relay stopped");
 }
@@ -290,50 +206,15 @@ async function ensureGatewayConnected(gateway: GatewayClient, stop: { stopped: b
   }
 }
 
-function normalizeReply(message: unknown): unknown {
-  if (message && typeof message === "object") {
-    const text = (message as { text?: unknown }).text;
-    if (typeof text === "string" && text.trim()) {
-      return { text };
-    }
-  }
-  return { message };
-}
-
-function buildReplyPayload(reply: { message: unknown; runId: string; media?: unknown[] }): unknown {
-  // Keep back-compat with the old `{ text }` short form, but never drop `message`/`media`.
-  const normalized = normalizeReply(reply.message) as { text?: unknown; message?: unknown };
-  const payload: Record<string, unknown> = {
-    runId: reply.runId,
-    message: reply.message,
-  };
-  if (typeof normalized.text === "string" && normalized.text.trim()) {
-    payload.text = normalized.text;
-  }
-  if (Array.isArray(reply.media) && reply.media.length > 0) {
-    payload.media = reply.media;
-  }
-  return payload;
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  const ms = Math.max(1, timeoutMs);
-  let timer: NodeJS.Timeout | null = null;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Timed out: ${label}`)), ms);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 async function waitForStop(stop: { stopped: boolean }): Promise<void> {
   while (!stop.stopped) {
     await sleep(200);
   }
+}
+
+async function closeServer(server: import("node:http").Server): Promise<void> {
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve());
+  });
 }
 

@@ -1,7 +1,6 @@
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import JSON5 from "json5";
+import { resolveOpenclawConfigPath } from "../common/utils/paths.js";
 
 export type ResolvedGatewayAuth = {
   token?: string;
@@ -16,16 +15,8 @@ export type ResolvedOpenclawConfig = {
   };
 };
 
-function resolveDefaultStateDir(env: NodeJS.ProcessEnv): string {
-  const override = env.OPENCLAW_STATE_DIR?.trim();
-  if (override) return path.resolve(override);
-  return path.join(os.homedir(), ".openclaw");
-}
-
 function resolveDefaultConfigPath(env: NodeJS.ProcessEnv): string {
-  const override = env.OPENCLAW_CONFIG_PATH?.trim();
-  if (override) return path.resolve(override);
-  return path.join(resolveDefaultStateDir(env), "openclaw.json");
+  return resolveOpenclawConfigPath(env);
 }
 
 function safeReadJson5(filePath: string): Record<string, unknown> | null {
