@@ -75,42 +75,10 @@ export const inboundPushMessageSchema = z.object({
 });
 export type InboundPushMessage = z.infer<typeof inboundPushMessageSchema>;
 
-export const taskResultRequestSchema = z.discriminatedUnion("outcome", [
-  z.object({
-    relayInstanceId: z.string().min(1),
-    attempt: z.number().int().min(1),
-    leaseId: z.string().min(1),
-    finishedAtMs: z.number().int().nonnegative(),
-    outcome: z.literal("reply"),
-    reply: z.unknown(),
-    openclawMeta: z.unknown().optional(),
-  }),
-  z.object({
-    relayInstanceId: z.string().min(1),
-    attempt: z.number().int().min(1),
-    leaseId: z.string().min(1),
-    finishedAtMs: z.number().int().nonnegative(),
-    outcome: z.literal("no_reply"),
-    noReply: z.unknown().optional(),
-    openclawMeta: z.unknown().optional(),
-  }),
-  z.object({
-    relayInstanceId: z.string().min(1),
-    attempt: z.number().int().min(1),
-    leaseId: z.string().min(1),
-    finishedAtMs: z.number().int().nonnegative(),
-    outcome: z.literal("error"),
-    error: z.unknown(),
-    openclawMeta: z.unknown().optional(),
-  }),
-]);
-
-export type TaskResultRequest = z.infer<typeof taskResultRequestSchema>;
-
 export const relayInboundMessageRequestSchema = z.discriminatedUnion("outcome", [
   z.object({
     relayInstanceId: z.string().min(1),
-    relayMessageId: z.string().min(1),
+    relayMessageId: z.string().min(1).optional(),
     finishedAtMs: z.number().int().nonnegative(),
     outcome: z.literal("reply"),
     reply: z.unknown(),
@@ -118,7 +86,7 @@ export const relayInboundMessageRequestSchema = z.discriminatedUnion("outcome", 
   }),
   z.object({
     relayInstanceId: z.string().min(1),
-    relayMessageId: z.string().min(1),
+    relayMessageId: z.string().min(1).optional(),
     finishedAtMs: z.number().int().nonnegative(),
     outcome: z.literal("no_reply"),
     noReply: z.unknown().optional(),
@@ -126,7 +94,7 @@ export const relayInboundMessageRequestSchema = z.discriminatedUnion("outcome", 
   }),
   z.object({
     relayInstanceId: z.string().min(1),
-    relayMessageId: z.string().min(1),
+    relayMessageId: z.string().min(1).optional(),
     finishedAtMs: z.number().int().nonnegative(),
     outcome: z.literal("error"),
     error: z.unknown(),

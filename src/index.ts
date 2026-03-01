@@ -118,10 +118,9 @@ async function main(): Promise<void> {
     getHealth: () => {
       const queueState = queue.getState();
       const backendResilience = backend.getResilienceState();
-      const pullBreakerOpen = backendResilience.pullBreaker.state === "open";
       return {
         ok: true,
-        ready: !shuttingDown && gateway.isReady() && queueState.queueLength < queueState.maxQueue && !pullBreakerOpen,
+        ready: !shuttingDown && gateway.isReady() && queueState.queueLength < queueState.maxQueue,
         details: {
           shuttingDown,
           gatewayReady: gateway.isReady(),

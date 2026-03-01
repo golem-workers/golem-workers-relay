@@ -93,6 +93,16 @@ Run:
 npm run test:e2e
 ```
 
+## Cross-repo relay-messenger stand
+
+Workspace-level relay/messenger stand (real backend + real relay + mock Telegram API + mock OpenClaw WS)
+is launched from backend repo:
+
+```bash
+cd ../golem-workers-backend
+npm run test:e2e:relay-messenger-stand
+```
+
 Notes:
 - Requires a working Docker engine (Docker Desktop on macOS).
 - The test creates a temporary env-file and uses a dummy `OPENROUTER_API_KEY`; it does not require `openclaw.env`.
