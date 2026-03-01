@@ -5,10 +5,7 @@ function parseBool(value: string | undefined): boolean {
   return /^(1|true|yes|on)$/i.test(value.trim());
 }
 
-const nodeEnv = (process.env.NODE_ENV ?? "development").trim();
-const devLogRequested = parseBool(process.env.RELAY_DEV_LOG);
-const devLogForce = parseBool(process.env.RELAY_DEV_LOG_FORCE);
-const devLogEnabled = devLogRequested && (nodeEnv !== "production" || devLogForce);
+const devLogEnabled = parseBool(process.env.MESSAGE_FLOW_LOG);
 const defaultLevel = devLogEnabled ? "debug" : "info";
 
 export const logger = pino({

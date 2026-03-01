@@ -115,15 +115,45 @@ export function startPushServer(input: {
 
     const token = parseBearer(req);
     if (!token || token !== input.relayToken) {
+      logger.warn(
+        {
+          event: "message_flow",
+          direction: "backend_to_relay",
+          stage: "rejected",
+          status: 401,
+          error: "Invalid relay token",
+        },
+        "Message flow transition"
+      );
       sendJson(res, 401, { code: "UNAUTHORIZED", message: "Invalid relay token" });
       return;
     }
 
     if (isRateLimited()) {
+      logger.warn(
+        {
+          event: "message_flow",
+          direction: "backend_to_relay",
+          stage: "rejected",
+          status: 429,
+          error: "Push request rate limit exceeded",
+        },
+        "Message flow transition"
+      );
       sendJson(res, 429, { code: "RATE_LIMITED", message: "Push request rate limit exceeded" });
       return;
     }
     if (activeRequests >= maxConcurrentRequests) {
+      logger.warn(
+        {
+          event: "message_flow",
+          direction: "backend_to_relay",
+          stage: "rejected",
+          status: 503,
+          error: "Relay push server is busy",
+        },
+        "Message flow transition"
+      );
       sendJson(res, 503, { code: "BUSY", message: "Relay push server is busy" });
       return;
     }
@@ -134,6 +164,16 @@ export function startPushServer(input: {
       const parsedJson = raw.trim() ? (JSON.parse(raw) as unknown) : null;
       const parsed = inboundPushMessageSchema.safeParse(parsedJson);
       if (!parsed.success) {
+        logger.warn(
+          {
+            event: "message_flow",
+            direction: "backend_to_relay",
+            stage: "rejected",
+            status: 400,
+            error: "Invalid push payload",
+          },
+          "Message flow transition"
+        );
         sendJson(res, 400, {
           code: "VALIDATION_ERROR",
           message: "Invalid push payload",
@@ -142,9 +182,31 @@ export function startPushServer(input: {
         return;
       }
       await input.onMessage(parsed.data);
+      logger.info(
+        {
+          event: "message_flow",
+          direction: "backend_to_relay",
+          stage: "accepted",
+          backendMessageId: parsed.data.messageId,
+          relayMessageId: null,
+          kind: parsed.data.input.kind,
+          status: 200,
+        },
+        "Message flow transition"
+      );
       sendJson(res, 200, { accepted: true });
     } catch (error) {
       if (error instanceof PushServerHttpError) {
+        logger.warn(
+          {
+            event: "message_flow",
+            direction: "backend_to_relay",
+            stage: "rejected",
+            status: error.statusCode,
+            error: error.message,
+          },
+          "Message flow transition"
+        );
         sendJson(res, error.statusCode, {
           code: error.code,
           message: error.message,
@@ -152,7 +214,16 @@ export function startPushServer(input: {
         });
         return;
       }
-      logger.warn({ err: error instanceof Error ? error.message : String(error) }, "Push server request failed");
+      logger.warn(
+        {
+          event: "message_flow",
+          direction: "backend_to_relay",
+          stage: "failed",
+          status: 500,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Message flow transition"
+      );
       sendJson(res, 500, { code: "PUSH_SERVER_ERROR", message: "Failed to process push message" });
     } finally {
       activeRequests = Math.max(0, activeRequests - 1);

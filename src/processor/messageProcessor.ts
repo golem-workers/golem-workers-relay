@@ -25,16 +25,19 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
     const relayMessageId = `relay_${randomUUID()}`;
     try {
       if (cfg.devLogEnabled) {
-        logger.debug(
+        logger.info(
           {
-            messageId: msg.messageId,
+            event: "message_flow",
+            direction: "backend_to_relay",
+            stage: "received",
+            backendMessageId: msg.messageId,
             relayMessageId,
             kind: msg.input.kind,
             sessionKey: msg.input.kind === "chat" ? msg.input.sessionKey : null,
-            messageLen: msg.input.kind === "chat" ? msg.input.messageText.length : null,
-            messagePreview: msg.input.kind === "chat" ? makeTextPreview(msg.input.messageText, cfg.devLogTextMaxLen) : null,
+            textLen: msg.input.kind === "chat" ? msg.input.messageText.length : null,
+            textPreview: msg.input.kind === "chat" ? makeTextPreview(msg.input.messageText, cfg.devLogTextMaxLen) : null,
           },
-          "Push message received for processing"
+          "Message flow transition"
         );
       }
 
@@ -61,7 +64,10 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
                 : null,
               auth: hello.auth ? { role: hello.auth.role, scopes: hello.auth.scopes } : null,
             },
-            openclawMeta: { method: "connect" },
+            openclawMeta: buildOpenclawMetaWithTrace(
+              { method: "connect" },
+              { backendMessageId: msg.messageId, relayMessageId, relayInstanceId: cfg.relayInstanceId }
+            ),
           },
         });
       } else if (msg.input.kind === "session_new") {
@@ -74,7 +80,10 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
             finishedAtMs,
             outcome: "reply",
             reply: reset,
-            openclawMeta: { method: "session_new" },
+            openclawMeta: buildOpenclawMetaWithTrace(
+              { method: "session_new" },
+              { backendMessageId: msg.messageId, relayMessageId, relayInstanceId: cfg.relayInstanceId }
+            ),
           },
         });
       } else {
@@ -94,7 +103,12 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
               finishedAtMs,
               outcome: "reply",
               reply: buildReplyPayload(result.reply),
-              openclawMeta: normalizeOpenclawMeta(openclawMeta),
+              openclawMeta: buildOpenclawMetaWithTrace(normalizeOpenclawMeta(openclawMeta), {
+                backendMessageId: msg.messageId,
+                relayMessageId,
+                relayInstanceId: cfg.relayInstanceId,
+                openclawRunId: result.reply.runId,
+              }),
             },
           });
         } else if (result.outcome === "no_reply") {
@@ -105,7 +119,12 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
               finishedAtMs,
               outcome: "no_reply",
               noReply: result.noReply ?? { reason: "no_message" },
-              openclawMeta: normalizeOpenclawMeta(openclawMeta),
+              openclawMeta: buildOpenclawMetaWithTrace(normalizeOpenclawMeta(openclawMeta), {
+                backendMessageId: msg.messageId,
+                relayMessageId,
+                relayInstanceId: cfg.relayInstanceId,
+                openclawRunId: result.noReply?.runId,
+              }),
             },
           });
         } else {
@@ -116,18 +135,40 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
               finishedAtMs,
               outcome: "error",
               error: result.error,
-              openclawMeta: normalizeOpenclawMeta(openclawMeta),
+              openclawMeta: buildOpenclawMetaWithTrace(normalizeOpenclawMeta(openclawMeta), {
+                backendMessageId: msg.messageId,
+                relayMessageId,
+                relayInstanceId: cfg.relayInstanceId,
+                openclawRunId: result.error.runId,
+              }),
             },
           });
         }
       }
 
-      logger.info({ messageId: msg.messageId, relayMessageId, durationMs: Date.now() - startedAt }, "Push message processed");
+      logger.info(
+        {
+          event: "message_flow",
+          direction: "relay_to_backend",
+          stage: "callback_sent",
+          backendMessageId: msg.messageId,
+          relayMessageId,
+          durationMs: Date.now() - startedAt,
+        },
+        "Message flow transition"
+      );
     } catch (err) {
       const finishedAtMs = Date.now();
       logger.warn(
-        { messageId: msg.messageId, relayMessageId, err: err instanceof Error ? err.message : String(err) },
-        "Push message processing failed"
+        {
+          event: "message_flow",
+          direction: "relay_to_backend",
+          stage: "failed",
+          backendMessageId: msg.messageId,
+          relayMessageId,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        "Message flow transition"
       );
       try {
         await backend.submitInboundMessage({
@@ -137,13 +178,23 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
             finishedAtMs,
             outcome: "error",
             error: { code: "RELAY_INTERNAL_ERROR", message: "Relay failed to process message" },
-            openclawMeta: { method: "relay" },
+            openclawMeta: buildOpenclawMetaWithTrace(
+              { method: "relay" },
+              { backendMessageId: msg.messageId, relayMessageId, relayInstanceId: cfg.relayInstanceId }
+            ),
           },
         });
       } catch (submitErr) {
         logger.warn(
-          { messageId: msg.messageId, err: submitErr instanceof Error ? submitErr.message : String(submitErr) },
-          "Failed to submit push error result"
+          {
+            event: "message_flow",
+            direction: "relay_to_backend",
+            stage: "failed",
+            backendMessageId: msg.messageId,
+            relayMessageId,
+            error: submitErr instanceof Error ? submitErr.message : String(submitErr),
+          },
+          "Message flow transition"
         );
       }
     }
@@ -156,6 +207,27 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function normalizeOpenclawMeta(meta: unknown): Record<string, unknown> | undefined {
   return isPlainObject(meta) ? meta : undefined;
+}
+
+function buildOpenclawMetaWithTrace(
+  meta: Record<string, unknown> | undefined,
+  trace: {
+    backendMessageId: string;
+    relayMessageId: string;
+    relayInstanceId: string;
+    openclawRunId?: string;
+  }
+): Record<string, unknown> {
+  const base = meta ? { ...meta } : {};
+  return {
+    ...base,
+    trace: {
+      backendMessageId: trace.backendMessageId,
+      relayMessageId: trace.relayMessageId,
+      relayInstanceId: trace.relayInstanceId,
+      ...(trace.openclawRunId ? { openclawRunId: trace.openclawRunId } : {}),
+    },
+  };
 }
 
 function buildReplyPayload(reply: { message: unknown; runId: string; media?: unknown[] }): unknown {

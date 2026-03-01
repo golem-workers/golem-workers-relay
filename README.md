@@ -130,16 +130,13 @@ Push transport settings:
 Note: relay creates its own device identity on the host under `~/.openclaw` unless
 `OPENCLAW_STATE_DIR` is set. This is separate from the gateway's container state.
 
-## Verbose / trace-like logging
+## Unified Message Flow Logging
 
-To log all gateway events plus request/response summaries:
+Enable the same structured flow logs used by backend with one key:
 
-- `RELAY_DEV_LOG=1`
-- `RELAY_DEV_LOG_GATEWAY_FRAMES=1` (very noisy; logs raw frame previews and parse/schema failures)
-- `RELAY_DEV_LOG_TEXT_MAXLEN=5000`
-- `LOG_LEVEL=debug` (optional; auto-defaults to `debug` when `RELAY_DEV_LOG=1`)
+- `MESSAGE_FLOW_LOG=1`
 
-Important: if relay runs with `NODE_ENV=production`, dev logs are disabled by default.
-To explicitly override this in production, set:
-
-- `RELAY_DEV_LOG_FORCE=1`
+When enabled, relay emits transition events for:
+- backend push accepted/rejected,
+- relay -> OpenClaw request/response stages,
+- relay callback request/retry/success/failure to backend.

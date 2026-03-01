@@ -25,11 +25,7 @@ const envSchema = z.object({
   RELAY_PUSH_MAX_CONCURRENT_REQUESTS: z.coerce.number().int().min(1).max(10_000).optional(),
   RELAY_PUSH_MAX_QUEUE: z.coerce.number().int().min(1).max(1_000_000).optional(),
 
-  // Dev logging (hard-disabled in production).
-  RELAY_DEV_LOG: z.coerce.boolean().optional(),
-  RELAY_DEV_LOG_FORCE: z.coerce.boolean().optional(),
-  RELAY_DEV_LOG_TEXT_MAXLEN: z.coerce.number().int().min(0).max(5000).optional(),
-  RELAY_DEV_LOG_GATEWAY_FRAMES: z.coerce.boolean().optional(),
+  MESSAGE_FLOW_LOG: z.coerce.boolean().optional(),
 
   OPENCLAW_GATEWAY_WS_URL: z.string().url().optional(),
   OPENCLAW_CONFIG_PATH: z.string().min(1).optional(),
@@ -62,7 +58,6 @@ export type RelayConfig = {
   pushMaxConcurrentRequests: number;
   pushMaxQueue: number;
   devLogEnabled: boolean;
-  devLogForce: boolean;
   devLogTextMaxLen: number;
   devLogGatewayFrames: boolean;
   openclaw: {
@@ -85,11 +80,9 @@ export type RelayConfig = {
 
 export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConfig {
   const parsed = envSchema.parse(env) satisfies RelayEnv;
-  const nodeEnv = (env.NODE_ENV ?? "development").trim();
-  const devLogForce = parsed.RELAY_DEV_LOG_FORCE ?? false;
-  const devLogEnabled = (parsed.RELAY_DEV_LOG ?? false) && (nodeEnv !== "production" || devLogForce);
-  const devLogTextMaxLen = parsed.RELAY_DEV_LOG_TEXT_MAXLEN ?? 200;
-  const devLogGatewayFrames = devLogEnabled && (parsed.RELAY_DEV_LOG_GATEWAY_FRAMES ?? false);
+  const devLogEnabled = parsed.MESSAGE_FLOW_LOG ?? false;
+  const devLogTextMaxLen = 200;
+  const devLogGatewayFrames = false;
 
   const relayInstanceId =
     parsed.RELAY_INSTANCE_ID ||
@@ -109,7 +102,6 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     pushMaxConcurrentRequests: parsed.RELAY_PUSH_MAX_CONCURRENT_REQUESTS ?? 100,
     pushMaxQueue: parsed.RELAY_PUSH_MAX_QUEUE ?? 2000,
     devLogEnabled,
-    devLogForce,
     devLogTextMaxLen,
     devLogGatewayFrames,
     openclaw: {
@@ -147,7 +139,6 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     pushMaxConcurrentRequests: 100,
     pushMaxQueue: 2000,
     devLogEnabled: false,
-    devLogForce: false,
     devLogTextMaxLen: 200,
     devLogGatewayFrames: false,
     openclaw: { scopes: ["operator.admin"] },

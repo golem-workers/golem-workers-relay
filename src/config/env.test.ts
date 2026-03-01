@@ -11,29 +11,24 @@ describe("loadRelayConfig", () => {
     ).not.toThrow();
   });
 
-  it("disables dev log in production unless forced", () => {
+  it("disables message flow log by default", () => {
     const cfg = loadRelayConfig({
       RELAY_TOKEN: "t",
       BACKEND_BASE_URL: "https://example.com",
-      NODE_ENV: "production",
-      RELAY_DEV_LOG: "1",
     });
     expect(cfg.devLogEnabled).toBe(false);
-    expect(cfg.devLogForce).toBe(false);
+    expect(cfg.devLogGatewayFrames).toBe(false);
   });
 
-  it("enables dev log in production when forced", () => {
+  it("enables message flow log when MESSAGE_FLOW_LOG is set", () => {
     const cfg = loadRelayConfig({
       RELAY_TOKEN: "t",
       BACKEND_BASE_URL: "https://example.com",
       NODE_ENV: "production",
-      RELAY_DEV_LOG: "1",
-      RELAY_DEV_LOG_FORCE: "1",
-      RELAY_DEV_LOG_GATEWAY_FRAMES: "1",
+      MESSAGE_FLOW_LOG: "1",
     });
     expect(cfg.devLogEnabled).toBe(true);
-    expect(cfg.devLogForce).toBe(true);
-    expect(cfg.devLogGatewayFrames).toBe(true);
+    expect(cfg.devLogGatewayFrames).toBe(false);
   });
 });
 

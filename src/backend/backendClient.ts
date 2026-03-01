@@ -31,10 +31,19 @@ export class BackendClient {
     const url = `${this.opts.baseUrl}/api/v1/relays/messages`;
     const timeoutMs = 15_000;
     const body = relayInboundMessageRequestSchema.parse(input.body);
+    const backendMessageId = readBackendMessageId(body.openclawMeta);
     if (this.opts.devLogEnabled) {
-      logger.debug(
-        { url, relayMessageId: body.relayMessageId, outcome: body.outcome },
-        "Backend submitInboundMessage request"
+      logger.info(
+        {
+          event: "message_flow",
+          direction: "relay_to_backend",
+          stage: "request_sent",
+          url,
+          backendMessageId,
+          relayMessageId: body.relayMessageId ?? null,
+          outcome: body.outcome,
+        },
+        "Message flow transition"
       );
     }
     await this.writeBreaker.execute(async () => {
@@ -47,7 +56,19 @@ export class BackendClient {
           shouldRetry: (err) => isRetryableBackendError(err),
           onRetry: ({ error, attempt, sleepMs }) => {
             const status = error instanceof Error ? (error as Error & { status?: number }).status : undefined;
-            logger.warn({ attempt, sleepMs, label: "submitInboundMessage", status: status ?? null }, "Retrying backend request");
+            logger.warn(
+              {
+                event: "message_flow",
+                direction: "relay_to_backend",
+                stage: "retrying",
+                attempt,
+                sleepMs,
+                status: status ?? null,
+                backendMessageId,
+                relayMessageId: body.relayMessageId ?? null,
+              },
+              "Message flow transition"
+            );
           },
         }
       );
@@ -56,6 +77,20 @@ export class BackendClient {
         throw new Error("Backend rejected relay inbound message");
       }
     });
+    if (this.opts.devLogEnabled) {
+      logger.info(
+        {
+          event: "message_flow",
+          direction: "relay_to_backend",
+          stage: "sent",
+          url,
+          backendMessageId,
+          relayMessageId: body.relayMessageId ?? null,
+          outcome: body.outcome,
+        },
+        "Message flow transition"
+      );
+    }
     return { accepted: true };
   }
 
@@ -96,7 +131,16 @@ async function postJson(url: string, token: string, body: unknown, timeoutMs: nu
     }
 
     if (!resp.ok) {
-      logger.warn({ url, status: resp.status }, "Backend returned non-2xx for relay request");
+      logger.warn(
+        {
+          event: "message_flow",
+          direction: "relay_to_backend",
+          stage: "failed",
+          url,
+          status: resp.status,
+        },
+        "Message flow transition"
+      );
       const err = new Error(`Backend HTTP ${resp.status}`) as Error & { status?: number };
       err.status = resp.status;
       throw err;
@@ -140,5 +184,13 @@ function previewText(input: string): string {
 function isRetryableBackendError(err: unknown): boolean {
   const status = err instanceof Error ? (err as Error & { status?: number }).status : undefined;
   return status === undefined || (status >= 500 && status <= 599) || status === 429;
+}
+
+function readBackendMessageId(openclawMeta: unknown): string | null {
+  if (!openclawMeta || typeof openclawMeta !== "object") return null;
+  const trace = (openclawMeta as { trace?: unknown }).trace;
+  if (!trace || typeof trace !== "object") return null;
+  const backendMessageId = (trace as { backendMessageId?: unknown }).backendMessageId;
+  return typeof backendMessageId === "string" && backendMessageId.trim().length > 0 ? backendMessageId : null;
 }
 

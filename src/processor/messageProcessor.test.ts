@@ -52,13 +52,23 @@ describe("createMessageProcessor", () => {
       | { body?: { outcome?: unknown; openclawMeta?: { model?: unknown; usage?: Record<string, unknown> } } }
       | undefined;
     expect(firstCall?.body?.outcome).toBe("reply");
-    expect(firstCall?.body?.openclawMeta).toEqual(openclawMeta);
-    expect(firstCall?.body?.openclawMeta?.model).toBe("moonshot/kimi-k2.5");
-    expect(firstCall?.body?.openclawMeta?.usage?.model).toBe("moonshot/kimi-k2.5");
-    expect(firstCall?.body?.openclawMeta?.usage?.inputTokens).toBe(80);
-    expect(firstCall?.body?.openclawMeta?.usage?.outputTokens).toBe(30);
-    expect(firstCall?.body?.openclawMeta?.usage?.cacheReadTokens).toBe(6);
-    expect(firstCall?.body?.openclawMeta?.usage?.totalTokens).toBe(116);
+    const meta = firstCall?.body?.openclawMeta as
+      | {
+          model?: unknown;
+          usage?: Record<string, unknown>;
+          trace?: Record<string, unknown>;
+        }
+      | undefined;
+    expect(meta?.model).toBe("moonshot/kimi-k2.5");
+    expect(meta?.usage?.model).toBe("moonshot/kimi-k2.5");
+    expect(meta?.usage?.inputTokens).toBe(80);
+    expect(meta?.usage?.outputTokens).toBe(30);
+    expect(meta?.usage?.cacheReadTokens).toBe(6);
+    expect(meta?.usage?.totalTokens).toBe(116);
+    expect(meta?.trace?.backendMessageId).toBe("msg_1");
+    expect(meta?.trace?.relayInstanceId).toBe("relay_1");
+    expect(meta?.trace?.openclawRunId).toBe("run_1");
+    expect(typeof meta?.trace?.relayMessageId).toBe("string");
   });
 });
 

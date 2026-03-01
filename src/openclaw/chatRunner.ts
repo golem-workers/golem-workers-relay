@@ -255,15 +255,19 @@ export class ChatRunner {
     const messageText = composeMessageWithUploadedFiles(baseMessageText, uploadedPaths);
     const startedAtMs = Date.now();
     if (this.devLogEnabled) {
-      logger.debug(
+      logger.info(
         {
-          taskId: input.taskId,
+          event: "message_flow",
+          direction: "relay_to_openclaw",
+          stage: "request_sent",
+          backendMessageId: input.taskId,
+          relayMessageId: null,
           sessionKey: input.sessionKey,
           timeoutMs: input.timeoutMs,
-          messageLen: messageText.length,
-          messagePreview: makeTextPreview(messageText, this.devLogTextMaxLen),
+          textLen: messageText.length,
+          textPreview: makeTextPreview(messageText, this.devLogTextMaxLen),
         },
-        "Relay starting chat task"
+        "Message flow transition"
       );
     }
     const usageIncoming = await this.collectSessionsUsageStats({
@@ -330,8 +334,18 @@ export class ChatRunner {
         const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
         const retryable = attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
         logger.warn(
-          { taskId: input.taskId, attempt, retryable, backoffMs, err: msg },
-          "Gateway request failed"
+          {
+            event: "message_flow",
+            direction: "relay_to_openclaw",
+            stage: "retrying",
+            backendMessageId: input.taskId,
+            relayMessageId: null,
+            attempt,
+            retryable,
+            backoffMs,
+            error: msg,
+          },
+          "Message flow transition"
         );
         if (!retryable) {
           return {
@@ -390,7 +404,19 @@ export class ChatRunner {
         if (finalEvt.state === "final") {
           if (finalEvt.message !== undefined) {
             if (this.devLogEnabled) {
-              logger.debug({ taskId: input.taskId, runId, outcome: "reply" }, "Relay chat task completed");
+              logger.info(
+                {
+                  event: "message_flow",
+                  direction: "openclaw_to_relay",
+                  stage: "response_received",
+                  backendMessageId: input.taskId,
+                  relayMessageId: null,
+                  openclawRunId: runId,
+                  outcome: "reply",
+                  durationMs: Date.now() - startedAtMs,
+                },
+                "Message flow transition"
+              );
             }
             const media = await collectTranscriptMedia({ sessionKey: input.sessionKey }).catch((err) => {
               if (this.devLogEnabled) {
@@ -419,7 +445,19 @@ export class ChatRunner {
             };
           }
           if (this.devLogEnabled) {
-            logger.debug({ taskId: input.taskId, runId, outcome: "no_reply" }, "Relay chat task completed");
+            logger.info(
+              {
+                event: "message_flow",
+                direction: "openclaw_to_relay",
+                stage: "response_received",
+                backendMessageId: input.taskId,
+                relayMessageId: null,
+                openclawRunId: runId,
+                outcome: "no_reply",
+                durationMs: Date.now() - startedAtMs,
+              },
+              "Message flow transition"
+            );
           }
           return {
             result: { outcome: "no_reply", noReply: { runId } },
@@ -432,9 +470,18 @@ export class ChatRunner {
           };
         }
         if (finalEvt.state === "aborted") {
-          if (this.devLogEnabled) {
-            logger.warn({ taskId: input.taskId, runId }, "Relay chat aborted");
-          }
+          logger.warn(
+            {
+              event: "message_flow",
+              direction: "openclaw_to_relay",
+              stage: "failed",
+              backendMessageId: input.taskId,
+              relayMessageId: null,
+              openclawRunId: runId,
+              error: "Chat aborted",
+            },
+            "Message flow transition"
+          );
           return {
             result: { outcome: "error", error: { code: "ABORTED", message: "Chat aborted", runId } },
             openclawMeta: {
@@ -453,8 +500,12 @@ export class ChatRunner {
         const classification = classifyRetryableGatewayError(gatewayErrorMessage);
         logger.warn(
           {
-            taskId: input.taskId,
-            runId,
+            event: "message_flow",
+            direction: "openclaw_to_relay",
+            stage: "failed",
+            backendMessageId: input.taskId,
+            relayMessageId: null,
+            openclawRunId: runId,
             attempt,
             retryable: classification.retryable,
             reason: classification.reason,
@@ -463,7 +514,7 @@ export class ChatRunner {
             errorMessageLen: gatewayErrorMessage.length,
             errorMessagePreview: makeTextPreview(gatewayErrorMessage, 500),
           },
-          "Relay chat gateway error"
+          "Message flow transition"
         );
 
         const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
