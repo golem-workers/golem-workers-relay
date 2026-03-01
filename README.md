@@ -45,26 +45,13 @@ Control UI:
 - First relay connect may require approving a device pairing request (you'll see `NOT_PAIRED` in relay logs).
 
 Note: the pairing prompt is a side-effect of Docker networking. If you install OpenClaw as a host daemon
-(`onboard-host.sh`), relay connects from true localhost and pairing is auto-approved (silent).
+relay connects from true localhost and pairing is auto-approved (silent).
 
 Optional CLI (interactive):
 
 ```bash
 npm run openclaw:cli -- channels login
 ```
-
-## OpenClaw as a host daemon (recommended for real servers)
-
-If you want a proper daemon/service (launchd on macOS, systemd user service on Linux), run OpenClaw on the host:
-
-```bash
-cp openclaw.env.example openclaw.env
-# fill OPENCLAW_GATEWAY_TOKEN + OPENROUTER_API_KEY
-bash scripts/openclaw/onboard-host.sh openclaw.env
-```
-
-After that, you typically do not need Docker for OpenClaw: the daemon keeps the gateway running and relay can use:
-`OPENCLAW_GATEWAY_WS_URL=ws://127.0.0.1:18789`.
 
 ## Reset / wipe (Docker variant)
 

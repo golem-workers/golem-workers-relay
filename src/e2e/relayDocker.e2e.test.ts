@@ -11,8 +11,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:chil
 type MockBackend = {
   baseUrl: string;
   close: () => Promise<void>;
-  waitForPull: (timeoutMs: number) => Promise<void>;
-  waitForResult: (timeoutMs: number) => Promise<{ taskId: string; body: unknown; headers: http.IncomingHttpHeaders }>;
+  waitForCallback: (timeoutMs: number) => Promise<{ body: unknown; headers: http.IncomingHttpHeaders }>;
 };
 
 let lastPairingAttempt: { status: number | null; stdout: string; stderr: string } | null = null;
@@ -74,32 +73,9 @@ async function waitForTcpPort(host: string, port: number, timeoutMs: number): Pr
 
 async function startMockBackend(opts: { relayToken: string }): Promise<MockBackend> {
   const port = await getFreePort();
-  const tasks: Array<{
-    taskId: string;
-    attempt: number;
-    leaseId: string;
-    leaseExpiresAt: string;
-    input: { kind: "chat"; sessionKey: string; messageText: string };
-  }> = [
-    {
-      taskId: `task_${randomUUID()}`,
-      attempt: 1,
-      leaseId: `lease_${randomUUID()}`,
-      leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-      input: { kind: "chat", sessionKey: "e2e:s1", messageText: "ping" },
-    },
-  ];
-
-  let resolveResult:
-    | ((v: { taskId: string; body: unknown; headers: http.IncomingHttpHeaders }) => void)
-    | null = null;
-  const resultPromise = new Promise<{ taskId: string; body: unknown; headers: http.IncomingHttpHeaders }>((r) => {
+  let resolveResult: ((v: { body: unknown; headers: http.IncomingHttpHeaders }) => void) | null = null;
+  const resultPromise = new Promise<{ body: unknown; headers: http.IncomingHttpHeaders }>((r) => {
     resolveResult = r;
-  });
-
-  let resolvePulled: (() => void) | null = null;
-  const pulledPromise = new Promise<void>((r) => {
-    resolvePulled = r;
   });
 
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -121,22 +97,10 @@ async function startMockBackend(opts: { relayToken: string }): Promise<MockBacke
 
       const body = await readJson(req);
 
-      if (url.pathname === "/api/v1/relays/pull") {
-        resolvePulled?.();
-        resolvePulled = null;
-        // Only give a single task once; then idle.
-        const out = { tasks: tasks.splice(0, 1) };
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(out));
-        return;
-      }
-
-      const m = url.pathname.match(/^\/api\/v1\/relays\/tasks\/([^/]+)\/result$/);
-      if (m) {
-        const taskId = decodeURIComponent(m[1] ?? "");
+      if (url.pathname === "/api/v1/relays/messages") {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ accepted: true }));
-        resolveResult?.({ taskId, body, headers: req.headers });
+        resolveResult?.({ body, headers: req.headers });
         resolveResult = null;
         return;
       }
@@ -160,23 +124,17 @@ async function startMockBackend(opts: { relayToken: string }): Promise<MockBacke
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
-    waitForPull: async (timeoutMs: number) => {
-      await Promise.race([
-        pulledPromise,
-        new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error("Timed out waiting for relay pull")), timeoutMs)
-        ),
-      ]);
-    },
-    waitForResult: async (timeoutMs: number) => {
+    waitForCallback: async (timeoutMs: number) => {
       const timer = setTimeout(() => {
         // Force a clear error; promise will stay pending otherwise.
-        resolveResult?.({ taskId: "timeout", body: { timeout: true }, headers: {} });
+        resolveResult?.({ body: { timeout: true }, headers: {} });
         resolveResult = null;
       }, timeoutMs);
       try {
         const r = await resultPromise;
-        if (r.taskId === "timeout") throw new Error("Timed out waiting for relay submitResult");
+        if ((r.body as { timeout?: boolean })?.timeout) {
+          throw new Error("Timed out waiting for relay callback");
+        }
         return r;
       } finally {
         clearTimeout(timer);
@@ -199,6 +157,32 @@ async function readJson(req: http.IncomingMessage): Promise<unknown> {
   }
   const raw = Buffer.concat(chunks).toString("utf8");
   return raw ? (JSON.parse(raw) as unknown) : null;
+}
+
+async function postRelayPush(input: {
+  baseUrl: string;
+  relayToken: string;
+  body: unknown;
+  timeoutMs: number;
+}): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), input.timeoutMs);
+  try {
+    const resp = await fetch(`${input.baseUrl}/relay/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${input.relayToken}`,
+      },
+      body: JSON.stringify(input.body),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      throw new Error(`Relay push failed with status ${resp.status}`);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function spawnRelay(opts: {
@@ -358,7 +342,7 @@ const testIt = hasDocker ? it : it.skip;
 
 describe("e2e: relay works against OpenClaw gateway (docker)", () => {
   testIt(
-    "pulls one task and submits a result",
+    "accepts push message and submits callback result",
     { timeout: 240_000 },
     async () => {
       const here = path.dirname(fileURLToPath(import.meta.url));
@@ -373,6 +357,7 @@ describe("e2e: relay works against OpenClaw gateway (docker)", () => {
       let bridgePort = await getFreePort();
       while (bridgePort === gatewayPort) bridgePort = await getFreePort();
       const gatewayToken = `e2e-token-${randomUUID()}`;
+      const relayPushPort = await getFreePort();
 
       // Compose requires OPENROUTER_API_KEY; gateway can start unconfigured.
       await writeFile(
@@ -412,8 +397,7 @@ describe("e2e: relay works against OpenClaw gateway (docker)", () => {
             ...process.env,
             BACKEND_BASE_URL: backend.baseUrl,
             RELAY_TOKEN: "test-relay-token",
-            RELAY_WAIT_SECONDS: "0",
-            RELAY_MAX_TASKS: "1",
+            RELAY_PUSH_PORT: String(relayPushPort),
             RELAY_CONCURRENCY: "1",
             RELAY_TASK_TIMEOUT_MS: "15000",
             OPENCLAW_GATEWAY_WS_URL: `ws://127.0.0.1:${gatewayPort}`,
@@ -480,21 +464,25 @@ describe("e2e: relay works against OpenClaw gateway (docker)", () => {
           ].join("\n");
         };
 
-        try {
-          await backend.waitForPull(120_000);
-        } catch (err) {
-          throw new Error(debugDump(err instanceof Error ? err.message : String(err)));
-        }
+        await waitForTcpPort("127.0.0.1", relayPushPort, 60_000);
 
-        let taskId: string;
         let body: unknown;
         try {
-          ({ taskId, body } = await backend.waitForResult(60_000));
+          await postRelayPush({
+            baseUrl: `http://127.0.0.1:${relayPushPort}`,
+            relayToken: "test-relay-token",
+            body: {
+              messageId: `msg_${randomUUID()}`,
+              sentAtMs: Date.now(),
+              input: { kind: "chat", sessionKey: "e2e:s1", messageText: "ping" },
+            },
+            timeoutMs: 15_000,
+          });
+          ({ body } = await backend.waitForCallback(60_000));
         } catch (err) {
           throw new Error(debugDump(err instanceof Error ? err.message : String(err)));
         }
 
-        expect(taskId).toMatch(/^task_/);
         expect(body).toBeTruthy();
         expect(typeof body).toBe("object");
 

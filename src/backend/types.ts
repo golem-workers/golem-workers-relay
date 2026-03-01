@@ -1,11 +1,5 @@
 import { z } from "zod";
 
-export const pullRequestSchema = z.object({
-  relayInstanceId: z.string().min(1),
-  maxTasks: z.number().int().min(1).max(20),
-  waitSeconds: z.number().int().min(0).max(100_000_000),
-});
-
 const chatTaskInputSchema = z.object({
   kind: z.literal("chat"),
   sessionKey: z.string().min(1),
@@ -46,21 +40,6 @@ export const taskInputSchema = z.discriminatedUnion("kind", [
   sessionNewTaskInputSchema,
 ]);
 
-export const leasedTaskSchema = z.object({
-  taskId: z.string().min(1),
-  attempt: z.number().int().min(1),
-  leaseId: z.string().min(1),
-  leaseExpiresAt: z.string().min(1),
-  input: taskInputSchema,
-});
-
-export const pullResponseSchema = z.object({
-  tasks: z.array(leasedTaskSchema),
-});
-
-export type PullRequest = z.infer<typeof pullRequestSchema>;
-export type LeasedTask = z.infer<typeof leasedTaskSchema>;
-export type PullResponse = z.infer<typeof pullResponseSchema>;
 export type TaskInput = z.infer<typeof taskInputSchema>;
 
 export const inboundPushMessageSchema = z.object({

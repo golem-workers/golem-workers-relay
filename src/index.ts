@@ -24,8 +24,6 @@ async function main(): Promise<void> {
       backendBaseUrl: cfg.backendBaseUrl,
       gatewayWsUrl: openclaw.gateway.wsUrl,
       openclawConfigPath: openclaw.configPath,
-      maxTasks: cfg.maxTasks,
-      waitSeconds: cfg.waitSeconds,
       concurrency: cfg.concurrency,
       pushPort: cfg.pushPort,
       pushPath: cfg.pushPath,

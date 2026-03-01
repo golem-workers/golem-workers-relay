@@ -15,8 +15,6 @@ const envSchema = z.object({
   BACKEND_BASE_URL: z.string().url(),
 
   RELAY_INSTANCE_ID: z.string().min(1).optional(),
-  RELAY_MAX_TASKS: z.coerce.number().int().min(1).max(20).optional(),
-  RELAY_WAIT_SECONDS: z.coerce.number().int().min(0).max(100_000_000).optional(),
   RELAY_TASK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(2_147_483_647).optional(),
   RELAY_CONCURRENCY: z.coerce.number().int().min(1).max(20).optional(),
   RELAY_PUSH_PORT: z.coerce.number().int().min(1).max(65535).optional(),
@@ -48,8 +46,6 @@ export type RelayConfig = {
   relayToken: string;
   backendBaseUrl: string;
   relayInstanceId: string;
-  maxTasks: number;
-  waitSeconds: number;
   taskTimeoutMs: number;
   concurrency: number;
   pushPort: number;
@@ -92,8 +88,6 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     relayToken: parsed.RELAY_TOKEN,
     backendBaseUrl: parsed.BACKEND_BASE_URL.replace(/\/+$/, ""),
     relayInstanceId,
-    maxTasks: parsed.RELAY_MAX_TASKS ?? 5,
-    waitSeconds: parsed.RELAY_WAIT_SECONDS ?? 2_147_468,
     taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 9_999_999,
     concurrency: parsed.RELAY_CONCURRENCY ?? 1,
     pushPort: parsed.RELAY_PUSH_PORT ?? 18790,
@@ -129,8 +123,6 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     relayToken: "test",
     backendBaseUrl: "http://localhost:3000",
     relayInstanceId: "test-relay",
-    maxTasks: 1,
-    waitSeconds: 0,
     taskTimeoutMs: 5000,
     concurrency: 1,
     pushPort: 18790,
