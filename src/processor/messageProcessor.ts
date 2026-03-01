@@ -205,6 +205,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && (value as { constructor?: unknown }).constructor === Object;
 }
 
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
 function normalizeOpenclawMeta(meta: unknown): Record<string, unknown> | undefined {
   if (!isPlainObject(meta)) return undefined;
   const normalized = { ...meta };
@@ -327,7 +331,7 @@ function pickModelFromUsageOutgoing(source: unknown): string | undefined {
   const aggregates = (source as { aggregates?: unknown }).aggregates;
   if (!isPlainObject(aggregates)) return undefined;
   const byModel = (aggregates as { byModel?: unknown }).byModel;
-  if (!Array.isArray(byModel) || byModel.length === 0) return undefined;
+  if (!isUnknownArray(byModel) || byModel.length === 0) return undefined;
   const first = byModel[0];
   if (!isPlainObject(first)) return undefined;
   const provider = readNonEmptyString((first as { provider?: unknown }).provider);
