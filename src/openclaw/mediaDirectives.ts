@@ -65,15 +65,6 @@ async function resolveSessionFileForSessionKey(params: {
   if (looksLikePlainObject(exact) && typeof exact.sessionFile === "string" && exact.sessionFile.trim()) {
     return exact.sessionFile.trim();
   }
-
-  // Fallback: find a mapping key that ends with `:${sessionKey}`.
-  const suffix = `:${params.sessionKey}`;
-  for (const [k, v] of Object.entries(parsed)) {
-    if (!k.endsWith(suffix)) continue;
-    if (looksLikePlainObject(v) && typeof v.sessionFile === "string" && v.sessionFile.trim()) {
-      return v.sessionFile.trim();
-    }
-  }
   return null;
 }
 

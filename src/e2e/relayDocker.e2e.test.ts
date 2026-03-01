@@ -79,14 +79,14 @@ async function startMockBackend(opts: { relayToken: string }): Promise<MockBacke
     attempt: number;
     leaseId: string;
     leaseExpiresAt: string;
-    input: { sessionKey: string; messageText: string };
+    input: { kind: "chat"; sessionKey: string; messageText: string };
   }> = [
     {
       taskId: `task_${randomUUID()}`,
       attempt: 1,
       leaseId: `lease_${randomUUID()}`,
       leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-      input: { sessionKey: "e2e:s1", messageText: "ping" },
+      input: { kind: "chat", sessionKey: "e2e:s1", messageText: "ping" },
     },
   ];
 
@@ -384,7 +384,6 @@ describe("e2e: relay works against OpenClaw gateway (docker)", () => {
           `OPENCLAW_BRIDGE_PORT=${bridgePort}`,
           `OPENCLAW_GATEWAY_BIND=lan`,
           `OPENCLAW_SKIP_CHANNELS=1`,
-          `CLAWDBOT_SKIP_CHANNELS=1`,
         ].join("\n") + "\n",
         "utf8"
       );

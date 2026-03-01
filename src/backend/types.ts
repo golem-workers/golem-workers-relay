@@ -40,16 +40,11 @@ const sessionNewTaskInputSchema = z.object({
   kind: z.literal("session_new"),
 });
 
-export const taskInputSchema = z.preprocess((value) => {
-  // Back-compat: older backends send `{ sessionKey, messageText }` without a `kind`.
-  if (value && typeof value === "object" && (value as { constructor?: unknown }).constructor === Object) {
-    const obj = value as Record<string, unknown>;
-    if (typeof obj.kind !== "string" && typeof obj.sessionKey === "string" && typeof obj.messageText === "string") {
-      return { kind: "chat", ...obj };
-    }
-  }
-  return value;
-}, z.discriminatedUnion("kind", [chatTaskInputSchema, handshakeTaskInputSchema, sessionNewTaskInputSchema]));
+export const taskInputSchema = z.discriminatedUnion("kind", [
+  chatTaskInputSchema,
+  handshakeTaskInputSchema,
+  sessionNewTaskInputSchema,
+]);
 
 export const leasedTaskSchema = z.object({
   taskId: z.string().min(1),

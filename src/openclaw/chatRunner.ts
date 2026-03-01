@@ -268,7 +268,6 @@ export class ChatRunner {
     }
     const usageIncoming = await this.collectSessionsUsageStats({
       timeoutMs: Math.min(2_000, Math.max(400, Math.trunc(input.timeoutMs / 3))),
-      allowWhenMethodsMissing: true,
       attempts: 3,
     });
     if (!usageIncoming) {
@@ -356,7 +355,6 @@ export class ChatRunner {
         this.runSessionByRunId.delete(runId);
         const usageOutgoing = await this.collectSessionsUsageStats({
           timeoutMs: Math.min(2_000, Math.max(400, remainingMs - 200)),
-          allowWhenMethodsMissing: true,
           attempts: 3,
         });
         if (!usageOutgoing) {
@@ -637,17 +635,12 @@ export class ChatRunner {
 
   private async collectSessionsUsageStats(input: {
     timeoutMs: number;
-    allowWhenMethodsMissing?: boolean;
     attempts?: number;
   }): Promise<OpenclawSessionsUsageStats | undefined> {
     const hello = this.gateway.getHello();
     const supportedMethods = Array.isArray(hello?.features?.methods) ? new Set(hello.features.methods) : null;
-    if (!supportedMethods && !input.allowWhenMethodsMissing) {
-      return undefined;
-    }
-    if (supportedMethods && !supportedMethods.has("sessions.usage") && !input.allowWhenMethodsMissing) {
-      return undefined;
-    }
+    if (!supportedMethods) return undefined;
+    if (!supportedMethods.has("sessions.usage")) return undefined;
     const perCallTimeoutMs = Math.max(300, Math.min(1500, Math.trunc(input.timeoutMs)));
     const attempts = Math.max(1, Math.min(3, Math.trunc(input.attempts ?? 3)));
     for (let attempt = 1; attempt <= attempts; attempt += 1) {

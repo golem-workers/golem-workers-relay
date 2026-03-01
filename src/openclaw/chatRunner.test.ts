@@ -67,6 +67,10 @@ describe("ChatRunner", () => {
                 type: "hello-ok",
                 protocol: 3,
                 policy: { tickIntervalMs: 5000 },
+                features: {
+                  methods: ["chat.send", "sessions.usage"],
+                  events: ["chat"],
+                },
               },
             })
           );
@@ -243,7 +247,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("uses sessions.usage even when method is not advertised", async () => {
+  it("returns USAGE_REQUIRED when sessions.usage is not advertised", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
 
@@ -311,16 +315,22 @@ describe("ChatRunner", () => {
       messageText: "hi",
       timeoutMs: 2000,
     });
-    expect(result.outcome).toBe("reply");
-
-    expect((openclawMeta as { usageIncoming?: unknown }).usageIncoming).toBeDefined();
-    expect((openclawMeta as { usageOutgoing?: unknown }).usageOutgoing).toBeDefined();
+    expect(result).toEqual({
+      outcome: "error",
+      error: {
+        code: "USAGE_REQUIRED",
+        message: "sessions.usage is required before chat.send",
+      },
+    });
+    expect(openclawMeta).toMatchObject({
+      method: "chat.send",
+    });
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("collects outgoing usage when hello features are missing", async () => {
+  it("returns USAGE_REQUIRED when hello features are missing", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
 
@@ -347,39 +357,6 @@ describe("ChatRunner", () => {
           return;
         }
         if (frame.type !== "req") return;
-        if (frame.method === "chat.send") {
-          const runId = "run_snapshot_legacy";
-          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
-          setTimeout(() => {
-            ws.send(
-              JSON.stringify({
-                type: "event",
-                event: "chat",
-                payload: {
-                  runId,
-                  sessionKey: "s-legacy",
-                  seq: 1,
-                  state: "final",
-                  message: { text: "ok" },
-                },
-              })
-            );
-          }, 10);
-          return;
-        }
-        if (frame.method === "sessions.usage") {
-          ws.send(
-            JSON.stringify({
-              type: "res",
-              id: frame.id,
-              ok: true,
-              payload: {
-                source: "sessions.usage",
-                totals: { input: 12, output: 5, totalTokens: 17 },
-              },
-            })
-          );
-        }
       });
     });
 
@@ -398,13 +375,16 @@ describe("ChatRunner", () => {
       messageText: "hi",
       timeoutMs: 2000,
     });
-    expect(result.outcome).toBe("reply");
-    const statsMeta = openclawMeta as {
-      usageIncoming?: { totals?: { totalTokens?: number } };
-      usageOutgoing?: { totals?: { totalTokens?: number } };
-    };
-    expect(statsMeta.usageIncoming?.totals?.totalTokens).toBe(27);
-    expect(statsMeta.usageOutgoing?.totals?.totalTokens).toBe(27);
+    expect(result).toEqual({
+      outcome: "error",
+      error: {
+        code: "USAGE_REQUIRED",
+        message: "sessions.usage is required before chat.send",
+      },
+    });
+    expect(openclawMeta).toMatchObject({
+      method: "chat.send",
+    });
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
@@ -427,7 +407,12 @@ describe("ChatRunner", () => {
               type: "res",
               id: frame.id,
               ok: true,
-              payload: { type: "hello-ok", protocol: 3, policy: { tickIntervalMs: 5000 } },
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
             }),
           );
           return;
@@ -502,7 +487,12 @@ describe("ChatRunner", () => {
               type: "res",
               id: frame.id,
               ok: true,
-              payload: { type: "hello-ok", protocol: 3, policy: { tickIntervalMs: 5000 } },
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
             }),
           );
           return;
@@ -575,7 +565,12 @@ describe("ChatRunner", () => {
               type: "res",
               id: frame.id,
               ok: true,
-              payload: { type: "hello-ok", protocol: 3, policy: { tickIntervalMs: 5000 } },
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
             }),
           );
           return;
@@ -649,7 +644,12 @@ describe("ChatRunner", () => {
               type: "res",
               id: frame.id,
               ok: true,
-              payload: { type: "hello-ok", protocol: 3, policy: { tickIntervalMs: 5000 } },
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
             }),
           );
           return;
@@ -735,7 +735,12 @@ describe("ChatRunner", () => {
               type: "res",
               id: frame.id,
               ok: true,
-              payload: { type: "hello-ok", protocol: 3, policy: { tickIntervalMs: 5000 } },
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
             }),
           );
           return;
@@ -850,7 +855,12 @@ describe("ChatRunner", () => {
               type: "res",
               id: frame.id,
               ok: true,
-              payload: { type: "hello-ok", protocol: 3, policy: { tickIntervalMs: 5000 } },
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
             }),
           );
           return;
@@ -920,6 +930,10 @@ describe("ChatRunner", () => {
                 type: "hello-ok",
                 protocol: 3,
                 policy: { tickIntervalMs: 5000 },
+                features: {
+                  methods: ["chat.send", "sessions.usage"],
+                  events: ["chat"],
+                },
               },
             })
           );

@@ -17,7 +17,6 @@ services:
 
       # Allow starting without any channel integrations configured.
       OPENCLAW_SKIP_CHANNELS: ${OPENCLAW_SKIP_CHANNELS:-1}
-      CLAWDBOT_SKIP_CHANNELS: ${CLAWDBOT_SKIP_CHANNELS:-1}
     volumes:
       # Persist OpenClaw state + openclaw.json on the host.
       - ./.openclaw:/home/node/.openclaw
@@ -52,7 +51,6 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY}
       OPENCLAW_SKIP_CHANNELS: ${OPENCLAW_SKIP_CHANNELS:-1}
-      CLAWDBOT_SKIP_CHANNELS: ${CLAWDBOT_SKIP_CHANNELS:-1}
       BROWSER: echo
     volumes:
       - ./.openclaw:/home/node/.openclaw
