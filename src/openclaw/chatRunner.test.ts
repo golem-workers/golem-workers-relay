@@ -247,16 +247,30 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("returns USAGE_REQUIRED when sessions.usage is not advertised", async () => {
+  it("returns USAGE_REQUIRED when sessions.usage is unavailable", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+    let chatSendCalls = 0;
 
     const { wss, port } = startServer((ws) => {
       ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
       ws.on("message", (data) => {
         const text = rawDataToString(data);
         const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
-        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "sessions.usage") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: false,
+              error: {
+                code: "METHOD_NOT_FOUND",
+                message: "Unknown method: sessions.usage",
+              },
+            })
+          );
+          return;
+        }
         if (frame.type === "req" && frame.method === "connect") {
           ws.send(
             JSON.stringify({
@@ -278,6 +292,7 @@ describe("ChatRunner", () => {
         }
         if (frame.type !== "req") return;
         if (frame.method === "chat.send") {
+          chatSendCalls += 1;
           const runId = "run_snapshot_2";
           ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
           setTimeout(() => {
@@ -325,12 +340,96 @@ describe("ChatRunner", () => {
     expect(openclawMeta).toMatchObject({
       method: "chat.send",
     });
+    expect(chatSendCalls).toBe(0);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("returns USAGE_REQUIRED when hello features are missing", async () => {
+  it("collects usage even when sessions.usage is not advertised", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: {
+                  methods: ["chat.send"],
+                  events: ["chat"],
+                },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type !== "req") return;
+        if (frame.method === "chat.send") {
+          const runId = "run_snapshot_not_advertised";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: {
+                  runId,
+                  sessionKey: "s-not-advertised",
+                  seq: 1,
+                  state: "final",
+                  message: { text: "ok" },
+                },
+              })
+            );
+          }, 10);
+          return;
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const { result, openclawMeta } = await runner.runChatTask({
+      taskId: "task_snapshot_not_advertised",
+      sessionKey: "s-not-advertised",
+      messageText: "hi",
+      timeoutMs: 2000,
+    });
+    expect(result.outcome).toBe("reply");
+    expect(openclawMeta).toMatchObject({
+      method: "chat.send",
+      usageIncoming: {
+        source: "sessions.usage",
+      },
+      usageOutgoing: {
+        source: "sessions.usage",
+      },
+    });
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
+  it("collects usage even when hello features are missing", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
 
@@ -357,6 +456,26 @@ describe("ChatRunner", () => {
           return;
         }
         if (frame.type !== "req") return;
+        if (frame.method === "chat.send") {
+          const runId = "run_snapshot_legacy";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: {
+                  runId,
+                  sessionKey: "s-legacy",
+                  seq: 1,
+                  state: "final",
+                  message: { text: "ok" },
+                },
+              })
+            );
+          }, 10);
+          return;
+        }
       });
     });
 
@@ -375,15 +494,15 @@ describe("ChatRunner", () => {
       messageText: "hi",
       timeoutMs: 2000,
     });
-    expect(result).toEqual({
-      outcome: "error",
-      error: {
-        code: "USAGE_REQUIRED",
-        message: "sessions.usage is required before chat.send",
-      },
-    });
+    expect(result.outcome).toBe("reply");
     expect(openclawMeta).toMatchObject({
       method: "chat.send",
+      usageIncoming: {
+        source: "sessions.usage",
+      },
+      usageOutgoing: {
+        source: "sessions.usage",
+      },
     });
 
     client.stop();

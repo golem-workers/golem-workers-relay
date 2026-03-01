@@ -688,15 +688,13 @@ export class ChatRunner {
     timeoutMs: number;
     attempts?: number;
   }): Promise<OpenclawSessionsUsageStats | undefined> {
-    const hello = this.gateway.getHello();
-    const supportedMethods = Array.isArray(hello?.features?.methods) ? new Set(hello.features.methods) : null;
-    if (!supportedMethods) return undefined;
-    if (!supportedMethods.has("sessions.usage")) return undefined;
     const perCallTimeoutMs = Math.max(300, Math.min(1500, Math.trunc(input.timeoutMs)));
     const attempts = Math.max(1, Math.min(3, Math.trunc(input.attempts ?? 3)));
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       // Request global usage snapshot so totals/aggregates include all sessions,
-      // all models, and the full available period.
+      // all models, and the full available period. Do not trust `hello.features.methods`
+      // for capability discovery because some OpenClaw versions implement
+      // `sessions.usage` but do not advertise it.
       const payload = await this.gateway.getSessionsUsage({}, { timeoutMs: perCallTimeoutMs }).catch(() => undefined);
       if (!isPlainObject(payload)) {
         if (attempt < attempts) await sleep(attempt * 120);
