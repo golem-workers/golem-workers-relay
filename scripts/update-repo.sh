@@ -4,6 +4,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+FORCE_RESTART=0
+for arg in "$@"; do
+  case "${arg}" in
+    force|--force|-f)
+      FORCE_RESTART=1
+      ;;
+    *)
+      echo "Unknown argument: ${arg}"
+      echo "Usage: $0 [force|--force|-f]"
+      exit 1
+      ;;
+  esac
+done
+
 # Default service name for systemd restart. If the caller explicitly sets
 # SERVICE_NAME="" we treat that as "do not restart".
 if [[ -z "${SERVICE_NAME+x}" ]]; then
@@ -97,10 +111,18 @@ NEW_HEAD="$(git rev-parse HEAD)"
 # Keep scripts executable even if checkout resets modes.
 chmod 0777 "${ROOT_DIR}/scripts/update-repo.sh" "${ROOT_DIR}/scripts/start.sh" 2>/dev/null || true
 
+HAS_CHANGES=0
 if [[ "${OLD_HEAD}" != "${NEW_HEAD}" ]]; then
+  HAS_CHANGES=1
   echo "Changes detected. Rebuilding..."
   "${NPM_BIN}" ci
   "${NPM_BIN}" run build
+fi
+
+if [[ "${HAS_CHANGES}" -eq 1 || "${FORCE_RESTART}" -eq 1 ]]; then
+  if [[ "${HAS_CHANGES}" -eq 0 ]]; then
+    echo "No changes detected, but force restart requested."
+  fi
 
   # Optional systemd restart (defaults to "golem-workers-relay").
   # Best-effort: missing systemd/sudo/unit should not fail the update.
