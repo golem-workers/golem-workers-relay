@@ -94,7 +94,8 @@ brew --version
 
 echo 'export NODE_OPTIONS="--max-old-space-size=2024"' >> ~/.bashrc
 source ~/.bashrc
-curl -fsSL https://openclaw.ai/install.sh | bash -s -- --install-method npm --no-onboard
+
+curl -fsSL https://openclaw.ai/install.sh | bash -s -- --version 2026.3.1 --install-method npm --no-onboard
 
 export PATH="/home/claw/.npm-global/bin:$PATH"
 source ~/.bashrc
