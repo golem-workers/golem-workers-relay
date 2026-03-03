@@ -68,14 +68,16 @@ go version
 sudo bash -c 'useradd -m -s /bin/bash claw && passwd -l claw && echo "claw ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/claw && chmod 440 /etc/sudoers.d/claw && sed -i "s/^#*PasswordAuthentication.*/PasswordAuthentication no/" /etc/ssh/sshd_config && systemctl restart ssh'
 apt install -y dbus-user-session
 loginctl enable-linger claw
-systemctl start "user@$(id -u claw).service"
+systemctl restart "user@$(id -u claw).service"
 
 cd /home/claw/
 sudo -iu claw
 
+__________________________________________________________________________________
 
-export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+echo 'export XDG_RUNTIME_DIR="/run/user/$(id -u)"' >> ~/.bashrc
+echo 'export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"' >> ~/.bashrc
+source ~/.bashrc
 
 ### BREW ###
 
