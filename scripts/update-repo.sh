@@ -114,7 +114,14 @@ chmod 0777 "${ROOT_DIR}/scripts/update-repo.sh" "${ROOT_DIR}/scripts/start.sh" 2
 HAS_CHANGES=0
 if [[ "${OLD_HEAD}" != "${NEW_HEAD}" ]]; then
   HAS_CHANGES=1
-  echo "Changes detected. Rebuilding..."
+fi
+
+if [[ "${HAS_CHANGES}" -eq 1 || "${FORCE_RESTART}" -eq 1 ]]; then
+  if [[ "${HAS_CHANGES}" -eq 1 ]]; then
+    echo "Changes detected. Rebuilding..."
+  else
+    echo "No changes detected, but force mode requested. Running full rebuild..."
+  fi
   "${NPM_BIN}" ci
   "${NPM_BIN}" run build
 fi
