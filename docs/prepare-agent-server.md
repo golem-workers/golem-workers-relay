@@ -24,7 +24,6 @@ sudo journalctl --vacuum-size=100M
 
 sudo tee /etc/fail2ban/jail.local > /dev/null <<EOF
 [DEFAULT]
-# Добавьте сюда свой IP, чтобы случайно не забанить себя
 ignoreip = 127.0.0.1/8 ::1 192.168.2.0/24
 banaction = ufw
 maxretry = 30
