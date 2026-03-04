@@ -20,25 +20,6 @@ sudo sed -i 's/^SystemMaxUse=.*/SystemMaxUse=100M/' /etc/systemd/journald.conf
 sudo systemctl restart systemd-journald
 sudo journalctl --vacuum-size=100M
 
-### F2B ###
-
-sudo tee /etc/fail2ban/jail.local > /dev/null <<EOF
-[DEFAULT]
-ignoreip = 127.0.0.1/8 ::1 192.168.2.0/24
-banaction = ufw
-maxretry = 30
-findtime = 3600
-bantime  = 86400
-
-[sshd]
-enabled = true
-port = ssh
-filter = sshd
-logpath = /var/log/auth.log
-EOF
-
-sudo systemctl restart fail2ban
-
 #### SWAP ###
 
 sudo fallocate -l 2G /swapfile
@@ -61,37 +42,23 @@ EOF
 source ~/.bashrc
 go version
 
-
-
-### USER ###
-
-useradd -m -s /bin/bash claw
-passwd -l claw
-echo "claw ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/claw
-chmod 440 /etc/sudoers.d/claw
-sed -i "s/^#*PasswordAuthentication.*/PasswordAuthentication no/" /etc/ssh/sshd_config
-systemctl restart ssh
-
-loginctl enable-linger claw
-systemctl start "user@$(id -u claw).service"
-
-cd /home/claw/
-sudo -iu claw
-
-__________________________________________________________________________________
-
-cat >> ~/.bashrc << 'EOF'
-export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
-EOF
-source ~/.bashrc
-
 ### BREW ###
 
-NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-echo >> /home/claw/.bashrc
-echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"' >> /home/claw/.bashrc
-eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"
+id -u linuxbrew >/dev/null 2>&1 || useradd -m -s /bin/bash linuxbrew
+mkdir -p /home/linuxbrew/.linuxbrew
+chown -R linuxbrew:linuxbrew /home/linuxbrew
+
+sudo -u linuxbrew -H bash -lc 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+sudo -u linuxbrew -H bash -lc 'grep -qxF '\''eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"'\'' ~/.bashrc || echo '\''eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"'\'' >> ~/.bashrc'
+
+cat >/usr/local/bin/brew <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exec sudo -u linuxbrew -H bash -lc 'cd / && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)" && brew "$@"' _ "$@"
+EOF
+chmod +x /usr/local/bin/brew
+
+source /root/.bashrc
 
 brew --version
 
@@ -107,3 +74,13 @@ export PATH="/home/claw/.npm-global/bin:$PATH"
 source ~/.bashrc
 openclaw onboard --install-daemon
 
+
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+mkdir -p ~/Documents/provider-snapshots
+
+scp -i ~/.ssh/do_rsa \
+  root@65.21.228.232:/srv/golem-provider/data/overlays/snapshots/img_c4bf8497-b07b-4291-a23e-a9b7c36f7270.overlay \
+  ~/Documents/provider-snapshots/
