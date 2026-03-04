@@ -70,5 +70,53 @@ describe("createMessageProcessor", () => {
     expect(meta?.trace?.openclawRunId).toBe("run_1");
     expect(typeof meta?.trace?.relayMessageId).toBe("string");
   });
+
+  it("preserves extra reply fields from ChatRunner", async () => {
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockResolvedValue({
+          result: {
+            outcome: "reply",
+            reply: {
+              runId: "run_tech_1",
+              message: { role: "assistant", content: "ok" },
+              openclawEvents: [
+                { runId: "run_tech_1", sessionKey: "s1", seq: 0, state: "delta", message: { text: "ping" } },
+                { runId: "run_tech_1", sessionKey: "s1", seq: 1, state: "final", message: { text: "ok" } },
+              ],
+            },
+          },
+          openclawMeta: { method: "chat.send", runId: "run_tech_1" },
+        }),
+      } as never,
+      backend: { submitInboundMessage } as never,
+    });
+
+    const message: InboundPushMessage = {
+      messageId: "msg_tech_1",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "ping",
+      },
+    };
+
+    await processor(message);
+
+    const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
+      | { body?: { reply?: { openclawEvents?: unknown[]; runId?: string } } }
+      | undefined;
+    expect(firstCall?.body?.reply?.runId).toBe("run_tech_1");
+    expect(Array.isArray(firstCall?.body?.reply?.openclawEvents)).toBe(true);
+    expect(firstCall?.body?.reply?.openclawEvents).toHaveLength(2);
+  });
 });
 

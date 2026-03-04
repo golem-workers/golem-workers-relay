@@ -244,6 +244,7 @@ function buildOpenclawMetaWithTrace(
 
 function buildReplyPayload(reply: { message: unknown; runId: string; media?: unknown[] }): unknown {
   const payload: Record<string, unknown> = {
+    ...(isPlainObject(reply) ? reply : {}),
     runId: reply.runId,
     message: normalizeReplyMessage(reply.message),
   };

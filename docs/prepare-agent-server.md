@@ -66,6 +66,16 @@ brew --version
 ### OPENCLAW INSTALL ###
 
 echo 'export NODE_OPTIONS="--max-old-space-size=2024"' >> ~/.bashrc
+sudo mkdir -p /etc/systemd/system.conf.d
+sudo tee /etc/systemd/system.conf.d/node-options.conf >/dev/null <<'EOF'
+[Manager]
+DefaultEnvironment=NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps
+EOF
+sudo mkdir -p /etc/systemd/user.conf.d
+sudo tee /etc/systemd/user.conf.d/node-options.conf >/dev/null <<'EOF'
+[Manager]
+DefaultEnvironment=NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps
+EOF
 source ~/.bashrc
 
 curl -fsSL https://openclaw.ai/install.sh | bash -s -- --version 2026.3.1 --install-method npm --no-onboard
@@ -74,6 +84,19 @@ export PATH="/home/claw/.npm-global/bin:$PATH"
 source ~/.bashrc
 openclaw onboard --install-daemon
 
+
+sudo mkdir -p /etc/systemd/system/golem-workers-relay.service.d && printf '%s\n' '[Service]' 'Environment=NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps' | sudo tee /etc/systemd/system/golem-workers-relay.service.d/override.conf >/dev/null && sudo systemctl daemon-reload && sudo systemctl restart golem-workers-relay && systemctl show -p Environment golem-workers-relay
+sudo mkdir -p /root/.config/systemd/user/openclaw-gateway.service.d
+sudo tee /root/.config/systemd/user/openclaw-gateway.service.d/override.conf >/dev/null <<'EOF'
+[Service]
+Environment=NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps
+EOF
+sudo systemctl daemon-reexec
+sudo systemctl daemon-reload
+sudo systemctl restart golem-workers-relay
+sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reexec
+sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reload
+sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user restart openclaw-gateway
 
 
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

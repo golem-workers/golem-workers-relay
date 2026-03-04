@@ -17,9 +17,32 @@ import {
 } from "./transcription.js";
 
 export type ChatRunResult =
-  | { outcome: "reply"; reply: { message: unknown; runId: string; media?: TranscriptMediaFile[] } }
-  | { outcome: "no_reply"; noReply?: { reason?: string; runId: string } }
-  | { outcome: "error"; error: { code: string; message: string; runId?: string } };
+  | {
+      outcome: "reply";
+      reply: {
+        message: unknown;
+        runId: string;
+        media?: TranscriptMediaFile[];
+        openclawEvents?: ChatEvent[];
+      };
+    }
+  | {
+      outcome: "no_reply";
+      noReply?: {
+        reason?: string;
+        runId: string;
+        openclawEvents?: ChatEvent[];
+      };
+    }
+  | {
+      outcome: "error";
+      error: {
+        code: string;
+        message: string;
+        runId?: string;
+        openclawEvents?: ChatEvent[];
+      };
+    };
 
 type ChatRetryOptions = {
   attempts: number;
@@ -179,6 +202,7 @@ async function listKnownSessionKeysFromState(): Promise<string[]> {
 export class ChatRunner {
   private waitersByRunId = new Map<string, Waiter>();
   private runSessionByRunId = new Map<string, string>();
+  private runEventsByRunId = new Map<string, ChatEvent[]>();
   private sessionMaintenanceLock: Promise<void> | null = null;
   private readonly devLogEnabled: boolean;
   private readonly devLogTextMaxLen: number;
@@ -228,9 +252,11 @@ export class ChatRunner {
     const parsed = chatEventSchema.safeParse(evt.payload);
     if (!parsed.success) return;
     const chatEvt = parsed.data;
-    if (chatEvt.state !== "final" && chatEvt.state !== "error" && chatEvt.state !== "aborted") {
-      return;
+    const events = this.runEventsByRunId.get(chatEvt.runId);
+    if (events) {
+      events.push(chatEvt);
     }
+    if (chatEvt.state !== "final" && chatEvt.state !== "error" && chatEvt.state !== "aborted") return;
     if (this.devLogEnabled) {
       logger.debug({ runId: chatEvt.runId, state: chatEvt.state }, "Gateway chat event terminal");
     }
@@ -365,8 +391,10 @@ export class ChatRunner {
           logger.debug({ taskId: input.taskId, runId, attempt }, "Relay waiting for chat final event");
         }
         this.runSessionByRunId.set(runId, input.sessionKey);
+        this.runEventsByRunId.set(runId, []);
         const finalEvt = await this.waitForFinal(runId, remainingMs);
         this.runSessionByRunId.delete(runId);
+        const openclawEvents = this.consumeRunEvents(runId);
         const usageOutgoing = await this.collectSessionsUsageStats({
           timeoutMs: Math.min(2_000, Math.max(400, remainingMs - 200)),
           attempts: 3,
@@ -433,6 +461,7 @@ export class ChatRunner {
                 reply: {
                   message: finalEvt.message,
                   runId,
+                  ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
                   ...(media.length > 0 ? { media } : {}),
                 },
               },
@@ -460,7 +489,14 @@ export class ChatRunner {
             );
           }
           return {
-            result: { outcome: "no_reply", noReply: { runId } },
+            result: {
+              outcome: "no_reply",
+              noReply: {
+                runId,
+                reason: finalEvt.stopReason ?? "no_message",
+                ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
+              },
+            },
             openclawMeta: {
               method: "chat.send",
               runId,
@@ -483,7 +519,15 @@ export class ChatRunner {
             "Message flow transition"
           );
           return {
-            result: { outcome: "error", error: { code: "ABORTED", message: "Chat aborted", runId } },
+            result: {
+              outcome: "error",
+              error: {
+                code: "ABORTED",
+                message: "Chat aborted",
+                runId,
+                ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
+              },
+            },
             openclawMeta: {
               method: "chat.send",
               runId,
@@ -524,7 +568,12 @@ export class ChatRunner {
           return {
             result: {
               outcome: "error",
-              error: { code: "GATEWAY_ERROR", message: gatewayErrorMessage, runId },
+              error: {
+                code: "GATEWAY_ERROR",
+                message: gatewayErrorMessage,
+                runId,
+                ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
+              },
             },
             openclawMeta: {
               method: "chat.send",
@@ -552,6 +601,7 @@ export class ChatRunner {
         }
 
         this.runSessionByRunId.delete(runId);
+        this.runEventsByRunId.delete(runId);
         const msg = err instanceof Error ? err.message : "Timed out waiting for final";
         const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
         const elapsedMs = Date.now() - startedAtMs;
@@ -657,10 +707,17 @@ export class ChatRunner {
       const timeout = setTimeout(() => {
         this.waitersByRunId.delete(runId);
         this.runSessionByRunId.delete(runId);
+        this.runEventsByRunId.delete(runId);
         reject(new Error("Timed out waiting for final"));
       }, timeoutMs);
       this.waitersByRunId.set(runId, { resolve, reject, timeout });
     });
+  }
+
+  private consumeRunEvents(runId: string): ChatEvent[] {
+    const events = this.runEventsByRunId.get(runId) ?? [];
+    this.runEventsByRunId.delete(runId);
+    return events;
   }
 
   private async waitForSessionMaintenance(): Promise<void> {

@@ -127,3 +127,14 @@ When enabled, relay emits transition events for:
 - backend push accepted/rejected,
 - relay -> OpenClaw request/response stages,
 - relay callback request/retry/success/failure to backend.
+
+## OpenClaw event forwarding semantics
+
+For `chat` tasks, relay always sends a callback to backend and preserves OpenClaw run events:
+- `outcome=reply` when OpenClaw returned a final message.
+- `outcome=no_reply` when a run completed without a user-facing message (for example technical/system finalization).
+- `outcome=error` when a run failed or was aborted.
+- `outcome=technical` for raw OpenClaw gateway events (for example `tick`, `connect.challenge`, `chat` event frames).
+
+Relay includes all collected OpenClaw `chat` events (including intermediate/technical `delta` events) in
+`reply.openclawEvents`, `noReply.openclawEvents`, or `error.openclawEvents`.

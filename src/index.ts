@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import { logger } from "./logger.js";
 import { loadRelayConfig } from "./config/env.js";
 import { resolveOpenclawConfig } from "./openclaw/openclawConfig.js";
@@ -6,6 +7,7 @@ import { BackendClient } from "./backend/backendClient.js";
 import { type InboundPushMessage } from "./backend/types.js";
 import { GatewayClient } from "./openclaw/gatewayClient.js";
 import { ChatRunner } from "./openclaw/chatRunner.js";
+import { type EventFrame } from "./openclaw/protocol.js";
 import { type AudioTaskMedia, transcribeAudioWithDeepgram } from "./openclaw/transcription.js";
 import { transcribeAudioWithOpenAi } from "./openclaw/openaiTranscription.js";
 import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
@@ -57,6 +59,10 @@ async function main(): Promise<void> {
 
   const sttApiKey = cfg.stt.provider === "openai" ? cfg.stt.openaiApiKey : cfg.stt.deepgramApiKey;
   const sttLanguage = cfg.stt.provider === "openai" ? cfg.stt.openaiLanguage : undefined;
+  const forwardGatewayEvent = createGatewayEventForwarder({
+    relayInstanceId: cfg.relayInstanceId,
+    backend,
+  });
 
   const gateway = new GatewayClient({
     url: openclaw.gateway.wsUrl,
@@ -65,7 +71,10 @@ async function main(): Promise<void> {
     instanceId: cfg.relayInstanceId,
     role: "operator",
     scopes: cfg.openclaw.scopes,
-    onEvent: (evt) => chatRunner?.handleEvent(evt),
+    onEvent: (evt) => {
+      chatRunner?.handleEvent(evt);
+      void forwardGatewayEvent(evt);
+    },
     devLogEnabled: cfg.devLogEnabled,
     devLogTextMaxLen: cfg.devLogTextMaxLen,
     devLogGatewayFrames: cfg.devLogGatewayFrames,
@@ -213,5 +222,53 @@ async function closeServer(server: import("node:http").Server): Promise<void> {
   await new Promise<void>((resolve) => {
     server.close(() => resolve());
   });
+}
+
+function createGatewayEventForwarder(input: {
+  relayInstanceId: string;
+  backend: BackendClient;
+}): (evt: EventFrame) => Promise<void> {
+  const { relayInstanceId, backend } = input;
+  return async (evt: EventFrame): Promise<void> => {
+    const relayMessageId = `relay_oc_evt_${randomUUID()}`;
+    const finishedAtMs = Date.now();
+    try {
+      await backend.submitInboundMessage({
+        body: {
+          relayInstanceId,
+          relayMessageId,
+          finishedAtMs,
+          outcome: "technical",
+          technical: {
+            source: "openclaw_gateway",
+            event: evt.event,
+            payload: evt.payload ?? null,
+            seq: evt.seq ?? null,
+            stateVersion: evt.stateVersion ?? null,
+          },
+          openclawMeta: {
+            method: `gateway.event.${evt.event}`,
+            trace: {
+              relayMessageId,
+              relayInstanceId,
+            },
+          },
+        },
+      });
+    } catch (err) {
+      logger.warn(
+        {
+          event: "message_flow",
+          direction: "relay_to_backend",
+          stage: "failed",
+          relayMessageId,
+          relayInstanceId,
+          outcome: "technical",
+          error: err instanceof Error ? err.message : String(err),
+        },
+        "Failed to forward OpenClaw gateway event to backend"
+      );
+    }
+  };
 }
 

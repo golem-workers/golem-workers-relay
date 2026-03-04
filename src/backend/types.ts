@@ -74,6 +74,14 @@ export const relayInboundMessageRequestSchema = z.discriminatedUnion("outcome", 
     error: z.unknown(),
     openclawMeta: z.unknown().optional(),
   }),
+  z.object({
+    relayInstanceId: z.string().min(1),
+    relayMessageId: z.string().min(1).optional(),
+    finishedAtMs: z.number().int().nonnegative(),
+    outcome: z.literal("technical"),
+    technical: z.unknown(),
+    openclawMeta: z.unknown().optional(),
+  }),
 ]);
 export type RelayInboundMessageRequest = z.infer<typeof relayInboundMessageRequestSchema>;
 
