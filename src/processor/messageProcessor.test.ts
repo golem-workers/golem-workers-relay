@@ -20,6 +20,7 @@ describe("createMessageProcessor", () => {
       cfg: {
         relayInstanceId: "relay_1",
         taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
         devLogEnabled: false,
         devLogTextMaxLen: 200,
       },
@@ -77,6 +78,7 @@ describe("createMessageProcessor", () => {
       cfg: {
         relayInstanceId: "relay_1",
         taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
         devLogEnabled: false,
         devLogTextMaxLen: 200,
       },
@@ -117,6 +119,78 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.reply?.runId).toBe("run_tech_1");
     expect(Array.isArray(firstCall?.body?.reply?.openclawEvents)).toBe(true);
     expect(firstCall?.body?.reply?.openclawEvents).toHaveLength(2);
+  });
+
+  it("debounces chat messages per session and sends batch", async () => {
+    vi.useFakeTimers();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const runChatTask = vi.fn().mockResolvedValue({
+      result: {
+        outcome: "reply",
+        reply: { runId: "run_batch_1", message: { role: "assistant", content: "ok" } },
+      },
+      openclawMeta: { method: "chat.send", runId: "run_batch_1" },
+    });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 5_000,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: { runChatTask } as never,
+      backend: { submitInboundMessage } as never,
+    });
+
+    const first = processor({
+      messageId: "msg_1",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "first",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(4_900);
+    expect(runChatTask).toHaveBeenCalledTimes(0);
+
+    const second = processor({
+      messageId: "msg_2",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "second",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(4_900);
+    expect(runChatTask).toHaveBeenCalledTimes(0);
+
+    await vi.advanceTimersByTimeAsync(100);
+    await Promise.all([first, second]);
+
+    expect(runChatTask).toHaveBeenCalledTimes(1);
+    expect(runChatTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "msg_2",
+        sessionKey: "s1",
+        messageText: "first\n\nsecond",
+      })
+    );
+    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
+    const noReply = submitInboundMessage.mock.calls[0]?.[0] as
+      | { body?: { outcome?: string; noReply?: { reason?: string; batchedIntoMessageId?: string } } }
+      | undefined;
+    expect(noReply?.body?.outcome).toBe("no_reply");
+    expect(noReply?.body?.noReply?.reason).toBe("batched");
+    expect(noReply?.body?.noReply?.batchedIntoMessageId).toBe("msg_2");
+
+    const reply = submitInboundMessage.mock.calls[1]?.[0] as
+      | { body?: { outcome?: string; openclawMeta?: { trace?: { backendMessageId?: string } } } }
+      | undefined;
+    expect(reply?.body?.outcome).toBe("reply");
+    expect(reply?.body?.openclawMeta?.trace?.backendMessageId).toBe("msg_2");
+    vi.useRealTimers();
   });
 });
 

@@ -10,6 +10,7 @@ type MessageProcessorInput = {
   cfg: {
     relayInstanceId: string;
     taskTimeoutMs: number;
+    chatBatchDebounceMs: number;
     devLogEnabled: boolean;
     devLogTextMaxLen: number;
   };
@@ -20,7 +21,233 @@ type MessageProcessorInput = {
 
 export function createMessageProcessor(input: MessageProcessorInput): (msg: InboundPushMessage) => Promise<void> {
   const { cfg, gateway, runner, backend } = input;
+  const chatBatchesBySession = new Map<string, ChatBatchState>();
+  const chatBatchDebounceMs = Math.max(0, Math.trunc(cfg.chatBatchDebounceMs));
+
   return async (msg: InboundPushMessage): Promise<void> => {
+    if (msg.input.kind !== "chat" || chatBatchDebounceMs === 0) {
+      await processSingleMessage({ cfg, gateway, runner, backend, msg });
+      return;
+    }
+    await enqueueChatBatch({
+      sessionKey: msg.input.sessionKey,
+      msg,
+      debounceMs: chatBatchDebounceMs,
+      chatBatchesBySession,
+      flush: async (items) => {
+        await flushChatBatch({ cfg, gateway, runner, backend, items });
+      },
+    });
+  };
+}
+
+type Deferred = {
+  resolve: () => void;
+  reject: (error: unknown) => void;
+  promise: Promise<void>;
+};
+
+type ChatBatchItem = {
+  msg: InboundPushMessage;
+  deferred: Deferred;
+};
+
+type ChatBatchState = {
+  timer: NodeJS.Timeout | null;
+  items: ChatBatchItem[];
+};
+
+async function enqueueChatBatch(input: {
+  sessionKey: string;
+  msg: InboundPushMessage;
+  debounceMs: number;
+  chatBatchesBySession: Map<string, ChatBatchState>;
+  flush: (items: ChatBatchItem[]) => Promise<void>;
+}): Promise<void> {
+  const deferred = createDeferred();
+  const state =
+    input.chatBatchesBySession.get(input.sessionKey) ??
+    (() => {
+      const created: ChatBatchState = { timer: null, items: [] };
+      input.chatBatchesBySession.set(input.sessionKey, created);
+      return created;
+    })();
+  state.items.push({ msg: input.msg, deferred });
+  if (state.timer) {
+    clearTimeout(state.timer);
+  }
+  state.timer = setTimeout(() => {
+    const current = input.chatBatchesBySession.get(input.sessionKey);
+    if (!current) return;
+    input.chatBatchesBySession.delete(input.sessionKey);
+    const items = current.items;
+    if (items.length === 0) return;
+    void input.flush(items).catch((error) => {
+      for (const item of items) {
+        item.deferred.reject(error);
+      }
+    });
+  }, input.debounceMs);
+  return deferred.promise;
+}
+
+async function flushChatBatch(input: {
+  cfg: {
+    relayInstanceId: string;
+    taskTimeoutMs: number;
+    chatBatchDebounceMs: number;
+    devLogEnabled: boolean;
+    devLogTextMaxLen: number;
+  };
+  gateway: GatewayClient;
+  runner: ChatRunner;
+  backend: BackendClient;
+  items: ChatBatchItem[];
+}): Promise<void> {
+  if (input.items.length === 0) return;
+  if (input.items.length === 1) {
+    const only = input.items[0];
+    try {
+      await processSingleMessage({
+        cfg: input.cfg,
+        gateway: input.gateway,
+        runner: input.runner,
+        backend: input.backend,
+        msg: only.msg,
+      });
+      only.deferred.resolve();
+    } catch (error) {
+      only.deferred.reject(error);
+    }
+    return;
+  }
+
+  const firstItems = input.items.slice(0, -1);
+  const target = input.items[input.items.length - 1];
+  const mergedMessage = buildMergedChatMessage(input.items.map((item) => item.msg), target.msg.messageId);
+
+  for (const item of firstItems) {
+    try {
+      await submitBatchedNoReply({
+        cfg: input.cfg,
+        backend: input.backend,
+        sourceMessage: item.msg,
+        targetMessageId: target.msg.messageId,
+        batchedCount: input.items.length,
+      });
+      item.deferred.resolve();
+    } catch (error) {
+      item.deferred.reject(error);
+    }
+  }
+
+  try {
+    await processSingleMessage({
+      cfg: input.cfg,
+      gateway: input.gateway,
+      runner: input.runner,
+      backend: input.backend,
+      msg: mergedMessage,
+    });
+    target.deferred.resolve();
+  } catch (error) {
+    target.deferred.reject(error);
+  }
+}
+
+function buildMergedChatMessage(
+  items: InboundPushMessage[],
+  targetMessageId: string
+): InboundPushMessage {
+  const tail = items[items.length - 1];
+  const chatItems = items.filter(
+    (item): item is InboundPushMessage & { input: Extract<InboundPushMessage["input"], { kind: "chat" }> } =>
+      item.input.kind === "chat"
+  );
+  const messageText = items
+    .map((item) => (item.input.kind === "chat" ? item.input.messageText.trim() : ""))
+    .filter((text) => text.length > 0)
+    .join("\n\n");
+  const media = chatItems.flatMap((item) => (Array.isArray(item.input.media) ? item.input.media : []));
+  return {
+    ...tail,
+    messageId: targetMessageId,
+    input: {
+      ...(tail.input.kind === "chat" ? tail.input : chatItems[chatItems.length - 1].input),
+      messageText,
+      ...(media.length > 0 ? { media } : {}),
+    },
+  };
+}
+
+async function submitBatchedNoReply(input: {
+  cfg: {
+    relayInstanceId: string;
+    taskTimeoutMs: number;
+    chatBatchDebounceMs: number;
+    devLogEnabled: boolean;
+    devLogTextMaxLen: number;
+  };
+  backend: BackendClient;
+  sourceMessage: InboundPushMessage;
+  targetMessageId: string;
+  batchedCount: number;
+}): Promise<void> {
+  const relayMessageId = `relay_${randomUUID()}`;
+  const finishedAtMs = Date.now();
+  await input.backend.submitInboundMessage({
+    body: {
+      relayInstanceId: input.cfg.relayInstanceId,
+      relayMessageId,
+      finishedAtMs,
+      outcome: "no_reply",
+      noReply: {
+        reason: "batched",
+        batchedIntoMessageId: input.targetMessageId,
+        batchedCount: input.batchedCount,
+      },
+      openclawMeta: buildOpenclawMetaWithTrace(
+        {
+          method: "chat.batch",
+          batch: {
+            strategy: "debounce",
+            debounceMs: input.cfg.chatBatchDebounceMs,
+          },
+        },
+        {
+          backendMessageId: input.sourceMessage.messageId,
+          relayMessageId,
+          relayInstanceId: input.cfg.relayInstanceId,
+        }
+      ),
+    },
+  });
+}
+
+function createDeferred(): Deferred {
+  let resolve!: () => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { resolve, reject, promise };
+}
+
+async function processSingleMessage(input: {
+  cfg: {
+    relayInstanceId: string;
+    taskTimeoutMs: number;
+    chatBatchDebounceMs: number;
+    devLogEnabled: boolean;
+    devLogTextMaxLen: number;
+  };
+  gateway: GatewayClient;
+  runner: ChatRunner;
+  backend: BackendClient;
+  msg: InboundPushMessage;
+}): Promise<void> {
+  const { cfg, gateway, runner, backend, msg } = input;
     const startedAt = Date.now();
     const relayMessageId = `relay_${randomUUID()}`;
     try {
@@ -198,9 +425,7 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
         );
       }
     }
-  };
 }
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && (value as { constructor?: unknown }).constructor === Object;
 }

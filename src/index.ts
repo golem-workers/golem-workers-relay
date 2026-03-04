@@ -102,6 +102,7 @@ async function main(): Promise<void> {
     cfg: {
       relayInstanceId: cfg.relayInstanceId,
       taskTimeoutMs: cfg.taskTimeoutMs,
+      chatBatchDebounceMs: cfg.chatBatchDebounceMs,
       devLogEnabled: cfg.devLogEnabled,
       devLogTextMaxLen: cfg.devLogTextMaxLen,
     },

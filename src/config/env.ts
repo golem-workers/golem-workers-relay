@@ -16,6 +16,7 @@ const envSchema = z.object({
 
   RELAY_INSTANCE_ID: z.string().min(1).optional(),
   RELAY_TASK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(2_147_483_647).optional(),
+  RELAY_CHAT_BATCH_DEBOUNCE_MS: z.coerce.number().int().min(0).max(120_000).optional(),
   RELAY_CONCURRENCY: z.coerce.number().int().min(1).max(20).optional(),
   RELAY_PUSH_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_PUSH_PATH: z.string().min(1).optional(),
@@ -47,6 +48,7 @@ export type RelayConfig = {
   backendBaseUrl: string;
   relayInstanceId: string;
   taskTimeoutMs: number;
+  chatBatchDebounceMs: number;
   concurrency: number;
   pushPort: number;
   pushPath: string;
@@ -89,6 +91,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     backendBaseUrl: parsed.BACKEND_BASE_URL.replace(/\/+$/, ""),
     relayInstanceId,
     taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 9_999_999,
+    chatBatchDebounceMs: parsed.RELAY_CHAT_BATCH_DEBOUNCE_MS ?? 5_000,
     concurrency: parsed.RELAY_CONCURRENCY ?? 1,
     pushPort: parsed.RELAY_PUSH_PORT ?? 18790,
     pushPath: parsed.RELAY_PUSH_PATH ?? "/relay/messages",
@@ -124,6 +127,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     backendBaseUrl: "http://localhost:3000",
     relayInstanceId: "test-relay",
     taskTimeoutMs: 5000,
+    chatBatchDebounceMs: 5000,
     concurrency: 1,
     pushPort: 18790,
     pushPath: "/relay/messages",

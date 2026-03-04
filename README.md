@@ -113,6 +113,7 @@ Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 Push transport settings:
 - `RELAY_PUSH_PORT=18790` (HTTP port where backend sends push messages)
 - `RELAY_PUSH_PATH=/relay/messages` (HTTP path for backend push endpoint)
+- `RELAY_CHAT_BATCH_DEBOUNCE_MS=5000` (debounce for chat batching; relay waits for user silence and then sends one merged chat request, resetting timer on each new message)
 
 Note: relay creates its own device identity on the host under `~/.openclaw` unless
 `OPENCLAW_STATE_DIR` is set. This is separate from the gateway's container state.
