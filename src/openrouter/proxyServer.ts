@@ -118,6 +118,8 @@ function buildUpstreamHeaders(
   const out: Record<string, string> = {
     authorization: `Bearer ${relayToken}`,
     "x-gw-attempt": String(attemptHeader),
+    // Keep upstream payload uncompressed to avoid decoding/header drift between hops.
+    "accept-encoding": "identity",
   };
   for (const [rawKey, rawValue] of Object.entries(req.headers)) {
     const key = rawKey.toLowerCase();

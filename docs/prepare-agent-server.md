@@ -98,12 +98,11 @@ sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reexec
 sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reload
 sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user restart openclaw-gateway
 
-### OPENROUTER TRANSPARENT REWRITE (relay proxy) ###
+### OPENROUTER VIA LOCAL RELAY PROXY (NO IPTABLES) ###
 
-# Route OpenRouter host to local relay proxy and redirect TLS egress to proxy port.
-grep -qE '(^|[[:space:]])openrouter\.ai($|[[:space:]])' /etc/hosts || echo '127.0.0.1 openrouter.ai' >> /etc/hosts
-iptables -t nat -C OUTPUT -p tcp -d 127.0.0.1 --dport 443 -j REDIRECT --to-ports 18080 >/dev/null 2>&1 || \
-iptables -t nat -A OUTPUT -p tcp -d 127.0.0.1 --dport 443 -j REDIRECT --to-ports 18080
+# OpenClaw should call local relay proxy directly.
+openclaw config set env.OPENROUTER_BASE_URL "http://127.0.0.1:18080/api/v1"
+sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user restart openclaw-gateway
 
 
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
