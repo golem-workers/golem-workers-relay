@@ -16,7 +16,7 @@ cp openclaw.env.example openclaw.env
 
 Set at least:
 - `OPENCLAW_GATEWAY_TOKEN` (must match relay `OPENCLAW_GATEWAY_TOKEN`)
-- `OPENROUTER_API_KEY` (LLM provider key)
+- `OPENROUTER_API_KEY` (now can be a non-empty stub value; real key lives in backend proxy)
 - one STT provider key for voice transcription:
   - `DEEPGRAM_API_KEY` (for `STT_PROVIDER=deepgram`)
   - `OPENAI_API_KEY` (for `STT_PROVIDER=openai`)
@@ -114,6 +114,10 @@ Push transport settings:
 - `RELAY_PUSH_PORT=18790` (HTTP port where backend sends push messages)
 - `RELAY_PUSH_PATH=/relay/messages` (HTTP path for backend push endpoint)
 - `RELAY_CHAT_BATCH_DEBOUNCE_MS=5000` (debounce for chat batching; relay waits for user silence and then sends one merged chat request, resetting timer on each new message)
+- `RELAY_OPENROUTER_PROXY_ENABLED=1` (enable local OpenRouter-compatible proxy listener)
+- `RELAY_OPENROUTER_PROXY_PORT=18080` (local proxy port used by agent-side rewrite rules)
+- `RELAY_OPENROUTER_PROXY_PATH_PREFIX=/api/v1` (OpenRouter-compatible incoming path prefix)
+- `RELAY_OPENROUTER_BACKEND_PATH_PREFIX=/api/v1/relays/openrouter` (backend relay-auth proxy path)
 
 Note: relay creates its own device identity on the host under `~/.openclaw` unless
 `OPENCLAW_STATE_DIR` is set. This is separate from the gateway's container state.

@@ -23,6 +23,10 @@ const envSchema = z.object({
   RELAY_PUSH_RATE_LIMIT_PER_SEC: z.coerce.number().int().min(1).max(100_000).optional(),
   RELAY_PUSH_MAX_CONCURRENT_REQUESTS: z.coerce.number().int().min(1).max(10_000).optional(),
   RELAY_PUSH_MAX_QUEUE: z.coerce.number().int().min(1).max(1_000_000).optional(),
+  RELAY_OPENROUTER_PROXY_ENABLED: z.coerce.boolean().optional(),
+  RELAY_OPENROUTER_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+  RELAY_OPENROUTER_PROXY_PATH_PREFIX: z.string().min(1).optional(),
+  RELAY_OPENROUTER_BACKEND_PATH_PREFIX: z.string().min(1).optional(),
 
   MESSAGE_FLOW_LOG: z.coerce.boolean().optional(),
 
@@ -55,6 +59,12 @@ export type RelayConfig = {
   pushRateLimitPerSecond: number;
   pushMaxConcurrentRequests: number;
   pushMaxQueue: number;
+  openrouterProxy: {
+    enabled: boolean;
+    port: number;
+    pathPrefix: string;
+    backendPathPrefix: string;
+  };
   devLogEnabled: boolean;
   devLogTextMaxLen: number;
   devLogGatewayFrames: boolean;
@@ -98,6 +108,14 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     pushRateLimitPerSecond: parsed.RELAY_PUSH_RATE_LIMIT_PER_SEC ?? 100,
     pushMaxConcurrentRequests: parsed.RELAY_PUSH_MAX_CONCURRENT_REQUESTS ?? 100,
     pushMaxQueue: parsed.RELAY_PUSH_MAX_QUEUE ?? 2000,
+    openrouterProxy: {
+      enabled: parsed.RELAY_OPENROUTER_PROXY_ENABLED ?? true,
+      port: parsed.RELAY_OPENROUTER_PROXY_PORT ?? 18080,
+      pathPrefix: withLeadingSlash(parsed.RELAY_OPENROUTER_PROXY_PATH_PREFIX ?? "/api/v1"),
+      backendPathPrefix: withLeadingSlash(
+        parsed.RELAY_OPENROUTER_BACKEND_PATH_PREFIX ?? "/api/v1/relays/openrouter"
+      ),
+    },
     devLogEnabled,
     devLogTextMaxLen,
     devLogGatewayFrames,
@@ -134,6 +152,12 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     pushRateLimitPerSecond: 100,
     pushMaxConcurrentRequests: 100,
     pushMaxQueue: 2000,
+    openrouterProxy: {
+      enabled: true,
+      port: 18080,
+      pathPrefix: "/api/v1",
+      backendPathPrefix: "/api/v1/relays/openrouter",
+    },
     devLogEnabled: false,
     devLogTextMaxLen: 200,
     devLogGatewayFrames: false,
@@ -149,5 +173,11 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     ...overrides,
     openclaw: { ...base.openclaw, ...(overrides.openclaw ?? {}) },
   };
+}
+
+function withLeadingSlash(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) return "/";
+  return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
 

@@ -22,7 +22,7 @@ if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
   exit 1
 fi
 if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-  echo "[openclaw] OPENROUTER_API_KEY is required in $ENV_FILE"
+  echo "[openclaw] OPENROUTER_API_KEY is required in $ENV_FILE (stub value is acceptable)"
   exit 1
 fi
 

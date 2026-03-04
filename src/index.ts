@@ -13,6 +13,7 @@ import { transcribeAudioWithOpenAi } from "./openclaw/openaiTranscription.js";
 import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
 import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inMemoryTaskQueue.js";
 import { createMessageProcessor } from "./processor/messageProcessor.js";
+import { startOpenRouterProxyServer } from "./openrouter/proxyServer.js";
 
 async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
@@ -29,6 +30,9 @@ async function main(): Promise<void> {
       concurrency: cfg.concurrency,
       pushPort: cfg.pushPort,
       pushPath: cfg.pushPath,
+      openrouterProxyEnabled: cfg.openrouterProxy.enabled,
+      openrouterProxyPort: cfg.openrouterProxy.port,
+      openrouterProxyPathPrefix: cfg.openrouterProxy.pathPrefix,
       pushRateLimitPerSecond: cfg.pushRateLimitPerSecond,
       pushMaxConcurrentRequests: cfg.pushMaxConcurrentRequests,
       pushMaxQueue: cfg.pushMaxQueue,
@@ -163,6 +167,15 @@ async function main(): Promise<void> {
       return Promise.resolve();
     },
   });
+  const openrouterProxyServer = cfg.openrouterProxy.enabled
+    ? startOpenRouterProxyServer({
+        port: cfg.openrouterProxy.port,
+        backendBaseUrl: cfg.backendBaseUrl,
+        relayToken: cfg.relayToken,
+        pathPrefix: cfg.openrouterProxy.pathPrefix,
+        backendPathPrefix: cfg.openrouterProxy.backendPathPrefix,
+      })
+    : null;
 
   await waitForStop(stop);
   shuttingDown = true;
@@ -170,6 +183,9 @@ async function main(): Promise<void> {
   const drainState = queue.getState();
   logger.info({ inFlight: drainState.inFlight, queueLength: drainState.queueLength }, "Stop signal received; draining relay queue");
   await closeServer(server);
+  if (openrouterProxyServer) {
+    await closeServer(openrouterProxyServer);
+  }
   const drained = await queue.drain(Math.max(15_000, cfg.taskTimeoutMs * 2));
   if (!drained) {
     const finalState = queue.getState();
