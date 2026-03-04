@@ -10,7 +10,7 @@ apt update
 apt install -y ubuntu-keyring
 
 apt update && apt upgrade -y
-apt install -y curl gnupg lsb-release jq fail2ban build-essential procps file git wget dbus-user-session
+apt install -y curl gnupg lsb-release jq fail2ban build-essential procps file git wget dbus-user-session nano
 
 
 ### LOGS ###
@@ -65,7 +65,13 @@ go version
 
 ### USER ###
 
-sudo bash -c 'useradd -m -s /bin/bash claw && passwd -l claw && echo "claw ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/claw && chmod 440 /etc/sudoers.d/claw && sed -i "s/^#*PasswordAuthentication.*/PasswordAuthentication no/" /etc/ssh/sshd_config && systemctl restart ssh'
+useradd -m -s /bin/bash claw
+passwd -l claw
+echo "claw ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/claw
+chmod 440 /etc/sudoers.d/claw
+sed -i "s/^#*PasswordAuthentication.*/PasswordAuthentication no/" /etc/ssh/sshd_config
+systemctl restart ssh
+
 loginctl enable-linger claw
 systemctl start "user@$(id -u claw).service"
 
