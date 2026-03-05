@@ -10,7 +10,7 @@ apt update
 apt install -y ubuntu-keyring
 
 apt update && apt upgrade -y
-apt install -y curl gnupg lsb-release jq fail2ban build-essential procps file git wget dbus-user-session nano
+apt install -y curl gnupg lsb-release jq fail2ban build-essential procps file git wget dbus-user-session nano lsof
 
 
 ### LOGS ###
@@ -97,6 +97,10 @@ sudo systemctl restart golem-workers-relay
 sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reexec
 sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reload
 sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user restart openclaw-gateway
+
+
+### OPTIONAL: Temporarily disable gateway auth rate limiting ###
+#   jq '.gateway.auth.rateLimit = { "maxAttempts": 999999 }' ~/.openclaw/openclaw.json > /tmp/openclaw.json && mv /tmp/openclaw.json ~/.openclaw/openclaw.json
 
 
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
