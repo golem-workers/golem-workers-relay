@@ -75,14 +75,15 @@ async function handleProxyRequest(
   const upstreamPath = `${input.backendPathPrefix}${url.pathname}${url.search}`;
   const upstreamUrl = `${input.backendBaseUrl}${upstreamPath}`;
   const requestHeaders = buildUpstreamHeaders(req, input.relayToken);
+  const preparedBody = await prepareUpstreamBody(req, method, url.pathname);
   const timeout = setTimeout(() => controller.abort(), 120_000);
   req.on("aborted", () => controller.abort());
   try {
     const upstream = await fetch(upstreamUrl, {
       method,
       headers: requestHeaders,
-      body: method === "GET" || method === "HEAD" ? undefined : (req as unknown as never),
-      duplex: method === "GET" || method === "HEAD" ? undefined : "half",
+      body: preparedBody.body as never,
+      duplex: preparedBody.requiresDuplex ? "half" : undefined,
       signal: controller.signal,
     });
     res.statusCode = upstream.status;
@@ -108,6 +109,22 @@ async function handleProxyRequest(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function prepareUpstreamBody(
+  req: IncomingMessage,
+  method: string,
+  pathname: string
+): Promise<{ body: unknown; requiresDuplex: boolean }> {
+  if (method === "GET" || method === "HEAD") {
+    return { body: undefined, requiresDuplex: false };
+  }
+  if (!shouldRewriteModel(pathname, req.headers["content-type"])) {
+    return { body: req as unknown as never, requiresDuplex: true };
+  }
+  const rawBody = await readRequestBody(req);
+  const rewritten = rewriteOpenrouterModelField(rawBody);
+  return { body: rewritten, requiresDuplex: false };
 }
 
 function buildUpstreamHeaders(
@@ -173,4 +190,36 @@ function normalizePrefix(input: string): string {
   if (trimmed === "/") return "/";
   const withSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
   return withSlash.endsWith("/") ? withSlash.slice(0, -1) : withSlash;
+}
+
+function shouldRewriteModel(pathname: string, contentType: string | string[] | undefined): boolean {
+  const ct = Array.isArray(contentType) ? contentType.join(",").toLowerCase() : String(contentType ?? "").toLowerCase();
+  if (!ct.includes("application/json")) return false;
+  return (
+    pathname.endsWith("/chat/completions") ||
+    pathname.endsWith("/responses") ||
+    pathname.endsWith("/completions")
+  );
+}
+
+async function readRequestBody(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+function rewriteOpenrouterModelField(rawBody: Buffer): Uint8Array {
+  const rawText = rawBody.toString("utf8");
+  try {
+    const payload = JSON.parse(rawText) as { model?: unknown };
+    if (typeof payload.model === "string" && payload.model.startsWith("openrouter/")) {
+      payload.model = payload.model.slice("openrouter/".length);
+      return new TextEncoder().encode(JSON.stringify(payload));
+    }
+  } catch {
+    // Pass-through raw bytes if payload is not valid JSON.
+  }
+  return rawBody;
 }

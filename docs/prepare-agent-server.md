@@ -98,12 +98,6 @@ sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reexec
 sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reload
 sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user restart openclaw-gateway
 
-### OPENROUTER VIA LOCAL RELAY PROXY (NO IPTABLES) ###
-
-# OpenClaw should call local relay proxy directly.
-openclaw config set env.OPENROUTER_BASE_URL "http://127.0.0.1:18080/api/v1"
-sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user restart openclaw-gateway
-
 
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
