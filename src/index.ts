@@ -72,7 +72,6 @@ async function main(): Promise<void> {
     url: openclaw.gateway.wsUrl,
     token: openclaw.gateway.auth.token,
     password: openclaw.gateway.auth.password,
-    trustedProxyUser: cfg.openclaw.trustedProxyUser,
     instanceId: cfg.relayInstanceId,
     role: "operator",
     scopes: cfg.openclaw.scopes,

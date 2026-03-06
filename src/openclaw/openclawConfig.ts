@@ -77,6 +77,12 @@ export function resolveOpenclawConfig(env: NodeJS.ProcessEnv, input?: { gatewayW
     },
   };
 
+  if (!resolved.gateway.auth.token && !resolved.gateway.auth.password) {
+    throw new Error(
+      "OpenClaw gateway auth is not configured: set OPENCLAW_GATEWAY_TOKEN/OPENCLAW_GATEWAY_PASSWORD or gateway.auth token/password in openclaw.json"
+    );
+  }
+
   return resolved;
 }
 

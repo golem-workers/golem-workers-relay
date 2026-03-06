@@ -95,7 +95,7 @@ Notes:
 Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 
 - `OPENCLAW_GATEWAY_WS_URL=ws://127.0.0.1:18789`
-- `OPENCLAW_TRUSTED_PROXY_USER=golem-workers-relay`
+- `OPENCLAW_GATEWAY_TOKEN=<secret>` (or `OPENCLAW_GATEWAY_PASSWORD=<secret>`)
 - `OPENCLAW_SCOPES=operator.admin` (default)
 - `STT_PROVIDER=deepgram|openai` (optional, default `deepgram`)
 - `DEEPGRAM_API_KEY=` (optional; used when `STT_PROVIDER=deepgram`)

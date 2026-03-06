@@ -317,7 +317,7 @@ describe("e2e: relay works against OpenClaw gateway (docker)", () => {
             RELAY_CONCURRENCY: "1",
             RELAY_TASK_TIMEOUT_MS: "15000",
             OPENCLAW_GATEWAY_WS_URL: `ws://127.0.0.1:${gatewayPort}`,
-            OPENCLAW_TRUSTED_PROXY_USER: "golem-workers-relay",
+            OPENCLAW_GATEWAY_TOKEN: "test-token",
             OPENCLAW_STATE_DIR: relayStateDir,
             LOG_LEVEL: "info",
           },

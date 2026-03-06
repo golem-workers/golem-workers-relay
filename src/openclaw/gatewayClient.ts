@@ -28,7 +28,6 @@ export type GatewayClientOptions = {
   url: string;
   token?: string;
   password?: string;
-  trustedProxyUser?: string;
   instanceId?: string;
   role?: string;
   scopes?: string[];
@@ -83,16 +82,6 @@ function summarizeRequestParams(method: string, params: unknown, textMaxLen: num
     return { keys: Object.keys(p).slice(0, 20) };
   }
   return { keys: Object.keys(p).slice(0, 20) };
-}
-
-function headerHostFromWsUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    if (parsed.port) return `${parsed.hostname}:${parsed.port}`;
-    return parsed.hostname;
-  } catch {
-    return "127.0.0.1";
-  }
 }
 
 function summarizeChatMessage(message: unknown, textMaxLen: number): unknown {
@@ -308,12 +297,6 @@ export class GatewayClient {
     logger.info({ url }, "Connecting to OpenClaw gateway");
     this.ws = new WebSocket(url, {
       maxPayload: 25 * 1024 * 1024,
-      headers: {
-        "x-forwarded-user": this.opts.trustedProxyUser ?? "golem-workers-relay",
-        "x-forwarded-proto": "https",
-        "x-forwarded-host": headerHostFromWsUrl(url),
-        "x-forwarded-for": "127.0.0.1",
-      },
     });
 
     this.ws.on("open", () => {
