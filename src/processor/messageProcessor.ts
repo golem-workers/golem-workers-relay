@@ -430,20 +430,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && (value as { constructor?: unknown }).constructor === Object;
 }
 
-function isUnknownArray(value: unknown): value is unknown[] {
-  return Array.isArray(value);
-}
-
 function normalizeOpenclawMeta(meta: unknown): Record<string, unknown> | undefined {
   if (!isPlainObject(meta)) return undefined;
-  const normalized = { ...meta };
-  if (!("usage" in normalized)) {
-    const usage = deriveCanonicalUsageFromSessions(meta);
-    if (usage) {
-      normalized.usage = usage;
-    }
-  }
-  return normalized;
+  const method = readNonEmptyString(meta.method);
+  const runId = readNonEmptyString(meta.runId);
+  const model = readNonEmptyString(meta.model);
+  const trace = normalizeOpenclawMetaTrace(meta.trace);
+  const normalized = {
+    ...(method ? { method } : {}),
+    ...(runId ? { runId } : {}),
+    ...(model ? { model } : {}),
+    ...(trace ? { trace } : {}),
+  };
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 function buildOpenclawMetaWithTrace(
@@ -455,7 +454,7 @@ function buildOpenclawMetaWithTrace(
     openclawRunId?: string;
   }
 ): Record<string, unknown> {
-  const base = meta ? { ...meta } : {};
+  const base = normalizeOpenclawMeta(meta) ?? {};
   return {
     ...base,
     trace: {
@@ -465,6 +464,21 @@ function buildOpenclawMetaWithTrace(
       ...(trace.openclawRunId ? { openclawRunId: trace.openclawRunId } : {}),
     },
   };
+}
+
+function normalizeOpenclawMetaTrace(trace: unknown): Record<string, string> | undefined {
+  if (!isPlainObject(trace)) return undefined;
+  const backendMessageId = readNonEmptyString(trace.backendMessageId);
+  const relayMessageId = readNonEmptyString(trace.relayMessageId);
+  const relayInstanceId = readNonEmptyString(trace.relayInstanceId);
+  const openclawRunId = readNonEmptyString(trace.openclawRunId);
+  const normalized = {
+    ...(backendMessageId ? { backendMessageId } : {}),
+    ...(relayMessageId ? { relayMessageId } : {}),
+    ...(relayInstanceId ? { relayInstanceId } : {}),
+    ...(openclawRunId ? { openclawRunId } : {}),
+  };
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 function buildReplyPayload(reply: { message: unknown; runId: string; media?: unknown[] }): unknown {
@@ -502,77 +516,6 @@ function normalizeReplyMessage(message: unknown): unknown {
     return { ...message, role, content: text };
   }
   return message;
-}
-
-function deriveCanonicalUsageFromSessions(meta: unknown): Record<string, unknown> | undefined {
-  if (!isPlainObject(meta)) return undefined;
-  const incoming = readUsageTotals((meta as { usageIncoming?: unknown }).usageIncoming);
-  const outgoing = readUsageTotals((meta as { usageOutgoing?: unknown }).usageOutgoing);
-  if (!incoming && !outgoing) return undefined;
-
-  const inputTokens = Math.max(0, Math.trunc((outgoing?.input ?? 0) - (incoming?.input ?? 0)));
-  const outputTokens = Math.max(0, Math.trunc((outgoing?.output ?? 0) - (incoming?.output ?? 0)));
-  const cacheReadTokens = Math.max(
-    0,
-    Math.trunc((outgoing?.cacheRead ?? 0) - (incoming?.cacheRead ?? 0))
-  );
-  const totalTokens = Math.max(
-    0,
-    Math.trunc((outgoing?.totalTokens ?? inputTokens + outputTokens) - (incoming?.totalTokens ?? 0))
-  );
-  const model = pickModelFromUsageOutgoing((meta as { usageOutgoing?: unknown }).usageOutgoing);
-  const hasSignal =
-    inputTokens > 0 ||
-    outputTokens > 0 ||
-    cacheReadTokens > 0 ||
-    totalTokens > 0 ||
-    model !== undefined;
-  if (!hasSignal) return undefined;
-
-  return {
-    ...(model ? { model } : {}),
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    totalTokens,
-  };
-}
-
-function readUsageTotals(source: unknown):
-  | { input: number; output: number; cacheRead: number; totalTokens: number }
-  | undefined {
-  if (!isPlainObject(source)) return undefined;
-  const totals = (source as { totals?: unknown }).totals;
-  if (!isPlainObject(totals)) return undefined;
-  return {
-    input: readUsageNumber(totals.input),
-    output: readUsageNumber(totals.output),
-    cacheRead: readUsageNumber((totals as { cacheRead?: unknown }).cacheRead),
-    totalTokens: readUsageNumber((totals as { totalTokens?: unknown }).totalTokens),
-  };
-}
-
-function pickModelFromUsageOutgoing(source: unknown): string | undefined {
-  if (!isPlainObject(source)) return undefined;
-  const aggregates = (source as { aggregates?: unknown }).aggregates;
-  if (!isPlainObject(aggregates)) return undefined;
-  const byModel = (aggregates as { byModel?: unknown }).byModel;
-  if (!isUnknownArray(byModel) || byModel.length === 0) return undefined;
-  const first = byModel[0];
-  if (!isPlainObject(first)) return undefined;
-  const provider = readNonEmptyString((first as { provider?: unknown }).provider);
-  const model = readNonEmptyString((first as { model?: unknown }).model);
-  if (provider && model) return model.startsWith(`${provider}/`) ? model : `${provider}/${model}`;
-  return model ?? undefined;
-}
-
-function readUsageNumber(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, value);
-  if (typeof value === "string" && value.trim().length > 0) {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return Math.max(0, parsed);
-  }
-  return 0;
 }
 
 function readNonEmptyString(value: unknown): string | undefined {

@@ -3,18 +3,22 @@ import { createMessageProcessor } from "./messageProcessor.js";
 import type { InboundPushMessage } from "../backend/types.js";
 
 describe("createMessageProcessor", () => {
-  it("forwards relay openclawMeta as-is", async () => {
+  it("forwards only allowed openclawMeta fields", async () => {
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const openclawMeta = {
       method: "chat.send",
+      runId: "run_1",
       model: "moonshot/kimi-k2.5",
-      usage: {
-        model: "moonshot/kimi-k2.5",
-        inputTokens: 80,
-        outputTokens: 30,
-        cacheReadTokens: 6,
-        totalTokens: 116,
+      usageIncoming: { totals: { input: 1, output: 2 } },
+      usageOutgoing: { totals: { input: 3, output: 4 } },
+      trace: {
+        backendMessageId: "legacy-backend-id",
+        relayMessageId: "legacy-relay-id",
+        relayInstanceId: "legacy-relay",
+        openclawRunId: "legacy-openclaw-run-id",
+        extra: "remove-me",
       },
+      legacy: "remove-me",
     };
     const processor = createMessageProcessor({
       cfg: {
@@ -55,20 +59,25 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.outcome).toBe("reply");
     const meta = firstCall?.body?.openclawMeta as
       | {
+          method?: unknown;
+          runId?: unknown;
           model?: unknown;
-          usage?: Record<string, unknown>;
           trace?: Record<string, unknown>;
+          usageIncoming?: unknown;
+          usageOutgoing?: unknown;
+          legacy?: unknown;
         }
       | undefined;
+    expect(meta?.method).toBe("chat.send");
+    expect(meta?.runId).toBe("run_1");
     expect(meta?.model).toBe("moonshot/kimi-k2.5");
-    expect(meta?.usage?.model).toBe("moonshot/kimi-k2.5");
-    expect(meta?.usage?.inputTokens).toBe(80);
-    expect(meta?.usage?.outputTokens).toBe(30);
-    expect(meta?.usage?.cacheReadTokens).toBe(6);
-    expect(meta?.usage?.totalTokens).toBe(116);
+    expect(meta?.usageIncoming).toBeUndefined();
+    expect(meta?.usageOutgoing).toBeUndefined();
+    expect(meta?.legacy).toBeUndefined();
     expect(meta?.trace?.backendMessageId).toBe("msg_1");
     expect(meta?.trace?.relayInstanceId).toBe("relay_1");
     expect(meta?.trace?.openclawRunId).toBe("run_1");
+    expect(meta?.trace?.extra).toBeUndefined();
     expect(typeof meta?.trace?.relayMessageId).toBe("string");
   });
 
