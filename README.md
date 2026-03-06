@@ -15,7 +15,6 @@ cp openclaw.env.example openclaw.env
 ```
 
 Set at least:
-- `OPENCLAW_GATEWAY_TOKEN` (must match relay `OPENCLAW_GATEWAY_TOKEN`)
 - `OPENROUTER_API_KEY` (now can be a non-empty stub value; real key lives in backend proxy)
 - one STT provider key for voice transcription:
   - `DEEPGRAM_API_KEY` (for `STT_PROVIDER=deepgram`)
@@ -42,10 +41,6 @@ npm run openclaw:logs
 Control UI:
 
 - Open `http://127.0.0.1:18789/`
-- First relay connect may require approving a device pairing request (you'll see `NOT_PAIRED` in relay logs).
-
-Note: the pairing prompt is a side-effect of Docker networking. If you install OpenClaw as a host daemon
-relay connects from true localhost and pairing is auto-approved (silent).
 
 Optional CLI (interactive):
 
@@ -100,8 +95,7 @@ Notes:
 Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 
 - `OPENCLAW_GATEWAY_WS_URL=ws://127.0.0.1:18789`
-- `OPENCLAW_GATEWAY_TOKEN=<same as in openclaw.env>`
-- `OPENCLAW_GATEWAY_PASSWORD=` (optional; token is the baseline)
+- `OPENCLAW_TRUSTED_PROXY_USER=golem-workers-relay`
 - `OPENCLAW_SCOPES=operator.admin` (default)
 - `STT_PROVIDER=deepgram|openai` (optional, default `deepgram`)
 - `DEEPGRAM_API_KEY=` (optional; used when `STT_PROVIDER=deepgram`)

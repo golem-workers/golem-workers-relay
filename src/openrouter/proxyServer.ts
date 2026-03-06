@@ -204,8 +204,12 @@ function shouldRewriteModel(pathname: string, contentType: string | string[] | u
 
 async function readRequestBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  for await (const chunk of req as AsyncIterable<Buffer | string>) {
+    if (typeof chunk === "string") {
+      chunks.push(Buffer.from(chunk, "utf8"));
+    } else if (Buffer.isBuffer(chunk)) {
+      chunks.push(chunk);
+    }
   }
   return Buffer.concat(chunks);
 }

@@ -20,7 +20,7 @@ describe("startOpenRouterProxyServer", () => {
   it("forwards non-stream OpenRouter requests to backend proxy", async () => {
     const backendPort = await getFreePort();
     let backendAuthHeader: string | null = null;
-    const backendServer = http.createServer(async (req, res) => {
+    const backendServer = http.createServer((req, res) => {
       backendAuthHeader = req.headers.authorization ? String(req.headers.authorization) : null;
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");

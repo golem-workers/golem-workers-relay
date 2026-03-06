@@ -35,6 +35,7 @@ const envSchema = z.object({
   OPENCLAW_STATE_DIR: z.string().min(1).optional(),
   OPENCLAW_GATEWAY_TOKEN: z.string().min(1).optional(),
   OPENCLAW_GATEWAY_PASSWORD: z.string().min(1).optional(),
+  OPENCLAW_TRUSTED_PROXY_USER: z.string().min(1).optional(),
   OPENCLAW_SCOPES: z.string().optional(),
 
   STT_PROVIDER: z.enum(["deepgram", "openai"]).optional(),
@@ -74,6 +75,7 @@ export type RelayConfig = {
     stateDir?: string;
     token?: string;
     password?: string;
+    trustedProxyUser: string;
     scopes: string[];
   };
   stt: {
@@ -125,6 +127,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
       stateDir: parsed.OPENCLAW_STATE_DIR,
       token: parsed.OPENCLAW_GATEWAY_TOKEN,
       password: parsed.OPENCLAW_GATEWAY_PASSWORD,
+      trustedProxyUser: parsed.OPENCLAW_TRUSTED_PROXY_USER ?? "golem-workers-relay",
       scopes: parseCsv(parsed.OPENCLAW_SCOPES) ?? ["operator.admin"],
     },
     stt: {
@@ -161,7 +164,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     devLogEnabled: false,
     devLogTextMaxLen: 200,
     devLogGatewayFrames: false,
-    openclaw: { scopes: ["operator.admin"] },
+    openclaw: { trustedProxyUser: "golem-workers-relay", scopes: ["operator.admin"] },
     stt: {
       provider: "deepgram",
       openaiModel: "whisper-1",

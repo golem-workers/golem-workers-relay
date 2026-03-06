@@ -14,7 +14,6 @@ type MockBackend = {
   waitForCallback: (timeoutMs: number) => Promise<{ body: unknown; headers: http.IncomingHttpHeaders }>;
 };
 
-let lastPairingAttempt: { status: number | null; stdout: string; stderr: string } | null = null;
 
 function dockerAvailable(): boolean {
   const r = spawnSync("docker", ["version"], { stdio: "ignore" });
@@ -256,87 +255,6 @@ function runDockerCompose(
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
-function runDockerComposeAsync(
-  opts: { cwd: string; projectName: string; envFilePath: string },
-  args: string[]
-): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn("docker", [...dockerComposeBaseArgs(opts), ...args], {
-      cwd: opts.cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (d: string) => {
-      stdout += d;
-    });
-    child.stderr.on("data", (d: string) => {
-      stderr += d;
-    });
-    child.on("close", (code) => resolve({ status: code, stdout, stderr }));
-    child.on("error", () => resolve({ status: 1, stdout, stderr }));
-  });
-}
-
-async function tryApprovePairing(opts: {
-  cwd: string;
-  projectName: string;
-  envFilePath: string;
-  token: string;
-}): Promise<void> {
-  // Best effort: might fail when there is no pending request yet.
-  // We retry for a while while relay is connecting.
-  for (let i = 0; i < 60; i += 1) {
-    const listed = await runDockerComposeAsync(opts, [
-      "exec",
-      "-T",
-      "openclaw-gateway",
-      "openclaw",
-      "devices",
-      "list",
-      "--url",
-      "ws://127.0.0.1:18789",
-      "--token",
-      opts.token,
-      "--json",
-    ]);
-    lastPairingAttempt = listed;
-    if (listed.status === 0) {
-      try {
-        const parsed = JSON.parse(listed.stdout) as unknown;
-        const pending = (parsed as { pending?: unknown }).pending;
-        const pendingArr = Array.isArray(pending) ? (pending as unknown[]) : [];
-        const first: unknown = pendingArr.length > 0 ? pendingArr[0] : null;
-        const requestId =
-          first && typeof first === "object" ? (first as Record<string, unknown>).requestId ?? null : null;
-        if (typeof requestId === "string" && requestId) {
-          const approved = await runDockerComposeAsync(opts, [
-            "exec",
-            "-T",
-            "openclaw-gateway",
-            "openclaw",
-            "devices",
-            "approve",
-            requestId,
-            "--url",
-            "ws://127.0.0.1:18789",
-            "--token",
-            opts.token,
-            "--json",
-          ]);
-          lastPairingAttempt = approved;
-          if (approved.status === 0) return;
-        }
-      } catch {
-        // ignore parse errors; retry
-      }
-    }
-    await new Promise((r2) => setTimeout(r2, 1000));
-  }
-}
-
 const hasDocker = dockerAvailable();
 const testIt = hasDocker ? it : it.skip;
 
@@ -356,14 +274,12 @@ describe("e2e: relay works against OpenClaw gateway (docker)", () => {
       const gatewayPort = await getFreePort();
       let bridgePort = await getFreePort();
       while (bridgePort === gatewayPort) bridgePort = await getFreePort();
-      const gatewayToken = `e2e-token-${randomUUID()}`;
       const relayPushPort = await getFreePort();
 
       // Compose requires OPENROUTER_API_KEY; gateway can start unconfigured.
       await writeFile(
         envFilePath,
         [
-          `OPENCLAW_GATEWAY_TOKEN=${gatewayToken}`,
           `OPENROUTER_API_KEY=dummy`,
           `OPENCLAW_GATEWAY_PORT=${gatewayPort}`,
           `OPENCLAW_BRIDGE_PORT=${bridgePort}`,
@@ -401,17 +317,13 @@ describe("e2e: relay works against OpenClaw gateway (docker)", () => {
             RELAY_CONCURRENCY: "1",
             RELAY_TASK_TIMEOUT_MS: "15000",
             OPENCLAW_GATEWAY_WS_URL: `ws://127.0.0.1:${gatewayPort}`,
-            OPENCLAW_GATEWAY_TOKEN: gatewayToken,
+            OPENCLAW_TRUSTED_PROXY_USER: "golem-workers-relay",
             OPENCLAW_STATE_DIR: relayStateDir,
             LOG_LEVEL: "info",
           },
         });
         relay = spawned.proc;
         getRelayLogs = spawned.getLogs;
-
-        // Best-effort pairing auto-approve (if the gateway requests it).
-        // Do not fail the test if approval doesn't succeed; we still might connect without it.
-        void tryApprovePairing({ cwd: repoRoot, projectName, envFilePath, token: gatewayToken });
 
         const debugDump = (reason: string) => {
           const logs = getRelayLogs?.() ?? { stdout: "", stderr: "" };
@@ -422,28 +334,6 @@ describe("e2e: relay works against OpenClaw gateway (docker)", () => {
             "200",
             "openclaw-gateway",
           ]);
-          const devicesList = runDockerCompose({ cwd: repoRoot, projectName, envFilePath }, [
-            "exec",
-            "-T",
-            "openclaw-gateway",
-            "openclaw",
-            "devices",
-            "list",
-            "--url",
-            "ws://127.0.0.1:18789",
-            "--token",
-            gatewayToken,
-            "--json",
-          ]);
-          const pairing = lastPairingAttempt
-            ? [
-                `status=${String(lastPairingAttempt.status)}`,
-                lastPairingAttempt.stdout.trim(),
-                lastPairingAttempt.stderr.trim(),
-              ]
-                .filter(Boolean)
-                .join("\n")
-            : "(no attempts recorded)";
           return [
             reason,
             "",
@@ -452,12 +342,6 @@ describe("e2e: relay works against OpenClaw gateway (docker)", () => {
             "",
             "---- relay stderr ----",
             logs.stderr.trim() || "(empty)",
-            "",
-            "---- openclaw devices list (json) ----",
-            (devicesList.stdout || devicesList.stderr).trim() || "(empty)",
-            "",
-            "---- last pairing approve attempt ----",
-            pairing,
             "",
             "---- openclaw-gateway logs ----",
             (gwLogs.stdout || gwLogs.stderr).trim() || "(empty)",
