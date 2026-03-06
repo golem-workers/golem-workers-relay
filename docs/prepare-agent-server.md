@@ -22,13 +22,25 @@ sudo journalctl --vacuum-size=100M
 
 #### SWAP ###
 
-sudo fallocate -l 2G /swapfile
+sudo fallocate -l 6G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 sudo sysctl vm.swappiness=10
 echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
+
+
+### DNS / BOOT SPEED FIX ###
+set -euo pipefail
+sudo systemctl disable --now systemd-resolved || true
+sudo systemctl mask systemd-resolved || true
+sudo rm -f /etc/resolv.conf
+sudo tee /etc/resolv.conf >/dev/null <<'EOF'
+nameserver 10.55.0.1
+options timeout:1 attempts:2
+EOF
+sudo chmod 644 /etc/resolv.conf
 
 ### GO ###
 
@@ -65,16 +77,16 @@ brew --version
 
 ### OPENCLAW INSTALL ###
 
-echo 'export NODE_OPTIONS="--max-old-space-size=2024"' >> ~/.bashrc
+grep -qxF 'export NODE_OPTIONS="--max-old-space-size=2024 --enable-source-maps"' ~/.bashrc || echo 'export NODE_OPTIONS="--max-old-space-size=2024 --enable-source-maps"' >> ~/.bashrc
 sudo mkdir -p /etc/systemd/system.conf.d
 sudo tee /etc/systemd/system.conf.d/node-options.conf >/dev/null <<'EOF'
 [Manager]
-DefaultEnvironment=NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps
+DefaultEnvironment="NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps"
 EOF
 sudo mkdir -p /etc/systemd/user.conf.d
 sudo tee /etc/systemd/user.conf.d/node-options.conf >/dev/null <<'EOF'
 [Manager]
-DefaultEnvironment=NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps
+DefaultEnvironment="NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps"
 EOF
 source ~/.bashrc
 
@@ -98,16 +110,3 @@ sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reexec
 sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reload
 sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user restart openclaw-gateway
 
-
-### OPTIONAL: Temporarily disable gateway auth rate limiting ###
-#   jq '.gateway.auth.rateLimit = { "maxAttempts": 999999 }' ~/.openclaw/openclaw.json > /tmp/openclaw.json && mv /tmp/openclaw.json ~/.openclaw/openclaw.json
-
-
-++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
-
-mkdir -p ~/Documents/provider-snapshots
-
-scp -i ~/.ssh/do_rsa \
-  root@65.21.228.232:/srv/golem-provider/data/overlays/snapshots/img_c4bf8497-b07b-4291-a23e-a9b7c36f7270.overlay \
-  ~/Documents/provider-snapshots/
