@@ -3,6 +3,30 @@
 Relay daemon that accepts push messages from `golem-workers-backend` over HTTP and executes them via a **local**
 OpenClaw Gateway over WebSocket (`ws://127.0.0.1:18789` by default).
 
+## Prepare Agent Server
+
+To prepare a fresh agent server directly from this public repo, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/main/scripts/prepare-agent-server.sh | sudo bash
+```
+
+The script:
+
+- installs base Ubuntu packages, Google Chrome Stable, Go, Linuxbrew, and Node;
+- pre-pulls and builds `golem-workers-relay`;
+- installs OpenClaw plus full `playwright`;
+- runs `openclaw onboard --install-daemon`.
+
+Execution logs are written to:
+
+- `/var/log/golem-workers/prepare-agent-server.log`
+
+See also:
+
+- `docs/prepare-agent-server.md`
+- `scripts/prepare-agent-server.sh`
+
 ## Local OpenClaw Gateway (Docker Compose)
 
 This repo includes a `docker-compose.yml` that runs **only** the OpenClaw Gateway container.
