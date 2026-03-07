@@ -11,12 +11,18 @@ To prepare a fresh agent server directly from this public repo, run:
 curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/main/scripts/prepare-agent-server.sh | sudo bash
 ```
 
+To skip interactive OpenClaw onboarding during image preparation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/main/scripts/prepare-agent-server.sh | sudo bash -s -- --skip-openclaw-onboard
+```
+
 The script:
 
-- installs base Ubuntu packages, Google Chrome Stable, Go, Linuxbrew, and Node;
+- installs base Ubuntu packages, Google Chrome Stable, Go, Linuxbrew, and Node 22;
 - pre-pulls and builds `golem-workers-relay`;
 - installs OpenClaw plus full `playwright`;
-- runs `openclaw onboard --install-daemon`.
+- optionally runs `openclaw onboard --install-daemon`.
 
 Execution logs are written to:
 

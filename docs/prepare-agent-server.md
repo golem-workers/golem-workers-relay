@@ -6,6 +6,12 @@ Run directly from the public repo:
 curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/main/scripts/prepare-agent-server.sh | sudo bash
 ```
 
+If you want to skip interactive OpenClaw onboarding during base image preparation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/main/scripts/prepare-agent-server.sh | sudo bash -s -- --skip-openclaw-onboard
+```
+
 What it does:
 
 - installs base Ubuntu packages;
@@ -13,10 +19,10 @@ What it does:
 - installs Google Chrome Stable;
 - configures journald, swap, and DNS;
 - installs Go and Linuxbrew;
-- installs Node via Homebrew;
+- installs Node 22 separately (Linuxbrew is not used to install Node);
 - pre-pulls and builds `golem-workers-relay`;
 - installs OpenClaw plus full `playwright`;
-- runs `openclaw onboard --install-daemon`.
+- optionally runs `openclaw onboard --install-daemon`.
 
 Warm-image note:
 

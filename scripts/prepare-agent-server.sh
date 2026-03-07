@@ -10,6 +10,38 @@ CHROME_DEB="/tmp/google-chrome-stable_current_amd64.deb"
 RELAY_REPO_DIR="/root/golem-workers-relay"
 RELAY_REPO_URL="https://github.com/golem-workers/golem-workers-relay.git"
 NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
+RUN_OPENCLAW_ONBOARD=1
+
+usage() {
+  cat <<'EOF'
+Usage:
+  prepare-agent-server.sh [--skip-openclaw-onboard]
+
+Options:
+  --skip-openclaw-onboard  Install OpenClaw, but do not run `openclaw onboard --install-daemon`.
+  -h, --help               Show this help.
+EOF
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --skip-openclaw-onboard)
+        RUN_OPENCLAW_ONBOARD=0
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown argument: $1"
+        usage
+        exit 1
+        ;;
+    esac
+    shift
+  done
+}
 
 require_root() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
@@ -51,6 +83,7 @@ write_file() {
 }
 
 main() {
+  parse_args "$@"
   require_root
 
   mkdir -p "${LOG_DIR}"
@@ -156,13 +189,23 @@ EOF
   cat >/usr/local/bin/brew <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-exec sudo -u linuxbrew -H bash -lc 'cd / && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)" && brew "$@"' _ "$@"
+if [[ "$(id -un)" == "linuxbrew" ]]; then
+  exec /home/linuxbrew/.linuxbrew/bin/brew "$@"
+fi
+exec sudo -u linuxbrew -H bash -lc 'cd / && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)" && /home/linuxbrew/.linuxbrew/bin/brew "$@"' _ "$@"
 EOF
   chmod +x /usr/local/bin/brew
-  append_line_if_missing "${ROOT_BASHRC}" 'export PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH"'
-  export PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}"
-  sudo -u linuxbrew -H bash -lc 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)" && brew --version'
-  sudo -u linuxbrew -H bash -lc 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)" && brew list node >/dev/null 2>&1 || brew install node'
+  sed -i '\|export PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH"|d' "${ROOT_BASHRC}" || true
+  append_line_if_missing "${ROOT_BASHRC}" 'export PATH="$PATH:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin"'
+  export PATH="${PATH}:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin"
+  sudo -u linuxbrew -H bash -lc 'cd / && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)" && /home/linuxbrew/.linuxbrew/bin/brew --version'
+  sudo -u linuxbrew -H bash -lc 'cd / && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)" && (/home/linuxbrew/.linuxbrew/bin/brew list node >/dev/null 2>&1 && /home/linuxbrew/.linuxbrew/bin/brew uninstall --force node || true)'
+
+  set_step "nodejs"
+  if ! command -v node >/dev/null 2>&1 || ! node --version | grep -q '^v22\.'; then
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    apt-get install -y nodejs
+  fi
   node --version
   npm --version
 
@@ -190,12 +233,13 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\"
 "
   export NODE_OPTIONS="${NODE_OPTIONS_VALUE}"
   curl -fsSL https://openclaw.ai/install.sh | bash -s -- --version 2026.3.1 --install-method npm --no-onboard
-  append_line_if_missing "${ROOT_BASHRC}" 'export PATH="/home/claw/.npm-global/bin:$PATH"'
-  export PATH="/home/claw/.npm-global/bin:${PATH}"
-  id -u claw >/dev/null 2>&1
-  sudo -u claw -H bash -lc 'export NPM_CONFIG_PREFIX=/home/claw/.npm-global PATH=/home/claw/.npm-global/bin:$PATH && npm install -g playwright'
-  sudo -u claw -H bash -lc 'export NPM_CONFIG_PREFIX=/home/claw/.npm-global PATH=/home/claw/.npm-global/bin:$PATH && node -e "console.log(require.resolve(\"playwright/package.json\"))"'
-  openclaw onboard --install-daemon
+  npm install -g playwright
+  node -e "console.log(require.resolve(\"playwright/package.json\"))"
+  if [[ "${RUN_OPENCLAW_ONBOARD}" == "1" ]]; then
+    openclaw onboard --install-daemon
+  else
+    echo "Skipping openclaw onboard --install-daemon by request."
+  fi
 
   set_step "done"
   echo "__GW_PREPARE_DONE__=1"
