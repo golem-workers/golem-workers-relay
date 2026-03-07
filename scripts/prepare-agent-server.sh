@@ -95,17 +95,6 @@ main() {
     unzip \
     ripgrep
 
-  set_step "chrome"
-  wget -q -O "${CHROME_DEB}" "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
-  dpkg -i "${CHROME_DEB}" || apt-get install -f -y
-  google-chrome-stable --version
-
-  set_step "logs"
-  sed -i 's/^#SystemMaxUse=.*/SystemMaxUse=100M/' /etc/systemd/journald.conf
-  sed -i 's/^SystemMaxUse=.*/SystemMaxUse=100M/' /etc/systemd/journald.conf
-  systemctl restart systemd-journald
-  journalctl --vacuum-size=100M
-
   set_step "swap"
   if ! swapon --show=NAME | grep -qx "/swapfile"; then
     if [[ ! -f /swapfile ]]; then
@@ -122,6 +111,17 @@ main() {
   else
     printf '%s\n' 'vm.swappiness=10' >>/etc/sysctl.conf
   fi
+
+  set_step "chrome"
+  wget -q -O "${CHROME_DEB}" "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+  apt-get install -y "${CHROME_DEB}"
+  google-chrome-stable --version
+
+  set_step "logs"
+  sed -i 's/^#SystemMaxUse=.*/SystemMaxUse=100M/' /etc/systemd/journald.conf
+  sed -i 's/^SystemMaxUse=.*/SystemMaxUse=100M/' /etc/systemd/journald.conf
+  systemctl restart systemd-journald
+  journalctl --vacuum-size=100M
 
   set_step "dns_boot_speed_fix"
   systemctl disable --now systemd-resolved || true
