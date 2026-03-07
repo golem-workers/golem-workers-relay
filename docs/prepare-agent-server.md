@@ -22,6 +22,7 @@ What it does:
 - installs Node 22 separately (Linuxbrew is not used to install Node);
 - pre-pulls and builds `golem-workers-relay`;
 - installs OpenClaw plus full `playwright`;
+- configures low-power OpenClaw runtime env (`NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);
 - optionally runs `openclaw onboard --install-daemon`.
 
 Warm-image note:

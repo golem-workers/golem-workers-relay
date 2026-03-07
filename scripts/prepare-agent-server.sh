@@ -10,6 +10,7 @@ CHROME_DEB="/tmp/google-chrome-stable_current_amd64.deb"
 RELAY_REPO_DIR="/root/golem-workers-relay"
 RELAY_REPO_URL="https://github.com/golem-workers/golem-workers-relay.git"
 NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
+NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 RUN_OPENCLAW_ONBOARD=1
 
 usage() {
@@ -226,16 +227,22 @@ EOF
   set_step "openclaw_install"
   GLOBAL_NPM_ROOT="$(npm root -g)"
   echo "Using global npm root: ${GLOBAL_NPM_ROOT}"
+  mkdir -p "${NODE_COMPILE_CACHE_DIR}"
+  chmod 1777 "${NODE_COMPILE_CACHE_DIR}"
   append_line_if_missing "${ROOT_BASHRC}" "export NODE_OPTIONS=\"${NODE_OPTIONS_VALUE}\""
+  append_line_if_missing "${ROOT_BASHRC}" "export NODE_COMPILE_CACHE=\"${NODE_COMPILE_CACHE_DIR}\""
+  append_line_if_missing "${ROOT_BASHRC}" 'export OPENCLAW_NO_RESPAWN=1'
   append_line_if_missing "${ROOT_BASHRC}" "export NODE_PATH=\"${GLOBAL_NPM_ROOT}\""
   rm -f /etc/systemd/system.conf.d/node-runtime.conf /etc/systemd/user.conf.d/node-runtime.conf
   write_file /etc/systemd/system.conf.d/node-runtime.conf "[Manager]
-DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
+DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
 "
   write_file /etc/systemd/user.conf.d/node-runtime.conf "[Manager]
-DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
+DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
 "
   export NODE_OPTIONS="${NODE_OPTIONS_VALUE}"
+  export NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE_DIR}"
+  export OPENCLAW_NO_RESPAWN=1
   export NODE_PATH="${GLOBAL_NPM_ROOT}"
   curl -fsSL https://openclaw.ai/install.sh | bash -s -- --version 2026.3.1 --install-method npm --no-onboard
   test -f "${GLOBAL_NPM_ROOT}/openclaw/package.json"
