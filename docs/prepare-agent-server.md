@@ -10,7 +10,13 @@ apt update
 apt install -y ubuntu-keyring
 
 apt update && apt upgrade -y
-apt install -y curl gnupg lsb-release jq fail2ban build-essential procps file git wget dbus-user-session nano lsof
+apt install -y curl gnupg lsb-release jq fail2ban build-essential procps file git wget dbus-user-session nano lsof openssl ca-certificates dnsutils iptables ufw python3 unzip ripgrep
+
+### CHROME ###
+
+wget -q -O /tmp/google-chrome-stable_current_amd64.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+apt install -y /tmp/google-chrome-stable_current_amd64.deb
+google-chrome-stable --version
 
 
 ### LOGS ###
@@ -74,6 +80,22 @@ source /root/.bashrc
 
 brew --version
 
+### RELAY PREPULL ###
+
+if [ -d "/root/golem-workers-relay/.git" ]; then
+  cd /root/golem-workers-relay
+  git fetch --all --prune
+  git reset --hard origin/main
+else
+  rm -rf /root/golem-workers-relay
+  git clone https://github.com/golem-workers/golem-workers-relay.git /root/golem-workers-relay
+fi
+
+cd /root/golem-workers-relay
+npm ci
+npm run build
+cd ~
+
 
 ### OPENCLAW INSTALL ###
 
@@ -94,19 +116,7 @@ curl -fsSL https://openclaw.ai/install.sh | bash -s -- --version 2026.3.1 --inst
 
 export PATH="/home/claw/.npm-global/bin:$PATH"
 source ~/.bashrc
+sudo -u claw -H bash -lc 'export NPM_CONFIG_PREFIX=/home/claw/.npm-global PATH=/home/claw/.npm-global/bin:$PATH && npm install -g playwright'
+sudo -u claw -H bash -lc 'export NPM_CONFIG_PREFIX=/home/claw/.npm-global PATH=/home/claw/.npm-global/bin:$PATH && node -e "console.log(require.resolve(\"playwright/package.json\"))"'
 openclaw onboard --install-daemon
-
-
-sudo mkdir -p /etc/systemd/system/golem-workers-relay.service.d && printf '%s\n' '[Service]' 'Environment=NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps' | sudo tee /etc/systemd/system/golem-workers-relay.service.d/override.conf >/dev/null && sudo systemctl daemon-reload && sudo systemctl restart golem-workers-relay && systemctl show -p Environment golem-workers-relay
-sudo mkdir -p /root/.config/systemd/user/openclaw-gateway.service.d
-sudo tee /root/.config/systemd/user/openclaw-gateway.service.d/override.conf >/dev/null <<'EOF'
-[Service]
-Environment=NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps
-EOF
-sudo systemctl daemon-reexec
-sudo systemctl daemon-reload
-sudo systemctl restart golem-workers-relay
-sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reexec
-sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reload
-sudo -u root XDG_RUNTIME_DIR=/run/user/0 systemctl --user restart openclaw-gateway
 
