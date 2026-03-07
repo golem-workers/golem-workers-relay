@@ -17,6 +17,11 @@ What it does:
 - installs OpenClaw plus full `playwright`;
 - runs `openclaw onboard --install-daemon`.
 
+Warm-image note:
+
+- When a provider clones a Firecracker `warm_image`, backend bootstrap is still expected to run on the new server.
+- Warm-image cloning replaces SSH access material on the cloned overlay and backend provisioning reapplies relay/OpenClaw runtime config for the new agent identity.
+
 Logs:
 
 - file: `/var/log/golem-workers/prepare-agent-server.log`
