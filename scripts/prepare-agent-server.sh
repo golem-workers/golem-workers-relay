@@ -159,9 +159,10 @@ set -euo pipefail
 exec sudo -u linuxbrew -H bash -lc 'cd / && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)" && brew "$@"' _ "$@"
 EOF
   chmod +x /usr/local/bin/brew
-  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"
-  brew --version
-  brew list node >/dev/null 2>&1 || brew install node
+  append_line_if_missing "${ROOT_BASHRC}" 'export PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH"'
+  export PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}"
+  sudo -u linuxbrew -H bash -lc 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)" && brew --version'
+  sudo -u linuxbrew -H bash -lc 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)" && brew list node >/dev/null 2>&1 || brew install node'
   node --version
   npm --version
 
