@@ -28,6 +28,8 @@ What it does:
 Warm-image note:
 
 - When a provider clones a Firecracker `warm_image`, backend bootstrap is still expected to run on the new server.
+- Provider-side warm clones now restore inside per-clone Linux network namespaces so multiple clones can coexist with the source VM on one host.
+- The clone keeps the guest-internal network identity from snapshot memory; provider/bastion access is exposed through a separate provider-assigned access IP.
 - Warm-image cloning replaces SSH access material on the cloned overlay and backend provisioning reapplies relay/OpenClaw runtime config for the new agent identity.
 
 Logs:
@@ -38,3 +40,8 @@ Script source:
 
 - `scripts/prepare-agent-server.sh`
 
+After script execution without onboard use 
+```
+source /root/.bashrc
+openclaw onboard --install-daemon
+```
