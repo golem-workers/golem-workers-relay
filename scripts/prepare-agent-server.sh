@@ -224,17 +224,23 @@ EOF
   cd /root
 
   set_step "openclaw_install"
+  GLOBAL_NPM_ROOT="$(npm root -g)"
+  echo "Using global npm root: ${GLOBAL_NPM_ROOT}"
   append_line_if_missing "${ROOT_BASHRC}" "export NODE_OPTIONS=\"${NODE_OPTIONS_VALUE}\""
-  write_file /etc/systemd/system.conf.d/node-options.conf "[Manager]
-DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\"
+  append_line_if_missing "${ROOT_BASHRC}" "export NODE_PATH=\"${GLOBAL_NPM_ROOT}\""
+  rm -f /etc/systemd/system.conf.d/node-runtime.conf /etc/systemd/user.conf.d/node-runtime.conf
+  write_file /etc/systemd/system.conf.d/node-runtime.conf "[Manager]
+DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
 "
-  write_file /etc/systemd/user.conf.d/node-options.conf "[Manager]
-DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\"
+  write_file /etc/systemd/user.conf.d/node-runtime.conf "[Manager]
+DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
 "
   export NODE_OPTIONS="${NODE_OPTIONS_VALUE}"
+  export NODE_PATH="${GLOBAL_NPM_ROOT}"
   curl -fsSL https://openclaw.ai/install.sh | bash -s -- --version 2026.3.1 --install-method npm --no-onboard
+  test -f "${GLOBAL_NPM_ROOT}/openclaw/package.json"
   npm install -g playwright
-  node -e "console.log(require.resolve(\"playwright/package.json\"))"
+  test -f "${GLOBAL_NPM_ROOT}/playwright/package.json"
   if [[ "${RUN_OPENCLAW_ONBOARD}" == "1" ]]; then
     openclaw onboard --install-daemon
   else
