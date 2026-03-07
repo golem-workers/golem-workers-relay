@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SERVICE_NAME="${SERVICE_NAME:-golem-workers-relay}"
+SYSTEMD_SKIP_START="${SYSTEMD_SKIP_START:-0}"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 CRON_PATH="/etc/cron.d/${SERVICE_NAME}-update"
 
@@ -100,9 +101,13 @@ WantedBy=multi-user.target
 EOF
 
   systemctl daemon-reload
-  systemctl enable --now "${SERVICE_NAME}"
-  systemctl restart "${SERVICE_NAME}"
-  systemctl status "${SERVICE_NAME}" --no-pager || true
+  if [[ "${SYSTEMD_SKIP_START}" == "1" ]]; then
+    systemctl enable "${SERVICE_NAME}"
+    echo "Skipping service start for ${SERVICE_NAME}; caller will activate it later."
+  else
+    systemctl enable --now "${SERVICE_NAME}"
+    systemctl status "${SERVICE_NAME}" --no-pager || true
+  fi
 else
   echo "systemctl not found; skipping systemd service install."
 fi
