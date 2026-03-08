@@ -39,6 +39,19 @@ resolve_bin() {
 
 require_root "$@"
 
+ensure_ffmpeg() {
+  if command -v ffmpeg >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "ffmpeg not found and apt-get is unavailable. Install ffmpeg before running relay setup."
+    exit 1
+  fi
+  echo "Installing ffmpeg..."
+  apt-get update
+  apt-get install -y ffmpeg
+}
+
 if [[ ! -f "${ROOT_DIR}/package.json" ]]; then
   echo "package.json not found at: ${ROOT_DIR}"
   exit 1
@@ -68,6 +81,7 @@ NODE_DIR="$(cd "$(dirname "${NODE_BIN}")" && pwd)"
 
 # Ensure dependencies and build output exist before starting the service.
 cd "${ROOT_DIR}"
+ensure_ffmpeg
 echo "Installing npm dependencies..."
 if [[ -f "${ROOT_DIR}/package-lock.json" ]]; then
   "${NPM_BIN}" ci

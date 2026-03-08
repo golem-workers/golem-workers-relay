@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { transcribeAudioWithOpenRouter } from "./openrouterTranscription.js";
+import { prepareAudioForOpenRouter, transcribeAudioWithOpenRouter } from "./openrouterTranscription.js";
 
 describe("transcribeAudioWithOpenRouter", () => {
   afterEach(() => {
@@ -31,8 +31,8 @@ describe("transcribeAudioWithOpenRouter", () => {
       timeoutMs: 1000,
       media: {
         type: "audio",
-        contentType: "audio/ogg",
-        fileName: "voice.ogg",
+        contentType: "audio/mpeg",
+        fileName: "voice.mp3",
         dataB64: Buffer.from("voice").toString("base64"),
       },
     });
@@ -58,7 +58,7 @@ describe("transcribeAudioWithOpenRouter", () => {
     expect(payload.messages[0]?.content[1]).toMatchObject({
       type: "input_audio",
       input_audio: {
-        format: "ogg",
+        format: "mp3",
       },
     });
   });
@@ -112,5 +112,29 @@ describe("transcribeAudioWithOpenRouter", () => {
         },
       })
     ).rejects.toThrow("Unsupported audio content type");
+  });
+
+  it("converts unsupported formats to wav before sending to OpenRouter", async () => {
+    const convertedAudio = Buffer.from("converted-wav").toString("base64");
+
+    const prepared = await prepareAudioForOpenRouter(
+      {
+        timeoutMs: 1000,
+        media: {
+          type: "audio",
+          contentType: "audio/ogg",
+          fileName: "voice.ogg",
+          dataB64: Buffer.from("ogg-audio").toString("base64"),
+        },
+      },
+      {
+        convertAudioToWav: vi.fn().mockResolvedValue(convertedAudio),
+      }
+    );
+
+    expect(prepared).toEqual({
+      dataB64: convertedAudio,
+      format: "wav",
+    });
   });
 });
