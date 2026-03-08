@@ -119,7 +119,7 @@ describe("startOpenRouterProxyServer", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: "openrouter/openai/gpt-audio-mini",
+        model: "openrouter/openai/gpt-audio",
         messages: [
           {
             role: "user",
@@ -140,7 +140,7 @@ describe("startOpenRouterProxyServer", () => {
 
     expect(response.status).toBe(200);
     expect(upstreamBody).toMatchObject({
-      model: "openai/gpt-audio-mini",
+      model: "openai/gpt-audio",
       messages: [
         {
           content: [

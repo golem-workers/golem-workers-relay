@@ -27,7 +27,7 @@ describe("transcribeAudioWithOpenRouter", () => {
 
     const transcript = await transcribeAudioWithOpenRouter({
       baseUrl: "http://127.0.0.1:18080/api/v1/",
-      model: "openrouter/openai/gpt-audio-mini",
+      model: "openrouter/openai/gpt-audio",
       timeoutMs: 1000,
       media: {
         type: "audio",
@@ -54,7 +54,7 @@ describe("transcribeAudioWithOpenRouter", () => {
       model: string;
       messages: Array<{ content: Array<{ type: string; input_audio?: { format: string } }> }>;
     };
-    expect(payload.model).toBe("openrouter/openai/gpt-audio-mini");
+    expect(payload.model).toBe("openrouter/openai/gpt-audio");
     expect(payload.messages[0]?.content[1]).toMatchObject({
       type: "input_audio",
       input_audio: {
@@ -87,7 +87,7 @@ describe("transcribeAudioWithOpenRouter", () => {
 
     const transcript = await transcribeAudioWithOpenRouter({
       baseUrl: "http://127.0.0.1:18080/api/v1",
-      model: "openrouter/openai/gpt-audio-mini",
+      model: "openrouter/openai/gpt-audio",
       timeoutMs: 1000,
       media: {
         type: "audio",
@@ -103,7 +103,7 @@ describe("transcribeAudioWithOpenRouter", () => {
     await expect(
       transcribeAudioWithOpenRouter({
         baseUrl: "http://127.0.0.1:18080/api/v1",
-        model: "openrouter/openai/gpt-audio-mini",
+        model: "openrouter/openai/gpt-audio",
         timeoutMs: 1000,
         media: {
           type: "audio",

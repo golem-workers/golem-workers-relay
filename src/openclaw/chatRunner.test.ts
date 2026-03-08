@@ -782,7 +782,7 @@ describe("ChatRunner", () => {
     runner = new ChatRunner(client, {
       transcription: {
         baseUrl: "http://127.0.0.1:18080/custom-proxy",
-        model: "openrouter/openai/gpt-audio-mini",
+        model: "openrouter/openai/gpt-audio",
         timeoutMs: 1000,
       },
       transcribeAudio,
@@ -806,7 +806,7 @@ describe("ChatRunner", () => {
     expect(transcribeAudio).toHaveBeenCalledWith(
       expect.objectContaining({
         baseUrl: "http://127.0.0.1:18080/custom-proxy",
-        model: "openrouter/openai/gpt-audio-mini",
+        model: "openrouter/openai/gpt-audio",
       })
     );
     expect(sentMessage).toContain("[Voice transcript]");
@@ -890,7 +890,7 @@ describe("ChatRunner", () => {
     expect(transcribeAudio).toHaveBeenCalledWith(
       expect.objectContaining({
         baseUrl: "http://127.0.0.1:18080/api/v1",
-        model: "openrouter/openai/gpt-audio-mini",
+        model: "openrouter/openai/gpt-audio",
       })
     );
     expect(sentMessage).toContain("[Voice transcript]");

@@ -139,7 +139,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
           parsed.RELAY_OPENROUTER_PROXY_PATH_PREFIX ?? "/api/v1"
         )}`
       ).replace(/\/+$/, ""),
-      model: parsed.OPENROUTER_STT_MODEL ?? "openrouter/openai/gpt-audio-mini",
+      model: parsed.OPENROUTER_STT_MODEL ?? "openrouter/openai/gpt-audio",
       timeoutMs: parsed.STT_TIMEOUT_MS ?? 15_000,
     },
   };
@@ -172,7 +172,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     openclaw: { token: "test", scopes: ["operator.admin"] },
     stt: {
       baseUrl: "http://127.0.0.1:18080/api/v1",
-      model: "openrouter/openai/gpt-audio-mini",
+      model: "openrouter/openai/gpt-audio",
       timeoutMs: 15_000,
     },
   };

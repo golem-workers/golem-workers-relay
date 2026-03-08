@@ -127,7 +127,7 @@ Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 - `OPENCLAW_GATEWAY_TOKEN=<secret>` (or `OPENCLAW_GATEWAY_PASSWORD=<secret>`)
 - `OPENCLAW_SCOPES=operator.admin` (default)
 - `OPENROUTER_STT_BASE_URL=http://127.0.0.1:18080/api/v1` (optional; defaults to the local relay proxy)
-- `OPENROUTER_STT_MODEL=openrouter/openai/gpt-audio-mini` (optional; OpenRouter audio-capable model used for transcription)
+- `OPENROUTER_STT_MODEL=openrouter/openai/gpt-audio` (optional; OpenRouter audio-capable model used for transcription)
 - `STT_TIMEOUT_MS=15000` (optional, transcription timeout)
 
 Push transport settings:

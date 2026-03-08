@@ -214,7 +214,7 @@ export class ChatRunner {
     };
     this.transcription = {
       baseUrl: opts?.transcription?.baseUrl?.trim() ?? "http://127.0.0.1:18080/api/v1",
-      model: opts?.transcription?.model?.trim() ?? "openrouter/openai/gpt-audio-mini",
+      model: opts?.transcription?.model?.trim() ?? "openrouter/openai/gpt-audio",
       timeoutMs: Math.max(1000, Math.trunc(opts?.transcription?.timeoutMs ?? 15_000)),
     };
     this.transcribeAudio = opts?.transcribeAudio ?? transcribeAudioWithOpenRouter;

@@ -70,7 +70,7 @@ describe("loadRelayConfig", () => {
     });
 
     expect(cfg.stt.baseUrl).toBe("http://127.0.0.1:19090/or/v1");
-    expect(cfg.stt.model).toBe("openrouter/openai/gpt-audio-mini");
+    expect(cfg.stt.model).toBe("openrouter/openai/gpt-audio");
   });
 
   it("allows explicit OpenRouter STT overrides", () => {
