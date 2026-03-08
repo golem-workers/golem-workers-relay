@@ -8,8 +8,7 @@ import { type InboundPushMessage } from "./backend/types.js";
 import { GatewayClient } from "./openclaw/gatewayClient.js";
 import { ChatRunner } from "./openclaw/chatRunner.js";
 import { type EventFrame } from "./openclaw/protocol.js";
-import { type AudioTaskMedia, transcribeAudioWithDeepgram } from "./openclaw/transcription.js";
-import { transcribeAudioWithOpenAi } from "./openclaw/openaiTranscription.js";
+import { transcribeAudioWithOpenRouter } from "./openclaw/openrouterTranscription.js";
 import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
 import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inMemoryTaskQueue.js";
 import { createMessageProcessor } from "./processor/messageProcessor.js";
@@ -47,22 +46,6 @@ async function main(): Promise<void> {
   });
 
   let chatRunner: ChatRunner | null = null;
-  const transcribeAudio: (input: {
-    media: AudioTaskMedia;
-    apiKey: string;
-    language?: string;
-    timeoutMs: number;
-  }) => Promise<string> =
-    cfg.stt.provider === "openai"
-      ? (input) =>
-          transcribeAudioWithOpenAi({
-            ...input,
-            model: cfg.stt.openaiModel,
-          })
-      : transcribeAudioWithDeepgram;
-
-  const sttApiKey = cfg.stt.provider === "openai" ? cfg.stt.openaiApiKey : cfg.stt.deepgramApiKey;
-  const sttLanguage = cfg.stt.provider === "openai" ? cfg.stt.openaiLanguage : undefined;
   const forwardGatewayEvent = createGatewayEventForwarder({
     relayInstanceId: cfg.relayInstanceId,
     backend,
@@ -87,11 +70,11 @@ async function main(): Promise<void> {
     devLogEnabled: cfg.devLogEnabled,
     devLogTextMaxLen: cfg.devLogTextMaxLen,
     transcription: {
-      apiKey: sttApiKey,
-      language: sttLanguage,
+      baseUrl: cfg.stt.baseUrl,
+      model: cfg.stt.model,
       timeoutMs: cfg.stt.timeoutMs,
     },
-    transcribeAudio,
+    transcribeAudio: transcribeAudioWithOpenRouter,
   });
 
   const stop = createStopSignal();

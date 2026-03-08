@@ -47,9 +47,7 @@ cp openclaw.env.example openclaw.env
 
 Set at least:
 - `OPENROUTER_API_KEY` (now can be a non-empty stub value; real key lives in backend proxy)
-- one STT provider key for voice transcription:
-  - `DEEPGRAM_API_KEY` (for `STT_PROVIDER=deepgram`)
-  - `OPENAI_API_KEY` (for `STT_PROVIDER=openai`)
+- no separate STT key is required; voice transcription goes through the local OpenRouter proxy
 
 2) One-command setup (build image, run `openclaw onboard`, start gateway):
 
@@ -128,11 +126,8 @@ Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 - `OPENCLAW_GATEWAY_WS_URL=ws://127.0.0.1:18789`
 - `OPENCLAW_GATEWAY_TOKEN=<secret>` (or `OPENCLAW_GATEWAY_PASSWORD=<secret>`)
 - `OPENCLAW_SCOPES=operator.admin` (default)
-- `STT_PROVIDER=deepgram|openai` (optional, default `deepgram`)
-- `DEEPGRAM_API_KEY=` (optional; used when `STT_PROVIDER=deepgram`)
-- `OPENAI_API_KEY=` (optional; used when `STT_PROVIDER=openai`)
-- `OPENAI_STT_MODEL=whisper-1` (optional; OpenAI transcription model)
-- `OPENAI_STT_LANGUAGE=` (optional; language hint, e.g. `ru`/`en`)
+- `OPENROUTER_STT_BASE_URL=http://127.0.0.1:18080/api/v1` (optional; defaults to the local relay proxy)
+- `OPENROUTER_STT_MODEL=openrouter/openai/gpt-audio-mini` (optional; OpenRouter audio-capable model used for transcription)
 - `STT_TIMEOUT_MS=15000` (optional, transcription timeout)
 
 Push transport settings:

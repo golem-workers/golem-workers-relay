@@ -2,7 +2,9 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { logger } from "../logger.js";
 import { inboundPushMessageSchema, type InboundPushMessage } from "../backend/types.js";
 
-const MAX_BODY_BYTES = 15 * 1024 * 1024;
+// Telegram voice/file limits are measured on binary payload size, but relay traffic
+// carries the same media as base64 JSON, which expands by roughly 33%.
+const MAX_BODY_BYTES = 30 * 1024 * 1024;
 
 export class PushServerHttpError extends Error {
   readonly statusCode: number;

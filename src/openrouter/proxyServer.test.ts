@@ -86,6 +86,76 @@ describe("startOpenRouterProxyServer", () => {
     expect(text).toContain("data:");
     expect(text).toContain("[DONE]");
   });
+
+  it("forwards multimodal audio JSON payloads and rewrites the openrouter model prefix", async () => {
+    const backendPort = await getFreePort();
+    let upstreamBody: unknown = null;
+    const backendServer = http.createServer((req, res) => {
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        }
+        upstreamBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ choices: [{ message: { content: "ok" } }] }));
+      })();
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startOpenRouterProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/api/v1",
+      backendPathPrefix: "/api/v1/relays/openrouter",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/api/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "openrouter/openai/gpt-audio-mini",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Transcribe this." },
+              {
+                type: "input_audio",
+                input_audio: {
+                  data: Buffer.from("voice").toString("base64"),
+                  format: "ogg",
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(upstreamBody).toMatchObject({
+      model: "openai/gpt-audio-mini",
+      messages: [
+        {
+          content: [
+            { type: "text", text: "Transcribe this." },
+            {
+              type: "input_audio",
+              input_audio: {
+                format: "ogg",
+              },
+            },
+          ],
+        },
+      ],
+    });
+  });
 });
 
 async function getFreePort(): Promise<number> {

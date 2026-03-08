@@ -11,10 +11,10 @@ import { computeBackoffMs, sleep } from "../common/resilience/backoff.js";
 import {
   composeMessageWithTranscript,
   logTranscriptionFailure,
-  transcribeAudioWithDeepgram,
   type AudioTaskMedia,
   type TaskMedia,
 } from "./transcription.js";
+import { transcribeAudioWithOpenRouter } from "./openrouterTranscription.js";
 
 export type ChatRunResult =
   | {
@@ -51,8 +51,8 @@ type ChatRetryOptions = {
 };
 
 type TranscriptionOptions = {
-  apiKey?: string;
-  language?: string;
+  baseUrl: string;
+  model: string;
   timeoutMs: number;
 };
 
@@ -175,8 +175,8 @@ export class ChatRunner {
   private readonly transcription: TranscriptionOptions;
   private readonly transcribeAudio: (input: {
     media: AudioTaskMedia;
-    apiKey: string;
-    language?: string;
+    baseUrl: string;
+    model: string;
     timeoutMs: number;
   }) => Promise<string>;
 
@@ -189,8 +189,8 @@ export class ChatRunner {
       transcription?: Partial<TranscriptionOptions>;
       transcribeAudio?: (input: {
         media: AudioTaskMedia;
-        apiKey: string;
-        language?: string;
+        baseUrl: string;
+        model: string;
         timeoutMs: number;
       }) => Promise<string>;
     }
@@ -205,11 +205,11 @@ export class ChatRunner {
       jitterMs: Math.max(0, Math.trunc(opts?.retry?.jitterMs ?? 250)),
     };
     this.transcription = {
-      apiKey: opts?.transcription?.apiKey,
-      language: opts?.transcription?.language,
+      baseUrl: opts?.transcription?.baseUrl?.trim() ?? "http://127.0.0.1:18080/api/v1",
+      model: opts?.transcription?.model?.trim() ?? "openrouter/openai/gpt-audio-mini",
       timeoutMs: Math.max(1000, Math.trunc(opts?.transcription?.timeoutMs ?? 15_000)),
     };
-    this.transcribeAudio = opts?.transcribeAudio ?? transcribeAudioWithDeepgram;
+    this.transcribeAudio = opts?.transcribeAudio ?? transcribeAudioWithOpenRouter;
   }
 
   handleEvent(evt: EventFrame): void {
@@ -573,14 +573,12 @@ export class ChatRunner {
   }): Promise<string> {
     const media = input.media?.find((item): item is AudioTaskMedia => item.type === "audio");
     if (!media) return input.messageText;
-    const apiKey = this.transcription.apiKey?.trim();
-    if (!apiKey) return input.messageText;
 
     try {
       const transcript = await this.transcribeAudio({
         media,
-        apiKey,
-        language: this.transcription.language,
+        baseUrl: this.transcription.baseUrl,
+        model: this.transcription.model,
         timeoutMs: this.transcription.timeoutMs,
       });
       return composeMessageWithTranscript({ messageText: input.messageText, transcript });
