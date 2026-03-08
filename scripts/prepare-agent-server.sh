@@ -127,6 +127,7 @@ main() {
     ufw \
     python3 \
     unzip \
+    ffmpeg \
     ripgrep
 
   set_step "swap"

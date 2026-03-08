@@ -15,6 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/m
 What it does:
 
 - installs base Ubuntu packages;
+- installs `ffmpeg` for relay voice transcription/conversion;
 - creates swap early so low-memory agents can unpack large packages like Chrome;
 - installs Google Chrome Stable;
 - configures journald, swap, and DNS;
