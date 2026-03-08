@@ -138,7 +138,7 @@ Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 Push transport settings:
 - `RELAY_PUSH_PORT=18790` (HTTP port where backend sends push messages)
 - `RELAY_PUSH_PATH=/relay/messages` (HTTP path for backend push endpoint)
-- `RELAY_CHAT_BATCH_DEBOUNCE_MS=5000` (debounce for chat batching; relay waits for user silence and then sends one merged chat request, resetting timer on each new message)
+- `RELAY_CHAT_BATCH_DEBOUNCE_MS=1` (near-zero debounce by default; relay still supports batching, but effectively sends chats immediately unless you raise this value)
 - `RELAY_OPENROUTER_PROXY_ENABLED=1` (enable local OpenRouter-compatible proxy listener)
 - `RELAY_OPENROUTER_PROXY_PORT=18080` (local proxy port used by agent-side rewrite rules)
 - `RELAY_OPENROUTER_PROXY_PATH_PREFIX=/api/v1` (OpenRouter-compatible incoming path prefix)
