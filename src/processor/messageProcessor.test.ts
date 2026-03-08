@@ -9,8 +9,6 @@ describe("createMessageProcessor", () => {
       method: "chat.send",
       runId: "run_1",
       model: "moonshot/kimi-k2.5",
-      usageIncoming: { totals: { input: 1, output: 2 } },
-      usageOutgoing: { totals: { input: 3, output: 4 } },
       trace: {
         backendMessageId: "legacy-backend-id",
         relayMessageId: "legacy-relay-id",
@@ -63,16 +61,12 @@ describe("createMessageProcessor", () => {
           runId?: unknown;
           model?: unknown;
           trace?: Record<string, unknown>;
-          usageIncoming?: unknown;
-          usageOutgoing?: unknown;
           legacy?: unknown;
         }
       | undefined;
     expect(meta?.method).toBe("chat.send");
     expect(meta?.runId).toBe("run_1");
     expect(meta?.model).toBe("moonshot/kimi-k2.5");
-    expect(meta?.usageIncoming).toBeUndefined();
-    expect(meta?.usageOutgoing).toBeUndefined();
     expect(meta?.legacy).toBeUndefined();
     expect(meta?.trace?.backendMessageId).toBe("msg_1");
     expect(meta?.trace?.relayInstanceId).toBe("relay_1");

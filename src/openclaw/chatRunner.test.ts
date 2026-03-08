@@ -204,7 +204,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("includes usageIncoming and usageOutgoing from sessions.usage", async () => {
+  it("does not request sessions usage snapshots during chat", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
     const sessionsUsageParamsSeen: unknown[] = [];
@@ -304,25 +304,17 @@ describe("ChatRunner", () => {
       timeoutMs: 2000,
     });
     expect(result.outcome).toBe("reply");
-
-    const statsMeta = openclawMeta as {
-      usageIncoming?: { source?: string; aggregates?: { byModel?: Array<{ model?: string }> } };
-      usageOutgoing?: { source?: string; totals?: { totalTokens?: number } };
-    };
-    expect(statsMeta.usageIncoming?.source).toBe("sessions.usage");
-    expect(statsMeta.usageIncoming?.aggregates?.byModel?.[0]?.model).toBe("moonshot/kimi-k2.5");
-    expect(statsMeta.usageOutgoing?.source).toBe("sessions.usage");
-    expect(statsMeta.usageOutgoing?.totals?.totalTokens).toBe(27);
-    expect(sessionsUsageParamsSeen.length).toBeGreaterThanOrEqual(2);
-    expect(sessionsUsageParamsSeen).toEqual(
-      expect.arrayContaining([{}, {}])
-    );
+    expect(openclawMeta).toMatchObject({
+      method: "chat.send",
+      runId: "run_snapshot_1",
+    });
+    expect(sessionsUsageParamsSeen).toEqual([]);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("returns USAGE_REQUIRED when sessions.usage is unavailable", async () => {
+  it("does not depend on sessions.usage availability", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
     let chatSendCalls = 0;
@@ -405,23 +397,20 @@ describe("ChatRunner", () => {
       messageText: "hi",
       timeoutMs: 2000,
     });
-    expect(result).toEqual({
-      outcome: "error",
-      error: {
-        code: "USAGE_REQUIRED",
-        message: "sessions.usage is required before chat.send",
-      },
+    expect(result).toMatchObject({
+      outcome: "reply",
     });
     expect(openclawMeta).toMatchObject({
       method: "chat.send",
+      runId: "run_snapshot_2",
     });
-    expect(chatSendCalls).toBe(0);
+    expect(chatSendCalls).toBe(1);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("collects usage even when sessions.usage is not advertised", async () => {
+  it("works even when sessions.usage is not advertised", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
 
@@ -492,19 +481,14 @@ describe("ChatRunner", () => {
     expect(result.outcome).toBe("reply");
     expect(openclawMeta).toMatchObject({
       method: "chat.send",
-      usageIncoming: {
-        source: "sessions.usage",
-      },
-      usageOutgoing: {
-        source: "sessions.usage",
-      },
+      runId: "run_snapshot_not_advertised",
     });
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("collects usage even when hello features are missing", async () => {
+  it("works even when hello features are missing", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
 
@@ -572,12 +556,7 @@ describe("ChatRunner", () => {
     expect(result.outcome).toBe("reply");
     expect(openclawMeta).toMatchObject({
       method: "chat.send",
-      usageIncoming: {
-        source: "sessions.usage",
-      },
-      usageOutgoing: {
-        source: "sessions.usage",
-      },
+      runId: "run_snapshot_legacy",
     });
 
     client.stop();

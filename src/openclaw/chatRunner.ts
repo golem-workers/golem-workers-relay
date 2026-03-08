@@ -71,43 +71,8 @@ type ParsedInjectedStreamError = {
 type OpenclawChatMeta = {
   method: string;
   runId?: string;
-  usage?: unknown;
   model?: string;
-  usageIncoming?: unknown;
-  usageOutgoing?: unknown;
 };
-
-type OpenclawSessionsUsageStats = {
-  source: "sessions.usage";
-  updatedAt?: number;
-  startDate?: string;
-  endDate?: string;
-  totals?: Record<string, unknown>;
-  aggregates?: {
-    byModel?: Array<{
-      provider?: string;
-      model?: string;
-      count?: number;
-      totals?: Record<string, unknown>;
-    }>;
-  };
-};
-
-function composeProviderModelName(input: {
-  provider?: unknown;
-  model?: unknown;
-}): { provider?: string; model?: string } {
-  const provider =
-    typeof input.provider === "string" && input.provider.trim().length > 0 ? input.provider.trim() : undefined;
-  const model = typeof input.model === "string" && input.model.trim().length > 0 ? input.model.trim() : undefined;
-  if (!provider && !model) return {};
-  if (!provider) return { model };
-  if (!model) return { provider };
-  if (model.startsWith(`${provider}/`)) {
-    return { provider, model };
-  }
-  return { provider, model: `${provider}/${model}` };
-}
 
 function tryParseInjectedStreamJsonError(text: string): ParsedInjectedStreamError | null {
   if (!text.includes("JSON error injected into SSE stream")) {
@@ -296,25 +261,6 @@ export class ChatRunner {
         "Message flow transition"
       );
     }
-    const usageIncoming = await this.collectSessionsUsageStats({
-      timeoutMs: Math.min(2_000, Math.max(400, Math.trunc(input.timeoutMs / 3))),
-      attempts: 3,
-    });
-    if (!usageIncoming) {
-      return {
-        result: {
-          outcome: "error",
-          error: {
-            code: "USAGE_REQUIRED",
-            message: "sessions.usage is required before chat.send",
-          },
-        },
-        openclawMeta: {
-          method: "chat.send",
-        },
-      };
-    }
-
     for (let attempt = 1; attempt <= this.retry.attempts; attempt += 1) {
       const elapsedMs = Date.now() - startedAtMs;
       const remainingMs = Math.max(0, input.timeoutMs - elapsedMs);
@@ -324,10 +270,7 @@ export class ChatRunner {
             outcome: "error",
             error: { code: "GATEWAY_TIMEOUT", message: "Timed out waiting for final" },
           },
-          openclawMeta: {
-            method: "chat.send",
-            ...(usageIncoming ? { usageIncoming } : {}),
-          },
+          openclawMeta: { method: "chat.send" },
         };
       }
 
@@ -349,10 +292,7 @@ export class ChatRunner {
           }
           return {
             result: { outcome: "error", error: { code: "NO_RUN_ID", message: "Gateway did not return runId" } },
-            openclawMeta: {
-              method: "chat.send",
-              ...(usageIncoming ? { usageIncoming } : {}),
-            },
+            openclawMeta: { method: "chat.send" },
           };
         }
       } catch (err) {
@@ -376,10 +316,7 @@ export class ChatRunner {
         if (!retryable) {
           return {
             result: { outcome: "error", error: { code: "GATEWAY_ERROR", message: `Gateway request failed: ${msg}` } },
-            openclawMeta: {
-              method: "chat.send",
-              ...(usageIncoming ? { usageIncoming } : {}),
-            },
+            openclawMeta: { method: "chat.send" },
           };
         }
         await sleep(backoffMs);
@@ -395,40 +332,6 @@ export class ChatRunner {
         const finalEvt = await this.waitForFinal(runId, remainingMs);
         this.runSessionByRunId.delete(runId);
         const openclawEvents = this.consumeRunEvents(runId);
-        const usageOutgoing = await this.collectSessionsUsageStats({
-          timeoutMs: Math.min(2_000, Math.max(400, remainingMs - 200)),
-          attempts: 3,
-        });
-        if (!usageOutgoing) {
-          return {
-            result: {
-              outcome: "error",
-              error: {
-                code: "USAGE_REQUIRED",
-                message: "sessions.usage is required after chat.send",
-                runId,
-              },
-            },
-            openclawMeta: {
-              method: "chat.send",
-              runId,
-              usageIncoming,
-            },
-          };
-        }
-        if (this.devLogEnabled) {
-          logger.debug(
-            {
-              taskId: input.taskId,
-              runId,
-              state: finalEvt.state,
-              stopReason: finalEvt.stopReason ?? null,
-              usageIncoming: summarizeSessionsUsageForDebug(usageIncoming),
-              usageOutgoing: summarizeSessionsUsageForDebug(usageOutgoing),
-            },
-            "Relay final chat usage report"
-          );
-        }
         if (finalEvt.state === "final") {
           if (finalEvt.message !== undefined) {
             if (this.devLogEnabled) {
@@ -468,8 +371,6 @@ export class ChatRunner {
               openclawMeta: {
                 method: "chat.send",
                 runId,
-                usageIncoming,
-                usageOutgoing,
               },
             };
           }
@@ -500,8 +401,6 @@ export class ChatRunner {
             openclawMeta: {
               method: "chat.send",
               runId,
-              usageIncoming,
-              usageOutgoing,
             },
           };
         }
@@ -531,8 +430,6 @@ export class ChatRunner {
             openclawMeta: {
               method: "chat.send",
               runId,
-              usageIncoming,
-              usageOutgoing,
             },
           };
         }
@@ -578,8 +475,6 @@ export class ChatRunner {
             openclawMeta: {
               method: "chat.send",
               runId,
-              usageIncoming,
-              usageOutgoing,
             },
           };
         }
@@ -610,11 +505,7 @@ export class ChatRunner {
         if (!retryable) {
           return {
             result: { outcome: "error", error: { code: "GATEWAY_TIMEOUT", message: msg, runId } },
-            openclawMeta: {
-              method: "chat.send",
-              runId,
-              ...(usageIncoming ? { usageIncoming } : {}),
-            },
+            openclawMeta: { method: "chat.send", runId },
           };
         }
         await sleep(backoffMs);
@@ -624,10 +515,7 @@ export class ChatRunner {
     // Should be unreachable due to loop returns, but keep a safe fallback.
     return {
       result: { outcome: "error", error: { code: "GATEWAY_ERROR", message: "Chat failed" } },
-      openclawMeta: {
-        method: "chat.send",
-        ...(usageIncoming ? { usageIncoming } : {}),
-      },
+      openclawMeta: { method: "chat.send" },
     };
   }
 
@@ -741,79 +629,6 @@ export class ChatRunner {
     }
   }
 
-  private async collectSessionsUsageStats(input: {
-    timeoutMs: number;
-    attempts?: number;
-  }): Promise<OpenclawSessionsUsageStats | undefined> {
-    const perCallTimeoutMs = Math.max(300, Math.min(1500, Math.trunc(input.timeoutMs)));
-    const attempts = Math.max(1, Math.min(3, Math.trunc(input.attempts ?? 3)));
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      // Request global usage snapshot so totals/aggregates include all sessions,
-      // all models, and the full available period. Do not trust `hello.features.methods`
-      // for capability discovery because some OpenClaw versions implement
-      // `sessions.usage` but do not advertise it.
-      const payload = await this.gateway.getSessionsUsage({}, { timeoutMs: perCallTimeoutMs }).catch(() => undefined);
-      if (!isPlainObject(payload)) {
-        if (attempt < attempts) await sleep(attempt * 120);
-        continue;
-      }
-      const out: OpenclawSessionsUsageStats = { source: "sessions.usage" };
-      if (typeof payload.updatedAt === "number" && Number.isFinite(payload.updatedAt)) {
-        out.updatedAt = payload.updatedAt;
-      }
-      if (typeof payload.startDate === "string" && payload.startDate.trim().length > 0) {
-        out.startDate = payload.startDate;
-      }
-      if (typeof payload.endDate === "string" && payload.endDate.trim().length > 0) {
-        out.endDate = payload.endDate;
-      }
-      if (isPlainObject(payload.totals)) {
-        out.totals = payload.totals;
-      }
-      if (isPlainObject(payload.aggregates) && Array.isArray(payload.aggregates.byModel)) {
-        out.aggregates = {
-          byModel: payload.aggregates.byModel
-            .filter((row): row is Record<string, unknown> => isPlainObject(row))
-            .map((row) => {
-              const normalizedModel = composeProviderModelName({
-                provider: row.provider,
-                model: row.model,
-              });
-              return {
-                ...normalizedModel,
-                ...(typeof row.count === "number" && Number.isFinite(row.count) ? { count: row.count } : {}),
-                ...(isPlainObject(row.totals) ? { totals: row.totals } : {}),
-              };
-            }),
-        };
-      }
-      return out;
-    }
-    return undefined;
-  }
-}
-
-function summarizeSessionsUsageForDebug(snapshot: OpenclawSessionsUsageStats | undefined): Record<string, unknown> | null {
-  if (!snapshot) return null;
-  const byModel = Array.isArray(snapshot.aggregates?.byModel) ? snapshot.aggregates.byModel : [];
-  return {
-    source: snapshot.source,
-    hasTotals: !!snapshot.totals,
-    byModelCount: byModel.length,
-    models: byModel
-      .slice(0, 20)
-      .map((row) => (typeof row.model === "string" ? row.model : null))
-      .filter((row) => row !== null),
-    updatedAt: snapshot.updatedAt ?? null,
-  };
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as { constructor?: unknown }).constructor === Object
-  );
 }
 
 function composeMessageWithUploadedFiles(messageText: string, uploadedPaths: string[]): string {
