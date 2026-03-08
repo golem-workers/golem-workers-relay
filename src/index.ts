@@ -1,5 +1,4 @@
 import "dotenv/config";
-import { randomUUID } from "node:crypto";
 import { logger } from "./logger.js";
 import { loadRelayConfig } from "./config/env.js";
 import { resolveOpenclawConfig } from "./openclaw/openclawConfig.js";
@@ -7,12 +6,12 @@ import { BackendClient } from "./backend/backendClient.js";
 import { type InboundPushMessage } from "./backend/types.js";
 import { GatewayClient } from "./openclaw/gatewayClient.js";
 import { ChatRunner } from "./openclaw/chatRunner.js";
-import { type EventFrame } from "./openclaw/protocol.js";
 import { transcribeAudioWithOpenRouter } from "./openclaw/openrouterTranscription.js";
 import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
 import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inMemoryTaskQueue.js";
 import { createMessageProcessor } from "./processor/messageProcessor.js";
 import { startOpenRouterProxyServer } from "./openrouter/proxyServer.js";
+import { createGatewayEventForwarder } from "./openclaw/gatewayEventForwarder.js";
 
 async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
@@ -49,6 +48,8 @@ async function main(): Promise<void> {
   const forwardGatewayEvent = createGatewayEventForwarder({
     relayInstanceId: cfg.relayInstanceId,
     backend,
+    forwardFinalOnly: cfg.openclawForwardFinalOnly,
+    getChatRunTrace: (runId) => chatRunner?.getRunTrace(runId) ?? null,
   });
 
   const gateway = new GatewayClient({
@@ -222,53 +223,5 @@ async function closeServer(server: import("node:http").Server): Promise<void> {
   await new Promise<void>((resolve) => {
     server.close(() => resolve());
   });
-}
-
-function createGatewayEventForwarder(input: {
-  relayInstanceId: string;
-  backend: BackendClient;
-}): (evt: EventFrame) => Promise<void> {
-  const { relayInstanceId, backend } = input;
-  return async (evt: EventFrame): Promise<void> => {
-    const relayMessageId = `relay_oc_evt_${randomUUID()}`;
-    const finishedAtMs = Date.now();
-    try {
-      await backend.submitInboundMessage({
-        body: {
-          relayInstanceId,
-          relayMessageId,
-          finishedAtMs,
-          outcome: "technical",
-          technical: {
-            source: "openclaw_gateway",
-            event: evt.event,
-            payload: evt.payload ?? null,
-            seq: evt.seq ?? null,
-            stateVersion: evt.stateVersion ?? null,
-          },
-          openclawMeta: {
-            method: `gateway.event.${evt.event}`,
-            trace: {
-              relayMessageId,
-              relayInstanceId,
-            },
-          },
-        },
-      });
-    } catch (err) {
-      logger.warn(
-        {
-          event: "message_flow",
-          direction: "relay_to_backend",
-          stage: "failed",
-          relayMessageId,
-          relayInstanceId,
-          outcome: "technical",
-          error: err instanceof Error ? err.message : String(err),
-        },
-        "Failed to forward OpenClaw gateway event to backend"
-      );
-    }
-  };
 }
 

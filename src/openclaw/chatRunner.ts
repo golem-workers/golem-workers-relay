@@ -175,6 +175,7 @@ export class ChatRunner {
   private waitersByRunId = new Map<string, Waiter>();
   private runSessionByRunId = new Map<string, string>();
   private runEventsByRunId = new Map<string, ChatEvent[]>();
+  private runTraceByRunId = new Map<string, { backendMessageId: string }>();
   private sessionMaintenanceLock: Promise<void> | null = null;
   private readonly devLogEnabled: boolean;
   private readonly devLogTextMaxLen: number;
@@ -237,7 +238,12 @@ export class ChatRunner {
     clearTimeout(waiter.timeout);
     this.waitersByRunId.delete(chatEvt.runId);
     this.runSessionByRunId.delete(chatEvt.runId);
+    this.runTraceByRunId.delete(chatEvt.runId);
     waiter.resolve(chatEvt);
+  }
+
+  getRunTrace(runId: string): { backendMessageId: string } | null {
+    return this.runTraceByRunId.get(runId) ?? null;
   }
 
   async runChatTask(input: {
@@ -352,9 +358,11 @@ export class ChatRunner {
           logger.debug({ taskId: input.taskId, runId, attempt }, "Relay waiting for chat final event");
         }
         this.runSessionByRunId.set(runId, input.sessionKey);
+        this.runTraceByRunId.set(runId, { backendMessageId: input.taskId });
         this.runEventsByRunId.set(runId, []);
         const finalEvt = await this.waitForFinal(runId, remainingMs);
         this.runSessionByRunId.delete(runId);
+        this.runTraceByRunId.delete(runId);
         const openclawEvents = this.consumeRunEvents(runId);
         if (finalEvt.state === "final") {
           if (finalEvt.message !== undefined) {
@@ -520,6 +528,7 @@ export class ChatRunner {
         }
 
         this.runSessionByRunId.delete(runId);
+        this.runTraceByRunId.delete(runId);
         this.runEventsByRunId.delete(runId);
         const msg = err instanceof Error ? err.message : "Timed out waiting for final";
         const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
@@ -570,6 +579,7 @@ export class ChatRunner {
             throw new Error("Gateway did not return runId for /new");
           }
           this.runSessionByRunId.set(runId, sessionKey);
+          this.runTraceByRunId.set(runId, { backendMessageId: `session_new:${sessionKey}` });
           try {
             const finalEvt = await this.waitForFinal(runId, 15_000);
             if (finalEvt.state === "error") {
@@ -581,6 +591,7 @@ export class ChatRunner {
             sessionsRotated += 1;
           } finally {
             this.runSessionByRunId.delete(runId);
+            this.runTraceByRunId.delete(runId);
           }
         } catch {
           sessionsFailed += 1;
@@ -620,6 +631,7 @@ export class ChatRunner {
       const timeout = setTimeout(() => {
         this.waitersByRunId.delete(runId);
         this.runSessionByRunId.delete(runId);
+        this.runTraceByRunId.delete(runId);
         this.runEventsByRunId.delete(runId);
         reject(new Error("Timed out waiting for final"));
       }, timeoutMs);

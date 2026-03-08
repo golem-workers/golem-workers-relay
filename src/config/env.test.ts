@@ -46,6 +46,21 @@ describe("loadRelayConfig", () => {
     expect(custom.chatBatchDebounceMs).toBe(7500);
   });
 
+  it("enables final-only OpenClaw forwarding by default and allows override", () => {
+    const def = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+    });
+    expect(def.openclawForwardFinalOnly).toBe(true);
+
+    const custom = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+      RELAY_OPENCLAW_FORWARD_FINAL_ONLY: "0",
+    });
+    expect(custom.openclawForwardFinalOnly).toBe(false);
+  });
+
   it("derives OpenRouter STT base URL from the local proxy by default", () => {
     const cfg = loadRelayConfig({
       RELAY_TOKEN: "t",

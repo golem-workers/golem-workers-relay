@@ -138,6 +138,7 @@ Push transport settings:
 - `RELAY_OPENROUTER_PROXY_PORT=18080` (local proxy port used by agent-side rewrite rules)
 - `RELAY_OPENROUTER_PROXY_PATH_PREFIX=/api/v1` (OpenRouter-compatible incoming path prefix)
 - `RELAY_OPENROUTER_BACKEND_PATH_PREFIX=/api/v1/relays/openrouter` (backend relay-auth proxy path)
+- `RELAY_OPENCLAW_FORWARD_FINAL_ONLY=1` (default: only forward compact `delta` typing signals; disable with `0` to forward all raw OpenClaw gateway events)
 
 Note: relay creates its own device identity on the host under `~/.openclaw` unless
 `OPENCLAW_STATE_DIR` is set. This is separate from the gateway's container state.
@@ -159,7 +160,15 @@ For `chat` tasks, relay always sends a callback to backend and preserves OpenCla
 - `outcome=reply` when OpenClaw returned a final message.
 - `outcome=no_reply` when a run completed without a user-facing message (for example technical/system finalization).
 - `outcome=error` when a run failed or was aborted.
-- `outcome=technical` for raw OpenClaw gateway events (for example `tick`, `connect.challenge`, `chat` event frames).
+- `outcome=technical` for gateway-side signals.
 
 Relay includes all collected OpenClaw `chat` events (including intermediate/technical `delta` events) in
 `reply.openclawEvents`, `noReply.openclawEvents`, or `error.openclawEvents`.
+
+By default (`RELAY_OPENCLAW_FORWARD_FINAL_ONLY=1`) relay does not forward raw `tick`, `connect.challenge`, or raw
+terminal `chat` frames to backend. Instead it sends only compact `technical.event=chat.delta_signal` callbacks for
+intermediate `delta` events so backend/messenger integrations can surface "agent is typing" without receiving the
+partial text stream.
+
+When `RELAY_OPENCLAW_FORWARD_FINAL_ONLY=0`, relay keeps the legacy behavior and forwards all raw gateway events as
+`outcome=technical`.

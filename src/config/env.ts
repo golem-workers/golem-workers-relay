@@ -10,6 +10,14 @@ function parseCsv(value: string | undefined): string[] | undefined {
   return items.length > 0 ? items : undefined;
 }
 
+const envBooleanSchema = z.preprocess((value) => {
+  if (typeof value !== "string") return value;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return value;
+}, z.boolean());
+
 const envSchema = z.object({
   RELAY_TOKEN: z.string().min(1),
   BACKEND_BASE_URL: z.string().url(),
@@ -27,6 +35,7 @@ const envSchema = z.object({
   RELAY_OPENROUTER_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_OPENROUTER_PROXY_PATH_PREFIX: z.string().min(1).optional(),
   RELAY_OPENROUTER_BACKEND_PATH_PREFIX: z.string().min(1).optional(),
+  RELAY_OPENCLAW_FORWARD_FINAL_ONLY: envBooleanSchema.optional(),
 
   MESSAGE_FLOW_LOG: z.coerce.boolean().optional(),
 
@@ -62,6 +71,7 @@ export type RelayConfig = {
     pathPrefix: string;
     backendPathPrefix: string;
   };
+  openclawForwardFinalOnly: boolean;
   devLogEnabled: boolean;
   devLogTextMaxLen: number;
   devLogGatewayFrames: boolean;
@@ -110,6 +120,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
         parsed.RELAY_OPENROUTER_BACKEND_PATH_PREFIX ?? "/api/v1/relays/openrouter"
       ),
     },
+    openclawForwardFinalOnly: parsed.RELAY_OPENCLAW_FORWARD_FINAL_ONLY ?? true,
     devLogEnabled,
     devLogTextMaxLen,
     devLogGatewayFrames,
@@ -154,6 +165,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
       pathPrefix: "/api/v1",
       backendPathPrefix: "/api/v1/relays/openrouter",
     },
+    openclawForwardFinalOnly: true,
     devLogEnabled: false,
     devLogTextMaxLen: 200,
     devLogGatewayFrames: false,
