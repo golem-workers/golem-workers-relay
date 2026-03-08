@@ -46,8 +46,8 @@ const envSchema = z.object({
   OPENCLAW_GATEWAY_PASSWORD: z.string().min(1).optional(),
   OPENCLAW_SCOPES: z.string().optional(),
 
-  OPENROUTER_STT_BASE_URL: z.string().url().optional(),
-  OPENROUTER_STT_MODEL: z.string().min(1).optional(),
+  OPENAI_STT_BASE_URL: z.string().url().optional(),
+  OPENAI_STT_MODEL: z.string().min(1).optional(),
   STT_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).optional(),
 });
 
@@ -134,12 +134,10 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     },
     stt: {
       baseUrl: (
-        parsed.OPENROUTER_STT_BASE_URL ??
-        `http://127.0.0.1:${parsed.RELAY_OPENROUTER_PROXY_PORT ?? 18080}${withLeadingSlash(
-          parsed.RELAY_OPENROUTER_PROXY_PATH_PREFIX ?? "/api/v1"
-        )}`
+        parsed.OPENAI_STT_BASE_URL ??
+        `${parsed.BACKEND_BASE_URL.replace(/\/+$/, "")}/api/v1/relays/openai`
       ).replace(/\/+$/, ""),
-      model: parsed.OPENROUTER_STT_MODEL ?? "openrouter/openai/gpt-audio",
+      model: parsed.OPENAI_STT_MODEL ?? "gpt-4o-mini-transcribe",
       timeoutMs: parsed.STT_TIMEOUT_MS ?? 15_000,
     },
   };
@@ -171,8 +169,8 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     devLogGatewayFrames: false,
     openclaw: { token: "test", scopes: ["operator.admin"] },
     stt: {
-      baseUrl: "http://127.0.0.1:18080/api/v1",
-      model: "openrouter/openai/gpt-audio",
+      baseUrl: "http://localhost:3000/api/v1/relays/openai",
+      model: "gpt-4o-mini-transcribe",
       timeoutMs: 15_000,
     },
   };

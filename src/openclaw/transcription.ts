@@ -17,10 +17,22 @@ export type FileTaskMedia = {
 export type TaskMedia = AudioTaskMedia | FileTaskMedia;
 
 export function composeMessageWithTranscript(input: { messageText: string; transcript: string }): string {
-  const text = input.messageText.trim();
+  const text = stripVoicePlaceholders(input.messageText);
   const transcript = input.transcript.trim();
   if (!text) return transcript;
   return `${text}\n\n[Voice transcript]\n${transcript}`;
+}
+
+function stripVoicePlaceholders(messageText: string): string {
+  return messageText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => {
+      const normalized = line.toLowerCase();
+      return normalized !== "[voice message]" && normalized !== "[voice note]";
+    })
+    .join("\n")
+    .trim();
 }
 
 export function logTranscriptionFailure(input: { taskId: string; error: unknown }): void {

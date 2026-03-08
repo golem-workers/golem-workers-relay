@@ -4,8 +4,8 @@ import { transcribeAudioWithOpenAi } from "./openaiTranscription.js";
 const sampleMedia = {
   type: "audio" as const,
   dataB64: Buffer.from("voice-bytes", "utf8").toString("base64"),
-  contentType: "audio/ogg",
-  fileName: "voice.ogg",
+  contentType: "audio/mpeg",
+  fileName: "voice.mp3",
 };
 
 describe("transcribeAudioWithOpenAi", () => {
@@ -20,20 +20,21 @@ describe("transcribeAudioWithOpenAi", () => {
 
     const transcript = await transcribeAudioWithOpenAi({
       media: sampleMedia,
-      apiKey: "openai-key",
-      model: "whisper-1",
-      language: "ru",
+      baseUrl: "https://backend.example.com/api/v1/relays/openai/",
+      relayToken: "relay-token",
+      model: "gpt-4o-mini-transcribe",
       timeoutMs: 1000,
     });
 
     expect(transcript).toBe("hello from whisper");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect(url).toBe("https://api.openai.com/v1/audio/transcriptions");
+    expect(url).toBe("https://backend.example.com/api/v1/relays/openai/audio/transcriptions");
     expect(init?.method).toBe("POST");
     expect(init?.headers).toEqual(
       expect.objectContaining({
-        Authorization: "Bearer openai-key",
+        Authorization: "Bearer relay-token",
+        "x-openai-stt-model": "gpt-4o-mini-transcribe",
       }),
     );
   });
@@ -44,8 +45,9 @@ describe("transcribeAudioWithOpenAi", () => {
     await expect(
       transcribeAudioWithOpenAi({
         media: sampleMedia,
-        apiKey: "openai-key",
-        model: "whisper-1",
+        baseUrl: "https://backend.example.com/api/v1/relays/openai",
+        relayToken: "relay-token",
+        model: "gpt-4o-mini-transcribe",
         timeoutMs: 1000,
       }),
     ).rejects.toThrow("OpenAI transcription returned an empty transcript");
@@ -57,8 +59,9 @@ describe("transcribeAudioWithOpenAi", () => {
     await expect(
       transcribeAudioWithOpenAi({
         media: sampleMedia,
-        apiKey: "openai-key",
-        model: "whisper-1",
+        baseUrl: "https://backend.example.com/api/v1/relays/openai",
+        relayToken: "relay-token",
+        model: "gpt-4o-mini-transcribe",
         timeoutMs: 1000,
       }),
     ).rejects.toThrow("OpenAI transcription timed out");

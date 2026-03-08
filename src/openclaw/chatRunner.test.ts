@@ -782,7 +782,7 @@ describe("ChatRunner", () => {
     runner = new ChatRunner(client, {
       transcription: {
         baseUrl: "http://127.0.0.1:18080/custom-proxy",
-        model: "openrouter/openai/gpt-audio",
+        model: "gpt-4o-mini-transcribe",
         timeoutMs: 1000,
       },
       transcribeAudio,
@@ -806,7 +806,7 @@ describe("ChatRunner", () => {
     expect(transcribeAudio).toHaveBeenCalledWith(
       expect.objectContaining({
         baseUrl: "http://127.0.0.1:18080/custom-proxy",
-        model: "openrouter/openai/gpt-audio",
+        model: "gpt-4o-mini-transcribe",
       })
     );
     expect(sentMessage).toContain("[Voice transcript]");
@@ -816,7 +816,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("uses the OpenRouter transcriber defaults when no STT config override is provided", async () => {
+  it("uses the OpenAI transcriber defaults when no STT config override is provided", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
     const transcribeAudio = vi.fn().mockResolvedValue("voice text");
@@ -889,8 +889,8 @@ describe("ChatRunner", () => {
     expect(result.outcome).toBe("reply");
     expect(transcribeAudio).toHaveBeenCalledWith(
       expect.objectContaining({
-        baseUrl: "http://127.0.0.1:18080/api/v1",
-        model: "openrouter/openai/gpt-audio",
+        baseUrl: "http://localhost:3000/api/v1/relays/openai",
+        model: "gpt-4o-mini-transcribe",
       })
     );
     expect(sentMessage).toContain("[Voice transcript]");

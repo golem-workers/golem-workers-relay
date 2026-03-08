@@ -1,15 +1,20 @@
 import { type AudioTaskMedia } from "./transcription.js";
+import { prepareAudioForOpenRouter } from "./openrouterTranscription.js";
 
 export async function transcribeAudioWithOpenAi(input: {
   media: AudioTaskMedia;
-  apiKey: string;
+  baseUrl: string;
+  relayToken: string;
   model: string;
-  language?: string;
   timeoutMs: number;
 }): Promise<string> {
-  const apiKey = input.apiKey.trim();
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY is empty");
+  const baseUrl = input.baseUrl.trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error("OpenAI transcription base URL is empty");
+  }
+  const relayToken = input.relayToken.trim();
+  if (!relayToken) {
+    throw new Error("Relay token is empty for OpenAI transcription proxy");
   }
   const model = input.model.trim();
   if (!model) {
@@ -21,23 +26,28 @@ export async function transcribeAudioWithOpenAi(input: {
     throw new Error("Audio payload is empty");
   }
 
-  const fileName = input.media.fileName?.trim() || guessFileName(input.media.contentType);
-  const file = new File([body], fileName, { type: input.media.contentType });
+  const preparedAudio = await prepareAudioForOpenRouter({
+    media: input.media,
+    timeoutMs: input.timeoutMs,
+  });
+  const fileName = guessFileName(preparedAudio.format);
+  const fileContentType = preparedAudio.format === "mp3" ? "audio/mpeg" : "audio/wav";
+  const file = new File([Buffer.from(preparedAudio.dataB64, "base64")], fileName, {
+    type: fileContentType,
+  });
   const form = new FormData();
   form.set("file", file);
   form.set("model", model);
-  if (input.language?.trim()) {
-    form.set("language", input.language.trim());
-  }
   form.set("response_format", "json");
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(1000, input.timeoutMs));
   try {
-    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    const response = await fetch(`${baseUrl}/audio/transcriptions`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${relayToken}`,
+        "x-openai-stt-model": model,
       },
       body: form,
       signal: controller.signal,
@@ -65,12 +75,6 @@ export async function transcribeAudioWithOpenAi(input: {
   }
 }
 
-function guessFileName(contentType: string): string {
-  const normalized = contentType.toLowerCase();
-  if (normalized.includes("mpeg")) return "audio.mp3";
-  if (normalized.includes("wav")) return "audio.wav";
-  if (normalized.includes("webm")) return "audio.webm";
-  if (normalized.includes("ogg")) return "audio.ogg";
-  if (normalized.includes("mp4")) return "audio.mp4";
-  return "audio.bin";
+function guessFileName(format: "wav" | "mp3"): string {
+  return format === "mp3" ? "audio.mp3" : "audio.wav";
 }

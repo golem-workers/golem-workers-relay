@@ -61,29 +61,27 @@ describe("loadRelayConfig", () => {
     expect(custom.openclawForwardFinalOnly).toBe(false);
   });
 
-  it("derives OpenRouter STT base URL from the local proxy by default", () => {
+  it("derives OpenAI STT base URL from the backend relay proxy by default", () => {
     const cfg = loadRelayConfig({
       RELAY_TOKEN: "t",
       BACKEND_BASE_URL: "https://example.com",
-      RELAY_OPENROUTER_PROXY_PORT: "19090",
-      RELAY_OPENROUTER_PROXY_PATH_PREFIX: "/or/v1",
     });
 
-    expect(cfg.stt.baseUrl).toBe("http://127.0.0.1:19090/or/v1");
-    expect(cfg.stt.model).toBe("openrouter/openai/gpt-audio");
+    expect(cfg.stt.baseUrl).toBe("https://example.com/api/v1/relays/openai");
+    expect(cfg.stt.model).toBe("gpt-4o-mini-transcribe");
   });
 
-  it("allows explicit OpenRouter STT overrides", () => {
+  it("allows explicit OpenAI STT overrides", () => {
     const cfg = loadRelayConfig({
       RELAY_TOKEN: "t",
       BACKEND_BASE_URL: "https://example.com",
-      OPENROUTER_STT_BASE_URL: "https://relay.example.com/audio/",
-      OPENROUTER_STT_MODEL: "openrouter/custom/audio-model",
+      OPENAI_STT_BASE_URL: "https://relay.example.com/audio/",
+      OPENAI_STT_MODEL: "gpt-4o-transcribe",
       STT_TIMEOUT_MS: "20000",
     });
 
     expect(cfg.stt.baseUrl).toBe("https://relay.example.com/audio");
-    expect(cfg.stt.model).toBe("openrouter/custom/audio-model");
+    expect(cfg.stt.model).toBe("gpt-4o-transcribe");
     expect(cfg.stt.timeoutMs).toBe(20_000);
   });
 });

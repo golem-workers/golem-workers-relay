@@ -6,7 +6,7 @@ import { BackendClient } from "./backend/backendClient.js";
 import { type InboundPushMessage } from "./backend/types.js";
 import { GatewayClient } from "./openclaw/gatewayClient.js";
 import { ChatRunner } from "./openclaw/chatRunner.js";
-import { transcribeAudioWithOpenRouter } from "./openclaw/openrouterTranscription.js";
+import { transcribeAudioWithOpenAi } from "./openclaw/openaiTranscription.js";
 import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
 import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inMemoryTaskQueue.js";
 import { createMessageProcessor } from "./processor/messageProcessor.js";
@@ -72,10 +72,11 @@ async function main(): Promise<void> {
     devLogTextMaxLen: cfg.devLogTextMaxLen,
     transcription: {
       baseUrl: cfg.stt.baseUrl,
+      relayToken: cfg.relayToken,
       model: cfg.stt.model,
       timeoutMs: cfg.stt.timeoutMs,
     },
-    transcribeAudio: transcribeAudioWithOpenRouter,
+    transcribeAudio: transcribeAudioWithOpenAi,
   });
 
   const stop = createStopSignal();

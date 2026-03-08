@@ -14,7 +14,7 @@ import {
   type AudioTaskMedia,
   type TaskMedia,
 } from "./transcription.js";
-import { transcribeAudioWithOpenRouter } from "./openrouterTranscription.js";
+import { transcribeAudioWithOpenAi } from "./openaiTranscription.js";
 
 export type ChatRunResult =
   | {
@@ -52,6 +52,7 @@ type ChatRetryOptions = {
 
 type TranscriptionOptions = {
   baseUrl: string;
+  relayToken: string;
   model: string;
   timeoutMs: number;
 };
@@ -184,6 +185,7 @@ export class ChatRunner {
   private readonly transcribeAudio: (input: {
     media: AudioTaskMedia;
     baseUrl: string;
+    relayToken: string;
     model: string;
     timeoutMs: number;
   }) => Promise<string>;
@@ -198,6 +200,7 @@ export class ChatRunner {
       transcribeAudio?: (input: {
         media: AudioTaskMedia;
         baseUrl: string;
+        relayToken: string;
         model: string;
         timeoutMs: number;
       }) => Promise<string>;
@@ -213,11 +216,12 @@ export class ChatRunner {
       jitterMs: Math.max(0, Math.trunc(opts?.retry?.jitterMs ?? 250)),
     };
     this.transcription = {
-      baseUrl: opts?.transcription?.baseUrl?.trim() ?? "http://127.0.0.1:18080/api/v1",
-      model: opts?.transcription?.model?.trim() ?? "openrouter/openai/gpt-audio",
+      baseUrl: opts?.transcription?.baseUrl?.trim() ?? "http://localhost:3000/api/v1/relays/openai",
+      relayToken: opts?.transcription?.relayToken?.trim() ?? "",
+      model: opts?.transcription?.model?.trim() ?? "gpt-4o-mini-transcribe",
       timeoutMs: Math.max(1000, Math.trunc(opts?.transcription?.timeoutMs ?? 15_000)),
     };
-    this.transcribeAudio = opts?.transcribeAudio ?? transcribeAudioWithOpenRouter;
+    this.transcribeAudio = opts?.transcribeAudio ?? transcribeAudioWithOpenAi;
   }
 
   handleEvent(evt: EventFrame): void {
@@ -613,6 +617,7 @@ export class ChatRunner {
       const transcript = await this.transcribeAudio({
         media,
         baseUrl: this.transcription.baseUrl,
+        relayToken: this.transcription.relayToken,
         model: this.transcription.model,
         timeoutMs: this.transcription.timeoutMs,
       });
