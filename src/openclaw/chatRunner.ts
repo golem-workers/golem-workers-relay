@@ -74,6 +74,13 @@ type OpenclawChatMeta = {
   model?: string;
 };
 
+class VoiceTranscriptionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "VoiceTranscriptionError";
+  }
+}
+
 function tryParseInjectedStreamJsonError(text: string): ParsedInjectedStreamError | null {
   if (!text.includes("JSON error injected into SSE stream")) {
     return null;
@@ -241,7 +248,24 @@ export class ChatRunner {
     timeoutMs: number;
   }): Promise<{ result: ChatRunResult; openclawMeta: OpenclawChatMeta }> {
     await this.waitForSessionMaintenance();
-    const baseMessageText = await this.resolveMessageText(input);
+    let baseMessageText: string;
+    try {
+      baseMessageText = await this.resolveMessageText(input);
+    } catch (error) {
+      if (error instanceof VoiceTranscriptionError) {
+        return {
+          result: {
+            outcome: "error",
+            error: {
+              code: "VOICE_TRANSCRIPTION_FAILED",
+              message: error.message,
+            },
+          },
+          openclawMeta: { method: "chat.send" },
+        };
+      }
+      throw error;
+    }
     const uploadedPaths = await saveUploadedFiles({ media: input.media });
     const messageText = composeMessageWithUploadedFiles(baseMessageText, uploadedPaths);
     const startedAtMs = Date.now();
@@ -584,7 +608,10 @@ export class ChatRunner {
       return composeMessageWithTranscript({ messageText: input.messageText, transcript });
     } catch (error) {
       logTranscriptionFailure({ taskId: input.taskId, error });
-      return input.messageText;
+      const reason = error instanceof Error ? error.message.trim() : String(error);
+      throw new VoiceTranscriptionError(
+        `Voice message could not be transcribed, so it was not sent to the model. ${reason}`
+      );
     }
   }
 

@@ -29,6 +29,6 @@ export function logTranscriptionFailure(input: { taskId: string; error: unknown 
       taskId: input.taskId,
       err: input.error instanceof Error ? input.error.message : String(input.error),
     },
-    "Audio transcription failed; falling back to original text"
+    "Audio transcription failed"
   );
 }

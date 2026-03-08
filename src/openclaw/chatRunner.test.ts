@@ -643,7 +643,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("falls back to original message when transcription fails", async () => {
+  it("fails the task when transcription fails instead of sending raw voice placeholder to the model", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
     let sentMessage = "";
@@ -713,8 +713,15 @@ describe("ChatRunner", () => {
       ],
       timeoutMs: 1000,
     });
-    expect(result.outcome).toBe("reply");
-    expect(sentMessage).toBe("keep me");
+    expect(result.outcome).toBe("error");
+    expect(result).toEqual({
+      outcome: "error",
+      error: {
+        code: "VOICE_TRANSCRIPTION_FAILED",
+        message: "Voice message could not be transcribed, so it was not sent to the model. stt down",
+      },
+    });
+    expect(sentMessage).toBe("");
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));

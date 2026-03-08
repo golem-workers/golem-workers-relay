@@ -195,5 +195,50 @@ describe("createMessageProcessor", () => {
     expect(reply?.body?.openclawMeta?.trace?.backendMessageId).toBe("msg_2");
     vi.useRealTimers();
   });
+
+  it("propagates explicit voice transcription errors to backend", async () => {
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockResolvedValue({
+          result: {
+            outcome: "error",
+            error: {
+              code: "VOICE_TRANSCRIPTION_FAILED",
+              message: "Voice message could not be transcribed, so it was not sent to the model. upstream timeout",
+            },
+          },
+          openclawMeta: { method: "chat.send" },
+        }),
+      } as never,
+      backend: { submitInboundMessage } as never,
+    });
+
+    await processor({
+      messageId: "msg_voice_1",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "[Voice message]",
+      },
+    });
+
+    const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
+      | { body?: { outcome?: string; error?: { code?: string; message?: string } } }
+      | undefined;
+    expect(firstCall?.body?.outcome).toBe("error");
+    expect(firstCall?.body?.error).toEqual({
+      code: "VOICE_TRANSCRIPTION_FAILED",
+      message: "Voice message could not be transcribed, so it was not sent to the model. upstream timeout",
+    });
+  });
 });
 
