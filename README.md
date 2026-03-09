@@ -127,7 +127,7 @@ Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 - `OPENCLAW_GATEWAY_TOKEN=<secret>` (or `OPENCLAW_GATEWAY_PASSWORD=<secret>`)
 - `OPENCLAW_SCOPES=operator.admin` (default)
 - `OPENAI_STT_BASE_URL=http://backend.example.com/api/v1/relays/openai` (optional; defaults to the backend relay-auth proxy)
-- `OPENAI_STT_MODEL=gpt-4o-mini-transcribe` (optional; OpenAI transcription model used for voice transcription)
+- `OPENAI_STT_MODEL=gpt-4o-transcribe` (optional; OpenAI transcription model used for voice transcription)
 - `STT_TIMEOUT_MS=15000` (optional, transcription timeout)
 
 Push transport settings:

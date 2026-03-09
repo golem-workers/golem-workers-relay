@@ -137,7 +137,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
         parsed.OPENAI_STT_BASE_URL ??
         `${parsed.BACKEND_BASE_URL.replace(/\/+$/, "")}/api/v1/relays/openai`
       ).replace(/\/+$/, ""),
-      model: parsed.OPENAI_STT_MODEL ?? "gpt-4o-mini-transcribe",
+      model: parsed.OPENAI_STT_MODEL ?? "gpt-4o-transcribe",
       timeoutMs: parsed.STT_TIMEOUT_MS ?? 15_000,
     },
   };
@@ -170,7 +170,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     openclaw: { token: "test", scopes: ["operator.admin"] },
     stt: {
       baseUrl: "http://localhost:3000/api/v1/relays/openai",
-      model: "gpt-4o-mini-transcribe",
+      model: "gpt-4o-transcribe",
       timeoutMs: 15_000,
     },
   };

@@ -218,7 +218,7 @@ export class ChatRunner {
     this.transcription = {
       baseUrl: opts?.transcription?.baseUrl?.trim() ?? "http://localhost:3000/api/v1/relays/openai",
       relayToken: opts?.transcription?.relayToken?.trim() ?? "",
-      model: opts?.transcription?.model?.trim() ?? "gpt-4o-mini-transcribe",
+      model: opts?.transcription?.model?.trim() ?? "gpt-4o-transcribe",
       timeoutMs: Math.max(1000, Math.trunc(opts?.transcription?.timeoutMs ?? 15_000)),
     };
     this.transcribeAudio = opts?.transcribeAudio ?? transcribeAudioWithOpenAi;

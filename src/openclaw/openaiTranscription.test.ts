@@ -22,7 +22,7 @@ describe("transcribeAudioWithOpenAi", () => {
       media: sampleMedia,
       baseUrl: "https://backend.example.com/api/v1/relays/openai/",
       relayToken: "relay-token",
-      model: "gpt-4o-mini-transcribe",
+      model: "gpt-4o-transcribe",
       timeoutMs: 1000,
     });
 
@@ -34,7 +34,7 @@ describe("transcribeAudioWithOpenAi", () => {
     expect(init?.headers).toEqual(
       expect.objectContaining({
         Authorization: "Bearer relay-token",
-        "x-openai-stt-model": "gpt-4o-mini-transcribe",
+        "x-openai-stt-model": "gpt-4o-transcribe",
       }),
     );
   });
@@ -47,7 +47,7 @@ describe("transcribeAudioWithOpenAi", () => {
         media: sampleMedia,
         baseUrl: "https://backend.example.com/api/v1/relays/openai",
         relayToken: "relay-token",
-        model: "gpt-4o-mini-transcribe",
+        model: "gpt-4o-transcribe",
         timeoutMs: 1000,
       }),
     ).rejects.toThrow("OpenAI transcription returned an empty transcript");
@@ -61,7 +61,7 @@ describe("transcribeAudioWithOpenAi", () => {
         media: sampleMedia,
         baseUrl: "https://backend.example.com/api/v1/relays/openai",
         relayToken: "relay-token",
-        model: "gpt-4o-mini-transcribe",
+        model: "gpt-4o-transcribe",
         timeoutMs: 1000,
       }),
     ).rejects.toThrow("OpenAI transcription timed out");

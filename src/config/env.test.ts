@@ -68,7 +68,7 @@ describe("loadRelayConfig", () => {
     });
 
     expect(cfg.stt.baseUrl).toBe("https://example.com/api/v1/relays/openai");
-    expect(cfg.stt.model).toBe("gpt-4o-mini-transcribe");
+    expect(cfg.stt.model).toBe("gpt-4o-transcribe");
   });
 
   it("allows explicit OpenAI STT overrides", () => {
