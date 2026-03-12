@@ -39,6 +39,9 @@ export type GatewayClientOptions = {
   devLogEnabled?: boolean;
   devLogTextMaxLen?: number;
   devLogGatewayFrames?: boolean;
+  connectReadyTimeoutMs?: number;
+  startupMaxAttempts?: number;
+  startupRetryDelayMs?: number;
 };
 
 export type GatewayUsageCostParams = {
@@ -178,10 +181,13 @@ export class GatewayClient {
   private lastTickMs: number | null = null;
   private tickIntervalMs = 30_000;
   private tickTimer: NodeJS.Timeout | null = null;
+  private connectReadyTimeout: NodeJS.Timeout | null = null;
 
   private reconnectTimer: NodeJS.Timeout | null = null;
   private backoffMs = 1000;
   private stopped = false;
+  private startLoopPromise: Promise<void> | null = null;
+  private hasConnectedOnce = false;
 
   constructor(opts: GatewayClientOptions) {
     this.opts = opts;
@@ -189,14 +195,20 @@ export class GatewayClient {
 
   async start(): Promise<void> {
     this.stopped = false;
-    if (!this.readyPromise) {
-      this.readyPromise = new Promise<void>((resolve, reject) => {
-        this.readyResolve = resolve;
-        this.readyReject = reject;
-      });
+    if (this.hello) return;
+    if (this.startLoopPromise) {
+      return this.startLoopPromise;
     }
-    this.open();
-    return this.readyPromise;
+
+    const startLoop = this.runStartLoop();
+    this.startLoopPromise = startLoop;
+    try {
+      await startLoop;
+    } finally {
+      if (this.startLoopPromise === startLoop) {
+        this.startLoopPromise = null;
+      }
+    }
   }
 
   stop(): void {
@@ -205,6 +217,7 @@ export class GatewayClient {
     this.reconnectTimer = null;
     if (this.tickTimer) clearInterval(this.tickTimer);
     this.tickTimer = null;
+    this.clearConnectReadyTimeout();
     this.ws?.close();
     this.ws = null;
     this.flushPending(new Error("gateway client stopped"));
@@ -285,6 +298,47 @@ export class GatewayClient {
     }
   }
 
+  private async runStartLoop(): Promise<void> {
+    const maxAttempts = Math.max(1, Math.trunc(this.opts.startupMaxAttempts ?? 20));
+    const retryDelayMs = Math.max(0, Math.trunc(this.opts.startupRetryDelayMs ?? 5000));
+    let lastError: Error = new Error("Gateway connect failed");
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (this.hello) return;
+      try {
+        await this.startOnce();
+        return;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (this.stopped || attempt >= maxAttempts) {
+          break;
+        }
+        logger.warn(
+          { attempt, maxAttempts, retryDelayMs, err: lastError.message },
+          "Gateway connect attempt failed; retrying"
+        );
+        await sleep(retryDelayMs);
+      }
+    }
+
+    // Ensure the startup path fully tears down its socket/timers before the caller
+    // crashes the relay process and lets systemd restart it.
+    this.stop();
+    throw lastError;
+  }
+
+  private async startOnce(): Promise<void> {
+    if (this.hello) return;
+    if (!this.readyPromise) {
+      this.readyPromise = new Promise<void>((resolve, reject) => {
+        this.readyResolve = resolve;
+        this.readyReject = reject;
+      });
+    }
+    this.open();
+    return this.readyPromise;
+  }
+
   private open(): void {
     if (this.stopped) return;
     if (this.ws) return;
@@ -300,6 +354,7 @@ export class GatewayClient {
     });
 
     this.ws.on("open", () => {
+      this.armConnectReadyTimeout();
       // Some gateways emit `connect.challenge` asynchronously; sending `connect`
       // too early (without a nonce) can be rejected for non-local connects.
       // Fallback: if no challenge arrives, send a nonce-less connect after a delay.
@@ -310,6 +365,7 @@ export class GatewayClient {
     });
     this.ws.on("message", (data) => this.handleMessage(rawDataToString(data)));
     this.ws.on("close", (code, reason) => {
+      this.clearConnectReadyTimeout();
       const reasonText = typeof reason === "string" ? reason : reason.toString("utf8");
       logger.warn({ code, reason: reasonText }, "Gateway websocket closed");
       this.ws = null;
@@ -328,7 +384,9 @@ export class GatewayClient {
       this.readyResolve = null;
       this.readyReject = null;
       this.flushPending(closedErr);
-      this.scheduleReconnect();
+      if (this.hasConnectedOnce) {
+        this.scheduleReconnect();
+      }
     });
     this.ws.on("error", (err) => {
       logger.warn({ err: err instanceof Error ? err.message : String(err) }, "Gateway websocket error");
@@ -475,6 +533,22 @@ export class GatewayClient {
     }, Math.max(1000, Math.floor(intervalMs / 2)));
   }
 
+  private armConnectReadyTimeout(): void {
+    this.clearConnectReadyTimeout();
+    const timeoutMs = Math.max(1, Math.trunc(this.opts.connectReadyTimeoutMs ?? 5000));
+    this.connectReadyTimeout = setTimeout(() => {
+      if (this.hello) return;
+      this.onConnectError(new Error(`Gateway connect handshake timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  }
+
+  private clearConnectReadyTimeout(): void {
+    if (this.connectReadyTimeout) {
+      clearTimeout(this.connectReadyTimeout);
+      this.connectReadyTimeout = null;
+    }
+  }
+
   private sendConnectIfNeeded(): void {
     if (this.connectSent) return;
     if (!this.ws) return;
@@ -560,6 +634,7 @@ export class GatewayClient {
   }
 
   private onConnectResponse(payload: unknown): void {
+    this.clearConnectReadyTimeout();
     const parsed = helloOkSchema.safeParse(payload);
     if (!parsed.success) {
       this.onConnectError(new Error("Invalid hello-ok payload"));
@@ -567,6 +642,7 @@ export class GatewayClient {
     }
 
     this.hello = parsed.data;
+    this.hasConnectedOnce = true;
     this.backoffMs = 1000;
     this.lastTickMs = Date.now();
     this.startTickWatchdog(this.hello.policy.tickIntervalMs);
@@ -583,6 +659,7 @@ export class GatewayClient {
   }
 
   private onConnectError(err: Error): void {
+    this.clearConnectReadyTimeout();
     logger.warn({ err: err.message }, "Gateway connect failed");
     this.hello = null;
     if (this.readyReject) {
@@ -597,6 +674,10 @@ export class GatewayClient {
       // ignore
     }
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function rawDataToString(data: unknown): string {

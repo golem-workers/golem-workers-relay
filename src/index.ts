@@ -203,15 +203,10 @@ function createStopSignal() {
 }
 
 async function ensureGatewayConnected(gateway: GatewayClient, stop: { stopped: boolean }) {
-  while (!stop.stopped) {
-    try {
-      await gateway.start();
-      return;
-    } catch (err) {
-      logger.warn({ err: err instanceof Error ? err.message : String(err) }, "Gateway connect failed; retrying");
-      await sleep(1000);
-    }
+  if (stop.stopped) {
+    throw new Error("Relay stop requested before gateway startup completed");
   }
+  await gateway.start();
 }
 
 async function waitForStop(stop: { stopped: boolean }): Promise<void> {
