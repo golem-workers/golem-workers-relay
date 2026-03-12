@@ -31,12 +31,12 @@ describe("loadRelayConfig", () => {
     expect(cfg.devLogGatewayFrames).toBe(false);
   });
 
-  it("uses near-zero debounce by default and allows override", () => {
+  it("uses 500ms debounce by default and allows override", () => {
     const def = loadRelayConfig({
       RELAY_TOKEN: "t",
       BACKEND_BASE_URL: "https://example.com",
     });
-    expect(def.chatBatchDebounceMs).toBe(1);
+    expect(def.chatBatchDebounceMs).toBe(500);
 
     const custom = loadRelayConfig({
       RELAY_TOKEN: "t",
