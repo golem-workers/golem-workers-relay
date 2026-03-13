@@ -24,6 +24,7 @@ What it does:
 - pre-pulls and builds `golem-workers-relay`;
 - installs OpenClaw plus full `playwright`;
 - configures low-power OpenClaw runtime env (`NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);
+- installs and starts `gw-warm-quiesce-helper.service` on port `18555` for provider warm-image freeze/thaw orchestration;
 - optionally runs `openclaw onboard --install-daemon`.
 
 Warm-image note:
@@ -32,6 +33,7 @@ Warm-image note:
 - Provider-side warm clones now restore inside per-clone Linux network namespaces so multiple clones can coexist with the source VM on one host.
 - The clone keeps the guest-internal network identity from snapshot memory; provider/bastion access is exposed through a separate provider-assigned access IP.
 - Warm-image cloning replaces SSH access material on the cloned overlay and backend provisioning reapplies relay/OpenClaw runtime config for the new agent identity.
+- Strict warm-image creation now depends on the in-guest quiesce helper, which freezes `/` before capture and thaws it after resume/restore.
 
 Logs:
 

@@ -12,6 +12,9 @@ RELAY_REPO_URL="https://github.com/golem-workers/golem-workers-relay.git"
 NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 RUN_OPENCLAW_ONBOARD=1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+QUIESCE_HELPER_SRC="${SCRIPT_DIR}/assets/gw-warm-quiesce-helper.py"
+QUIESCE_HELPER_UNIT_SRC="${SCRIPT_DIR}/assets/gw-warm-quiesce-helper.service"
 
 usage() {
   cat <<'EOF'
@@ -126,6 +129,7 @@ main() {
     iptables \
     ufw \
     python3 \
+    util-linux \
     unzip \
     ffmpeg \
     ripgrep
@@ -157,6 +161,14 @@ main() {
   sed -i 's/^SystemMaxUse=.*/SystemMaxUse=100M/' /etc/systemd/journald.conf
   systemctl restart systemd-journald
   journalctl --vacuum-size=100M
+
+  set_step "warm_quiesce_helper"
+  command -v fsfreeze
+  install -D -m 0755 "${QUIESCE_HELPER_SRC}" /usr/local/bin/gw-warm-quiesce-helper.py
+  install -D -m 0644 "${QUIESCE_HELPER_UNIT_SRC}" /etc/systemd/system/gw-warm-quiesce-helper.service
+  systemctl daemon-reload
+  systemctl enable --now gw-warm-quiesce-helper.service
+  systemctl is-active --quiet gw-warm-quiesce-helper.service
 
   set_step "dns_boot_speed_fix"
   systemctl disable --now systemd-resolved || true
