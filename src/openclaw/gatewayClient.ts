@@ -42,6 +42,11 @@ export type GatewayClientOptions = {
   connectReadyTimeoutMs?: number;
   startupMaxAttempts?: number;
   startupRetryDelayMs?: number;
+  onConnectionStateChange?: (state: {
+    connected: boolean;
+    reason?: string;
+    observedAtMs: number;
+  }) => void;
 };
 
 export type GatewayUsageCostParams = {
@@ -188,6 +193,7 @@ export class GatewayClient {
   private stopped = false;
   private startLoopPromise: Promise<void> | null = null;
   private hasConnectedOnce = false;
+  private lastEmittedConnectionState: boolean | null = null;
 
   constructor(opts: GatewayClientOptions) {
     this.opts = opts;
@@ -221,6 +227,7 @@ export class GatewayClient {
     this.ws?.close();
     this.ws = null;
     this.flushPending(new Error("gateway client stopped"));
+    this.emitConnectionStateChange(false, "Gateway client stopped");
   }
 
   isReady(): boolean {
@@ -370,6 +377,10 @@ export class GatewayClient {
       logger.warn({ code, reason: reasonText }, "Gateway websocket closed");
       this.ws = null;
       this.hello = null;
+      this.emitConnectionStateChange(
+        false,
+        reasonText ? `Gateway websocket closed (${code}): ${reasonText}` : `Gateway websocket closed (${code})`
+      );
       const closedErr = new Error(`gateway closed (${code}): ${reasonText}`);
       // If we weren't ready yet, reject the pending `start()` promise so callers
       // can retry instead of hanging forever.
@@ -652,6 +663,7 @@ export class GatewayClient {
       { protocol: this.hello.protocol, tickIntervalMs: this.hello.policy.tickIntervalMs },
       "Connected to OpenClaw gateway"
     );
+    this.emitConnectionStateChange(true);
 
     this.readyResolve?.();
     this.readyResolve = null;
@@ -662,6 +674,7 @@ export class GatewayClient {
     this.clearConnectReadyTimeout();
     logger.warn({ err: err.message }, "Gateway connect failed");
     this.hello = null;
+    this.emitConnectionStateChange(false, err.message);
     if (this.readyReject) {
       this.readyReject(err);
       this.readyResolve = null;
@@ -673,6 +686,18 @@ export class GatewayClient {
     } catch {
       // ignore
     }
+  }
+
+  private emitConnectionStateChange(connected: boolean, reason?: string): void {
+    if (this.lastEmittedConnectionState === connected) {
+      return;
+    }
+    this.lastEmittedConnectionState = connected;
+    this.opts.onConnectionStateChange?.({
+      connected,
+      reason,
+      observedAtMs: Date.now(),
+    });
   }
 }
 

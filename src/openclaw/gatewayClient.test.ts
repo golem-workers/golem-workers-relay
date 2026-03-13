@@ -123,6 +123,57 @@ describe("GatewayClient", () => {
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
   });
+
+  it("emits connection state changes for disconnect and reconnect", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+
+    const observed: Array<{ connected: boolean; reason?: string }> = [];
+    let firstSocket = true;
+    const { wss, port } = startServer((ws) => {
+      const currentIsFirst = firstSocket;
+      firstSocket = false;
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string };
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000, maxPayload: 1, maxBufferedBytes: 1 },
+                server: { version: "x", connId: "c" },
+                snapshot: {},
+                features: { methods: [], events: [] },
+              },
+            })
+          );
+          if (currentIsFirst) {
+            setTimeout(() => ws.close(4001, "lost"), 10);
+          }
+        }
+      });
+    });
+
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onConnectionStateChange: (state) => observed.push({ connected: state.connected, reason: state.reason }),
+    });
+    await client.start();
+    await new Promise((resolve) => setTimeout(resolve, 1800));
+
+    expect(observed.some((entry) => entry.connected)).toBe(true);
+    expect(observed.some((entry) => entry.connected === false)).toBe(true);
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
 });
 
 function rawDataToString(data: unknown): string {

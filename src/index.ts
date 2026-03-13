@@ -12,6 +12,7 @@ import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inM
 import { createMessageProcessor } from "./processor/messageProcessor.js";
 import { startOpenRouterProxyServer } from "./openrouter/proxyServer.js";
 import { createGatewayEventForwarder } from "./openclaw/gatewayEventForwarder.js";
+import { createOpenclawConnectionStatusReporter } from "./openclaw/connectionStatusReporter.js";
 
 async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
@@ -43,6 +44,10 @@ async function main(): Promise<void> {
     relayToken: cfg.relayToken,
     devLogEnabled: cfg.devLogEnabled,
   });
+  const reportOpenclawConnectionStatus = createOpenclawConnectionStatusReporter({
+    backend,
+    relayInstanceId: cfg.relayInstanceId,
+  });
 
   let chatRunner: ChatRunner | null = null;
   const forwardGatewayEvent = createGatewayEventForwarder({
@@ -62,6 +67,9 @@ async function main(): Promise<void> {
     onEvent: (evt) => {
       chatRunner?.handleEvent(evt);
       void forwardGatewayEvent(evt);
+    },
+    onConnectionStateChange: (state) => {
+      void reportOpenclawConnectionStatus(state);
     },
     devLogEnabled: cfg.devLogEnabled,
     devLogTextMaxLen: cfg.devLogTextMaxLen,

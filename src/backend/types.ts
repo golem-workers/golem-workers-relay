@@ -85,6 +85,14 @@ export const relayInboundMessageRequestSchema = z.discriminatedUnion("outcome", 
 ]);
 export type RelayInboundMessageRequest = z.infer<typeof relayInboundMessageRequestSchema>;
 
+export const relayOpenclawStatusRequestSchema = z.object({
+  relayInstanceId: z.string().min(1),
+  observedAtMs: z.number().int().nonnegative(),
+  status: z.enum(["CONNECTED", "DISCONNECTED"]),
+  reason: z.string().min(1).max(1000).optional(),
+});
+export type RelayOpenclawStatusRequest = z.infer<typeof relayOpenclawStatusRequestSchema>;
+
 export const acceptedResponseSchema = z.object({
   accepted: z.boolean(),
 });

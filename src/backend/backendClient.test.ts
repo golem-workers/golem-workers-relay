@@ -44,4 +44,38 @@ describe("BackendClient", () => {
       consecutiveFailures: 0,
     });
   });
+
+  it("submits OpenClaw connection status to backend", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ accepted: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new BackendClient({
+      baseUrl: "http://127.0.0.1:3000",
+      relayToken: "token",
+      devLogEnabled: false,
+    });
+
+    await expect(
+      client.submitOpenclawStatus({
+        body: {
+          relayInstanceId: "relay-1",
+          observedAtMs: Date.now(),
+          status: "DISCONNECTED",
+          reason: "Gateway websocket closed (1006)",
+        },
+      })
+    ).resolves.toEqual({ accepted: true });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:3000/api/v1/relays/openclaw-status",
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
+  });
 });

@@ -3,6 +3,12 @@
 Relay daemon that accepts push messages from `golem-workers-backend` over HTTP and executes them via a **local**
 OpenClaw Gateway over WebSocket (`ws://127.0.0.1:18789` by default).
 
+The relay also reports the current OpenClaw connectivity state back to backend:
+
+- sends `DISCONNECTED` when startup connect fails or an established gateway connection drops
+- throttles repeated disconnect reports to at most once per minute
+- sends `CONNECTED` immediately after the gateway connection is restored
+
 ## Prepare Agent Server
 
 To prepare a fresh agent server directly from this public repo, run:

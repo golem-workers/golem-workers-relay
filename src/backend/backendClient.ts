@@ -3,7 +3,9 @@ import { retryWithBackoff } from "../common/resilience/retry.js";
 import { CircuitBreaker } from "../common/resilience/circuitBreaker.js";
 import {
   type RelayInboundMessageRequest,
+  type RelayOpenclawStatusRequest,
   relayInboundMessageRequestSchema,
+  relayOpenclawStatusRequestSchema,
   acceptedResponseSchema,
 } from "./types.js";
 
@@ -91,6 +93,30 @@ export class BackendClient {
         "Message flow transition"
       );
     }
+    return { accepted: true };
+  }
+
+  async submitOpenclawStatus(input: {
+    body: RelayOpenclawStatusRequest;
+  }): Promise<{ accepted: true }> {
+    const url = `${this.opts.baseUrl}/api/v1/relays/openclaw-status`;
+    const timeoutMs = 15_000;
+    const body = relayOpenclawStatusRequestSchema.parse(input.body);
+    await this.writeBreaker.execute(async () => {
+      const res = await retryWithBackoff(
+        () => postJson(url, this.opts.relayToken, body, timeoutMs),
+        {
+          attempts: 5,
+          baseDelayMs: [500, 900, 1600, 3000, 6000, 10_000],
+          jitterMs: 250,
+          shouldRetry: (err) => isRetryableBackendError(err),
+        }
+      );
+      const parsed = acceptedResponseSchema.parse(res);
+      if (!parsed.accepted) {
+        throw new Error("Backend rejected relay OpenClaw status");
+      }
+    });
     return { accepted: true };
   }
 
