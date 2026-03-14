@@ -443,6 +443,12 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     echo "Skipping openclaw onboard --install-daemon by request."
   fi
 
+  set_step "openclaw_snapshot_shutdown"
+  systemctl --user daemon-reload || true
+  systemctl --user stop openclaw-gateway.service || true
+  systemctl --user disable openclaw-gateway.service || true
+  systemctl --user reset-failed openclaw-gateway.service || true
+
   set_step "done"
   echo "__GW_PREPARE_DONE__=1"
   echo "Prepare agent server completed successfully."
