@@ -76,6 +76,20 @@ append_line_if_missing() {
   fi
 }
 
+upsert_env_file_key() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local escaped_value="${value//\\/\\\\}"
+  escaped_value="${escaped_value//\"/\\\"}"
+  touch "${file}"
+  if grep -q "^${key}=" "${file}"; then
+    sed -i "s|^${key}=.*|${key}=\"${escaped_value}\"|" "${file}"
+  else
+    printf '%s=\"%s\"\n' "${key}" "${value}" >>"${file}"
+  fi
+}
+
 write_file() {
   local path="$1"
   local content="$2"
@@ -397,6 +411,17 @@ EOF
   append_line_if_missing "${ROOT_BASHRC}" "export NODE_COMPILE_CACHE=\"${NODE_COMPILE_CACHE_DIR}\""
   append_line_if_missing "${ROOT_BASHRC}" 'export OPENCLAW_NO_RESPAWN=1'
   append_line_if_missing "${ROOT_BASHRC}" "export NODE_PATH=\"${GLOBAL_NPM_ROOT}\""
+  upsert_env_file_key /etc/environment NODE_OPTIONS "${NODE_OPTIONS_VALUE}"
+  upsert_env_file_key /etc/environment NODE_COMPILE_CACHE "${NODE_COMPILE_CACHE_DIR}"
+  upsert_env_file_key /etc/environment OPENCLAW_NO_RESPAWN "1"
+  upsert_env_file_key /etc/environment NODE_PATH "${GLOBAL_NPM_ROOT}"
+  write_file /etc/profile.d/golem-node-runtime.sh "#!/usr/bin/env bash
+export NODE_OPTIONS=\"${NODE_OPTIONS_VALUE}\"
+export NODE_COMPILE_CACHE=\"${NODE_COMPILE_CACHE_DIR}\"
+export OPENCLAW_NO_RESPAWN=1
+export NODE_PATH=\"${GLOBAL_NPM_ROOT}\"
+"
+  chmod 0644 /etc/profile.d/golem-node-runtime.sh
   rm -f /etc/systemd/system.conf.d/node-runtime.conf /etc/systemd/user.conf.d/node-runtime.conf
   write_file /etc/systemd/system.conf.d/node-runtime.conf "[Manager]
 DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"

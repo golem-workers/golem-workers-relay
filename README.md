@@ -29,7 +29,7 @@ The script:
 - installs and starts `gw-warm-quiesce-helper.service` so provider warm-image capture can freeze/thaw `/`;
 - pre-pulls and builds `golem-workers-relay`;
 - installs the latest OpenClaw plus full `playwright`;
-- configures low-power OpenClaw runtime env (`NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);
+- configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);
 - optionally runs `openclaw onboard --install-daemon`.
 
 Execution logs are written to:
