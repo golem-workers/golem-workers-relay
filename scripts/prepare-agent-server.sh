@@ -408,7 +408,7 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   export NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE_DIR}"
   export OPENCLAW_NO_RESPAWN=1
   export NODE_PATH="${GLOBAL_NPM_ROOT}"
-  curl -fsSL https://openclaw.ai/install.sh | bash -s -- --version 2026.3.1 --install-method npm --no-onboard
+  curl -fsSL https://openclaw.ai/install.sh | bash -s -- --install-method npm --no-onboard
   test -f "${GLOBAL_NPM_ROOT}/openclaw/package.json"
   npm install -g playwright
   test -f "${GLOBAL_NPM_ROOT}/playwright/package.json"

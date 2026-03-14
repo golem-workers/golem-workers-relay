@@ -22,10 +22,10 @@ What it does:
 - installs Go and Linuxbrew;
 - installs Node 22 separately (Linuxbrew is not used to install Node);
 - pre-pulls and builds `golem-workers-relay`;
-- installs OpenClaw plus full `playwright`;
+- installs the latest OpenClaw plus full `playwright`;
 - configures low-power OpenClaw runtime env (`NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);
 - installs and starts `gw-warm-quiesce-helper.service` on port `18555` for provider warm-image freeze/thaw orchestration;
-- optionally runs `openclaw onboard --install-daemon --non-interactive --accept-risk`; you can also re-run onboarding later with explicit provider and gateway flags to get closer to the backend-provisioned OpenClaw config.
+- optionally runs `OPENCLAW_SKIP_CANVAS_HOST=1 OPENCLAW_LOG_LEVEL=debug openclaw onboard --install-daemon --non-interactive --accept-risk`; you can also re-run onboarding later with explicit provider and gateway flags to get closer to the backend-provisioned OpenClaw config.
 
 Warm-image note:
 
@@ -49,7 +49,8 @@ Default non-interactive run used by the script:
 
 ```bash
 source /root/.bashrc
-openclaw onboard --install-daemon --non-interactive --accept-risk
+OPENCLAW_SKIP_CANVAS_HOST=1 OPENCLAW_LOG_LEVEL=debug \
+  openclaw onboard --install-daemon --non-interactive --accept-risk
 ```
 
 Interactive alternative:

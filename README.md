@@ -28,7 +28,7 @@ The script:
 - installs base Ubuntu packages, Google Chrome Stable, Go, Linuxbrew, and Node 22;
 - installs and starts `gw-warm-quiesce-helper.service` so provider warm-image capture can freeze/thaw `/`;
 - pre-pulls and builds `golem-workers-relay`;
-- installs OpenClaw plus full `playwright`;
+- installs the latest OpenClaw plus full `playwright`;
 - configures low-power OpenClaw runtime env (`NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);
 - optionally runs `openclaw onboard --install-daemon`.
 
