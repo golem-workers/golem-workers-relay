@@ -25,7 +25,7 @@ What it does:
 - installs the latest OpenClaw plus full `playwright`;
 - configures low-power OpenClaw runtime env (`NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);
 - installs and starts `gw-warm-quiesce-helper.service` on port `18555` for provider warm-image freeze/thaw orchestration;
-- optionally runs `OPENCLAW_SKIP_CANVAS_HOST=1 OPENCLAW_LOG_LEVEL=debug openclaw onboard --install-daemon --non-interactive --accept-risk`; you can also re-run onboarding later with explicit provider and gateway flags to get closer to the backend-provisioned OpenClaw config.
+- optionally runs `OPENCLAW_SKIP_CANVAS_HOST=1 OPENCLAW_LOG_LEVEL=debug systemctl --user import-environment OPENCLAW_SKIP_CANVAS_HOST OPENCLAW_LOG_LEVEL && openclaw onboard --install-daemon --non-interactive --accept-risk`; you can also re-run onboarding later with explicit provider and gateway flags to get closer to the backend-provisioned OpenClaw config.
 
 Warm-image note:
 
@@ -49,7 +49,10 @@ Default non-interactive run used by the script:
 
 ```bash
 source /root/.bashrc
-OPENCLAW_SKIP_CANVAS_HOST=1 OPENCLAW_LOG_LEVEL=debug \
+export OPENCLAW_SKIP_CANVAS_HOST=1
+export OPENCLAW_LOG_LEVEL=debug
+systemctl --user import-environment OPENCLAW_SKIP_CANVAS_HOST OPENCLAW_LOG_LEVEL
+
   openclaw onboard --install-daemon --non-interactive --accept-risk
 ```
 
