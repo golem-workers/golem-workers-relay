@@ -30,6 +30,7 @@ The script:
 - pre-pulls and builds `golem-workers-relay`;
 - installs the latest OpenClaw plus full `playwright`;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);
+- explicitly brings up root user-systemd (`loginctl enable-linger root`, `user@0.service`, `/run/user/0/bus`) before any OpenClaw daemon install work;
 - optionally runs `openclaw onboard --install-daemon`;
 - finishes image preparation by stopping and disabling `openclaw-gateway.service` so warm snapshots boot with OpenClaw cold and backend provisioning performs the first controlled start.
 

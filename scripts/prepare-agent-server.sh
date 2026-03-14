@@ -97,6 +97,27 @@ write_file() {
   printf '%s' "${content}" >"${path}"
 }
 
+prepare_root_user_systemd() {
+  loginctl enable-linger root
+  systemctl start user@0.service
+  export HOME=/root
+  export XDG_RUNTIME_DIR=/run/user/0
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+  mkdir -p "${XDG_RUNTIME_DIR}"
+  chmod 700 "${XDG_RUNTIME_DIR}"
+
+  local attempt
+  for attempt in $(seq 1 30); do
+    if [[ -S "${XDG_RUNTIME_DIR}/bus" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Root user systemd bus did not become available at ${XDG_RUNTIME_DIR}/bus"
+  return 1
+}
+
 install_warm_quiesce_helper() {
   install -D -m 0755 /dev/stdin /usr/local/bin/gw-warm-quiesce-helper.py <<'EOF'
 #!/usr/bin/env python3
@@ -433,6 +454,16 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   export NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE_DIR}"
   export OPENCLAW_NO_RESPAWN=1
   export NODE_PATH="${GLOBAL_NPM_ROOT}"
+  export OPENCLAW_SKIP_CANVAS_HOST=1
+  export OPENCLAW_LOG_LEVEL=debug
+  prepare_root_user_systemd
+  systemctl --user import-environment \
+    NODE_OPTIONS \
+    NODE_COMPILE_CACHE \
+    OPENCLAW_NO_RESPAWN \
+    NODE_PATH \
+    OPENCLAW_SKIP_CANVAS_HOST \
+    OPENCLAW_LOG_LEVEL || true
   curl -fsSL https://openclaw.ai/install.sh | bash -s -- --install-method npm --no-onboard
   test -f "${GLOBAL_NPM_ROOT}/openclaw/package.json"
   npm install -g playwright
@@ -444,6 +475,7 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   fi
 
   set_step "openclaw_snapshot_shutdown"
+  prepare_root_user_systemd
   systemctl --user daemon-reload || true
   systemctl --user stop openclaw-gateway.service || true
   systemctl --user disable openclaw-gateway.service || true
