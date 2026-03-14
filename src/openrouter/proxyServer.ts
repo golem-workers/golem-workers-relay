@@ -1,5 +1,6 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { logger } from "../logger.js";
 
 const hopByHopHeaders = new Set([
@@ -35,7 +36,19 @@ export function startOpenRouterProxyServer(input: {
         backendPathPrefix,
       },
       new AbortController()
-    );
+    ).catch((error) => {
+      logger.warn(
+        {
+          err: error instanceof Error ? error.message : String(error),
+          method: req.method ?? "GET",
+          url: req.url ?? "/",
+        },
+        "Relay OpenRouter proxy request crashed"
+      );
+      if (!res.headersSent && !res.destroyed) {
+        sendJson(res, 500, { code: "INTERNAL_ERROR", message: "Relay OpenRouter proxy crashed" });
+      }
+    });
   });
   server.listen(input.port, "0.0.0.0", () => {
     logger.info(
@@ -75,10 +88,15 @@ async function handleProxyRequest(
   const upstreamPath = `${input.backendPathPrefix}${url.pathname}${url.search}`;
   const upstreamUrl = `${input.backendBaseUrl}${upstreamPath}`;
   const requestHeaders = buildUpstreamHeaders(req, input.relayToken);
-  const preparedBody = await prepareUpstreamBody(req, method, url.pathname);
-  const timeout = setTimeout(() => controller.abort(), 120_000);
-  req.on("aborted", () => controller.abort());
+  const timeout = setTimeout(() => abortRequest(controller, "timeout"), 120_000);
+  req.on("aborted", () => abortRequest(controller, "client_closed"));
+  res.on("close", () => {
+    if (!res.writableEnded) {
+      abortRequest(controller, "client_closed");
+    }
+  });
   try {
+    const preparedBody = await prepareUpstreamBody(req, method, url.pathname);
     const upstream = await fetch(upstreamUrl, {
       method,
       headers: requestHeaders,
@@ -92,10 +110,31 @@ async function handleProxyRequest(
       res.end();
       return;
     }
-    Readable.fromWeb(upstream.body as unknown as ReadableStream<Uint8Array>).pipe(res);
+    try {
+      await pipeline(Readable.fromWeb(upstream.body as unknown as ReadableStream<Uint8Array>), res);
+    } catch (error) {
+      if (shouldIgnoreProxyStreamError(error, controller, res)) {
+        return;
+      }
+      throw error;
+    }
   } catch (error) {
+    if (controller.signal.aborted && controller.signal.reason === "client_closed") {
+      return;
+    }
+    if (controller.signal.aborted && controller.signal.reason === "timeout") {
+      if (!res.headersSent && !res.destroyed) {
+        sendJson(res, 504, { code: "UPSTREAM_TIMEOUT", message: "Upstream timed out" });
+      }
+      return;
+    }
+    if (shouldIgnoreProxyStreamError(error, controller, res)) {
+      return;
+    }
     if (controller.signal.aborted) {
-      sendJson(res, 504, { code: "UPSTREAM_TIMEOUT", message: "Upstream timed out" });
+      if (!res.headersSent && !res.destroyed) {
+        sendJson(res, 504, { code: "UPSTREAM_TIMEOUT", message: "Upstream timed out" });
+      }
       return;
     }
     logger.warn(
@@ -105,10 +144,41 @@ async function handleProxyRequest(
       },
       "Relay OpenRouter proxy request failed"
     );
-    sendJson(res, 502, { code: "UPSTREAM_ERROR", message: "Failed to proxy OpenRouter request" });
+    if (!res.headersSent && !res.destroyed) {
+      sendJson(res, 502, { code: "UPSTREAM_ERROR", message: "Failed to proxy OpenRouter request" });
+    }
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function abortRequest(controller: AbortController, reason: "timeout" | "client_closed"): void {
+  if (!controller.signal.aborted) {
+    controller.abort(reason);
+  }
+}
+
+function shouldIgnoreProxyStreamError(
+  error: unknown,
+  controller: AbortController,
+  res: ServerResponse
+): boolean {
+  if (res.destroyed || controller.signal.reason === "client_closed") {
+    return true;
+  }
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  if (error.name === "AbortError") {
+    return true;
+  }
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("aborted") ||
+    message.includes("premature close") ||
+    message.includes("socket hang up") ||
+    message.includes("connection reset")
+  );
 }
 
 async function prepareUpstreamBody(

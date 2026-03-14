@@ -156,6 +156,56 @@ describe("startOpenRouterProxyServer", () => {
       ],
     });
   });
+
+  it("stays alive when the client disconnects mid-stream", async () => {
+    const backendPort = await getFreePort();
+    const backendServer = http.createServer((_, res) => {
+      res.statusCode = 200;
+      res.setHeader("content-type", "text/event-stream");
+      res.write('data: {"id":"chunk_1"}\n\n');
+      setTimeout(() => {
+        res.write('data: {"id":"chunk_2"}\n\n');
+        res.end();
+      }, 50);
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startOpenRouterProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/api/v1",
+      backendPathPrefix: "/api/v1/relays/openrouter",
+    });
+    servers.push(relayServer);
+
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request(
+        `http://127.0.0.1:${relayPort}/api/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+        },
+        (res) => {
+          res.once("data", () => {
+            res.destroy();
+            resolve();
+          });
+          res.once("error", () => resolve());
+        }
+      );
+      req.once("error", reject);
+      req.end(JSON.stringify({ model: "openrouter/test", stream: true, messages: [] }));
+    });
+
+    await sleep(100);
+
+    const health = await fetch(`http://127.0.0.1:${relayPort}/health`);
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toMatchObject({ ok: true, status: "ok" });
+  });
 });
 
 async function getFreePort(): Promise<number> {
@@ -179,4 +229,8 @@ async function listen(server: http.Server, port: number): Promise<void> {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", () => resolve());
   });
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
