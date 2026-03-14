@@ -72,6 +72,44 @@ describe("pushServer", () => {
     });
     expect(second.status).toBe(429);
   });
+
+  it("stays alive when the client disconnects during request upload", async () => {
+    const port = await getFreePort();
+    const server = startPushServer({
+      port,
+      path: "/relay/messages",
+      relayToken: "token",
+      onMessage: async () => {},
+    });
+    servers.push(server);
+
+    await new Promise<void>((resolve) => {
+      const req = http.request(
+        `http://127.0.0.1:${port}/relay/messages`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer token",
+          },
+        },
+        () => resolve()
+      );
+      req.once("error", () => resolve());
+      req.write('{"messageId":"m1","input":{"kind":"chat","sessionKey":"s1","messageText":"partial');
+      setTimeout(() => {
+        req.destroy();
+        resolve();
+      }, 20);
+    });
+
+    await sleep(50);
+
+    const healthResp = await fetch(`http://127.0.0.1:${port}/health`);
+    expect(healthResp.status).toBe(200);
+    const healthJson = (await healthResp.json()) as { ok: boolean };
+    expect(healthJson.ok).toBe(true);
+  });
 });
 
 async function getFreePort(): Promise<number> {
@@ -88,4 +126,8 @@ async function getFreePort(): Promise<number> {
       srv.close((err) => (err ? reject(err) : resolve(port)));
     });
   });
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }

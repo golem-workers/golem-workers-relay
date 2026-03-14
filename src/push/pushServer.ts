@@ -21,23 +21,38 @@ export class PushServerHttpError extends Error {
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
+    let settled = false;
     let total = 0;
     const chunks: Buffer[] = [];
+    const rejectOnce = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const resolveOnce = (value: string) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     req.on("data", (chunk: Buffer) => {
       total += chunk.length;
       if (total > MAX_BODY_BYTES) {
-        reject(new Error("Request body too large"));
+        rejectOnce(new Error("Request body too large"));
         req.destroy();
         return;
       }
       chunks.push(chunk);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    req.on("aborted", () => rejectOnce(new Error("Client closed request body stream")));
+    req.on("end", () => resolveOnce(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", (error) => rejectOnce(error instanceof Error ? error : new Error(String(error))));
   });
 }
 
 function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
+  if (res.destroyed || res.writableEnded) {
+    return;
+  }
   res.statusCode = statusCode;
   res.setHeader("content-type", "application/json; charset=utf-8");
   res.end(JSON.stringify(body));
@@ -216,6 +231,9 @@ export function startPushServer(input: {
         });
         return;
       }
+      if (isClientDisconnectError(error) || res.destroyed) {
+        return;
+      }
       logger.warn(
         {
           event: "message_flow",
@@ -233,11 +251,39 @@ export function startPushServer(input: {
   };
 
   const server = http.createServer((req, res) => {
-    void handle(req, res);
+    void handle(req, res).catch((error) => {
+      logger.warn(
+        {
+          event: "message_flow",
+          direction: "backend_to_relay",
+          stage: "failed",
+          status: 500,
+          error: error instanceof Error ? error.message : String(error),
+          method: req.method ?? "GET",
+          path: req.url ?? "/",
+        },
+        "Push server request crashed"
+      );
+      sendJson(res, 500, { code: "PUSH_SERVER_ERROR", message: "Failed to process push message" });
+    });
   });
 
   server.listen(input.port, "0.0.0.0", () => {
     logger.info({ port: input.port, path }, "Relay push server started");
   });
   return server;
+}
+
+function isClientDisconnectError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return (
+    error.name === "AbortError" ||
+    message.includes("client closed") ||
+    message.includes("aborted") ||
+    message.includes("socket hang up") ||
+    message.includes("connection reset")
+  );
 }
