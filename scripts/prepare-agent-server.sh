@@ -413,7 +413,7 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   npm install -g playwright
   test -f "${GLOBAL_NPM_ROOT}/playwright/package.json"
   if [[ "${RUN_OPENCLAW_ONBOARD}" == "1" ]]; then
-    openclaw onboard --install-daemon
+    openclaw onboard --install-daemon --non-interactive --accept-risk
   else
     echo "Skipping openclaw onboard --install-daemon by request."
   fi

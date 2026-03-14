@@ -25,7 +25,7 @@ What it does:
 - installs OpenClaw plus full `playwright`;
 - configures low-power OpenClaw runtime env (`NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);
 - installs and starts `gw-warm-quiesce-helper.service` on port `18555` for provider warm-image freeze/thaw orchestration;
-- optionally runs `openclaw onboard --install-daemon`.
+- optionally runs `openclaw onboard --install-daemon --non-interactive --accept-risk`; you can also re-run onboarding later with explicit provider and gateway flags to get closer to the backend-provisioned OpenClaw config.
 
 Warm-image note:
 
@@ -43,8 +43,44 @@ Script source:
 
 - `scripts/prepare-agent-server.sh`
 
-After script execution without onboard use 
+After script execution without onboard use:
+
+Default non-interactive run used by the script:
+
+```bash
+source /root/.bashrc
+openclaw onboard --install-daemon --non-interactive --accept-risk
 ```
+
+Interactive alternative:
+
+```bash
 source /root/.bashrc
 openclaw onboard --install-daemon
 ```
+
+Non-interactive OpenRouter-through-local-proxy setup closest to backend provisioning:
+
+```bash
+source /root/.bashrc
+export OPENROUTER_API_KEY="<openrouter-api-key>"
+export OPENROUTER_BASE_URL="http://127.0.0.1:18080/api/v1"
+export OPENCLAW_GATEWAY_TOKEN="<gateway-token>"
+
+openclaw onboard \
+  --install-daemon \
+  --non-interactive \
+  --accept-risk \
+  --auth-choice openrouter-api-key \
+  --openrouter-api-key "$OPENROUTER_API_KEY" \
+  --gateway-port 18789 \
+  --gateway-bind lan \
+  --gateway-auth token \
+  --gateway-token "$OPENCLAW_GATEWAY_TOKEN" \
+  --node-manager npm
+```
+
+Notes:
+
+- `openclaw onboard` has no dedicated `--openrouter-base-url` flag, so the custom OpenRouter endpoint must be provided via `OPENROUTER_BASE_URL`.
+- This gets the onboarding step close to the expected server shape (`openrouter` auth, LAN bind, port `18789`, token auth, daemon install), but backend provisioning still applies the remaining server-specific config such as `env.OPENROUTER_BASE_URL`, extra tool/browser settings, Telegram defaults, and Control UI allowed origins.
