@@ -229,10 +229,9 @@ export class ChatRunner {
     const parsed = chatEventSchema.safeParse(evt.payload);
     if (!parsed.success) return;
     const chatEvt = parsed.data;
-    const events = this.runEventsByRunId.get(chatEvt.runId);
-    if (events) {
-      events.push(chatEvt);
-    }
+    const events = this.runEventsByRunId.get(chatEvt.runId) ?? [];
+    events.push(chatEvt);
+    this.runEventsByRunId.set(chatEvt.runId, events);
     if (chatEvt.state !== "final" && chatEvt.state !== "error" && chatEvt.state !== "aborted") return;
     if (this.devLogEnabled) {
       logger.debug({ runId: chatEvt.runId, state: chatEvt.state }, "Gateway chat event terminal");
@@ -363,7 +362,9 @@ export class ChatRunner {
         }
         this.runSessionByRunId.set(runId, input.sessionKey);
         this.runTraceByRunId.set(runId, { backendMessageId: input.taskId });
-        this.runEventsByRunId.set(runId, []);
+        if (!this.runEventsByRunId.has(runId)) {
+          this.runEventsByRunId.set(runId, []);
+        }
         const finalEvt = await this.waitForFinal(runId, remainingMs);
         this.runSessionByRunId.delete(runId);
         this.runTraceByRunId.delete(runId);
@@ -633,6 +634,13 @@ export class ChatRunner {
 
   private waitForFinal(runId: string, timeoutMs: number): Promise<ChatEvent> {
     return new Promise<ChatEvent>((resolve, reject) => {
+      const pendingTerminalEvent = (this.runEventsByRunId.get(runId) ?? []).find(
+        (event) => event.state === "final" || event.state === "error" || event.state === "aborted"
+      );
+      if (pendingTerminalEvent) {
+        resolve(pendingTerminalEvent);
+        return;
+      }
       const timeout = setTimeout(() => {
         this.waitersByRunId.delete(runId);
         this.runSessionByRunId.delete(runId);
