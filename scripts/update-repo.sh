@@ -24,6 +24,107 @@ if [[ -z "${SERVICE_NAME+x}" ]]; then
   SERVICE_NAME="golem-workers-relay"
 fi
 
+trim_spaces() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "${s}"
+}
+
+normalize_runtime_env() {
+  local value
+  value="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  case "${value}" in
+    production|prod)
+      echo "production"
+      ;;
+    development|dev|test|local)
+      echo "development"
+      ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
+read_env_value() {
+  local env_file="$1"
+  local key="$2"
+
+  [[ -f "${env_file}" ]] || return 1
+
+  awk -F '=' -v key="${key}" '
+    $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
+      sub("^[[:space:]]*" key "[[:space:]]*=", "", $0)
+      print $0
+      exit
+    }
+  ' "${env_file}"
+}
+
+detect_runtime_env() {
+  local candidate=""
+  local systemd_env=""
+
+  for candidate in "${DEPLOY_ENV:-}" "${APP_ENV:-}" "${NODE_ENV:-}"; do
+    candidate="$(normalize_runtime_env "$(trim_spaces "${candidate}")")"
+    if [[ -n "${candidate}" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+
+  candidate="$(read_env_value "${ROOT_DIR}/.env" NODE_ENV 2>/dev/null || true)"
+  candidate="$(normalize_runtime_env "$(trim_spaces "${candidate}" | tr -d '"' | tr -d "'")")"
+  if [[ -n "${candidate}" ]]; then
+    echo "${candidate}"
+    return 0
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemd_env="$(systemctl cat "${SERVICE_NAME}" 2>/dev/null | sed -n \
+      -e 's/^[[:space:]]*Environment=NODE_ENV=//p' \
+      -e 's/^[[:space:]]*Environment="NODE_ENV=\([^"]*\)".*/\1/p' \
+      | sed -n '1p')"
+    candidate="$(normalize_runtime_env "$(trim_spaces "${systemd_env}")")"
+    if [[ -n "${candidate}" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  fi
+
+  echo "NODE_ENV is not set; defaulting runtime environment to production-safe mode."
+  echo "production"
+}
+
+resolve_branch() {
+  local runtime_env="$1"
+  local explicit_branch="${BRANCH:-}"
+
+  if [[ "${runtime_env}" == "production" ]]; then
+    if [[ -n "${explicit_branch}" && "${explicit_branch}" != "release" ]]; then
+      echo "Ignoring BRANCH=${explicit_branch} because runtime environment is production; forcing release."
+    fi
+    echo "release"
+    return 0
+  fi
+
+  if [[ "${runtime_env}" == "development" ]]; then
+    if [[ -n "${explicit_branch}" && "${explicit_branch}" != "main" ]]; then
+      echo "Ignoring BRANCH=${explicit_branch} because runtime environment is development; forcing main."
+    fi
+    echo "main"
+    return 0
+  fi
+
+  if [[ -n "${explicit_branch}" ]]; then
+    echo "${explicit_branch}"
+    return 0
+  fi
+
+  echo "release"
+}
+
 # Relative paths (stored inside the repo).
 LOG_DIR="${ROOT_DIR}/logs"
 PID_DIR="${ROOT_DIR}/pids"
@@ -98,9 +199,13 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 1
 fi
 
+RUNTIME_ENV="$(detect_runtime_env)"
 REMOTE="${REMOTE:-origin}"
-BRANCH="${BRANCH:-main}"
+BRANCH="$(resolve_branch "${RUNTIME_ENV}")"
 REF="${REMOTE}/${BRANCH}"
+
+echo "Runtime environment: ${RUNTIME_ENV}"
+echo "Git branch: ${BRANCH}"
 
 OLD_HEAD="$(git rev-parse HEAD)"
 git fetch "${REMOTE}" "${BRANCH}"

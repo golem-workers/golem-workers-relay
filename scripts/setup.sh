@@ -20,6 +20,27 @@ resolve_branch() {
     return 0
   fi
 
+  local dotenv_node_env=""
+  if [[ -f "${ROOT_DIR}/.env" ]]; then
+    dotenv_node_env="$(
+      sed -n 's/^[[:space:]]*NODE_ENV[[:space:]]*=[[:space:]]*//p' "${ROOT_DIR}/.env" \
+        | sed -n '1p' \
+        | tr -d '"' \
+        | tr -d "'" \
+        | xargs
+    )"
+    case "$(printf '%s' "${dotenv_node_env}" | tr '[:upper:]' '[:lower:]')" in
+      production|prod)
+        echo "release"
+        return 0
+        ;;
+      development|dev)
+        echo "main"
+        return 0
+        ;;
+    esac
+  fi
+
   local current_branch=""
   current_branch="$(git -C "${ROOT_DIR}" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
   if [[ -n "${current_branch}" ]]; then
