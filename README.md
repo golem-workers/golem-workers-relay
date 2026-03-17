@@ -9,6 +9,11 @@ The relay also reports the current OpenClaw connectivity state back to backend:
 - throttles repeated disconnect reports to at most once per minute
 - sends `CONNECTED` immediately after the gateway connection is restored
 
+## Git Line Endings
+
+- This repository enforces `LF` line endings for all text files via `.gitattributes`.
+- On Windows, keep Windows Git and WSL Git aligned to avoid CRLF-only dirty worktrees around image-prep and release flows.
+
 ## Prepare Agent Server
 
 To prepare a fresh agent server directly from this public repo, run:
