@@ -14,6 +14,22 @@ SYSTEMD_SKIP_START="${SYSTEMD_SKIP_START:-0}"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 CRON_PATH="/etc/cron.d/${SERVICE_NAME}-update"
 
+resolve_branch() {
+  if [[ -n "${BRANCH:-}" ]]; then
+    echo "${BRANCH}"
+    return 0
+  fi
+
+  local current_branch=""
+  current_branch="$(git -C "${ROOT_DIR}" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  if [[ -n "${current_branch}" ]]; then
+    echo "${current_branch}"
+    return 0
+  fi
+
+  echo "main"
+}
+
 require_root() {
   if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
     return 0
@@ -76,6 +92,7 @@ if [[ -z "${NODE_BIN}" ]]; then
   exit 1
 fi
 
+BRANCH="$(resolve_branch)"
 NPM_DIR="$(cd "$(dirname "${NPM_BIN}")" && pwd)"
 NODE_DIR="$(cd "$(dirname "${NODE_BIN}")" && pwd)"
 
@@ -135,7 +152,7 @@ if [[ -d "/etc/cron.d" ]]; then
 SHELL=/bin/bash
 PATH=${NPM_DIR}:${NODE_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-0 * * * * root SERVICE_NAME=${SERVICE_NAME} NPM_BIN=${NPM_BIN} ${ROOT_DIR}/scripts/update-repo.sh >> /var/log/${SERVICE_NAME}/cron-update.log 2>&1
+0 * * * * root SERVICE_NAME=${SERVICE_NAME} NPM_BIN=${NPM_BIN} BRANCH=${BRANCH} ${ROOT_DIR}/scripts/update-repo.sh >> /var/log/${SERVICE_NAME}/cron-update.log 2>&1
 EOF
 
   chmod 0644 "${CRON_PATH}"

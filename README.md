@@ -14,20 +14,20 @@ The relay also reports the current OpenClaw connectivity state back to backend:
 To prepare a fresh agent server directly from this public repo, run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/main/scripts/prepare-agent-server.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/release/scripts/prepare-agent-server.sh | sudo bash
 ```
 
 To skip interactive OpenClaw onboarding during image preparation:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/main/scripts/prepare-agent-server.sh | sudo bash -s -- --skip-openclaw-onboard
+curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/release/scripts/prepare-agent-server.sh | sudo bash -s -- --skip-openclaw-onboard
 ```
 
 The script:
 
 - installs base Ubuntu packages, Google Chrome Stable, Go, Linuxbrew, and Node 22;
 - installs and starts `gw-warm-quiesce-helper.service` so provider warm-image capture can freeze/thaw `/`;
-- pre-pulls and builds `golem-workers-relay`;
+- pre-pulls and builds `golem-workers-relay` from `release` by default;
 - installs the latest OpenClaw plus full `playwright`;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);
 - explicitly brings up root user-systemd (`loginctl enable-linger root`, `user@0.service`, `/run/user/0/bus`) before any OpenClaw daemon install work;
@@ -147,10 +147,18 @@ Push transport settings:
 - `RELAY_OPENROUTER_PROXY_PORT=18080` (local proxy port used by agent-side rewrite rules)
 - `RELAY_OPENROUTER_PROXY_PATH_PREFIX=/api/v1` (OpenRouter-compatible incoming path prefix)
 - `RELAY_OPENROUTER_BACKEND_PATH_PREFIX=/api/v1/relays/openrouter` (backend relay-auth proxy path)
+- `RELAY_GOOGLE_AI_PROXY_ENABLED=1` (enable local Google AI-compatible proxy listener)
+- `RELAY_GOOGLE_AI_PROXY_PORT=18081` (local plain-HTTP proxy port used by the agent-side TLS interceptor for Gemini web search)
+- `RELAY_GOOGLE_AI_PROXY_PATH_PREFIX=/` (forward all Google AI request paths from the local interceptor)
+- `RELAY_GOOGLE_AI_BACKEND_PATH_PREFIX=/api/v1/relays/google-ai` (backend relay-auth proxy path)
 - `RELAY_OPENCLAW_FORWARD_FINAL_ONLY=1` (default: only forward compact `delta` typing signals; disable with `0` to forward all raw OpenClaw gateway events)
 
 Note: relay creates its own device identity on the host under `~/.openclaw` unless
 `OPENCLAW_STATE_DIR` is set. This is separate from the gateway's container state.
+
+Provisioned agents use both local listeners together:
+- OpenClaw model traffic still goes through `OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1`.
+- Gemini web-search traffic is intercepted transparently by the backend bootstrap via local TLS/hosts rewrites for `generativelanguage.googleapis.com` and then forwarded through relay to backend `/api/v1/relays/google-ai/*`.
 
 ## Unified Message Flow Logging
 
@@ -162,6 +170,11 @@ When enabled, relay emits transition events for:
 - backend push accepted/rejected,
 - relay -> OpenClaw request/response stages,
 - relay callback request/retry/success/failure to backend.
+
+For chat media:
+- `audio` is transcribed before `chat.send`.
+- `image` is forwarded to OpenClaw as multimodal `image_url` content parts using base64 `data:` URLs.
+- If the connected gateway rejects the structured multimodal payload, relay retries once using uploaded workspace files so the turn still reaches the agent with file references.
 
 ## OpenClaw event forwarding semantics
 

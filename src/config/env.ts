@@ -35,6 +35,10 @@ const envSchema = z.object({
   RELAY_OPENROUTER_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_OPENROUTER_PROXY_PATH_PREFIX: z.string().min(1).optional(),
   RELAY_OPENROUTER_BACKEND_PATH_PREFIX: z.string().min(1).optional(),
+  RELAY_GOOGLE_AI_PROXY_ENABLED: z.coerce.boolean().optional(),
+  RELAY_GOOGLE_AI_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+  RELAY_GOOGLE_AI_PROXY_PATH_PREFIX: z.string().min(1).optional(),
+  RELAY_GOOGLE_AI_BACKEND_PATH_PREFIX: z.string().min(1).optional(),
   RELAY_OPENCLAW_FORWARD_FINAL_ONLY: envBooleanSchema.optional(),
 
   MESSAGE_FLOW_LOG: z.coerce.boolean().optional(),
@@ -66,6 +70,12 @@ export type RelayConfig = {
   pushMaxConcurrentRequests: number;
   pushMaxQueue: number;
   openrouterProxy: {
+    enabled: boolean;
+    port: number;
+    pathPrefix: string;
+    backendPathPrefix: string;
+  };
+  googleAiProxy: {
     enabled: boolean;
     port: number;
     pathPrefix: string;
@@ -120,6 +130,14 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
         parsed.RELAY_OPENROUTER_BACKEND_PATH_PREFIX ?? "/api/v1/relays/openrouter"
       ),
     },
+    googleAiProxy: {
+      enabled: parsed.RELAY_GOOGLE_AI_PROXY_ENABLED ?? true,
+      port: parsed.RELAY_GOOGLE_AI_PROXY_PORT ?? 18081,
+      pathPrefix: withLeadingSlash(parsed.RELAY_GOOGLE_AI_PROXY_PATH_PREFIX ?? "/"),
+      backendPathPrefix: withLeadingSlash(
+        parsed.RELAY_GOOGLE_AI_BACKEND_PATH_PREFIX ?? "/api/v1/relays/google-ai"
+      ),
+    },
     openclawForwardFinalOnly: parsed.RELAY_OPENCLAW_FORWARD_FINAL_ONLY ?? true,
     devLogEnabled,
     devLogTextMaxLen,
@@ -163,6 +181,12 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
       pathPrefix: "/api/v1",
       backendPathPrefix: "/api/v1/relays/openrouter",
     },
+    googleAiProxy: {
+      enabled: true,
+      port: 18081,
+      pathPrefix: "/",
+      backendPathPrefix: "/api/v1/relays/google-ai",
+    },
     openclawForwardFinalOnly: true,
     devLogEnabled: false,
     devLogTextMaxLen: 200,
@@ -177,7 +201,10 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
   return {
     ...base,
     ...overrides,
+    openrouterProxy: { ...base.openrouterProxy, ...(overrides.openrouterProxy ?? {}) },
+    googleAiProxy: { ...base.googleAiProxy, ...(overrides.googleAiProxy ?? {}) },
     openclaw: { ...base.openclaw, ...(overrides.openclaw ?? {}) },
+    stt: { ...base.stt, ...(overrides.stt ?? {}) },
   };
 }
 

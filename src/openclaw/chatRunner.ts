@@ -12,6 +12,7 @@ import {
   composeMessageWithTranscript,
   logTranscriptionFailure,
   type AudioTaskMedia,
+  type ImageTaskMedia,
   type TaskMedia,
 } from "./transcription.js";
 import { transcribeAudioWithOpenAi } from "./openaiTranscription.js";
@@ -74,6 +75,17 @@ type OpenclawChatMeta = {
   runId?: string;
   model?: string;
 };
+
+type GatewayChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+type GatewayChatMessage =
+  | string
+  | {
+      role: "user";
+      content: GatewayChatContentPart[];
+    };
 
 class VoiceTranscriptionError extends Error {
   constructor(message: string) {
@@ -275,8 +287,10 @@ export class ChatRunner {
       }
       throw error;
     }
-    const uploadedPaths = await saveUploadedFiles({ media: input.media });
-    const messageText = composeMessageWithUploadedFiles(baseMessageText, uploadedPaths);
+    const gatewayMessage = await buildGatewayChatMessage({
+      messageText: baseMessageText,
+      media: input.media,
+    });
     const startedAtMs = Date.now();
     if (this.devLogEnabled) {
       logger.info(
@@ -288,8 +302,8 @@ export class ChatRunner {
           relayMessageId: null,
           sessionKey: input.sessionKey,
           timeoutMs: input.timeoutMs,
-          textLen: messageText.length,
-          textPreview: makeTextPreview(messageText, this.devLogTextMaxLen),
+          textLen: summarizeOutgoingMessageLength(gatewayMessage.primary),
+          textPreview: summarizeOutgoingMessagePreview(gatewayMessage.primary, this.devLogTextMaxLen),
         },
         "Message flow transition"
       );
@@ -312,7 +326,7 @@ export class ChatRunner {
       try {
         const payload = await this.gateway.request("chat.send", {
           sessionKey: input.sessionKey,
-          message: messageText,
+          message: gatewayMessage.primary,
           idempotencyKey: input.taskId,
           timeoutMs: remainingMs,
         });
@@ -330,6 +344,20 @@ export class ChatRunner {
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        if (gatewayMessage.fallback && shouldFallbackToUploadedFiles(err)) {
+          logger.warn(
+            {
+              taskId: input.taskId,
+              sessionKey: input.sessionKey,
+              error: msg,
+            },
+            "Gateway rejected multimodal payload; retrying with uploaded files fallback"
+          );
+          gatewayMessage.primary = gatewayMessage.fallback;
+          gatewayMessage.fallback = null;
+          attempt -= 1;
+          continue;
+        }
         const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
         const retryable = attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
         logger.warn(
@@ -686,6 +714,89 @@ function composeMessageWithUploadedFiles(messageText: string, uploadedPaths: str
   const suffix = uploadedPaths.map((filePath) => `File uploaded to: ${filePath}`).join("\n");
   const text = messageText.trim();
   return text ? `${text}\n${suffix}` : suffix;
+}
+
+async function buildGatewayChatMessage(input: {
+  messageText: string;
+  media?: TaskMedia[];
+}): Promise<{ primary: GatewayChatMessage; fallback: GatewayChatMessage | null }> {
+  const imageMedia = pickImageMedia(input.media);
+  const uploadedPaths = await saveUploadedFiles({ media: input.media });
+  const messageText = composeMessageWithUploadedFiles(input.messageText, uploadedPaths);
+  if (imageMedia.length === 0) {
+    return { primary: messageText, fallback: null };
+  }
+
+  const directText = normalizeVisionPromptText(messageText);
+  const content: GatewayChatContentPart[] = [{ type: "text", text: directText }];
+  for (const image of imageMedia) {
+    content.push({
+      type: "image_url",
+      image_url: {
+        url: toImageDataUrl(image),
+      },
+    });
+  }
+
+  const fallbackImagePaths = await saveUploadedFiles({
+    media: input.media,
+    includeTypes: ["image"],
+  });
+  const fallbackText = composeMessageWithUploadedFiles(normalizeVisionPromptText(input.messageText), [
+    ...uploadedPaths,
+    ...fallbackImagePaths,
+  ]);
+
+  return {
+    primary: {
+      role: "user",
+      content,
+    },
+    fallback: normalizeVisionPromptText(fallbackText),
+  };
+}
+
+function pickImageMedia(media: TaskMedia[] | undefined): ImageTaskMedia[] {
+  if (!Array.isArray(media) || media.length === 0) return [];
+  return media.filter((item): item is ImageTaskMedia => item.type === "image");
+}
+
+function normalizeVisionPromptText(messageText: string): string {
+  const text = messageText.trim();
+  return text.length > 0 ? text : "[image]";
+}
+
+function toImageDataUrl(image: ImageTaskMedia): string {
+  const mime = image.contentType.trim() || "application/octet-stream";
+  return `data:${mime};base64,${image.dataB64}`;
+}
+
+function summarizeOutgoingMessageLength(message: GatewayChatMessage): number {
+  if (typeof message === "string") return message.length;
+  return JSON.stringify(message).length;
+}
+
+function summarizeOutgoingMessagePreview(message: GatewayChatMessage, textMaxLen: number): string {
+  if (typeof message === "string") return makeTextPreview(message, textMaxLen);
+  const content = Array.isArray(message.content) ? message.content : [];
+  const textParts = content
+    .filter((part): part is { type: "text"; text: string } => part.type === "text")
+    .map((part) => part.text);
+  const imageCount = content.filter((part) => part.type === "image_url").length;
+  const textPreview = makeTextPreview(textParts.join("\n"), textMaxLen);
+  return imageCount > 0 ? `${textPreview} [images:${imageCount}]` : textPreview;
+}
+
+function shouldFallbackToUploadedFiles(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const normalized = error.message.toLowerCase();
+  return (
+    normalized.includes("validation") ||
+    normalized.includes("invalid") ||
+    normalized.includes("bad request") ||
+    normalized.includes("unsupported") ||
+    normalized.includes("params")
+  );
 }
 
 function extractRunId(payload: unknown): string | null {

@@ -9,6 +9,7 @@ GO_TARBALL="/tmp/go1.25.6.linux-amd64.tar.gz"
 CHROME_DEB="/tmp/google-chrome-stable_current_amd64.deb"
 RELAY_REPO_DIR="/root/golem-workers-relay"
 RELAY_REPO_URL="https://github.com/golem-workers/golem-workers-relay.git"
+RELAY_GIT_REF="${RELAY_GIT_REF:-release}"
 NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 RUN_OPENCLAW_ONBOARD=1
@@ -47,7 +48,7 @@ parse_args() {
 require_root() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
     echo "Run as root, for example:"
-    echo "  curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/main/scripts/prepare-agent-server.sh | sudo bash"
+    echo "  curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/release/scripts/prepare-agent-server.sh | sudo bash"
     exit 1
   fi
 }
@@ -412,11 +413,12 @@ EOF
   set_step "relay_prepull"
   if [[ -d "${RELAY_REPO_DIR}/.git" ]]; then
     cd "${RELAY_REPO_DIR}"
-    git fetch --all --prune
-    git reset --hard origin/main
+    git fetch --prune origin "${RELAY_GIT_REF}"
+    git checkout "${RELAY_GIT_REF}"
+    git reset --hard "origin/${RELAY_GIT_REF}"
   else
     rm -rf "${RELAY_REPO_DIR}"
-    git clone "${RELAY_REPO_URL}" "${RELAY_REPO_DIR}"
+    git clone --branch "${RELAY_GIT_REF}" --single-branch "${RELAY_REPO_URL}" "${RELAY_REPO_DIR}"
     cd "${RELAY_REPO_DIR}"
   fi
   npm ci

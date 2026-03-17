@@ -1,29 +1,44 @@
 import { z } from "zod";
 
-const chatTaskInputSchema = z.object({
-  kind: z.literal("chat"),
-  sessionKey: z.string().min(1),
-  messageText: z.string().min(1),
-  media: z
-    .array(
-      z.discriminatedUnion("type", [
-        z.object({
-          type: z.literal("audio"),
-          dataB64: z.string().min(1),
-          contentType: z.string().min(1),
-          fileName: z.string().min(1).optional(),
-        }),
-        z.object({
-          type: z.literal("file"),
-          dataB64: z.string().min(1),
-          contentType: z.string().min(1),
-          fileName: z.string().min(1).optional(),
-        }),
-      ])
-    )
-    .optional(),
-  context: z.unknown().optional(),
-});
+const relayMediaSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("audio"),
+    dataB64: z.string().min(1),
+    contentType: z.string().min(1),
+    fileName: z.string().min(1).optional(),
+  }),
+  z.object({
+    type: z.literal("file"),
+    dataB64: z.string().min(1),
+    contentType: z.string().min(1),
+    fileName: z.string().min(1).optional(),
+  }),
+  z.object({
+    type: z.literal("image"),
+    dataB64: z.string().min(1),
+    contentType: z.string().min(1),
+    fileName: z.string().min(1).optional(),
+  }),
+]);
+
+const chatTaskInputSchema = z
+  .object({
+    kind: z.literal("chat"),
+    sessionKey: z.string().min(1),
+    messageText: z.string(),
+    media: z.array(relayMediaSchema).optional(),
+    context: z.unknown().optional(),
+  })
+  .superRefine((value, ctx) => {
+    const hasText = value.messageText.trim().length > 0;
+    const hasMedia = Array.isArray(value.media) && value.media.length > 0;
+    if (hasText || hasMedia) return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "messageText or media is required",
+      path: ["messageText"],
+    });
+  });
 
 const handshakeTaskInputSchema = z.object({
   kind: z.literal("handshake"),

@@ -1,6 +1,6 @@
 import http from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { startOpenRouterProxyServer } from "./proxyServer.js";
+import { startGoogleAiProxyServer, startOpenRouterProxyServer } from "./proxyServer.js";
 
 describe("startOpenRouterProxyServer", () => {
   const servers: http.Server[] = [];
@@ -205,6 +205,71 @@ describe("startOpenRouterProxyServer", () => {
     const health = await fetch(`http://127.0.0.1:${relayPort}/health`);
     expect(health.status).toBe(200);
     await expect(health.json()).resolves.toMatchObject({ ok: true, status: "ok" });
+  });
+});
+
+describe("startGoogleAiProxyServer", () => {
+  const servers: http.Server[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+          })
+      )
+    );
+    servers.length = 0;
+  });
+
+  it("forwards Gemini requests to backend proxy without rewriting path or key query", async () => {
+    const backendPort = await getFreePort();
+    let receivedPath = "";
+    let backendAuthHeader: string | null = null;
+    const backendServer = http.createServer((req, res) => {
+      receivedPath = req.url ?? "";
+      backendAuthHeader = req.headers.authorization ? String(req.headers.authorization) : null;
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] } }] }));
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startGoogleAiProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/",
+      backendPathPrefix: "/api/v1/relays/google-ai",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(
+      `http://127.0.0.1:${relayPort}/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?alt=sse&key=attacker`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": "client-key",
+        },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: "Search web" }] }],
+          tools: [{ google_search: {} }],
+        }),
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(backendAuthHeader).toBe("Bearer relay-token");
+    expect(receivedPath).toBe(
+      "/api/v1/relays/google-ai/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?alt=sse&key=attacker"
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      candidates: [{ content: { parts: [{ text: "ok" }] } }],
+    });
   });
 });
 

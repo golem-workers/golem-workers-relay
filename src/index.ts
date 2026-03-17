@@ -10,7 +10,7 @@ import { transcribeAudioWithOpenAi } from "./openclaw/openaiTranscription.js";
 import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
 import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inMemoryTaskQueue.js";
 import { createMessageProcessor } from "./processor/messageProcessor.js";
-import { startOpenRouterProxyServer } from "./openrouter/proxyServer.js";
+import { startGoogleAiProxyServer, startOpenRouterProxyServer } from "./openrouter/proxyServer.js";
 import { createGatewayEventForwarder } from "./openclaw/gatewayEventForwarder.js";
 import { createOpenclawConnectionStatusReporter } from "./openclaw/connectionStatusReporter.js";
 
@@ -32,6 +32,9 @@ async function main(): Promise<void> {
       openrouterProxyEnabled: cfg.openrouterProxy.enabled,
       openrouterProxyPort: cfg.openrouterProxy.port,
       openrouterProxyPathPrefix: cfg.openrouterProxy.pathPrefix,
+      googleAiProxyEnabled: cfg.googleAiProxy.enabled,
+      googleAiProxyPort: cfg.googleAiProxy.port,
+      googleAiProxyPathPrefix: cfg.googleAiProxy.pathPrefix,
       pushRateLimitPerSecond: cfg.pushRateLimitPerSecond,
       pushMaxConcurrentRequests: cfg.pushMaxConcurrentRequests,
       pushMaxQueue: cfg.pushMaxQueue,
@@ -169,6 +172,15 @@ async function main(): Promise<void> {
         backendPathPrefix: cfg.openrouterProxy.backendPathPrefix,
       })
     : null;
+  const googleAiProxyServer = cfg.googleAiProxy.enabled
+    ? startGoogleAiProxyServer({
+        port: cfg.googleAiProxy.port,
+        backendBaseUrl: cfg.backendBaseUrl,
+        relayToken: cfg.relayToken,
+        pathPrefix: cfg.googleAiProxy.pathPrefix,
+        backendPathPrefix: cfg.googleAiProxy.backendPathPrefix,
+      })
+    : null;
 
   await waitForStop(stop);
   shuttingDown = true;
@@ -178,6 +190,9 @@ async function main(): Promise<void> {
   await closeServer(server);
   if (openrouterProxyServer) {
     await closeServer(openrouterProxyServer);
+  }
+  if (googleAiProxyServer) {
+    await closeServer(googleAiProxyServer);
   }
   const drained = await queue.drain(Math.max(15_000, cfg.taskTimeoutMs * 2));
   if (!drained) {

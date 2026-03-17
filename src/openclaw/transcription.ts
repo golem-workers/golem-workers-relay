@@ -14,7 +14,14 @@ export type FileTaskMedia = {
   fileName?: string;
 };
 
-export type TaskMedia = AudioTaskMedia | FileTaskMedia;
+export type ImageTaskMedia = {
+  type: "image";
+  dataB64: string;
+  contentType: string;
+  fileName?: string;
+};
+
+export type TaskMedia = AudioTaskMedia | FileTaskMedia | ImageTaskMedia;
 
 export function composeMessageWithTranscript(input: { messageText: string; transcript: string }): string {
   const text = stripVoicePlaceholders(input.messageText);

@@ -70,11 +70,18 @@ function summarizeRequestParams(method: string, params: unknown, textMaxLen: num
   if (!params || typeof params !== "object") return null;
   const p = params as Record<string, unknown>;
   if (method === "chat.send") {
-    const message = typeof p.message === "string" ? p.message : "";
+    const messageSummary = summarizeChatMessage(p.message, textMaxLen) as
+      | {
+          messageLen?: number | null;
+          messagePreview?: string | null;
+          textLen?: number | null;
+          textPreview?: string | null;
+          keys?: string[];
+        }
+      | undefined;
     return {
       sessionKey: typeof p.sessionKey === "string" ? p.sessionKey : null,
-      messageLen: message.length,
-      messagePreview: makeTextPreview(message, textMaxLen),
+      messageSummary: messageSummary ?? null,
       idempotencyKey: typeof p.idempotencyKey === "string" ? p.idempotencyKey : null,
       timeoutMs: typeof p.timeoutMs === "number" ? p.timeoutMs : null,
     };

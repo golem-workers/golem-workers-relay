@@ -16,13 +16,19 @@ const hopByHopHeaders = new Set([
   "content-length",
 ]);
 
-export function startOpenRouterProxyServer(input: {
+type RequestBodyMode = "passthrough" | "openrouter-model-rewrite";
+
+type RelayProxyServerInput = {
+  serviceName: string;
   port: number;
   backendBaseUrl: string;
   relayToken: string;
   pathPrefix: string;
   backendPathPrefix: string;
-}): http.Server {
+  requestBodyMode: RequestBodyMode;
+};
+
+function startRelayProxyServer(input: RelayProxyServerInput): http.Server {
   const pathPrefix = normalizePrefix(input.pathPrefix);
   const backendPathPrefix = normalizePrefix(input.backendPathPrefix);
   const server = http.createServer((req, res) => {
@@ -30,10 +36,12 @@ export function startOpenRouterProxyServer(input: {
       {
         req,
         res,
+        serviceName: input.serviceName,
         backendBaseUrl: input.backendBaseUrl,
         relayToken: input.relayToken,
         pathPrefix,
         backendPathPrefix,
+        requestBodyMode: input.requestBodyMode,
       },
       new AbortController()
     ).catch((error) => {
@@ -43,10 +51,13 @@ export function startOpenRouterProxyServer(input: {
           method: req.method ?? "GET",
           url: req.url ?? "/",
         },
-        "Relay OpenRouter proxy request crashed"
+        `${input.serviceName} request crashed`
       );
       if (!res.headersSent && !res.destroyed) {
-        sendJson(res, 500, { code: "INTERNAL_ERROR", message: "Relay OpenRouter proxy crashed" });
+        sendJson(res, 500, {
+          code: "INTERNAL_ERROR",
+          message: `${input.serviceName} crashed`,
+        });
       }
     });
   });
@@ -57,27 +68,57 @@ export function startOpenRouterProxyServer(input: {
         pathPrefix,
         backendPathPrefix,
       },
-      "Relay OpenRouter proxy server started"
+      `${input.serviceName} server started`
     );
   });
   return server;
+}
+
+export function startOpenRouterProxyServer(input: {
+  port: number;
+  backendBaseUrl: string;
+  relayToken: string;
+  pathPrefix: string;
+  backendPathPrefix: string;
+}): http.Server {
+  return startRelayProxyServer({
+    serviceName: "relay-openrouter-proxy",
+    ...input,
+    requestBodyMode: "openrouter-model-rewrite",
+  });
+}
+
+export function startGoogleAiProxyServer(input: {
+  port: number;
+  backendBaseUrl: string;
+  relayToken: string;
+  pathPrefix: string;
+  backendPathPrefix: string;
+}): http.Server {
+  return startRelayProxyServer({
+    serviceName: "relay-google-ai-proxy",
+    ...input,
+    requestBodyMode: "passthrough",
+  });
 }
 
 async function handleProxyRequest(
   input: {
     req: IncomingMessage;
     res: ServerResponse;
+    serviceName: string;
     backendBaseUrl: string;
     relayToken: string;
     pathPrefix: string;
     backendPathPrefix: string;
+    requestBodyMode: RequestBodyMode;
   },
   controller: AbortController
 ): Promise<void> {
   const { req, res } = input;
   const url = new URL(req.url ?? "/", "http://relay.local");
   if (req.method === "GET" && url.pathname === "/health") {
-    sendJson(res, 200, { ok: true, status: "ok", service: "relay-openrouter-proxy" });
+    sendJson(res, 200, { ok: true, status: "ok", service: input.serviceName });
     return;
   }
   if (!url.pathname.startsWith(input.pathPrefix)) {
@@ -96,7 +137,12 @@ async function handleProxyRequest(
     }
   });
   try {
-    const preparedBody = await prepareUpstreamBody(req, method, url.pathname);
+    const preparedBody = await prepareUpstreamBody(
+      req,
+      method,
+      url.pathname,
+      input.requestBodyMode
+    );
     const upstream = await fetch(upstreamUrl, {
       method,
       headers: requestHeaders,
@@ -142,10 +188,13 @@ async function handleProxyRequest(
         err: error instanceof Error ? error.message : String(error),
         upstreamUrl,
       },
-      "Relay OpenRouter proxy request failed"
+      `${input.serviceName} request failed`
     );
     if (!res.headersSent && !res.destroyed) {
-      sendJson(res, 502, { code: "UPSTREAM_ERROR", message: "Failed to proxy OpenRouter request" });
+      sendJson(res, 502, {
+        code: "UPSTREAM_ERROR",
+        message: `Failed to proxy request via ${input.serviceName}`,
+      });
     }
   } finally {
     clearTimeout(timeout);
@@ -184,12 +233,16 @@ function shouldIgnoreProxyStreamError(
 async function prepareUpstreamBody(
   req: IncomingMessage,
   method: string,
-  pathname: string
+  pathname: string,
+  requestBodyMode: RequestBodyMode
 ): Promise<{ body: unknown; requiresDuplex: boolean }> {
   if (method === "GET" || method === "HEAD") {
     return { body: undefined, requiresDuplex: false };
   }
-  if (!shouldRewriteModel(pathname, req.headers["content-type"])) {
+  if (
+    requestBodyMode !== "openrouter-model-rewrite" ||
+    !shouldRewriteModel(pathname, req.headers["content-type"])
+  ) {
     return { body: req as unknown as never, requiresDuplex: true };
   }
   const rawBody = await readRequestBody(req);

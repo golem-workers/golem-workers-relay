@@ -900,6 +900,211 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("sends images to chat.send as multimodal image_url content", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+    let sentMessage: unknown = null;
+
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
+            }),
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          sentMessage = ((frame.params ?? {}) as Record<string, unknown>).message;
+          const runId = "run_image_direct";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: {
+                  runId,
+                  sessionKey: "s-image",
+                  seq: 1,
+                  state: "final",
+                  message: { text: "vision ok" },
+                },
+              }),
+            );
+          }, 10);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "task_image_direct",
+      sessionKey: "s-image",
+      messageText: "what is in this image?",
+      media: [
+        {
+          type: "image",
+          dataB64: Buffer.from("png", "utf8").toString("base64"),
+          contentType: "image/png",
+          fileName: "vision.png",
+        },
+      ],
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("reply");
+    expect(sentMessage).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "what is in this image?" },
+        {
+          type: "image_url",
+          image_url: {
+            url: `data:image/png;base64,${Buffer.from("png", "utf8").toString("base64")}`,
+          },
+        },
+      ],
+    });
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
+  it("falls back to uploaded files when gateway rejects multimodal payloads", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-image-fallback-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    const uploadsDir = path.join(stateDir, "workspace", "files");
+    let chatSendCalls = 0;
+    const sentMessages: unknown[] = [];
+
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
+            }),
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          chatSendCalls += 1;
+          sentMessages.push(((frame.params ?? {}) as Record<string, unknown>).message);
+          if (chatSendCalls === 1) {
+            ws.send(
+              JSON.stringify({
+                type: "res",
+                id: frame.id,
+                ok: false,
+                error: {
+                  code: "VALIDATION_ERROR",
+                  message: "Invalid message payload",
+                },
+              }),
+            );
+            return;
+          }
+          const runId = "run_image_fallback";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: {
+                  runId,
+                  sessionKey: "s-image-fallback",
+                  seq: 1,
+                  state: "final",
+                  message: { text: "fallback ok" },
+                },
+              }),
+            );
+          }, 10);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "task_image_fallback",
+      sessionKey: "s-image-fallback",
+      messageText: "",
+      media: [
+        {
+          type: "image",
+          dataB64: Buffer.from("png", "utf8").toString("base64"),
+          contentType: "image/png",
+          fileName: "vision.png",
+        },
+      ],
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("reply");
+    expect(chatSendCalls).toBe(2);
+    expect(sentMessages[0]).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "[image]" },
+        {
+          type: "image_url",
+          image_url: {
+            url: `data:image/png;base64,${Buffer.from("png", "utf8").toString("base64")}`,
+          },
+        },
+      ],
+    });
+    expect(typeof sentMessages[1]).toBe("string");
+    expect(sentMessages[1]).toMatch(/\[image\]/);
+    expect(sentMessages[1]).toMatch(/File uploaded to:/);
+    const uploadedEntries = await fs.readdir(uploadsDir);
+    expect(uploadedEntries.some((name) => name.endsWith("-vision.png"))).toBe(true);
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("stores uploaded files, appends file paths, and rotates old files", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-uploads-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
