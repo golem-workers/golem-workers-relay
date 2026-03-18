@@ -1,6 +1,10 @@
 import http from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { startGoogleAiProxyServer, startOpenRouterProxyServer } from "./proxyServer.js";
+import {
+  LOCAL_PROXY_LISTEN_HOST,
+  startGoogleAiProxyServer,
+  startOpenRouterProxyServer,
+} from "./proxyServer.js";
 
 describe("startOpenRouterProxyServer", () => {
   const servers: http.Server[] = [];
@@ -38,6 +42,8 @@ describe("startOpenRouterProxyServer", () => {
       backendPathPrefix: "/api/v1/relays/openrouter",
     });
     servers.push(relayServer);
+    await waitForListening(relayServer);
+    expect(relayServer.address()).toMatchObject({ address: LOCAL_PROXY_LISTEN_HOST, port: relayPort });
 
     const response = await fetch(`http://127.0.0.1:${relayPort}/api/v1/chat/completions`, {
       method: "POST",
@@ -293,6 +299,13 @@ async function listen(server: http.Server, port: number): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", () => resolve());
+  });
+}
+
+async function waitForListening(server: http.Server): Promise<void> {
+  if (server.listening) return;
+  await new Promise<void>((resolve) => {
+    server.once("listening", () => resolve());
   });
 }
 

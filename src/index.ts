@@ -10,7 +10,11 @@ import { transcribeAudioWithOpenAi } from "./openclaw/openaiTranscription.js";
 import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
 import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inMemoryTaskQueue.js";
 import { createMessageProcessor } from "./processor/messageProcessor.js";
-import { startGoogleAiProxyServer, startOpenRouterProxyServer } from "./openrouter/proxyServer.js";
+import {
+  LOCAL_PROXY_LISTEN_HOST,
+  startGoogleAiProxyServer,
+  startOpenRouterProxyServer,
+} from "./openrouter/proxyServer.js";
 import { createGatewayEventForwarder } from "./openclaw/gatewayEventForwarder.js";
 import { createOpenclawConnectionStatusReporter } from "./openclaw/connectionStatusReporter.js";
 
@@ -30,9 +34,11 @@ async function main(): Promise<void> {
       pushPort: cfg.pushPort,
       pushPath: cfg.pushPath,
       openrouterProxyEnabled: cfg.openrouterProxy.enabled,
+      openrouterProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
       openrouterProxyPort: cfg.openrouterProxy.port,
       openrouterProxyPathPrefix: cfg.openrouterProxy.pathPrefix,
       googleAiProxyEnabled: cfg.googleAiProxy.enabled,
+      googleAiProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
       googleAiProxyPort: cfg.googleAiProxy.port,
       googleAiProxyPathPrefix: cfg.googleAiProxy.pathPrefix,
       pushRateLimitPerSecond: cfg.pushRateLimitPerSecond,

@@ -3,6 +3,8 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { logger } from "../logger.js";
 
+export const LOCAL_PROXY_LISTEN_HOST = "127.0.0.1";
+
 const hopByHopHeaders = new Set([
   "connection",
   "keep-alive",
@@ -61,9 +63,10 @@ function startRelayProxyServer(input: RelayProxyServerInput): http.Server {
       }
     });
   });
-  server.listen(input.port, "0.0.0.0", () => {
+  server.listen(input.port, LOCAL_PROXY_LISTEN_HOST, () => {
     logger.info(
       {
+        host: LOCAL_PROXY_LISTEN_HOST,
         port: input.port,
         pathPrefix,
         backendPathPrefix,
