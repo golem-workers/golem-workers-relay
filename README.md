@@ -180,6 +180,7 @@ For chat media:
 - `audio` is transcribed before `chat.send`.
 - `image` is forwarded to OpenClaw as multimodal `image_url` content parts using base64 `data:` URLs.
 - If the connected gateway rejects the structured multimodal payload, relay retries once using uploaded workspace files so the turn still reaches the agent with file references.
+- For Telegram-connected sessions, relay also injects a delivery hint for generated artifacts: when the agent wants to return a real file to the user, it should save the artifact in the OpenClaw workspace and include a final `MEDIA: relative/path.ext` line so relay can attach that file in `reply.media`.
 
 ## OpenClaw event forwarding semantics
 

@@ -287,6 +287,10 @@ export class ChatRunner {
       }
       throw error;
     }
+    baseMessageText = applyTelegramArtifactDeliveryInstructions({
+      sessionKey: input.sessionKey,
+      messageText: baseMessageText,
+    });
     const gatewayMessage = await buildGatewayChatMessage({
       messageText: baseMessageText,
       media: input.media,
@@ -764,6 +768,22 @@ function pickImageMedia(media: TaskMedia[] | undefined): ImageTaskMedia[] {
 function normalizeVisionPromptText(messageText: string): string {
   const text = messageText.trim();
   return text.length > 0 ? text : "[image]";
+}
+
+function applyTelegramArtifactDeliveryInstructions(input: {
+  sessionKey: string;
+  messageText: string;
+}): string {
+  if (!input.sessionKey.startsWith("tg:")) {
+    return input.messageText;
+  }
+  const instruction = [
+    "[Telegram bridge note]",
+    "If you need to send the user a generated file, save it under the OpenClaw workspace and add a separate final line exactly as `MEDIA: relative/path.ext`.",
+    "Do not paste the full file contents into the reply when the intended output is a file attachment.",
+  ].join("\n");
+  const text = input.messageText.trim();
+  return text ? `${text}\n\n${instruction}` : instruction;
 }
 
 function toImageDataUrl(image: ImageTaskMedia): string {

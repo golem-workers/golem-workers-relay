@@ -129,6 +129,75 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("appends Telegram file delivery instructions for tg sessions", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+    let sentMessage = "";
+
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          const params = (frame.params ?? {}) as Record<string, unknown>;
+          sentMessage = typeof params.message === "string" ? params.message : "";
+          const runId = "run_tg_1";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: { runId, sessionKey: "tg:123:srv_1", seq: 1, state: "final", message: { text: "ok" } },
+              })
+            );
+          }, 10);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "task_tg_1",
+      sessionKey: "tg:123:srv_1",
+      messageText: "Please prepare a report",
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("reply");
+    expect(sentMessage).toContain("Please prepare a report");
+    expect(sentMessage).toContain("[Telegram bridge note]");
+    expect(sentMessage).toContain("MEDIA: relative/path.ext");
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("keeps intermediate chat events in reply payload", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);

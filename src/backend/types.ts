@@ -21,6 +21,25 @@ const relayMediaSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+const replyMediaFileSchema = z
+  .object({
+    path: z.string().min(1).optional(),
+    fileName: z.string().min(1),
+    contentType: z.string().min(1),
+    dataB64: z.string().min(1),
+    sizeBytes: z.number().int().positive(),
+  })
+  .strict();
+
+const relayReplySchema = z
+  .object({
+    message: z.unknown().optional(),
+    runId: z.string().min(1).optional(),
+    media: z.array(replyMediaFileSchema).optional(),
+    openclawEvents: z.array(z.unknown()).optional(),
+  })
+  .passthrough();
+
 const chatTaskInputSchema = z
   .object({
     kind: z.literal("chat"),
@@ -70,7 +89,7 @@ export const relayInboundMessageRequestSchema = z.discriminatedUnion("outcome", 
     relayMessageId: z.string().min(1).optional(),
     finishedAtMs: z.number().int().nonnegative(),
     outcome: z.literal("reply"),
-    reply: z.unknown(),
+    reply: relayReplySchema,
     openclawMeta: z.unknown().optional(),
   }),
   z.object({

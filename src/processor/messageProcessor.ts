@@ -481,16 +481,69 @@ function normalizeOpenclawMetaTrace(trace: unknown): Record<string, string> | un
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
-function buildReplyPayload(reply: { message: unknown; runId: string; media?: unknown[] }): unknown {
+function buildReplyPayload(reply: {
+  message: unknown;
+  runId: string;
+  media?: Array<{
+    path: string;
+    fileName: string;
+    contentType: string;
+    dataB64: string;
+    sizeBytes: number;
+  }>;
+}): unknown {
   const payload: Record<string, unknown> = {
     ...(isPlainObject(reply) ? reply : {}),
     runId: reply.runId,
     message: normalizeReplyMessage(reply.message),
   };
   if (Array.isArray(reply.media) && reply.media.length > 0) {
-    payload.media = reply.media;
+    payload.media = normalizeReplyMedia(reply.media);
   }
   return payload;
+}
+
+function normalizeReplyMedia(
+  media: Array<{
+    path: string;
+    fileName: string;
+    contentType: string;
+    dataB64: string;
+    sizeBytes: number;
+  }>
+): Array<{
+  path?: string;
+  fileName: string;
+  contentType: string;
+  dataB64: string;
+  sizeBytes: number;
+}> {
+  return media
+    .map((item) => ({
+      path: readNonEmptyString(item.path),
+      fileName: readNonEmptyString(item.fileName),
+      contentType: readNonEmptyString(item.contentType),
+      dataB64: readNonEmptyString(item.dataB64),
+      sizeBytes: Number.isFinite(item.sizeBytes) ? Math.trunc(item.sizeBytes) : 0,
+    }))
+    .filter(
+      (
+        item
+      ): item is {
+        path?: string;
+        fileName: string;
+        contentType: string;
+        dataB64: string;
+        sizeBytes: number;
+      } =>
+        Boolean(
+          item.fileName &&
+            item.contentType &&
+            item.dataB64 &&
+            Number.isInteger(item.sizeBytes) &&
+            item.sizeBytes > 0
+        )
+    );
 }
 
 function normalizeReplyMessage(message: unknown): unknown {
