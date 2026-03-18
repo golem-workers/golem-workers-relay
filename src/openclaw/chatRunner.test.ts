@@ -14,6 +14,9 @@ function startServer(handler: (ws: import("ws").WebSocket) => void) {
   return { wss, port: addr.port };
 }
 
+const ONE_BY_ONE_PNG_B64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=";
+
 function maybeHandleSessionsUsage(
   ws: import("ws").WebSocket,
   frame: { type: string; id: string; method: string; params?: unknown }
@@ -1035,7 +1038,7 @@ describe("ChatRunner", () => {
       media: [
         {
           type: "image",
-          dataB64: Buffer.from("png", "utf8").toString("base64"),
+          dataB64: ONE_BY_ONE_PNG_B64,
           contentType: "image/png",
           fileName: "vision.png",
         },
@@ -1043,14 +1046,14 @@ describe("ChatRunner", () => {
       timeoutMs: 1000,
     });
     expect(result.outcome).toBe("reply");
-    expect(sentMessage).toEqual({
+    expect(sentMessage).toMatchObject({
       role: "user",
       content: [
         { type: "text", text: "what is in this image?" },
         {
           type: "image_url",
           image_url: {
-            url: `data:image/png;base64,${Buffer.from("png", "utf8").toString("base64")}`,
+            url: expect.stringMatching(/^data:image\/png;base64,/),
           },
         },
       ],
@@ -1143,7 +1146,7 @@ describe("ChatRunner", () => {
       media: [
         {
           type: "image",
-          dataB64: Buffer.from("png", "utf8").toString("base64"),
+          dataB64: ONE_BY_ONE_PNG_B64,
           contentType: "image/png",
           fileName: "vision.png",
         },
@@ -1152,14 +1155,14 @@ describe("ChatRunner", () => {
     });
     expect(result.outcome).toBe("reply");
     expect(chatSendCalls).toBe(2);
-    expect(sentMessages[0]).toEqual({
+    expect(sentMessages[0]).toMatchObject({
       role: "user",
       content: [
         { type: "text", text: "[image]" },
         {
           type: "image_url",
           image_url: {
-            url: `data:image/png;base64,${Buffer.from("png", "utf8").toString("base64")}`,
+            url: expect.stringMatching(/^data:image\/png;base64,/),
           },
         },
       ],
@@ -1364,7 +1367,8 @@ describe("ChatRunner", () => {
     expect(Array.isArray(result.reply.media)).toBe(true);
     expect(result.reply.media?.[0]?.fileName).toBe("klava.svg");
     expect(result.reply.media?.[0]?.contentType).toBe("image/svg+xml");
-    expect(result.reply.media?.[0]?.dataB64).toBe(Buffer.from("<svg/>", "utf8").toString("base64"));
+    expect(result.reply.media?.[0]?.path).toBe("avatars/klava.svg");
+    expect(result.reply.media?.[0]?.sizeBytes).toBe(Buffer.from("<svg/>", "utf8").byteLength);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));

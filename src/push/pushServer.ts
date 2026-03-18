@@ -1,6 +1,10 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import fs from "node:fs/promises";
+import nodePath from "node:path";
 import { logger } from "../logger.js";
 import { inboundPushMessageSchema, type InboundPushMessage } from "../backend/types.js";
+import { resolveOpenclawStateDir } from "../common/utils/paths.js";
+import { resolveRelayMediaFile } from "../openclaw/mediaDirectives.js";
 
 // Telegram voice/file limits are measured on binary payload size, but relay traffic
 // carries the same media as base64 JSON, which expands by roughly 33%.
@@ -85,7 +89,8 @@ export function startPushServer(input: {
   getHealth?: () => { ok: boolean; ready: boolean; details?: unknown };
   onMessage: (message: InboundPushMessage) => Promise<void>;
 }): http.Server {
-  const path = input.path.startsWith("/") ? input.path : `/${input.path}`;
+  const pushPath = input.path.startsWith("/") ? input.path : `/${input.path}`;
+  const mediaPath = replaceLastPathSegment(pushPath, "media");
   const healthPath = input.healthPath?.trim() || "/health";
   const readinessPath = input.readinessPath?.trim() || "/ready";
   const rateLimitPerSecond = Math.max(1, Math.trunc(input.rateLimitPerSecond ?? 100));
@@ -125,7 +130,43 @@ export function startPushServer(input: {
       return;
     }
 
-    if (req.method !== "POST" || pathname !== path) {
+    if (pathname === mediaPath && req.method === "GET") {
+      const token = parseBearer(req);
+      if (!token || token !== input.relayToken) {
+        sendJson(res, 401, { code: "UNAUTHORIZED", message: "Invalid relay token" });
+        return;
+      }
+      try {
+        const mediaReference = (url.searchParams.get("path") ?? "").trim();
+        if (!mediaReference) {
+          sendJson(res, 400, { code: "VALIDATION_ERROR", message: "path query parameter is required" });
+          return;
+        }
+        const stateDir = resolveOpenclawStateDir(process.env);
+        const resolved = await resolveRelayMediaFile({
+          stateDir,
+          workspaceRoot: nodePath.join(stateDir, "workspace"),
+          mediaPath: mediaReference,
+        });
+        const payload = await fs.readFile(resolved.absPath);
+        if (payload.byteLength <= 0) {
+          sendJson(res, 404, { code: "MEDIA_NOT_FOUND", message: "Media file is empty or unavailable" });
+          return;
+        }
+        res.statusCode = 200;
+        res.setHeader("content-type", sniffContentType(resolved.relPath));
+        res.setHeader("content-length", String(payload.byteLength));
+        res.end(payload);
+      } catch (error) {
+        sendJson(res, 404, {
+          code: "MEDIA_NOT_FOUND",
+          message: error instanceof Error ? error.message : "Media file was not found",
+        });
+      }
+      return;
+    }
+
+    if (req.method !== "POST" || pathname !== pushPath) {
       sendJson(res, 404, { code: "NOT_FOUND", message: "Not found" });
       return;
     }
@@ -269,9 +310,32 @@ export function startPushServer(input: {
   });
 
   server.listen(input.port, "0.0.0.0", () => {
-    logger.info({ port: input.port, path }, "Relay push server started");
+    logger.info({ port: input.port, path: pushPath }, "Relay push server started");
   });
   return server;
+}
+
+function replaceLastPathSegment(input: string, nextSegment: string): string {
+  const parts = input.split("/").filter((part) => part.length > 0);
+  if (parts.length === 0) {
+    return `/${nextSegment}`;
+  }
+  parts[parts.length - 1] = nextSegment;
+  return `/${parts.join("/")}`;
+}
+
+function sniffContentType(filePath: string): string {
+  const normalized = filePath.toLowerCase();
+  if (normalized.endsWith(".svg")) return "image/svg+xml";
+  if (normalized.endsWith(".png")) return "image/png";
+  if (normalized.endsWith(".jpg") || normalized.endsWith(".jpeg")) return "image/jpeg";
+  if (normalized.endsWith(".webp")) return "image/webp";
+  if (normalized.endsWith(".gif")) return "image/gif";
+  if (normalized.endsWith(".txt")) return "text/plain; charset=utf-8";
+  if (normalized.endsWith(".json")) return "application/json; charset=utf-8";
+  if (normalized.endsWith(".csv")) return "text/csv; charset=utf-8";
+  if (normalized.endsWith(".pdf")) return "application/pdf";
+  return "application/octet-stream";
 }
 
 function isClientDisconnectError(error: unknown): boolean {

@@ -7,7 +7,6 @@ export type TranscriptMediaFile = {
   path: string;
   fileName: string;
   contentType: string;
-  dataB64: string;
   sizeBytes: number;
 };
 
@@ -115,7 +114,7 @@ function sniffContentType(filePath: string): string {
   return "application/octet-stream";
 }
 
-async function resolveMediaFile(params: {
+export async function resolveRelayMediaFile(params: {
   stateDir: string;
   workspaceRoot: string;
   mediaPath: string;
@@ -177,21 +176,20 @@ export async function collectTranscriptMedia(params: {
   for (const p of mediaPaths) {
     if (results.length >= maxFiles) break;
     try {
-      const resolved = await resolveMediaFile({
+      const resolved = await resolveRelayMediaFile({
         stateDir,
         workspaceRoot,
         mediaPath: p,
       });
-      const buf = await fs.readFile(resolved.absPath);
-      if (buf.byteLength <= 0 || buf.byteLength > maxBytes) {
+      const stat = await fs.stat(resolved.absPath);
+      if (stat.size <= 0 || stat.size > maxBytes) {
         continue;
       }
       results.push({
         path: resolved.relPath,
         fileName: path.basename(resolved.relPath) || "file",
         contentType: sniffContentType(resolved.relPath),
-        dataB64: buf.toString("base64"),
-        sizeBytes: buf.byteLength,
+        sizeBytes: stat.size,
       });
     } catch {
       // Ignore individual failures; don't fail the whole task.

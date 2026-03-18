@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { type BackendClient } from "../backend/backendClient.js";
 import { type InboundPushMessage, type RelayInboundMessageRequest } from "../backend/types.js";
 import { logger } from "../logger.js";
 import { type ChatRunner } from "../openclaw/chatRunner.js";
 import { type GatewayClient } from "../openclaw/gatewayClient.js";
 import { makeTextPreview } from "../common/utils/text.js";
+import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 
 type MessageProcessorInput = {
   cfg: {
@@ -329,7 +332,7 @@ async function processSingleMessage(input: {
               relayMessageId,
               finishedAtMs,
               outcome: "reply",
-              reply: buildReplyPayload(result.reply),
+              reply: await buildReplyPayload(result.reply),
               openclawMeta: buildOpenclawMetaWithTrace(normalizeOpenclawMeta(openclawMeta), {
                 backendMessageId: msg.messageId,
                 relayMessageId,
@@ -481,24 +484,26 @@ function normalizeOpenclawMetaTrace(trace: unknown): Record<string, string> | un
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
-function buildReplyPayload(reply: {
+async function buildReplyPayload(reply: {
   message: unknown;
   runId: string;
   media?: Array<{
     path: string;
     fileName: string;
     contentType: string;
-    dataB64: string;
     sizeBytes: number;
   }>;
-}): Extract<RelayInboundMessageRequest, { outcome: "reply" }>["reply"] {
+}): Promise<Extract<RelayInboundMessageRequest, { outcome: "reply" }>["reply"]> {
+  const normalizedMessage = normalizeReplyMessage(reply.message);
+  const extracted = await extractInlineReplyMedia(normalizedMessage);
   const payload: Extract<RelayInboundMessageRequest, { outcome: "reply" }>["reply"] = {
     ...(isPlainObject(reply) ? reply : {}),
     runId: reply.runId,
-    message: normalizeReplyMessage(reply.message),
+    message: extracted.message,
   };
-  if (Array.isArray(reply.media) && reply.media.length > 0) {
-    payload.media = normalizeReplyMedia(reply.media);
+  const allMedia = [...(Array.isArray(reply.media) ? reply.media : []), ...extracted.media];
+  if (allMedia.length > 0) {
+    payload.media = normalizeReplyMedia(allMedia);
   }
   return payload;
 }
@@ -508,21 +513,18 @@ function normalizeReplyMedia(
     path: string;
     fileName: string;
     contentType: string;
-    dataB64: string;
     sizeBytes: number;
   }>
 ): Array<{
   path?: string;
   fileName: string;
   contentType: string;
-  dataB64: string;
   sizeBytes: number;
 }> {
   const normalized: Array<{
     path?: string;
     fileName: string;
     contentType: string;
-    dataB64: string;
     sizeBytes: number;
   }> = [];
 
@@ -530,10 +532,9 @@ function normalizeReplyMedia(
     const path = readNonEmptyString(item.path);
     const fileName = readNonEmptyString(item.fileName);
     const contentType = readNonEmptyString(item.contentType);
-    const dataB64 = readNonEmptyString(item.dataB64);
     const sizeBytes = Number.isFinite(item.sizeBytes) ? Math.trunc(item.sizeBytes) : 0;
 
-    if (!fileName || !contentType || !dataB64 || !Number.isInteger(sizeBytes) || sizeBytes <= 0) {
+    if (!fileName || !contentType || !Number.isInteger(sizeBytes) || sizeBytes <= 0) {
       continue;
     }
 
@@ -541,12 +542,145 @@ function normalizeReplyMedia(
       ...(path ? { path } : {}),
       fileName,
       contentType,
-      dataB64,
       sizeBytes,
     });
   }
 
   return normalized;
+}
+
+async function extractInlineReplyMedia(message: unknown): Promise<{
+  message: unknown;
+  media: Array<{
+    path: string;
+    fileName: string;
+    contentType: string;
+    sizeBytes: number;
+  }>;
+}> {
+  if (!isPlainObject(message) || !Array.isArray(message.content)) {
+    return { message, media: [] };
+  }
+  const content: unknown[] = [];
+  const media: Array<{
+    path: string;
+    fileName: string;
+    contentType: string;
+    sizeBytes: number;
+  }> = [];
+  for (const part of message.content) {
+    const extracted = await extractInlineReplyMediaPart(part);
+    if (extracted.media) {
+      media.push(extracted.media);
+      continue;
+    }
+    content.push(extracted.part);
+  }
+  return {
+    message: {
+      ...message,
+      content,
+    },
+    media,
+  };
+}
+
+async function extractInlineReplyMediaPart(part: unknown): Promise<{
+  part: unknown;
+  media?: {
+    path: string;
+    fileName: string;
+    contentType: string;
+    sizeBytes: number;
+  };
+}> {
+  if (!isPlainObject(part) || part.type !== "image") {
+    return { part };
+  }
+  const rawData = readNonEmptyString(part.data);
+  if (!rawData) {
+    return { part };
+  }
+  const parsed = parseInlineImagePayload(rawData, readNonEmptyString(part.mimeType));
+  if (!parsed) {
+    return { part };
+  }
+  const persisted = await persistInlineReplyMedia({
+    payload: parsed.dataB64,
+    contentType: parsed.contentType,
+    fileName: readNonEmptyString(part.fileName),
+  });
+  const sanitizedPart = { ...part };
+  delete sanitizedPart.data;
+  return {
+    part: {
+      ...sanitizedPart,
+      dataPreview: {
+        dataPrefix: parsed.dataB64.slice(0, 128),
+        dataLength: parsed.dataB64.length,
+        truncated: true,
+      },
+    },
+    media: persisted,
+  };
+}
+
+function parseInlineImagePayload(
+  value: string,
+  mimeType: string | undefined
+): { dataB64: string; contentType: string } | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const dataUrlMatch = /^data:([^;]+);base64,(.*)$/i.exec(trimmed);
+  if (dataUrlMatch?.[2]) {
+    return {
+      contentType: (dataUrlMatch[1] ?? mimeType ?? "image/png").trim() || "image/png",
+      dataB64: dataUrlMatch[2].trim(),
+    };
+  }
+  return {
+    contentType: mimeType?.trim() || "image/png",
+    dataB64: trimmed,
+  };
+}
+
+async function persistInlineReplyMedia(input: {
+  payload: string;
+  contentType: string;
+  fileName?: string;
+}): Promise<{ path: string; fileName: string; contentType: string; sizeBytes: number }> {
+  const stateDir = resolveOpenclawStateDir(process.env);
+  const workspaceDir = path.join(stateDir, "workspace", "files", "inline-reply");
+  await fs.mkdir(workspaceDir, { recursive: true });
+  const ext = inferFileExtension(input.fileName, input.contentType);
+  const fileName = sanitizeFileName(input.fileName, ext);
+  const uniqueName = `${Date.now()}-${randomUUID()}-${fileName}`;
+  const absolutePath = path.join(workspaceDir, uniqueName);
+  const buffer = Buffer.from(input.payload, "base64");
+  await fs.writeFile(absolutePath, buffer);
+  return {
+    path: path.posix.join("files", "inline-reply", uniqueName),
+    fileName,
+    contentType: input.contentType,
+    sizeBytes: buffer.byteLength,
+  };
+}
+
+function inferFileExtension(fileName: string | undefined, contentType: string): string {
+  const ext = path.extname((fileName ?? "").trim()).replace(/^\./, "");
+  if (ext) return ext;
+  const normalized = contentType.toLowerCase();
+  if (normalized.includes("jpeg") || normalized.includes("jpg")) return "jpg";
+  if (normalized.includes("webp")) return "webp";
+  if (normalized.includes("gif")) return "gif";
+  if (normalized.includes("svg")) return "svg";
+  return "png";
+}
+
+function sanitizeFileName(fileName: string | undefined, ext: string): string {
+  const rawBase = path.basename((fileName ?? "").trim()) || `image.${ext}`;
+  const safe = rawBase.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
+  return safe || `image.${ext}`;
 }
 
 function normalizeReplyMessage(message: unknown): unknown {

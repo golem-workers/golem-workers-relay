@@ -21,7 +21,14 @@ export type ImageTaskMedia = {
   fileName?: string;
 };
 
-export type TaskMedia = AudioTaskMedia | FileTaskMedia | ImageTaskMedia;
+export type VideoTaskMedia = {
+  type: "video";
+  dataB64: string;
+  contentType: string;
+  fileName?: string;
+};
+
+export type TaskMedia = AudioTaskMedia | FileTaskMedia | ImageTaskMedia | VideoTaskMedia;
 
 export function composeMessageWithTranscript(input: { messageText: string; transcript: string }): string {
   const text = stripVoicePlaceholders(input.messageText);

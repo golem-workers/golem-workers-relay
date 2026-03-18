@@ -19,6 +19,12 @@ const relayMediaSchema = z.discriminatedUnion("type", [
     contentType: z.string().min(1),
     fileName: z.string().min(1).optional(),
   }),
+  z.object({
+    type: z.literal("video"),
+    dataB64: z.string().min(1),
+    contentType: z.string().min(1),
+    fileName: z.string().min(1).optional(),
+  }),
 ]);
 
 const replyMediaFileSchema = z
@@ -26,8 +32,11 @@ const replyMediaFileSchema = z
     path: z.string().min(1).optional(),
     fileName: z.string().min(1),
     contentType: z.string().min(1),
-    dataB64: z.string().min(1),
     sizeBytes: z.number().int().positive(),
+    dataB64: z.string().min(1).optional(),
+    dataPrefix: z.string().min(1).optional(),
+    dataLength: z.number().int().positive().optional(),
+    truncated: z.boolean().optional(),
   })
   .strict();
 

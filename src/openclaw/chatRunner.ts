@@ -16,6 +16,7 @@ import {
   type TaskMedia,
 } from "./transcription.js";
 import { transcribeAudioWithOpenAi } from "./openaiTranscription.js";
+import { prepareChatMedia } from "./mediaPreprocess.js";
 
 export type ChatRunResult =
   | {
@@ -724,9 +725,13 @@ async function buildGatewayChatMessage(input: {
   messageText: string;
   media?: TaskMedia[];
 }): Promise<{ primary: GatewayChatMessage; fallback: GatewayChatMessage | null }> {
-  const imageMedia = pickImageMedia(input.media);
-  const uploadedPaths = await saveUploadedFiles({ media: input.media });
-  const messageText = composeMessageWithUploadedFiles(input.messageText, uploadedPaths);
+  const prepared = await prepareChatMedia({
+    messageText: input.messageText,
+    media: input.media,
+  });
+  const imageMedia = prepared.visionMedia;
+  const uploadedPaths = await saveUploadedFiles({ media: prepared.uploadMedia });
+  const messageText = composeMessageWithUploadedFiles(prepared.messageText, uploadedPaths);
   if (imageMedia.length === 0) {
     return { primary: messageText, fallback: null };
   }
@@ -743,10 +748,10 @@ async function buildGatewayChatMessage(input: {
   }
 
   const fallbackImagePaths = await saveUploadedFiles({
-    media: input.media,
+    media: prepared.uploadMedia,
     includeTypes: ["image"],
   });
-  const fallbackText = composeMessageWithUploadedFiles(normalizeVisionPromptText(input.messageText), [
+  const fallbackText = composeMessageWithUploadedFiles(normalizeVisionPromptText(prepared.messageText), [
     ...uploadedPaths,
     ...fallbackImagePaths,
   ]);
@@ -758,11 +763,6 @@ async function buildGatewayChatMessage(input: {
     },
     fallback: normalizeVisionPromptText(fallbackText),
   };
-}
-
-function pickImageMedia(media: TaskMedia[] | undefined): ImageTaskMedia[] {
-  if (!Array.isArray(media) || media.length === 0) return [];
-  return media.filter((item): item is ImageTaskMedia => item.type === "image");
 }
 
 function normalizeVisionPromptText(messageText: string): string {
