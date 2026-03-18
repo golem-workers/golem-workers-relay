@@ -1052,12 +1052,11 @@ describe("ChatRunner", () => {
         { type: "text", text: "what is in this image?" },
         {
           type: "image_url",
-          image_url: {
-            url: expect.stringMatching(/^data:image\/png;base64,/),
-          },
         },
       ],
     });
+    const sentContent = (sentMessage as { content: Array<{ type: string; image_url?: { url?: string } }> }).content;
+    expect(sentContent[1]?.image_url?.url).toMatch(/^data:image\/png;base64,/);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
@@ -1161,12 +1160,13 @@ describe("ChatRunner", () => {
         { type: "text", text: "[image]" },
         {
           type: "image_url",
-          image_url: {
-            url: expect.stringMatching(/^data:image\/png;base64,/),
-          },
         },
       ],
     });
+    const fallbackContent = (
+      sentMessages[0] as { content: Array<{ type: string; image_url?: { url?: string } }> }
+    ).content;
+    expect(fallbackContent[1]?.image_url?.url).toMatch(/^data:image\/png;base64,/);
     expect(typeof sentMessages[1]).toBe("string");
     expect(sentMessages[1]).toMatch(/\[image\]/);
     expect(sentMessages[1]).toMatch(/File uploaded to:/);
@@ -1268,6 +1268,88 @@ describe("ChatRunner", () => {
     expect(uploadedLines).toHaveLength(2);
     expect(uploadedLines[0]).toContain(path.join("workspace", "files"));
     expect(uploadedLines[1]).toContain(path.join("workspace", "files"));
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
+  it("stores uploaded videos and sends the full file path to chat.send", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-video-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    const uploadsDir = path.join(stateDir, "workspace", "files");
+
+    let sentMessage: unknown = null;
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          const params = (frame.params ?? {}) as Record<string, unknown>;
+          sentMessage = params.message;
+          const runId = "run_video_upload";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: { runId, sessionKey: "s-video", seq: 1, state: "final", message: { text: "ok" } },
+              })
+            );
+          }, 10);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "task_video_upload",
+      sessionKey: "s-video",
+      messageText: "Inspect the uploaded video",
+      media: [
+        {
+          type: "video",
+          dataB64: Buffer.from("fake-mp4-payload", "utf8").toString("base64"),
+          contentType: "video/mp4",
+          fileName: "clip.mp4",
+        },
+      ],
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("reply");
+    expect(typeof sentMessage).toBe("string");
+    expect(sentMessage).toMatch(/Inspect the uploaded video/);
+    expect(sentMessage).toMatch(/File uploaded to:/);
+    expect(sentMessage).not.toMatch(/Only the first preview frame/);
+
+    const uploadedEntries = await fs.readdir(uploadsDir);
+    expect(uploadedEntries.filter((name) => name.endsWith("-clip.mp4")).length).toBe(1);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));

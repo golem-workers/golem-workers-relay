@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { type FileTaskMedia, type ImageTaskMedia, type TaskMedia } from "./transcription.js";
+import { type FileTaskMedia, type ImageTaskMedia, type TaskMedia, type VideoTaskMedia } from "./transcription.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 
 const FILE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -37,16 +37,18 @@ async function rotateOldFiles(input: { uploadsDir: string; nowMs: number }): Pro
 
 function pickFileMedia(
   media: TaskMedia[] | undefined,
-  options?: { includeTypes?: Array<"file" | "image"> }
-): Array<FileTaskMedia | ImageTaskMedia> {
+  options?: { includeTypes?: Array<"file" | "image" | "video"> }
+): Array<FileTaskMedia | ImageTaskMedia | VideoTaskMedia> {
   if (!Array.isArray(media) || media.length === 0) return [];
-  const includeTypes = new Set(options?.includeTypes ?? ["file"]);
+  const includeTypes = new Set(options?.includeTypes ?? ["file", "video"]);
   return media.filter(
-    (item): item is FileTaskMedia | ImageTaskMedia =>
+    (item): item is FileTaskMedia | ImageTaskMedia | VideoTaskMedia =>
       item.type === "file"
         ? includeTypes.has("file")
         : item.type === "image"
           ? includeTypes.has("image")
+          : item.type === "video"
+            ? includeTypes.has("video")
           : false
   );
 }
@@ -55,7 +57,7 @@ export async function saveUploadedFiles(input: {
   media?: TaskMedia[];
   env?: NodeJS.ProcessEnv;
   nowMs?: number;
-  includeTypes?: Array<"file" | "image">;
+  includeTypes?: Array<"file" | "image" | "video">;
 }): Promise<string[]> {
   const fileMedia = pickFileMedia(input.media, { includeTypes: input.includeTypes });
   if (fileMedia.length === 0) return [];
