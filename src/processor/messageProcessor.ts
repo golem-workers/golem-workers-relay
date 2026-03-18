@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { type BackendClient } from "../backend/backendClient.js";
-import { type InboundPushMessage } from "../backend/types.js";
+import { type InboundPushMessage, type RelayInboundMessageRequest } from "../backend/types.js";
 import { logger } from "../logger.js";
 import { type ChatRunner } from "../openclaw/chatRunner.js";
 import { type GatewayClient } from "../openclaw/gatewayClient.js";
@@ -491,8 +491,8 @@ function buildReplyPayload(reply: {
     dataB64: string;
     sizeBytes: number;
   }>;
-}): unknown {
-  const payload: Record<string, unknown> = {
+}): Extract<RelayInboundMessageRequest, { outcome: "reply" }>["reply"] {
+  const payload: Extract<RelayInboundMessageRequest, { outcome: "reply" }>["reply"] = {
     ...(isPlainObject(reply) ? reply : {}),
     runId: reply.runId,
     message: normalizeReplyMessage(reply.message),
@@ -518,32 +518,35 @@ function normalizeReplyMedia(
   dataB64: string;
   sizeBytes: number;
 }> {
-  return media
-    .map((item) => ({
-      path: readNonEmptyString(item.path),
-      fileName: readNonEmptyString(item.fileName),
-      contentType: readNonEmptyString(item.contentType),
-      dataB64: readNonEmptyString(item.dataB64),
-      sizeBytes: Number.isFinite(item.sizeBytes) ? Math.trunc(item.sizeBytes) : 0,
-    }))
-    .filter(
-      (
-        item
-      ): item is {
-        path?: string;
-        fileName: string;
-        contentType: string;
-        dataB64: string;
-        sizeBytes: number;
-      } =>
-        Boolean(
-          item.fileName &&
-            item.contentType &&
-            item.dataB64 &&
-            Number.isInteger(item.sizeBytes) &&
-            item.sizeBytes > 0
-        )
-    );
+  const normalized: Array<{
+    path?: string;
+    fileName: string;
+    contentType: string;
+    dataB64: string;
+    sizeBytes: number;
+  }> = [];
+
+  for (const item of media) {
+    const path = readNonEmptyString(item.path);
+    const fileName = readNonEmptyString(item.fileName);
+    const contentType = readNonEmptyString(item.contentType);
+    const dataB64 = readNonEmptyString(item.dataB64);
+    const sizeBytes = Number.isFinite(item.sizeBytes) ? Math.trunc(item.sizeBytes) : 0;
+
+    if (!fileName || !contentType || !dataB64 || !Number.isInteger(sizeBytes) || sizeBytes <= 0) {
+      continue;
+    }
+
+    normalized.push({
+      ...(path ? { path } : {}),
+      fileName,
+      contentType,
+      dataB64,
+      sizeBytes,
+    });
+  }
+
+  return normalized;
 }
 
 function normalizeReplyMessage(message: unknown): unknown {
