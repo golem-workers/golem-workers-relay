@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/r
 
 The script:
 
-- installs base Ubuntu packages, Google Chrome Stable, Go, Linuxbrew, and Node 22;
+- installs base Ubuntu packages plus agent media/PDF tooling (`ffmpeg`, `poppler-utils`, `imagemagick`, `python3-pip`), Google Chrome Stable, Go, Linuxbrew, and Node 22;
 - pre-pulls and builds `golem-workers-relay` from `release` by default;
 - installs the latest OpenClaw plus full `playwright`;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);

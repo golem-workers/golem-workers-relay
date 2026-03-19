@@ -162,10 +162,13 @@ main() {
     iptables \
     ufw \
     python3 \
+    python3-pip \
     util-linux \
     unzip \
     ffmpeg \
-    ripgrep
+    ripgrep \
+    poppler-utils \
+    imagemagick
 
   set_step "swap"
   if ! swapon --show=NAME | grep -qx "/swapfile"; then
