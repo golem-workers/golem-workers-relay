@@ -419,7 +419,10 @@ export class ChatRunner {
                 "Message flow transition"
               );
             }
-            const media = await collectTranscriptMedia({ sessionKey: input.sessionKey }).catch((err) => {
+            const media = await collectTranscriptMedia({
+              message: finalEvt.message,
+              openclawEvents,
+            }).catch((err) => {
               if (this.devLogEnabled) {
                 logger.warn(
                   { taskId: input.taskId, runId, err: err instanceof Error ? err.message : String(err) },

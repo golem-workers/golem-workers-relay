@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
+import { type ChatEvent } from "./protocol.js";
 
 export type TranscriptMediaFile = {
   /** The MEDIA: path as found in the transcript (relative). */
@@ -20,14 +21,6 @@ function resolveDefaultStateDir(): string {
   return resolveOpenclawStateDir(process.env);
 }
 
-function resolveStatePaths(stateDir: string) {
-  const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
-  return {
-    sessionsMapFile: path.join(sessionsDir, "sessions.json"),
-    workspaceRoot: path.join(stateDir, "workspace"),
-  };
-}
-
 function looksLikePlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && (value as { constructor?: unknown }).constructor === Object;
 }
@@ -45,58 +38,45 @@ export function extractMediaDirectivePaths(text: string): string[] {
   return Array.from(new Set(out));
 }
 
-async function resolveSessionFileForSessionKey(params: {
-  sessionsMapFile: string;
-  sessionKey: string;
-}): Promise<string | null> {
-  const raw = await fs.readFile(params.sessionsMapFile, "utf8").catch(() => "");
-  if (!raw.trim()) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw) as unknown;
-  } catch {
-    return null;
+function extractTextFromReplyMessage(message: unknown): string | null {
+  if (typeof message === "string") {
+    const normalized = message.trim();
+    return normalized.length > 0 ? normalized : null;
   }
-  if (!looksLikePlainObject(parsed)) return null;
-
-  const exactKey = `agent:main:${params.sessionKey}`;
-  const exact = parsed[exactKey];
-  if (looksLikePlainObject(exact) && typeof exact.sessionFile === "string" && exact.sessionFile.trim()) {
-    return exact.sessionFile.trim();
+  if (!looksLikePlainObject(message)) return null;
+  if (typeof message.text === "string" && message.text.trim().length > 0) {
+    return message.text.trim();
   }
-  return null;
+  if (typeof message.content === "string" && message.content.trim().length > 0) {
+    return message.content.trim();
+  }
+  if (!Array.isArray(message.content)) return null;
+  const parts = message.content
+    .map((part) => {
+      if (typeof part === "string" && part.trim().length > 0) {
+        return part.trim();
+      }
+      if (looksLikePlainObject(part) && part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) {
+        return part.text.trim();
+      }
+      return null;
+    })
+    .filter((part): part is string => typeof part === "string");
+  return parts.length > 0 ? parts.join("\n") : null;
 }
 
-function extractAssistantTextFromTranscriptLine(obj: unknown): string | null {
-  if (!looksLikePlainObject(obj)) return null;
-  if (obj.type !== "message") return null;
-  const msg = (obj as { message?: unknown }).message;
-  if (!looksLikePlainObject(msg)) return null;
-  if (msg.role !== "assistant") return null;
-  const content = msg.content;
-  if (!Array.isArray(content)) return null;
-  const parts = content
-    .map((p) => (looksLikePlainObject(p) && p.type === "text" && typeof p.text === "string" ? p.text : null))
-    .filter((t): t is string => typeof t === "string" && t.trim().length > 0);
-  if (parts.length === 0) return null;
-  return parts.join("\n");
-}
-
-async function readLatestAssistantMediaPathsFromTranscript(sessionFile: string): Promise<string[]> {
-  const raw = await fs.readFile(sessionFile, "utf8").catch(() => "");
-  if (!raw.trim()) return [];
-  // Walk backwards and return the most recent assistant message that contains MEDIA: directives.
-  const lines = raw.split(/\r?\n/);
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i];
-    if (!line || !line.trim()) continue;
-    let obj: unknown;
-    try {
-      obj = JSON.parse(line) as unknown;
-    } catch {
-      continue;
+function readLatestMediaPathsFromCurrentReply(input: { message?: unknown; openclawEvents?: ChatEvent[] }): string[] {
+  const candidates: unknown[] = [];
+  if (input.message !== undefined) {
+    candidates.push(input.message);
+  }
+  if (Array.isArray(input.openclawEvents)) {
+    for (let i = input.openclawEvents.length - 1; i >= 0; i -= 1) {
+      candidates.push(input.openclawEvents[i]?.message);
     }
-    const text = extractAssistantTextFromTranscriptLine(obj);
+  }
+  for (const candidate of candidates) {
+    const text = extractTextFromReplyMessage(candidate);
     if (!text) continue;
     const paths = extractMediaDirectivePaths(text);
     if (paths.length > 0) return paths;
@@ -154,22 +134,19 @@ export async function resolveRelayMediaFile(params: {
 }
 
 export async function collectTranscriptMedia(params: {
-  sessionKey: string;
+  message?: unknown;
+  openclawEvents?: ChatEvent[];
   opts?: CollectTranscriptMediaOpts;
 }): Promise<TranscriptMediaFile[]> {
   const stateDir = params.opts?.stateDir ?? resolveDefaultStateDir();
   const maxFiles = Math.max(0, Math.min(10, Math.trunc(params.opts?.maxFiles ?? 4)));
   const maxBytes = Math.max(1, Math.trunc(params.opts?.maxBytes ?? 5_000_000));
   if (maxFiles === 0) return [];
-
-  const { sessionsMapFile, workspaceRoot } = resolveStatePaths(stateDir);
-  const sessionFile = await resolveSessionFileForSessionKey({
-    sessionsMapFile,
-    sessionKey: params.sessionKey,
+  const workspaceRoot = path.join(stateDir, "workspace");
+  const mediaPaths = readLatestMediaPathsFromCurrentReply({
+    message: params.message,
+    openclawEvents: params.openclawEvents,
   });
-  if (!sessionFile) return [];
-
-  const mediaPaths = await readLatestAssistantMediaPathsFromTranscript(sessionFile);
   if (mediaPaths.length === 0) return [];
 
   const results: TranscriptMediaFile[] = [];
