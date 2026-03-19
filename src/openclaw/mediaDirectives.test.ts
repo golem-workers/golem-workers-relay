@@ -50,8 +50,8 @@ describe("collectTranscriptMedia", () => {
     expect(media).toHaveLength(1);
     expect(media[0]?.fileName).toBe("shot.png");
     expect(media[0]?.contentType).toBe("image/png");
-    expect(media[0]?.dataB64).toBe(imageBuf.toString("base64"));
     expect(media[0]?.path).toBe("media/browser/shot.png");
+    expect(media[0]?.sizeBytes).toBe(imageBuf.byteLength);
   });
 
   it("finds latest assistant message that contains MEDIA directives", async () => {
@@ -100,7 +100,8 @@ describe("collectTranscriptMedia", () => {
     const media = await collectTranscriptMedia({ sessionKey });
     expect(media).toHaveLength(1);
     expect(media[0]?.fileName).toBe("shot2.png");
-    expect(media[0]?.dataB64).toBe(imageBuf.toString("base64"));
+    expect(media[0]?.contentType).toBe("image/png");
+    expect(media[0]?.sizeBytes).toBe(imageBuf.byteLength);
   });
 });
 
