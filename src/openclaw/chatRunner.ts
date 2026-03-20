@@ -77,6 +77,24 @@ type OpenclawChatMeta = {
   model?: string;
 };
 
+const TRANSPORT_INTERRUPTION_PATTERNS = [
+  /network connection lost/i,
+  /socket hang up/i,
+  /\beconnreset\b/i,
+  /\beconnaborted\b/i,
+  /\betimedout\b/i,
+  /stream ended unexpectedly/i,
+  /connection closed/i,
+  /upstream disconnected/i,
+] as const;
+
+const TRANSPORT_RECOVERY_NOTE = [
+  "[System note]",
+  "The previous attempt ended due to a network interruption after partial tool execution.",
+  "First inspect the current workspace and session state, then continue from existing artifacts if possible.",
+  "Avoid repeating expensive steps unless they are truly required.",
+].join("\n");
+
 type GatewayChatContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } };
@@ -153,7 +171,62 @@ function classifyRetryableGatewayError(message: string): {
   if (/status"\s*:\s*"INTERNAL"/.test(message) && /"code"\s*:\s*5\d\d/.test(message)) {
     return { retryable: true, reason: "heuristic_internal" };
   }
+  if (TRANSPORT_INTERRUPTION_PATTERNS.some((pattern) => pattern.test(message))) {
+    return { retryable: true, reason: "transport_interruption" };
+  }
   return { retryable: false, reason: "non_retryable" };
+}
+
+function maybeApplyTransportRecoveryNote(message: GatewayChatMessage, enabled: boolean): GatewayChatMessage {
+  if (!enabled) return message;
+  if (typeof message === "string") {
+    const text = message.trim();
+    return text ? `${text}\n\n${TRANSPORT_RECOVERY_NOTE}` : TRANSPORT_RECOVERY_NOTE;
+  }
+
+  const content = Array.isArray(message.content) ? [...message.content] : [];
+  const firstTextIndex = content.findIndex((part) => part.type === "text");
+  if (firstTextIndex >= 0) {
+    const firstText = content[firstTextIndex];
+    if (firstText?.type === "text") {
+      content[firstTextIndex] = {
+        type: "text",
+        text: `${firstText.text}\n\n${TRANSPORT_RECOVERY_NOTE}`,
+      };
+      return { ...message, content };
+    }
+  }
+
+  return {
+    ...message,
+    content: [{ type: "text", text: TRANSPORT_RECOVERY_NOTE }, ...content],
+  };
+}
+
+function buildAttemptIdempotencyKey(input: {
+  taskId: string;
+  attempt: number;
+  transportRecoveryEnabled: boolean;
+}): string {
+  if (!input.transportRecoveryEnabled || input.attempt <= 1) {
+    return input.taskId;
+  }
+  return `${input.taskId}:transport-recovery:${input.attempt}`;
+}
+
+function normalizeGatewayFailureMessage(input: {
+  message: string;
+  reason: string;
+  attempts: number;
+  transportRecoveryEnabled: boolean;
+}): string {
+  if (input.reason !== "transport_interruption") {
+    return input.message;
+  }
+  if (input.transportRecoveryEnabled || input.attempts > 1) {
+    return `The agent lost network connectivity while running tools. We retried ${input.attempts} times in the same session, but recovery did not succeed. Partial files may exist in the workspace.`;
+  }
+  return "The agent lost network connectivity while running tools. Partial files may exist in the workspace.";
 }
 
 function resolveDefaultStateDir(): string {
@@ -313,6 +386,7 @@ export class ChatRunner {
         "Message flow transition"
       );
     }
+    let transportRecoveryEnabled = false;
     for (let attempt = 1; attempt <= this.retry.attempts; attempt += 1) {
       const elapsedMs = Date.now() - startedAtMs;
       const remainingMs = Math.max(0, input.timeoutMs - elapsedMs);
@@ -326,13 +400,24 @@ export class ChatRunner {
         };
       }
 
-      // `chat.send` is side-effecting; idempotencyKey must be stable across retries.
+      // Keep the same idempotency key for blind retries. Recovery retries after a
+      // terminal transport interruption intentionally use a new key because we send
+      // a new recovery note in the same session.
       let runId: string | null = null;
       try {
+        const attemptMessage = maybeApplyTransportRecoveryNote(
+          gatewayMessage.primary,
+          transportRecoveryEnabled && attempt > 1
+        );
+        const idempotencyKey = buildAttemptIdempotencyKey({
+          taskId: input.taskId,
+          attempt,
+          transportRecoveryEnabled,
+        });
         const payload = await this.gateway.request("chat.send", {
           sessionKey: input.sessionKey,
-          message: gatewayMessage.primary,
-          idempotencyKey: input.taskId,
+          message: attemptMessage,
+          idempotencyKey,
           timeoutMs: remainingMs,
         });
 
@@ -380,8 +465,12 @@ export class ChatRunner {
           "Message flow transition"
         );
         if (!retryable) {
+          const normalizedMessage =
+            transportRecoveryEnabled && this.retry.attempts > 1
+              ? "The agent lost network connectivity while attempting to recover the interrupted run. Partial files may exist in the workspace."
+              : `Gateway request failed: ${msg}`;
           return {
-            result: { outcome: "error", error: { code: "GATEWAY_ERROR", message: `Gateway request failed: ${msg}` } },
+            result: { outcome: "error", error: { code: "GATEWAY_ERROR", message: normalizedMessage } },
             openclawMeta: { method: "chat.send" },
           };
         }
@@ -535,12 +624,18 @@ export class ChatRunner {
         const retryable =
           classification.retryable && attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
         if (!retryable) {
+          const normalizedMessage = normalizeGatewayFailureMessage({
+            message: gatewayErrorMessage,
+            reason: classification.reason,
+            attempts: attempt,
+            transportRecoveryEnabled,
+          });
           return {
             result: {
               outcome: "error",
               error: {
                 code: "GATEWAY_ERROR",
-                message: gatewayErrorMessage,
+                message: normalizedMessage,
                 runId,
                 ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
               },
@@ -550,6 +645,9 @@ export class ChatRunner {
               runId,
             },
           };
+        }
+        if (classification.reason === "transport_interruption") {
+          transportRecoveryEnabled = true;
         }
         await sleep(backoffMs);
       } catch (err) {
