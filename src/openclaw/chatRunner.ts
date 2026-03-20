@@ -203,6 +203,16 @@ function maybeApplyTransportRecoveryNote(message: GatewayChatMessage, enabled: b
   };
 }
 
+function readLatestUserFacingMessage(events: ChatEvent[]): unknown | undefined {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const message = events[i]?.message;
+    if (message !== undefined) {
+      return message;
+    }
+  }
+  return undefined;
+}
+
 function buildAttemptIdempotencyKey(input: {
   taskId: string;
   attempt: number;
@@ -492,7 +502,8 @@ export class ChatRunner {
         this.runTraceByRunId.delete(runId);
         const openclawEvents = this.consumeRunEvents(runId);
         if (finalEvt.state === "final") {
-          if (finalEvt.message !== undefined) {
+          const finalMessage = finalEvt.message ?? readLatestUserFacingMessage(openclawEvents);
+          if (finalMessage !== undefined) {
             if (this.devLogEnabled) {
               logger.info(
                 {
@@ -509,7 +520,7 @@ export class ChatRunner {
               );
             }
             const media = await collectTranscriptMedia({
-              message: finalEvt.message,
+              message: finalMessage,
               openclawEvents,
             }).catch((err) => {
               if (this.devLogEnabled) {
@@ -524,7 +535,7 @@ export class ChatRunner {
               result: {
                 outcome: "reply",
                 reply: {
-                  message: finalEvt.message,
+                  message: finalMessage,
                   runId,
                   ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
                   ...(media.length > 0 ? { media } : {}),
@@ -553,10 +564,10 @@ export class ChatRunner {
           }
           return {
             result: {
-              outcome: "no_reply",
-              noReply: {
-                runId,
-                reason: finalEvt.stopReason ?? "no_message",
+              outcome: "error",
+              error: {
+                code: "NO_MESSAGE",
+                message: "OpenClaw completed without a user-facing message",
                 ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
               },
             },
