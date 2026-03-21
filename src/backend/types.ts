@@ -60,6 +60,14 @@ const relayReplySchema = z
   })
   .passthrough();
 
+const relayReplyChunkSchema = z
+  .object({
+    text: z.string().min(1),
+    runId: z.string().min(1),
+    seq: z.number().int().min(0),
+  })
+  .strict();
+
 const chatTaskInputSchema = z
   .object({
     kind: z.literal("chat"),
@@ -110,6 +118,14 @@ export const relayInboundMessageRequestSchema = z.discriminatedUnion("outcome", 
     finishedAtMs: z.number().int().nonnegative(),
     outcome: z.literal("reply"),
     reply: relayReplySchema,
+    openclawMeta: z.unknown().optional(),
+  }),
+  z.object({
+    relayInstanceId: z.string().min(1),
+    relayMessageId: z.string().min(1).optional(),
+    finishedAtMs: z.number().int().nonnegative(),
+    outcome: z.literal("reply_chunk"),
+    replyChunk: relayReplyChunkSchema,
     openclawMeta: z.unknown().optional(),
   }),
   z.object({

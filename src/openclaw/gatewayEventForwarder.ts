@@ -12,6 +12,7 @@ type BufferedDeltaSignal = {
   sessionKey: string;
   seq: number;
   state: "delta";
+  userFacingText: string | null;
   frameSeq: number | null;
   stateVersion: unknown;
   receivedOrder: number;
@@ -119,28 +120,50 @@ export function createGatewayEventForwarder(input: {
       if (!state.backendMessageId || delta.seq <= state.lastForwardedSeq) {
         continue;
       }
-      await submitTechnicalEvent({
-        relayInstanceId,
-        backend,
-        technicalEvent: "chat.delta_signal",
-        technicalPayload: {
-          runId: delta.runId,
-          sessionKey: delta.sessionKey,
-          seq: delta.seq,
-          state: delta.state,
-        },
-        seq: delta.frameSeq,
-        stateVersion: delta.stateVersion,
-        openclawMeta: {
-          method: "gateway.event.chat.delta_signal",
-          runId: delta.runId,
-          trace: {
-            backendMessageId: state.backendMessageId,
-            relayInstanceId,
-            openclawRunId: delta.runId,
+      if (forwardFinalOnly) {
+        await submitTechnicalEvent({
+          relayInstanceId,
+          backend,
+          technicalEvent: "chat.delta_signal",
+          technicalPayload: {
+            runId: delta.runId,
+            sessionKey: delta.sessionKey,
+            seq: delta.seq,
+            state: delta.state,
           },
-        },
-      });
+          seq: delta.frameSeq,
+          stateVersion: delta.stateVersion,
+          openclawMeta: {
+            method: "gateway.event.chat.delta_signal",
+            runId: delta.runId,
+            trace: {
+              backendMessageId: state.backendMessageId,
+              relayInstanceId,
+              openclawRunId: delta.runId,
+            },
+          },
+        });
+      }
+      if (delta.userFacingText) {
+        await submitReplyChunk({
+          relayInstanceId,
+          backend,
+          text: delta.userFacingText,
+          runId: delta.runId,
+          seq: delta.seq,
+          relayMessageId: `relay_oc_reply_chunk_${randomUUID()}`,
+          finishedAtMs: Date.now(),
+          openclawMeta: {
+            method: "gateway.event.chat.reply_chunk",
+            runId: delta.runId,
+            trace: {
+              backendMessageId: state.backendMessageId,
+              relayInstanceId,
+              openclawRunId: delta.runId,
+            },
+          },
+        });
+      }
       state.lastForwardedSeq = Math.max(state.lastForwardedSeq, delta.seq);
     }
     if (state.terminalSeen && !state.debounceTimer) {
@@ -186,10 +209,12 @@ export function createGatewayEventForwarder(input: {
           },
         },
       });
+      if (evt.event !== "chat") {
+        return;
+      }
+    } else if (evt.event !== "chat") {
       return;
     }
-
-    if (evt.event !== "chat") return;
     const parsed = chatEventSchema.safeParse(evt.payload);
     if (!parsed.success) return;
     const chatEvent = parsed.data;
@@ -245,6 +270,7 @@ export function createGatewayEventForwarder(input: {
       sessionKey: chatEvent.sessionKey,
       seq: chatEvent.seq,
       state: "delta",
+      userFacingText: extractPlainAssistantText(chatEvent.message),
       frameSeq: evt.seq ?? chatEvent.seq,
       stateVersion: evt.stateVersion ?? null,
       receivedOrder: runState.nextReceivedOrder++,
@@ -316,4 +342,122 @@ async function submitTechnicalEvent(input: {
       "Failed to forward OpenClaw gateway event to backend"
     );
   }
+}
+
+async function submitReplyChunk(input: {
+  relayInstanceId: string;
+  backend: BackendClient;
+  text: string;
+  runId: string;
+  seq: number;
+  relayMessageId: string;
+  finishedAtMs: number;
+  openclawMeta: {
+    method: string;
+    runId?: string;
+    trace: {
+      backendMessageId?: string;
+      relayInstanceId: string;
+      openclawRunId?: string;
+    };
+  };
+}): Promise<void> {
+  try {
+    await input.backend.submitInboundMessage({
+      body: {
+        relayInstanceId: input.relayInstanceId,
+        relayMessageId: input.relayMessageId,
+        finishedAtMs: input.finishedAtMs,
+        outcome: "reply_chunk",
+        replyChunk: {
+          text: input.text,
+          runId: input.runId,
+          seq: input.seq,
+        },
+        openclawMeta: {
+          method: input.openclawMeta.method,
+          ...(input.openclawMeta.runId ? { runId: input.openclawMeta.runId } : {}),
+          trace: {
+            ...(input.openclawMeta.trace.backendMessageId
+              ? { backendMessageId: input.openclawMeta.trace.backendMessageId }
+              : {}),
+            relayMessageId: input.relayMessageId,
+            relayInstanceId: input.openclawMeta.trace.relayInstanceId,
+            ...(input.openclawMeta.trace.openclawRunId
+              ? { openclawRunId: input.openclawMeta.trace.openclawRunId }
+              : {}),
+          },
+        },
+      },
+    });
+  } catch (err) {
+    logger.warn(
+      {
+        event: "message_flow",
+        direction: "relay_to_backend",
+        stage: "failed",
+        relayMessageId: input.relayMessageId,
+        relayInstanceId: input.relayInstanceId,
+        outcome: "reply_chunk",
+        error: err instanceof Error ? err.message : String(err),
+      },
+      "Failed to forward OpenClaw reply chunk to backend"
+    );
+  }
+}
+
+function extractPlainAssistantText(message: unknown): string | null {
+  if (typeof message === "string") {
+    return message.trim() || null;
+  }
+  if (!isPlainObject(message)) {
+    return null;
+  }
+  const role = typeof message.role === "string" ? message.role.trim().toLowerCase() : "assistant";
+  if (role && role !== "assistant") {
+    return null;
+  }
+  if (typeof message.content === "string") {
+    return message.content.trim() || null;
+  }
+  if (typeof message.text === "string") {
+    return message.text.trim() || null;
+  }
+  if (!Array.isArray(message.content)) {
+    return null;
+  }
+  const text = message.content
+    .map((part) => readTextContentPart(part))
+    .filter((part): part is string => Boolean(part))
+    .join("\n")
+    .trim();
+  return text || null;
+}
+
+function readTextContentPart(part: unknown): string | null {
+  if (typeof part === "string") {
+    return part.trim() || null;
+  }
+  if (!isPlainObject(part)) {
+    return null;
+  }
+  const type = typeof part.type === "string" ? part.type : "";
+  if (type !== "text" && type !== "output_text" && type !== "input_text") {
+    return null;
+  }
+  if (typeof part.text === "string") {
+    return part.text.trim() || null;
+  }
+  if (isPlainObject(part.text) && typeof part.text.value === "string") {
+    return part.text.value.trim() || null;
+  }
+  return null;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { constructor?: unknown }).constructor === Object
+  );
 }

@@ -938,7 +938,12 @@ function applyTelegramArtifactDeliveryInstructions(input: {
   }
   const instruction = [
     "[Telegram bridge note]",
-    "If you need to send the user a generated file, save it under the OpenClaw workspace and add a separate final line exactly as `MEDIA: relative/path.ext`.",
+    "If you need to send the user a file, first save or locate the exact file inside the OpenClaw workspace.",
+    "Before replying, verify that the file really exists at that exact workspace-relative path.",
+    "In your final answer, add a separate final line exactly as `MEDIA: relative/path.ext`.",
+    "Use the real workspace-relative path only. Do not invent directories, rename the file in the `MEDIA:` line, or point to an approximate match.",
+    "If you need to send multiple files, add one separate `MEDIA:` line per file.",
+    "If you are not sure about the exact path, inspect the workspace first and only then reply.",
     "Do not paste the full file contents into the reply when the intended output is a file attachment.",
   ].join("\n");
   const text = input.messageText.trim();

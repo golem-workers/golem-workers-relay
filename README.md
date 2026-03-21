@@ -188,6 +188,7 @@ For chat media:
 
 For `chat` tasks, relay always sends a callback to backend and preserves OpenClaw run events:
 - `outcome=reply` when OpenClaw returned a final message.
+- `outcome=reply_chunk` for each streamed assistant text chunk extracted from intermediate `chat.delta` events.
 - `outcome=no_reply` when a run completed without a user-facing message (for example technical/system finalization).
 - `outcome=error` when a run failed or was aborted.
 - `outcome=technical` for gateway-side signals.
@@ -197,8 +198,9 @@ Relay includes all collected OpenClaw `chat` events (including intermediate/tech
 
 By default (`RELAY_OPENCLAW_FORWARD_FINAL_ONLY=1`) relay does not forward raw `tick`, `connect.challenge`, or raw
 terminal `chat` frames to backend. Instead it sends only compact `technical.event=chat.delta_signal` callbacks for
-intermediate `delta` events so backend/messenger integrations can surface "agent is typing" without receiving the
-partial text stream.
+intermediate `delta` events so backend/messenger integrations can surface "agent is typing". In the same mode relay now
+also extracts plain assistant text from `chat.delta` payloads and forwards that text as `outcome=reply_chunk`
+callbacks so backend can batch and deliver those chunks to the messenger after a short inactivity window.
 
 When `RELAY_OPENCLAW_FORWARD_FINAL_ONLY=0`, relay keeps the legacy behavior and forwards all raw gateway events as
-`outcome=technical`.
+`outcome=technical`, while still sending `outcome=reply_chunk` for plain assistant text chunks.
