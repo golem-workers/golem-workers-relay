@@ -203,7 +203,7 @@ function maybeApplyTransportRecoveryNote(message: GatewayChatMessage, enabled: b
   };
 }
 
-function readLatestUserFacingMessage(events: ChatEvent[]): unknown | undefined {
+function readLatestUserFacingMessage(events: ChatEvent[]): unknown {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const message = events[i]?.message;
     if (message !== undefined) {
