@@ -5,6 +5,7 @@ import path from "node:path";
 import { logger } from "../logger.js";
 import {
   collectTranscriptArtifacts,
+  extractMediaDirectivePaths,
   type TranscriptArtifact,
   type TranscriptArtifactCollectionReport,
   type TranscriptMediaFile,
@@ -220,6 +221,153 @@ function readLatestUserFacingMessage(events: ChatEvent[]): unknown {
   return undefined;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && (value as { constructor?: unknown }).constructor === Object;
+}
+
+function extractTextFromMessage(message: unknown): string | null {
+  if (typeof message === "string") {
+    const normalized = message.trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+  if (!isPlainObject(message)) return null;
+  if (typeof message.text === "string" && message.text.trim().length > 0) {
+    return message.text.trim();
+  }
+  if (typeof message.content === "string" && message.content.trim().length > 0) {
+    return message.content.trim();
+  }
+  if (!Array.isArray(message.content)) return null;
+  const parts = message.content
+    .map((part) => {
+      if (typeof part === "string" && part.trim().length > 0) {
+        return part.trim();
+      }
+      if (isPlainObject(part) && part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) {
+        return part.text.trim();
+      }
+      return null;
+    })
+    .filter((part): part is string => typeof part === "string");
+  return parts.length > 0 ? parts.join("\n") : null;
+}
+
+function normalizeComparableText(text: string | null | undefined): string {
+  return (text ?? "").replace(/\r\n/g, "\n").trim();
+}
+
+function stripMediaDirectiveLines(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*MEDIA:\s*/.test(line))
+    .join("\n")
+    .trim();
+}
+
+async function readSessionsMapFromState(): Promise<Record<string, unknown> | null> {
+  const sessionsMapFile = path.join(resolveDefaultStateDir(), "agents", "main", "sessions", "sessions.json");
+  const raw = await fs.readFile(sessionsMapFile, "utf8").catch(() => "");
+  if (!raw.trim()) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+
+  return isPlainObject(parsed) ? parsed : null;
+}
+
+function readMessageRole(message: unknown): string | null {
+  if (!isPlainObject(message)) return null;
+  return typeof message.role === "string" && message.role.trim().length > 0 ? message.role.trim() : null;
+}
+
+async function readLatestAssistantMessageFromSessionTranscript(input: {
+  sessionKey: string;
+  requestMessage: GatewayChatMessage;
+}): Promise<unknown> {
+  const requestText = normalizeComparableText(extractTextFromMessage(input.requestMessage));
+  if (!requestText) return undefined;
+
+  const sessionsMap = await readSessionsMapFromState();
+  if (!sessionsMap) return undefined;
+
+  const sessionEntry = sessionsMap[`agent:main:${input.sessionKey}`];
+  if (!isPlainObject(sessionEntry)) return undefined;
+
+  const rawSessionFile =
+    typeof sessionEntry.sessionFile === "string" && sessionEntry.sessionFile.trim().length > 0
+      ? sessionEntry.sessionFile.trim()
+      : "";
+  if (!rawSessionFile) return undefined;
+
+  const sessionFile = path.isAbsolute(rawSessionFile)
+    ? rawSessionFile
+    : path.join(resolveDefaultStateDir(), "agents", "main", "sessions", rawSessionFile);
+  const rawTranscript = await fs.readFile(sessionFile, "utf8").catch(() => "");
+  if (!rawTranscript.trim()) return undefined;
+
+  const transcriptMessages = rawTranscript
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .map((line) => {
+      try {
+        return JSON.parse(line) as unknown;
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry): entry is { type?: unknown; message?: unknown } => isPlainObject(entry) && entry.type === "message");
+
+  let matchingUserIndex = -1;
+  for (let i = transcriptMessages.length - 1; i >= 0; i -= 1) {
+    const candidate = transcriptMessages[i]?.message;
+    if (readMessageRole(candidate) !== "user") continue;
+    if (normalizeComparableText(extractTextFromMessage(candidate)) === requestText) {
+      matchingUserIndex = i;
+      break;
+    }
+  }
+
+  if (matchingUserIndex < 0) return undefined;
+
+  let latestAssistantMessage: unknown = undefined;
+  for (let i = matchingUserIndex + 1; i < transcriptMessages.length; i += 1) {
+    const candidate = transcriptMessages[i]?.message;
+    const role = readMessageRole(candidate);
+    if (role === "user") break;
+    if (role !== "assistant") continue;
+    if (!extractTextFromMessage(candidate)) continue;
+    latestAssistantMessage = candidate;
+  }
+
+  return latestAssistantMessage;
+}
+
+function shouldPreferTranscriptReplyMessage(input: {
+  gatewayMessage: unknown;
+  transcriptMessage: unknown;
+}): boolean {
+  const transcriptText = extractTextFromMessage(input.transcriptMessage);
+  if (!transcriptText) return false;
+
+  const gatewayText = extractTextFromMessage(input.gatewayMessage);
+  if (!gatewayText) return true;
+
+  const gatewayMediaPaths = extractMediaDirectivePaths(gatewayText);
+  const transcriptMediaPaths = extractMediaDirectivePaths(transcriptText);
+  if (gatewayMediaPaths.length > 0 || transcriptMediaPaths.length === 0) {
+    return false;
+  }
+
+  return (
+    normalizeComparableText(stripMediaDirectiveLines(gatewayText)) ===
+    normalizeComparableText(stripMediaDirectiveLines(transcriptText))
+  );
+}
+
 function buildAttemptIdempotencyKey(input: {
   taskId: string;
   attempt: number;
@@ -251,23 +399,11 @@ function resolveDefaultStateDir(): string {
 }
 
 async function listKnownSessionKeysFromState(): Promise<string[]> {
-  const sessionsMapFile = path.join(resolveDefaultStateDir(), "agents", "main", "sessions", "sessions.json");
-  const raw = await fs.readFile(sessionsMapFile, "utf8").catch(() => "");
-  if (!raw.trim()) return [];
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw) as unknown;
-  } catch {
-    return [];
-  }
-
-  if (!parsed || typeof parsed !== "object" || (parsed as { constructor?: unknown }).constructor !== Object) {
-    return [];
-  }
+  const parsed = await readSessionsMapFromState();
+  if (!parsed) return [];
 
   const out: string[] = [];
-  for (const key of Object.keys(parsed as Record<string, unknown>)) {
+  for (const key of Object.keys(parsed)) {
     if (!key.startsWith("agent:main:")) continue;
     const sessionKey = key.slice("agent:main:".length).trim();
     if (sessionKey) out.push(sessionKey);
@@ -405,6 +541,7 @@ export class ChatRunner {
     }
     let transportRecoveryEnabled = false;
     for (let attempt = 1; attempt <= this.retry.attempts; attempt += 1) {
+      let finalAttemptMessage: GatewayChatMessage | null = null;
       const elapsedMs = Date.now() - startedAtMs;
       const remainingMs = Math.max(0, input.timeoutMs - elapsedMs);
       if (remainingMs < 300) {
@@ -426,6 +563,7 @@ export class ChatRunner {
           gatewayMessage.primary,
           transportRecoveryEnabled && attempt > 1
         );
+        finalAttemptMessage = attemptMessage;
         const idempotencyKey = buildAttemptIdempotencyKey({
           taskId: input.taskId,
           attempt,
@@ -509,7 +647,36 @@ export class ChatRunner {
         this.runTraceByRunId.delete(runId);
         const openclawEvents = this.consumeRunEvents(runId);
         if (finalEvt.state === "final") {
-          const finalMessage = finalEvt.message ?? readLatestUserFacingMessage(openclawEvents);
+          const gatewayFinalMessage = finalEvt.message ?? readLatestUserFacingMessage(openclawEvents);
+          const transcriptFinalMessage =
+            finalAttemptMessage !== null
+              ? await readLatestAssistantMessageFromSessionTranscript({
+                  sessionKey: input.sessionKey,
+                  requestMessage: finalAttemptMessage,
+                }).catch(() => undefined)
+              : undefined;
+          const useTranscriptFinalMessage =
+            transcriptFinalMessage !== undefined &&
+            shouldPreferTranscriptReplyMessage({
+              gatewayMessage: gatewayFinalMessage,
+              transcriptMessage: transcriptFinalMessage,
+            });
+          const finalMessage =
+            gatewayFinalMessage !== undefined && !useTranscriptFinalMessage
+              ? gatewayFinalMessage
+              : transcriptFinalMessage;
+          if (useTranscriptFinalMessage) {
+            logger.info(
+              {
+                event: "artifact_delivery",
+                stage: "transcript_reply_recovered",
+                taskId: input.taskId,
+                openclawRunId: runId,
+                sessionKey: input.sessionKey,
+              },
+              "Recovered final reply message from session transcript"
+            );
+          }
           if (finalMessage !== undefined) {
             if (this.devLogEnabled) {
               logger.info(
