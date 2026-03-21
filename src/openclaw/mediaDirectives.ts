@@ -162,7 +162,7 @@ function readStructuredArtifactsFromCurrentReply(input: {
     if (!looksLikePlainObject(candidate)) continue;
     const artifacts = Array.isArray(candidate.artifacts) ? candidate.artifacts : null;
     if (!artifacts || artifacts.length === 0) continue;
-    const normalized = artifacts
+    const normalized: TranscriptArtifactRequest[] = artifacts
       .map((item) => {
         if (!looksLikePlainObject(item)) return null;
         const artifactPath = typeof item.path === "string" ? item.path.trim() : "";
@@ -181,7 +181,7 @@ function readStructuredArtifactsFromCurrentReply(input: {
           ...(sizeBytes && sizeBytes > 0 ? { sizeBytes } : {}),
         };
       })
-      .filter((item): item is TranscriptArtifactRequest => Boolean(item));
+      .filter((item): item is NonNullable<typeof item> => item !== null);
     if (normalized.length > 0) return normalized;
   }
   return [];

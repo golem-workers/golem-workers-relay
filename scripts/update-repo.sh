@@ -202,15 +202,13 @@ fi
 RUNTIME_ENV="$(detect_runtime_env)"
 REMOTE="${REMOTE:-origin}"
 BRANCH="$(resolve_branch "${RUNTIME_ENV}")"
-REF="${REMOTE}/${BRANCH}"
 
 echo "Runtime environment: ${RUNTIME_ENV}"
 echo "Git branch: ${BRANCH}"
 
 OLD_HEAD="$(git rev-parse HEAD)"
 git fetch "${REMOTE}" "${BRANCH}"
-git reset --hard "${REF}"
-git pull --ff-only "${REMOTE}" "${BRANCH}"
+git reset --hard FETCH_HEAD
 NEW_HEAD="$(git rev-parse HEAD)"
 
 # Keep scripts executable even if checkout resets modes.
