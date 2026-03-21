@@ -32,12 +32,20 @@ Provisioning warning for 256 MiB snapshots:
 - The warm snapshot must stay cold: `openclaw-gateway.service` is expected to be stopped/disabled in the image, and backend provisioning performs the first controlled start.
 - Backend bootstrap intentionally does not restore the full bundled OpenClaw plugin set during that first start. On real `256 MiB` snapshot-debug e2e runs, enabling bundled self-hosted provider plugins before the gateway bound its port caused pre-listen hangs/readiness failures.
 - Current bootstrap policy is: allow only `device-pair` during the first gateway start, explicitly deny heavy/problematic plugins (`ollama`, `sglang`, `vllm`, `phone-control`, `talk-voice`, `telegram`), then continue with relay provisioning after readiness succeeds.
+- Backend bootstrap now also installs `openclaw-device-pair-auto-approve.service` plus `openclaw-device-pair-auto-approve.timer` on the agent. The timer polls every 5 seconds and approves all pending OpenClaw device-pair requests after provisioning starts the gateway, so the base image should not ship a conflicting pre-baked auto-approve unit.
 - `telegram` is explicitly denied even though Telegram channel config may exist, because OpenClaw doctor/auto-fix can auto-enable that plugin from config and silently break the bootstrap assumptions.
 - Do not "clean this up" by restoring bundled-default plugins in bootstrap unless a fresh real `256 MiB` snapshot replay (`npm run test:e2e:golem-snapshot-debug`) passes end-to-end.
 
 Logs:
 
 - file: `/var/log/golem-workers/prepare-agent-server.log`
+- backend-provisioned auto-approve worker: `/var/log/golem-workers/openclaw-device-pair-auto-approve.log`
+
+Runtime verification after backend provisioning:
+
+```bash
+HOME=/root XDG_RUNTIME_DIR=/run/user/0 systemctl --user status openclaw-device-pair-auto-approve.timer openclaw-device-pair-auto-approve.service --no-pager -l
+```
 
 Script source:
 

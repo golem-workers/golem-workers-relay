@@ -1,7 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createGatewayEventForwarder } from "./gatewayEventForwarder.js";
 
 describe("createGatewayEventForwarder", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
   it("forwards raw gateway events when final-only mode is disabled", async () => {
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const forward = createGatewayEventForwarder({
@@ -48,7 +53,8 @@ describe("createGatewayEventForwarder", () => {
     expect(firstCall?.body?.openclawMeta?.trace?.relayInstanceId).toBe("relay_1");
   });
 
-  it("sends only compact delta signals in final-only mode", async () => {
+  it("buffers delta signals and sends them to backend sorted by seq", async () => {
+    vi.useFakeTimers();
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const forward = createGatewayEventForwarder({
       relayInstanceId: "relay_1",
@@ -64,8 +70,14 @@ describe("createGatewayEventForwarder", () => {
 
     await forward({
       type: "event",
-      event: "tick",
-      payload: { ts: 1 },
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "session_1",
+        seq: 3,
+        state: "delta",
+        message: { text: "llo" },
+      },
     });
     await forward({
       type: "event",
@@ -78,19 +90,9 @@ describe("createGatewayEventForwarder", () => {
         message: { text: "hel" },
       },
     });
-    await forward({
-      type: "event",
-      event: "chat",
-      payload: {
-        runId: "run_1",
-        sessionKey: "session_1",
-        seq: 3,
-        state: "final",
-        message: { text: "hello" },
-      },
-    });
+    await vi.advanceTimersByTimeAsync(100);
 
-    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
     const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
       | {
           body?: {
@@ -124,5 +126,117 @@ describe("createGatewayEventForwarder", () => {
     expect(firstCall?.body?.openclawMeta?.trace?.backendMessageId).toBe("msg_1");
     expect(firstCall?.body?.openclawMeta?.trace?.relayInstanceId).toBe("relay_1");
     expect(firstCall?.body?.openclawMeta?.trace?.openclawRunId).toBe("run_1");
+    const secondCall = submitInboundMessage.mock.calls[1]?.[0] as
+      | {
+          body?: {
+            technical?: {
+              payload?: unknown;
+            };
+          };
+        }
+      | undefined;
+    expect(secondCall?.body?.technical?.payload).toEqual({
+      runId: "run_1",
+      sessionKey: "session_1",
+      seq: 3,
+      state: "delta",
+    });
+  });
+
+  it("drops buffered deltas when a terminal chat event arrives during debounce", async () => {
+    vi.useFakeTimers();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const forward = createGatewayEventForwarder({
+      relayInstanceId: "relay_1",
+      backend: { submitInboundMessage } as never,
+      forwardFinalOnly: true,
+      getChatRunTrace: (runId) =>
+        runId === "run_1"
+          ? {
+              backendMessageId: "msg_1",
+            }
+          : null,
+    });
+
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "session_1",
+        seq: 2,
+        state: "delta",
+        message: { text: "hel" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(50);
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "session_1",
+        seq: 3,
+        state: "final",
+        message: { text: "hello" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(submitInboundMessage).not.toHaveBeenCalled();
+  });
+
+  it("ignores any later delta signals after terminal state was seen", async () => {
+    vi.useFakeTimers();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const forward = createGatewayEventForwarder({
+      relayInstanceId: "relay_1",
+      backend: { submitInboundMessage } as never,
+      forwardFinalOnly: true,
+      getChatRunTrace: (runId) =>
+        runId === "run_1"
+          ? {
+              backendMessageId: "msg_1",
+            }
+          : null,
+    });
+
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "session_1",
+        seq: 2,
+        state: "delta",
+        message: { text: "hel" },
+      },
+    });
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "session_1",
+        seq: 3,
+        state: "final",
+        message: { text: "hello" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "session_1",
+        seq: 4,
+        state: "delta",
+        message: { text: "ignored" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(submitInboundMessage).not.toHaveBeenCalled();
   });
 });

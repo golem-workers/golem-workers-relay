@@ -7,6 +7,53 @@ type ChatRunTrace = {
   backendMessageId: string;
 };
 
+type BufferedDeltaSignal = {
+  runId: string;
+  sessionKey: string;
+  seq: number;
+  state: "delta";
+  frameSeq: number | null;
+  stateVersion: unknown;
+  receivedOrder: number;
+};
+
+type RunForwardState = {
+  runId: string;
+  backendMessageId: string | null;
+  highestSeqSeen: number;
+  lastForwardedSeq: number;
+  terminalSeen: boolean;
+  terminalState: "final" | "error" | "aborted" | null;
+  bufferedDeltas: BufferedDeltaSignal[];
+  debounceTimer: NodeJS.Timeout | null;
+  cleanupTimer: NodeJS.Timeout | null;
+  sendChain: Promise<void>;
+  nextReceivedOrder: number;
+};
+
+const CHAT_EVENT_BACKEND_DEBOUNCE_MS = 100;
+const TERMINAL_RUN_STATE_RETENTION_MS = 60_000;
+
+function createRunForwardState(runId: string, backendMessageId: string | null): RunForwardState {
+  return {
+    runId,
+    backendMessageId,
+    highestSeqSeen: -1,
+    lastForwardedSeq: -1,
+    terminalSeen: false,
+    terminalState: null,
+    bufferedDeltas: [],
+    debounceTimer: null,
+    cleanupTimer: null,
+    sendChain: Promise.resolve(),
+    nextReceivedOrder: 0,
+  };
+}
+
+function isTerminalChatState(state: string): state is "final" | "error" | "aborted" {
+  return state === "final" || state === "error" || state === "aborted";
+}
+
 export function createGatewayEventForwarder(input: {
   relayInstanceId: string;
   backend: BackendClient;
@@ -14,6 +61,115 @@ export function createGatewayEventForwarder(input: {
   getChatRunTrace: (runId: string) => ChatRunTrace | null;
 }): (evt: EventFrame) => Promise<void> {
   const { relayInstanceId, backend, forwardFinalOnly, getChatRunTrace } = input;
+  const runStatesByRunId = new Map<string, RunForwardState>();
+
+  const clearDebounceTimer = (state: RunForwardState): void => {
+    if (state.debounceTimer) {
+      clearTimeout(state.debounceTimer);
+      state.debounceTimer = null;
+    }
+  };
+
+  const clearCleanupTimer = (state: RunForwardState): void => {
+    if (state.cleanupTimer) {
+      clearTimeout(state.cleanupTimer);
+      state.cleanupTimer = null;
+    }
+  };
+
+  const deleteRunState = (runId: string): void => {
+    const state = runStatesByRunId.get(runId);
+    if (!state) {
+      return;
+    }
+    clearDebounceTimer(state);
+    clearCleanupTimer(state);
+    runStatesByRunId.delete(runId);
+  };
+
+  const scheduleTerminalCleanup = (state: RunForwardState): void => {
+    clearCleanupTimer(state);
+    state.cleanupTimer = setTimeout(() => {
+      deleteRunState(state.runId);
+    }, TERMINAL_RUN_STATE_RETENTION_MS);
+  };
+
+  const flushBufferedSignals = async (runId: string): Promise<void> => {
+    const state = runStatesByRunId.get(runId);
+    if (!state) {
+      return;
+    }
+    state.debounceTimer = null;
+    if (state.terminalSeen) {
+      state.bufferedDeltas = [];
+      scheduleTerminalCleanup(state);
+      return;
+    }
+    const deltas = [...state.bufferedDeltas].sort((left, right) => {
+      if (left.seq !== right.seq) {
+        return left.seq - right.seq;
+      }
+      return left.receivedOrder - right.receivedOrder;
+    });
+    state.bufferedDeltas = [];
+    for (const delta of deltas) {
+      if (state.terminalSeen) {
+        break;
+      }
+      if (!state.backendMessageId || delta.seq <= state.lastForwardedSeq) {
+        continue;
+      }
+      await submitTechnicalEvent({
+        relayInstanceId,
+        backend,
+        technicalEvent: "chat.delta_signal",
+        technicalPayload: {
+          runId: delta.runId,
+          sessionKey: delta.sessionKey,
+          seq: delta.seq,
+          state: delta.state,
+        },
+        seq: delta.frameSeq,
+        stateVersion: delta.stateVersion,
+        openclawMeta: {
+          method: "gateway.event.chat.delta_signal",
+          runId: delta.runId,
+          trace: {
+            backendMessageId: state.backendMessageId,
+            relayInstanceId,
+            openclawRunId: delta.runId,
+          },
+        },
+      });
+      state.lastForwardedSeq = Math.max(state.lastForwardedSeq, delta.seq);
+    }
+    if (state.terminalSeen && !state.debounceTimer) {
+      scheduleTerminalCleanup(state);
+    }
+  };
+
+  const queueFlush = (runId: string): void => {
+    const state = runStatesByRunId.get(runId);
+    if (!state) {
+      return;
+    }
+    state.sendChain = state.sendChain
+      .then(() => flushBufferedSignals(runId))
+      .catch((error) => {
+        logger.warn(
+          { relayInstanceId, runId, error: error instanceof Error ? error.message : String(error) },
+          "Failed to flush buffered OpenClaw chat events"
+        );
+      });
+  };
+
+  const scheduleDebouncedFlush = (state: RunForwardState): void => {
+    clearDebounceTimer(state);
+    state.debounceTimer = setTimeout(() => {
+      queueFlush(state.runId);
+    }, CHAT_EVENT_BACKEND_DEBOUNCE_MS);
+  };
+
   return async (evt: EventFrame): Promise<void> => {
     if (!forwardFinalOnly) {
       await submitTechnicalEvent({
@@ -35,38 +191,65 @@ export function createGatewayEventForwarder(input: {
 
     if (evt.event !== "chat") return;
     const parsed = chatEventSchema.safeParse(evt.payload);
-    if (!parsed.success || parsed.data.state !== "delta") return;
-    const runTrace = getChatRunTrace(parsed.data.runId);
-    if (!runTrace) {
+    if (!parsed.success) return;
+    const chatEvent = parsed.data;
+    const runTrace = getChatRunTrace(chatEvent.runId);
+    let runState = runStatesByRunId.get(chatEvent.runId) ?? null;
+    if (!runState && !runTrace) {
+      if (chatEvent.state === "delta") {
+        logger.warn(
+          { relayInstanceId, runId: chatEvent.runId, sessionKey: chatEvent.sessionKey, seq: chatEvent.seq },
+          "Skipping OpenClaw delta signal without correlated backend message"
+        );
+      }
+      return;
+    }
+    if (!runState) {
+      runState = createRunForwardState(chatEvent.runId, runTrace?.backendMessageId ?? null);
+      runStatesByRunId.set(chatEvent.runId, runState);
+    }
+    if (!runState.backendMessageId && runTrace?.backendMessageId) {
+      runState.backendMessageId = runTrace.backendMessageId;
+    }
+    runState.highestSeqSeen = Math.max(runState.highestSeqSeen, chatEvent.seq);
+
+    if (isTerminalChatState(chatEvent.state)) {
+      runState.terminalSeen = true;
+      runState.terminalState = chatEvent.state;
+      runState.bufferedDeltas = [];
+      clearCleanupTimer(runState);
+      scheduleDebouncedFlush(runState);
+      return;
+    }
+
+    if (runState.terminalSeen) {
+      scheduleTerminalCleanup(runState);
+      return;
+    }
+    if (!runState.backendMessageId) {
       logger.warn(
-        { relayInstanceId, runId: parsed.data.runId, sessionKey: parsed.data.sessionKey, seq: parsed.data.seq },
+        { relayInstanceId, runId: chatEvent.runId, sessionKey: chatEvent.sessionKey, seq: chatEvent.seq },
         "Skipping OpenClaw delta signal without correlated backend message"
       );
       return;
     }
-
-    await submitTechnicalEvent({
-      relayInstanceId,
-      backend,
-      technicalEvent: "chat.delta_signal",
-      technicalPayload: {
-        runId: parsed.data.runId,
-        sessionKey: parsed.data.sessionKey,
-        seq: parsed.data.seq,
-        state: parsed.data.state,
-      },
-      seq: evt.seq ?? parsed.data.seq,
+    if (
+      chatEvent.seq <= runState.lastForwardedSeq ||
+      runState.bufferedDeltas.some((buffered) => buffered.seq === chatEvent.seq)
+    ) {
+      scheduleDebouncedFlush(runState);
+      return;
+    }
+    runState.bufferedDeltas.push({
+      runId: chatEvent.runId,
+      sessionKey: chatEvent.sessionKey,
+      seq: chatEvent.seq,
+      state: "delta",
+      frameSeq: evt.seq ?? chatEvent.seq,
       stateVersion: evt.stateVersion ?? null,
-      openclawMeta: {
-        method: "gateway.event.chat.delta_signal",
-        runId: parsed.data.runId,
-        trace: {
-          backendMessageId: runTrace.backendMessageId,
-          relayInstanceId,
-          openclawRunId: parsed.data.runId,
-        },
-      },
+      receivedOrder: runState.nextReceivedOrder++,
     });
+    scheduleDebouncedFlush(runState);
   };
 }
 
