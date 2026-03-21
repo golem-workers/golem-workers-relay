@@ -1590,6 +1590,9 @@ describe("ChatRunner", () => {
     });
     expect(result.outcome).toBe("reply");
     if (result.outcome !== "reply") throw new Error("expected reply");
+    expect(Array.isArray(result.reply.artifacts)).toBe(true);
+    expect(result.reply.artifacts?.[0]?.kind).toBe("image");
+    expect(result.reply.artifacts?.[0]?.path).toBe("avatars/klava.svg");
     expect(Array.isArray(result.reply.media)).toBe(true);
     expect(result.reply.media?.[0]?.fileName).toBe("klava.svg");
     expect(result.reply.media?.[0]?.contentType).toBe("image/svg+xml");

@@ -40,10 +40,21 @@ const replyMediaFileSchema = z
   })
   .strict();
 
+const replyArtifactSchema = z
+  .object({
+    path: z.string().min(1),
+    fileName: z.string().min(1),
+    kind: z.enum(["image", "video", "audio", "file"]),
+    contentType: z.string().min(1),
+    sizeBytes: z.number().int().positive(),
+  })
+  .strict();
+
 const relayReplySchema = z
   .object({
     message: z.unknown().optional(),
     runId: z.string().min(1).optional(),
+    artifacts: z.array(replyArtifactSchema).optional(),
     media: z.array(replyMediaFileSchema).optional(),
     openclawEvents: z.array(z.unknown()).optional(),
   })

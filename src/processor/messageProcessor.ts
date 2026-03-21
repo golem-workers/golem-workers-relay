@@ -326,21 +326,151 @@ async function processSingleMessage(input: {
         });
         const finishedAtMs = Date.now();
         if (result.outcome === "reply") {
-          await backend.submitInboundMessage({
-            body: {
-              relayInstanceId: cfg.relayInstanceId,
-              relayMessageId,
-              finishedAtMs,
-              outcome: "reply",
-              reply: await buildReplyPayload(result.reply),
-              openclawMeta: buildOpenclawMetaWithTrace(normalizeOpenclawMeta(openclawMeta), {
+          const unresolvedArtifacts = readArtifactResolutionIssues(result.reply);
+          if (unresolvedArtifacts.length > 0) {
+            logger.warn(
+              {
+                event: "artifact_delivery",
+                stage: "retry_requested",
                 backendMessageId: msg.messageId,
                 relayMessageId,
+                unresolvedCount: unresolvedArtifacts.length,
+                unresolvedArtifacts,
+              },
+              "Reply contains unresolved artifacts; scheduling one internal retry"
+            );
+            await submitReplyCallback({
+              cfg,
+              backend,
+              correlationMessageId: msg.messageId,
+              reply: {
+                message: buildArtifactRetryNotice(),
+                runId: `${result.reply.runId}:artifact-retry-notice`,
+              },
+              openclawMeta: { method: "artifact.retry_notice" },
+            });
+
+            const retryTimeoutMs = Math.max(0, cfg.taskTimeoutMs - (Date.now() - startedAt));
+            if (retryTimeoutMs > 1000) {
+              const retryOutcome = await runner.runChatTask({
+                taskId: `${msg.messageId}:artifact-retry`,
+                sessionKey: msg.input.sessionKey,
+                messageText: buildArtifactRetryPrompt({ unresolved: unresolvedArtifacts }),
+                timeoutMs: retryTimeoutMs,
+              });
+              if (
+                retryOutcome.result.outcome === "reply" &&
+                readArtifactResolutionIssues(retryOutcome.result.reply).length === 0
+              ) {
+                logger.info(
+                  {
+                    event: "artifact_delivery",
+                    stage: "retry_succeeded",
+                    backendMessageId: msg.messageId,
+                    originalRunId: result.reply.runId,
+                    retryRunId: retryOutcome.result.reply.runId,
+                    artifactCount: retryOutcome.result.reply.artifacts?.length ?? 0,
+                  },
+                  "Artifact retry succeeded"
+                );
+                await submitReplyCallback({
+                  cfg,
+                  backend,
+                  correlationMessageId: msg.messageId,
+                  reply: retryOutcome.result.reply,
+                  openclawMeta: retryOutcome.openclawMeta,
+                });
+              } else {
+                logger.warn(
+                  {
+                    event: "artifact_delivery",
+                    stage: "retry_failed",
+                    backendMessageId: msg.messageId,
+                    originalRunId: result.reply.runId,
+                    retryOutcome: retryOutcome.result.outcome,
+                    retryIssues:
+                      retryOutcome.result.outcome === "reply"
+                        ? readArtifactResolutionIssues(retryOutcome.result.reply)
+                        : [],
+                  },
+                  "Artifact retry did not produce deliverable artifacts"
+                );
+                const originalText = extractReplyText(result.reply.message);
+                if (originalText) {
+                  await submitReplyCallback({
+                    cfg,
+                    backend,
+                    correlationMessageId: msg.messageId,
+                    reply: {
+                      message: originalText,
+                      runId: `${result.reply.runId}:artifact-fallback-text`,
+                    },
+                    openclawMeta: { method: "artifact.fallback_text" },
+                  });
+                }
+                await submitReplyCallback({
+                  cfg,
+                  backend,
+                  correlationMessageId: msg.messageId,
+                  reply: {
+                    message: buildArtifactFailureNotice(),
+                    runId: `${result.reply.runId}:artifact-failure-notice`,
+                  },
+                  openclawMeta: { method: "artifact.failure_notice" },
+                });
+              }
+            } else {
+              logger.warn(
+                {
+                  event: "artifact_delivery",
+                  stage: "retry_skipped",
+                  backendMessageId: msg.messageId,
+                  relayMessageId,
+                  retryTimeoutMs,
+                },
+                "Artifact retry skipped because there was not enough remaining time"
+              );
+              const originalText = extractReplyText(result.reply.message);
+              if (originalText) {
+                await submitReplyCallback({
+                  cfg,
+                  backend,
+                  correlationMessageId: msg.messageId,
+                  reply: {
+                    message: originalText,
+                    runId: `${result.reply.runId}:artifact-fallback-text`,
+                  },
+                  openclawMeta: { method: "artifact.fallback_text" },
+                });
+              }
+              await submitReplyCallback({
+                cfg,
+                backend,
+                correlationMessageId: msg.messageId,
+                reply: {
+                  message: buildArtifactFailureNotice(),
+                  runId: `${result.reply.runId}:artifact-failure-notice`,
+                },
+                openclawMeta: { method: "artifact.failure_notice" },
+              });
+            }
+          } else {
+            await backend.submitInboundMessage({
+              body: {
                 relayInstanceId: cfg.relayInstanceId,
-                openclawRunId: result.reply.runId,
-              }),
-            },
-          });
+                relayMessageId,
+                finishedAtMs,
+                outcome: "reply",
+                reply: await buildReplyPayload(result.reply),
+                openclawMeta: buildOpenclawMetaWithTrace(normalizeOpenclawMeta(openclawMeta), {
+                  backendMessageId: msg.messageId,
+                  relayMessageId,
+                  relayInstanceId: cfg.relayInstanceId,
+                  openclawRunId: result.reply.runId,
+                }),
+              },
+            });
+          }
         } else if (result.outcome === "no_reply") {
           await backend.submitInboundMessage({
             body: {
@@ -487,6 +617,13 @@ function normalizeOpenclawMetaTrace(trace: unknown): Record<string, string> | un
 async function buildReplyPayload(reply: {
   message: unknown;
   runId: string;
+  artifacts?: Array<{
+    path: string;
+    fileName: string;
+    kind: "image" | "video" | "audio" | "file";
+    contentType: string;
+    sizeBytes: number;
+  }>;
   media?: Array<{
     path: string;
     fileName: string;
@@ -501,46 +638,250 @@ async function buildReplyPayload(reply: {
     runId: reply.runId,
     message: extracted.message,
   };
-  const allMedia = [...(Array.isArray(reply.media) ? reply.media : []), ...extracted.media];
-  if (allMedia.length > 0) {
-    payload.media = normalizeReplyMedia(allMedia);
+  const allArtifacts = normalizeReplyArtifacts([
+    ...(Array.isArray(reply.artifacts) ? reply.artifacts : []),
+    ...(Array.isArray(reply.media) ? reply.media.map((item) => toReplyArtifact(item)) : []),
+    ...extracted.media.map((item) => toReplyArtifact(item)),
+  ]);
+  if (allArtifacts.length > 0) {
+    payload.artifacts = allArtifacts;
+    payload.media = allArtifacts.map((artifact) => ({
+      path: artifact.path,
+      fileName: artifact.fileName,
+      contentType: artifact.contentType,
+      sizeBytes: artifact.sizeBytes,
+    }));
   }
   return payload;
 }
 
-function normalizeReplyMedia(
-  media: Array<{
+function extractReplyText(message: unknown): string {
+  if (typeof message === "string") return message.trim();
+  if (!isPlainObject(message)) return "";
+  if (typeof message.content === "string") return message.content.trim();
+  if (typeof message.text === "string") return message.text.trim();
+  if (!Array.isArray(message.content)) return "";
+  return message.content
+    .map((part) => {
+      if (typeof part === "string") return part.trim();
+      if (isPlainObject(part) && part.type === "text" && typeof part.text === "string") {
+        return part.text.trim();
+      }
+      return "";
+    })
+    .filter((part) => part.length > 0)
+    .join("\n");
+}
+
+function readArtifactResolutionIssues(reply: {
+  artifactResolution?: {
+    unresolved?: Array<{
+      source?: string;
+      reason?: string;
+      path?: string;
+      fileName?: string;
+      kind?: string;
+      contentType?: string;
+      sizeBytes?: number;
+      candidatePaths?: string[];
+    }>;
+  };
+}): Array<{
+  source?: string;
+  reason?: string;
+  path?: string;
+  fileName?: string;
+  kind?: string;
+  contentType?: string;
+  sizeBytes?: number;
+  candidatePaths?: string[];
+}> {
+  return Array.isArray(reply.artifactResolution?.unresolved) ? reply.artifactResolution.unresolved : [];
+}
+
+function buildArtifactRetryNotice(): string {
+  return "We hit a temporary issue while preparing the file attachment. We are trying one more time now.";
+}
+
+function buildArtifactFailureNotice(): string {
+  return "Technical note: the agent message was delivered, but the file attachment could not be sent.";
+}
+
+function buildArtifactRetryPrompt(input: {
+  unresolved: Array<{
+    source?: string;
+    reason?: string;
+    path?: string;
+    fileName?: string;
+    kind?: string;
+    contentType?: string;
+    sizeBytes?: number;
+    candidatePaths?: string[];
+  }>;
+}): string {
+  const details = input.unresolved
+    .map((issue, index) => {
+      const parts = [
+        `Artifact ${index + 1}:`,
+        issue.path ? `requestedPath=${issue.path}` : null,
+        issue.fileName ? `fileName=${issue.fileName}` : null,
+        issue.kind ? `kind=${issue.kind}` : null,
+        issue.contentType ? `contentType=${issue.contentType}` : null,
+        typeof issue.sizeBytes === "number" ? `sizeBytes=${issue.sizeBytes}` : null,
+        issue.reason ? `reason=${issue.reason}` : null,
+        Array.isArray(issue.candidatePaths) && issue.candidatePaths.length > 0
+          ? `candidatePaths=${issue.candidatePaths.join(", ")}`
+          : null,
+      ].filter(Boolean);
+      return parts.join("; ");
+    })
+    .join("\n");
+  return [
+    "[System note]",
+    "Your previous answer referenced one or more file artifacts that the relay could not resolve unambiguously.",
+    "Inspect the current OpenClaw workspace and reply again without regenerating the file unless that is truly necessary.",
+    "Return the same user-facing answer if it is still correct, but include the correct artifact path in the reply artifacts / MEDIA reference so the relay can attach the file.",
+    "If multiple matching files exist, choose the exact one you created and reference its precise workspace-relative path.",
+    details ? `Unresolved artifacts:\n${details}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+async function submitReplyCallback(input: {
+  cfg: {
+    relayInstanceId: string;
+    taskTimeoutMs: number;
+    chatBatchDebounceMs: number;
+    devLogEnabled: boolean;
+    devLogTextMaxLen: number;
+  };
+  backend: BackendClient;
+  correlationMessageId: string;
+  reply: {
+    message: unknown;
+    runId: string;
+    artifacts?: Array<{
+      path: string;
+      fileName: string;
+      kind: "image" | "video" | "audio" | "file";
+      contentType: string;
+      sizeBytes: number;
+    }>;
+    media?: Array<{
+      path: string;
+      fileName: string;
+      contentType: string;
+      sizeBytes: number;
+    }>;
+  };
+  openclawMeta?: unknown;
+}): Promise<string> {
+  const relayMessageId = `relay_${randomUUID()}`;
+  const finishedAtMs = Date.now();
+  await input.backend.submitInboundMessage({
+    body: {
+      relayInstanceId: input.cfg.relayInstanceId,
+      relayMessageId,
+      finishedAtMs,
+      outcome: "reply",
+      reply: await buildReplyPayload(input.reply),
+      openclawMeta: buildOpenclawMetaWithTrace(normalizeOpenclawMeta(input.openclawMeta), {
+        backendMessageId: input.correlationMessageId,
+        relayMessageId,
+        relayInstanceId: input.cfg.relayInstanceId,
+        openclawRunId: input.reply.runId,
+      }),
+    },
+  });
+  logger.info(
+    {
+      event: "message_flow",
+      direction: "relay_to_backend",
+      stage: "callback_sent",
+      backendMessageId: input.correlationMessageId,
+      relayMessageId,
+      durationMs: 0,
+      supplemental: true,
+    },
+    "Message flow transition"
+  );
+  return relayMessageId;
+}
+
+function inferArtifactKind(contentType: string): "image" | "video" | "audio" | "file" {
+  const normalized = contentType.trim().toLowerCase();
+  if (normalized.startsWith("image/")) return "image";
+  if (normalized.startsWith("video/")) return "video";
+  if (normalized.startsWith("audio/")) return "audio";
+  return "file";
+}
+
+function toReplyArtifact(item: {
+  path: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  kind?: "image" | "video" | "audio" | "file";
+}): {
+  path: string;
+  fileName: string;
+  kind: "image" | "video" | "audio" | "file";
+  contentType: string;
+  sizeBytes: number;
+} {
+  return {
+    path: item.path,
+    fileName: item.fileName,
+    kind: item.kind ?? inferArtifactKind(item.contentType),
+    contentType: item.contentType,
+    sizeBytes: item.sizeBytes,
+  };
+}
+
+function normalizeReplyArtifacts(
+  artifacts: Array<{
     path: string;
     fileName: string;
+    kind?: "image" | "video" | "audio" | "file";
     contentType: string;
     sizeBytes: number;
   }>
 ): Array<{
-  path?: string;
+  path: string;
   fileName: string;
+  kind: "image" | "video" | "audio" | "file";
   contentType: string;
   sizeBytes: number;
 }> {
   const normalized: Array<{
-    path?: string;
+    path: string;
     fileName: string;
+    kind: "image" | "video" | "audio" | "file";
     contentType: string;
     sizeBytes: number;
   }> = [];
+  const seen = new Set<string>();
 
-  for (const item of media) {
+  for (const item of artifacts) {
     const path = readNonEmptyString(item.path);
     const fileName = readNonEmptyString(item.fileName);
+    const kind = item.kind ?? (item.contentType ? inferArtifactKind(item.contentType) : "file");
     const contentType = readNonEmptyString(item.contentType);
     const sizeBytes = Number.isFinite(item.sizeBytes) ? Math.trunc(item.sizeBytes) : 0;
 
-    if (!fileName || !contentType || !Number.isInteger(sizeBytes) || sizeBytes <= 0) {
+    if (!path || !fileName || !contentType || !Number.isInteger(sizeBytes) || sizeBytes <= 0) {
       continue;
     }
-
+    const dedupeKey = `${path}\u0000${fileName}\u0000${kind}\u0000${contentType}\u0000${sizeBytes}`;
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
     normalized.push({
-      ...(path ? { path } : {}),
+      path,
       fileName,
+      kind,
       contentType,
       sizeBytes,
     });

@@ -3,7 +3,12 @@ import { type ChatEvent, chatEventSchema, type EventFrame } from "./protocol.js"
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { logger } from "../logger.js";
-import { collectTranscriptMedia, type TranscriptMediaFile } from "./mediaDirectives.js";
+import {
+  collectTranscriptArtifacts,
+  type TranscriptArtifact,
+  type TranscriptArtifactCollectionReport,
+  type TranscriptMediaFile,
+} from "./mediaDirectives.js";
 import { saveUploadedFiles } from "./fileUploads.js";
 import { makeTextPreview } from "../common/utils/text.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
@@ -24,7 +29,9 @@ export type ChatRunResult =
       reply: {
         message: unknown;
         runId: string;
+        artifacts?: TranscriptArtifact[];
         media?: TranscriptMediaFile[];
+        artifactResolution?: TranscriptArtifactCollectionReport;
         openclawEvents?: ChatEvent[];
       };
     }
@@ -519,26 +526,66 @@ export class ChatRunner {
                 "Message flow transition"
               );
             }
-            const media = await collectTranscriptMedia({
+            const artifactResolution = await collectTranscriptArtifacts({
               message: finalMessage,
               openclawEvents,
+              opts: {
+                logContext: {
+                  taskId: input.taskId,
+                  runId,
+                  sessionKey: input.sessionKey,
+                },
+              },
             }).catch((err) => {
-              if (this.devLogEnabled) {
-                logger.warn(
-                  { taskId: input.taskId, runId, err: err instanceof Error ? err.message : String(err) },
-                  "Failed to collect transcript media"
-                );
-              }
-              return [];
+              logger.warn(
+                { taskId: input.taskId, runId, err: err instanceof Error ? err.message : String(err) },
+                "Failed to collect transcript artifacts"
+              );
+              return {
+                artifacts: [],
+                unresolved: [],
+                requestedCount: 0,
+                recoveredCount: 0,
+                usedStructuredArtifacts: false,
+                usedLegacyMediaDirectives: false,
+              } satisfies TranscriptArtifactCollectionReport;
             });
+            const media = artifactResolution.artifacts.map((artifact) => ({
+              path: artifact.path,
+              fileName: artifact.fileName,
+              contentType: artifact.contentType,
+              sizeBytes: artifact.sizeBytes,
+            }));
+            logger.info(
+              {
+                event: "artifact_delivery",
+                stage: "artifact_collection_completed",
+                taskId: input.taskId,
+                openclawRunId: runId,
+                sessionKey: input.sessionKey,
+                requestedCount: artifactResolution.requestedCount,
+                resolvedCount: artifactResolution.artifacts.length,
+                unresolvedCount: artifactResolution.unresolved.length,
+                recoveredCount: artifactResolution.recoveredCount,
+                usedStructuredArtifacts: artifactResolution.usedStructuredArtifacts,
+                usedLegacyMediaDirectives: artifactResolution.usedLegacyMediaDirectives,
+              },
+              "Transcript artifact collection completed"
+            );
             return {
               result: {
                 outcome: "reply",
                 reply: {
                   message: finalMessage,
                   runId,
+                  ...(artifactResolution.artifacts.length > 0
+                    ? { artifacts: artifactResolution.artifacts }
+                    : {}),
                   ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
                   ...(media.length > 0 ? { media } : {}),
+                  ...(artifactResolution.requestedCount > 0
+                    ? { artifactResolution }
+                    : {}),
                 },
               },
               openclawMeta: {

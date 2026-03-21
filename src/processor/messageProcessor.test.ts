@@ -124,6 +124,266 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.reply?.openclawEvents).toHaveLength(2);
   });
 
+  it("forwards structured reply artifacts and keeps legacy media compatibility", async () => {
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockResolvedValue({
+          result: {
+            outcome: "reply",
+            reply: {
+              runId: "run_artifact_1",
+              message: { role: "assistant", content: "done" },
+              artifacts: [
+                {
+                  path: "videos/final_ytp.mp4",
+                  fileName: "final_ytp.mp4",
+                  kind: "video",
+                  contentType: "video/mp4",
+                  sizeBytes: 2_749_256,
+                },
+              ],
+            },
+          },
+          openclawMeta: { method: "chat.send", runId: "run_artifact_1" },
+        }),
+      } as never,
+      backend: { submitInboundMessage } as never,
+    });
+
+    await processor({
+      messageId: "msg_artifact_1",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "send the file",
+      },
+    });
+
+    const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
+      | {
+          body?: {
+            reply?: {
+              artifacts?: Array<{ path?: string; fileName?: string; kind?: string; contentType?: string }>;
+              media?: Array<{ path?: string; fileName?: string; contentType?: string }>;
+            };
+          };
+        }
+      | undefined;
+    expect(firstCall?.body?.reply?.artifacts).toEqual([
+      {
+        path: "videos/final_ytp.mp4",
+        fileName: "final_ytp.mp4",
+        kind: "video",
+        contentType: "video/mp4",
+        sizeBytes: 2_749_256,
+      },
+    ]);
+    expect(firstCall?.body?.reply?.media).toEqual([
+      {
+        path: "videos/final_ytp.mp4",
+        fileName: "final_ytp.mp4",
+        contentType: "video/mp4",
+        sizeBytes: 2_749_256,
+      },
+    ]);
+  });
+
+  it("sends retry notice and then retry result when the first reply has unresolved artifacts", async () => {
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const runChatTask = vi
+      .fn()
+      .mockResolvedValueOnce({
+        result: {
+          outcome: "reply",
+          reply: {
+            runId: "run_first",
+            message: { role: "assistant", content: "Here is your file" },
+            artifactResolution: {
+              requestedCount: 1,
+              recoveredCount: 0,
+              usedStructuredArtifacts: false,
+              usedLegacyMediaDirectives: true,
+              artifacts: [],
+              unresolved: [
+                {
+                  source: "media_directive",
+                  reason: "missing_file",
+                  path: "cyber_yytp/final_ytp.mp4",
+                  fileName: "final_ytp.mp4",
+                },
+              ],
+            },
+          },
+        },
+        openclawMeta: { method: "chat.send", runId: "run_first" },
+      })
+      .mockResolvedValueOnce({
+        result: {
+          outcome: "reply",
+          reply: {
+            runId: "run_retry",
+            message: { role: "assistant", content: "Here is your file" },
+            artifacts: [
+              {
+                path: "files/final_ytp.mp4",
+                fileName: "final_ytp.mp4",
+                kind: "video",
+                contentType: "video/mp4",
+                sizeBytes: 100,
+              },
+            ],
+            artifactResolution: {
+              requestedCount: 1,
+              recoveredCount: 1,
+              usedStructuredArtifacts: false,
+              usedLegacyMediaDirectives: true,
+              artifacts: [
+                {
+                  path: "files/final_ytp.mp4",
+                  fileName: "final_ytp.mp4",
+                  kind: "video",
+                  contentType: "video/mp4",
+                  sizeBytes: 100,
+                },
+              ],
+              unresolved: [],
+            },
+          },
+        },
+        openclawMeta: { method: "chat.send", runId: "run_retry" },
+      });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: { runChatTask } as never,
+      backend: { submitInboundMessage } as never,
+    });
+
+    await processor({
+      messageId: "msg_retry_1",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "send file",
+      },
+    });
+
+    expect(runChatTask).toHaveBeenCalledTimes(2);
+    expect(runChatTask.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        taskId: "msg_retry_1:artifact-retry",
+        sessionKey: "s1",
+      })
+    );
+    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
+    const notice = submitInboundMessage.mock.calls[0]?.[0] as
+      | { body?: { reply?: { message?: { content?: string } } } }
+      | undefined;
+    const retried = submitInboundMessage.mock.calls[1]?.[0] as
+      | { body?: { reply?: { artifacts?: Array<{ path?: string }> } } }
+      | undefined;
+    expect(notice?.body?.reply?.message?.content).toBe(
+      "We hit a temporary issue while preparing the file attachment. We are trying one more time now."
+    );
+    expect(retried?.body?.reply?.artifacts?.[0]?.path).toBe("files/final_ytp.mp4");
+  });
+
+  it("falls back to original text and a technical notice after one failed artifact retry", async () => {
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const unresolvedArtifact = {
+      source: "media_directive",
+      reason: "missing_file",
+      path: "cyber_yytp/final_ytp.mp4",
+      fileName: "final_ytp.mp4",
+    };
+    const runChatTask = vi
+      .fn()
+      .mockResolvedValueOnce({
+        result: {
+          outcome: "reply",
+          reply: {
+            runId: "run_first_fail",
+            message: { role: "assistant", content: "Original agent text" },
+            artifactResolution: {
+              requestedCount: 1,
+              recoveredCount: 0,
+              usedStructuredArtifacts: false,
+              usedLegacyMediaDirectives: true,
+              artifacts: [],
+              unresolved: [unresolvedArtifact],
+            },
+          },
+        },
+        openclawMeta: { method: "chat.send", runId: "run_first_fail" },
+      })
+      .mockResolvedValueOnce({
+        result: {
+          outcome: "reply",
+          reply: {
+            runId: "run_retry_fail",
+            message: { role: "assistant", content: "Retry text" },
+            artifactResolution: {
+              requestedCount: 1,
+              recoveredCount: 0,
+              usedStructuredArtifacts: false,
+              usedLegacyMediaDirectives: true,
+              artifacts: [],
+              unresolved: [unresolvedArtifact],
+            },
+          },
+        },
+        openclawMeta: { method: "chat.send", runId: "run_retry_fail" },
+      });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: { runChatTask } as never,
+      backend: { submitInboundMessage } as never,
+    });
+
+    await processor({
+      messageId: "msg_retry_fail_1",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "send file",
+      },
+    });
+
+    expect(submitInboundMessage).toHaveBeenCalledTimes(3);
+    const originalReply = submitInboundMessage.mock.calls[1]?.[0] as
+      | { body?: { reply?: { message?: { content?: string } } } }
+      | undefined;
+    const technicalNotice = submitInboundMessage.mock.calls[2]?.[0] as
+      | { body?: { reply?: { message?: { content?: string } } } }
+      | undefined;
+    expect(originalReply?.body?.reply?.message?.content).toBe("Original agent text");
+    expect(technicalNotice?.body?.reply?.message?.content).toBe(
+      "Technical note: the agent message was delivered, but the file attachment could not be sent."
+    );
+  });
+
   it("debounces chat messages per session and sends batch", async () => {
     vi.useFakeTimers();
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
