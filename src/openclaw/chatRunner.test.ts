@@ -1664,7 +1664,14 @@ describe("ChatRunner", () => {
                   JSON.stringify({
                     type: "message",
                     message:
-                      typeof sentMessage === "string" ? { role: "user", content: sentMessage } : sentMessage,
+                      typeof sentMessage === "string"
+                        ? {
+                            role: "user",
+                            content:
+                              "System: [2026-03-21 16:40:33 UTC] Exec completed (plaid-sa, code 0) :: done\n\n" +
+                              sentMessage,
+                          }
+                        : sentMessage,
                   }),
                   JSON.stringify({
                     type: "message",

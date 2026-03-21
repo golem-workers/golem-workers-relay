@@ -256,6 +256,16 @@ function normalizeComparableText(text: string | null | undefined): string {
   return (text ?? "").replace(/\r\n/g, "\n").trim();
 }
 
+function matchesTranscriptUserMessage(candidateText: string, requestText: string): boolean {
+  const normalizedCandidate = normalizeComparableText(candidateText);
+  const normalizedRequest = normalizeComparableText(requestText);
+  if (!normalizedCandidate || !normalizedRequest) return false;
+  return (
+    normalizedCandidate === normalizedRequest ||
+    normalizedCandidate.endsWith(normalizedRequest)
+  );
+}
+
 function stripMediaDirectiveLines(text: string): string {
   return text
     .split(/\r?\n/)
@@ -325,7 +335,8 @@ async function readLatestAssistantMessageFromSessionTranscript(input: {
   for (let i = transcriptMessages.length - 1; i >= 0; i -= 1) {
     const candidate = transcriptMessages[i]?.message;
     if (readMessageRole(candidate) !== "user") continue;
-    if (normalizeComparableText(extractTextFromMessage(candidate)) === requestText) {
+    const candidateText = extractTextFromMessage(candidate);
+    if (candidateText && matchesTranscriptUserMessage(candidateText, requestText)) {
       matchingUserIndex = i;
       break;
     }
