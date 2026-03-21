@@ -400,14 +400,14 @@ async function resolveArtifactExactly(input: {
   };
 }
 
-async function recoverArtifactFromWorkspace(input: {
+function recoverArtifactFromWorkspace(input: {
   request: TranscriptArtifactRequest;
   workspaceCandidates: WorkspaceArtifactCandidate[];
-}): Promise<{
+}): {
   artifact?: TranscriptArtifact;
   issue?: TranscriptArtifactResolutionIssue;
   recovered: boolean;
-}> {
+} {
   const { request } = input;
   const nameMatches = request.fileName
     ? input.workspaceCandidates.filter((candidate) => candidate.fileName === request.fileName)
@@ -562,7 +562,7 @@ export async function collectTranscriptArtifacts(params: {
       });
       continue;
     }
-    const recovered = await recoverArtifactFromWorkspace({ request, workspaceCandidates });
+    const recovered = recoverArtifactFromWorkspace({ request, workspaceCandidates });
     if (recovered.artifact) {
       artifacts.push(recovered.artifact);
       recoveredCount += 1;
