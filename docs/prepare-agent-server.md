@@ -21,7 +21,7 @@ What it does:
 - installs Go and Linuxbrew;
 - installs Node 22 separately (Linuxbrew is not used to install Node);
 - pre-pulls and builds `golem-workers-relay` from `release` by default;
-- installs the latest OpenClaw plus full `playwright`;
+- installs the latest OpenClaw, `@lancedb/lancedb`, plus full `playwright`;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`) for current shell, future login shells, and systemd managers;
 - explicitly enables and starts the root user-systemd manager before OpenClaw daemon install (`loginctl enable-linger root`, `systemctl start user@0.service`, `XDG_RUNTIME_DIR=/run/user/0`, `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus`);
 - optionally runs `OPENCLAW_SKIP_CANVAS_HOST=1 OPENCLAW_LOG_LEVEL=debug systemctl --user import-environment OPENCLAW_SKIP_CANVAS_HOST OPENCLAW_LOG_LEVEL && openclaw onboard --install-daemon --non-interactive --accept-risk`; the script exports `NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps` before this so one-shot OpenClaw/Node commands also inherit the larger heap;
@@ -31,7 +31,8 @@ Provisioning warning for 256 MiB snapshots:
 
 - The warm snapshot must stay cold: `openclaw-gateway.service` is expected to be stopped/disabled in the image, and backend provisioning performs the first controlled start.
 - Backend bootstrap intentionally does not restore the full bundled OpenClaw plugin set during that first start. On real `256 MiB` snapshot-debug e2e runs, enabling bundled self-hosted provider plugins before the gateway bound its port caused pre-listen hangs/readiness failures.
-- Current bootstrap policy is: allow only `device-pair` during the first gateway start, explicitly deny heavy/problematic plugins (`ollama`, `sglang`, `vllm`, `phone-control`, `talk-voice`, `telegram`), then continue with relay provisioning after readiness succeeds.
+- Current bootstrap policy is: allow `device-pair` plus `memory-lancedb` during the first gateway start, explicitly deny heavy/problematic plugins (`ollama`, `sglang`, `vllm`, `phone-control`, `talk-voice`, `telegram`), then continue with relay provisioning after readiness succeeds.
+- Backend provisioning configures `memory-lancedb` to use the local OpenRouter-compatible embeddings proxy (`OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1`) with `text-embedding-3-large`, `autoCapture=true`, and `autoRecall=true`.
 - Backend bootstrap now also installs `openclaw-device-pair-auto-approve.service` plus `openclaw-device-pair-auto-approve.timer` on the agent. The timer polls every 5 seconds and approves all pending OpenClaw device-pair requests after provisioning starts the gateway, so the base image should not ship a conflicting pre-baked auto-approve unit.
 - `telegram` is explicitly denied even though Telegram channel config may exist, because OpenClaw doctor/auto-fix can auto-enable that plugin from config and silently break the bootstrap assumptions.
 - Do not "clean this up" by restoring bundled-default plugins in bootstrap unless a fresh real `256 MiB` snapshot replay (`npm run test:e2e:golem-snapshot-debug`) passes end-to-end.

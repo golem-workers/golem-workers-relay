@@ -309,6 +309,8 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     OPENCLAW_LOG_LEVEL || true
   curl -fsSL https://openclaw.ai/install.sh | bash -s -- --install-method npm --no-onboard
   test -f "${GLOBAL_NPM_ROOT}/openclaw/package.json"
+  npm --prefix "${GLOBAL_NPM_ROOT}/openclaw" install @lancedb/lancedb
+  node -e 'require.resolve("@lancedb/lancedb", { paths: [process.argv[1]] }); console.log("lancedb ready")' "${GLOBAL_NPM_ROOT}/openclaw"
   npm install -g playwright
   test -f "${GLOBAL_NPM_ROOT}/playwright/package.json"
   if [[ "${RUN_OPENCLAW_ONBOARD}" == "1" ]]; then
