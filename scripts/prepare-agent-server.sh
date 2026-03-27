@@ -311,10 +311,8 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   test -f "${GLOBAL_NPM_ROOT}/openclaw/package.json"
   npm --prefix "${GLOBAL_NPM_ROOT}/openclaw" install @lancedb/lancedb
   node -e 'require.resolve("@lancedb/lancedb", { paths: [process.argv[1]] }); console.log("lancedb ready")' "${GLOBAL_NPM_ROOT}/openclaw"
-  echo "Applying temporary upstream OpenClaw memory-lancedb npm-layout workaround"
+  echo "Applying temporary upstream OpenClaw memory-lancedb runtime manifest workaround"
   mkdir -p "${GLOBAL_NPM_ROOT}/openclaw/dist"
-  ln -sfn ../package.json "${GLOBAL_NPM_ROOT}/openclaw/dist/package.json"
-  test -f "${GLOBAL_NPM_ROOT}/openclaw/dist/package.json"
   node --input-type=module - "${GLOBAL_NPM_ROOT}/openclaw" <<'NODE'
 import fs from "node:fs"
 import path from "node:path"
@@ -324,10 +322,28 @@ const packageDir = process.argv[2]
 const rootPackagePath = path.join(packageDir, "package.json")
 const distPackagePath = path.join(packageDir, "dist", "package.json")
 const rootPackage = JSON.parse(fs.readFileSync(rootPackagePath, "utf8"))
-const distPackage = JSON.parse(fs.readFileSync(distPackagePath, "utf8"))
 const lanceDbSpec = rootPackage?.dependencies?.["@lancedb/lancedb"]
 if (typeof lanceDbSpec !== "string" || lanceDbSpec.trim().length === 0) {
   throw new Error("OpenClaw root package.json is missing @lancedb/lancedb")
+}
+try {
+  const stat = fs.lstatSync(distPackagePath)
+  if (stat.isSymbolicLink()) fs.unlinkSync(distPackagePath)
+} catch (error) {
+  if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") {
+    throw error
+  }
+}
+const runtimeManifest = {
+  name: "openclaw-memory-lancedb-runtime",
+  private: true,
+  type: "module",
+  dependencies: { "@lancedb/lancedb": lanceDbSpec }
+}
+fs.writeFileSync(distPackagePath, `${JSON.stringify(runtimeManifest, null, 2)}\n`, "utf8")
+const distPackage = JSON.parse(fs.readFileSync(distPackagePath, "utf8"))
+if (distPackage?.name !== runtimeManifest.name) {
+  throw new Error("OpenClaw dist/package.json runtime manifest name is invalid")
 }
 if (distPackage?.dependencies?.["@lancedb/lancedb"] !== lanceDbSpec) {
   throw new Error("OpenClaw dist/package.json is not compatible with memory-lancedb runtime expectations")
