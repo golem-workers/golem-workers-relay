@@ -105,6 +105,20 @@ export function startGoogleAiProxyServer(input: {
   });
 }
 
+export function startJinaProxyServer(input: {
+  port: number;
+  backendBaseUrl: string;
+  relayToken: string;
+  pathPrefix: string;
+  backendPathPrefix: string;
+}): http.Server {
+  return startRelayProxyServer({
+    serviceName: "relay-jina-proxy",
+    ...input,
+    requestBodyMode: "passthrough",
+  });
+}
+
 async function handleProxyRequest(
   input: {
     req: IncomingMessage;

@@ -309,50 +309,31 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     OPENCLAW_LOG_LEVEL || true
   curl -fsSL https://openclaw.ai/install.sh | bash -s -- --install-method npm --no-onboard
   test -f "${GLOBAL_NPM_ROOT}/openclaw/package.json"
-  npm --prefix "${GLOBAL_NPM_ROOT}/openclaw" install @lancedb/lancedb
-  node -e 'require.resolve("@lancedb/lancedb", { paths: [process.argv[1]] }); console.log("lancedb ready")' "${GLOBAL_NPM_ROOT}/openclaw"
-  echo "Applying temporary upstream OpenClaw memory-lancedb runtime manifest workaround"
-  mkdir -p "${GLOBAL_NPM_ROOT}/openclaw/dist"
-  node --input-type=module - "${GLOBAL_NPM_ROOT}/openclaw" <<'NODE'
+  npm --prefix "${GLOBAL_NPM_ROOT}/openclaw" install memory-lancedb-pro
+  test -f "${GLOBAL_NPM_ROOT}/openclaw/node_modules/memory-lancedb-pro/package.json"
+  mkdir -p /root/.openclaw/workspace/plugins
+  ln -sfn "${GLOBAL_NPM_ROOT}/openclaw/node_modules/memory-lancedb-pro" /root/.openclaw/workspace/plugins/memory-lancedb-pro
+  node --input-type=module - "${GLOBAL_NPM_ROOT}/openclaw/node_modules/memory-lancedb-pro" "/root/.openclaw/workspace/plugins/memory-lancedb-pro" <<'NODE'
 import fs from "node:fs"
 import path from "node:path"
-import { createRequire } from "node:module"
 
 const packageDir = process.argv[2]
-const rootPackagePath = path.join(packageDir, "package.json")
-const distPackagePath = path.join(packageDir, "dist", "package.json")
-const rootPackage = JSON.parse(fs.readFileSync(rootPackagePath, "utf8"))
-const lanceDbSpec = rootPackage?.dependencies?.["@lancedb/lancedb"]
-if (typeof lanceDbSpec !== "string" || lanceDbSpec.trim().length === 0) {
-  throw new Error("OpenClaw root package.json is missing @lancedb/lancedb")
+const linkPath = process.argv[3]
+const packageJsonPath = path.join(packageDir, "package.json")
+const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"))
+if (pkg?.name !== "memory-lancedb-pro") {
+  throw new Error(`Unexpected plugin package at ${packageJsonPath}`)
 }
-try {
-  const stat = fs.lstatSync(distPackagePath)
-  if (stat.isSymbolicLink()) fs.unlinkSync(distPackagePath)
-} catch (error) {
-  if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") {
-    throw error
-  }
+const stats = fs.lstatSync(linkPath)
+if (!stats.isSymbolicLink()) {
+  throw new Error(`Expected plugin link at ${linkPath}`)
 }
-const runtimeManifest = {
-  name: "openclaw-memory-lancedb-runtime",
-  private: true,
-  type: "module",
-  dependencies: { "@lancedb/lancedb": lanceDbSpec }
+const resolvedLinkTarget = fs.realpathSync(linkPath)
+const resolvedPackageDir = fs.realpathSync(packageDir)
+if (resolvedLinkTarget !== resolvedPackageDir) {
+  throw new Error(`Plugin link target mismatch: ${resolvedLinkTarget} !== ${resolvedPackageDir}`)
 }
-fs.writeFileSync(distPackagePath, `${JSON.stringify(runtimeManifest, null, 2)}\n`, "utf8")
-const distPackage = JSON.parse(fs.readFileSync(distPackagePath, "utf8"))
-if (distPackage?.name !== runtimeManifest.name) {
-  throw new Error("OpenClaw dist/package.json runtime manifest name is invalid")
-}
-if (distPackage?.dependencies?.["@lancedb/lancedb"] !== lanceDbSpec) {
-  throw new Error("OpenClaw dist/package.json is not compatible with memory-lancedb runtime expectations")
-}
-const resolved = createRequire(rootPackagePath).resolve("@lancedb/lancedb")
-if (!resolved || typeof resolved !== "string") {
-  throw new Error("OpenClaw memory-lancedb dependency could not be resolved after install")
-}
-console.log(`OpenClaw memory-lancedb compatibility validated: ${resolved}`)
+console.log(`memory-lancedb-pro prepared: ${resolvedPackageDir}`)
 NODE
   npm install -g playwright
   test -f "${GLOBAL_NPM_ROOT}/playwright/package.json"

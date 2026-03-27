@@ -13,6 +13,7 @@ import { createMessageProcessor } from "./processor/messageProcessor.js";
 import {
   LOCAL_PROXY_LISTEN_HOST,
   startGoogleAiProxyServer,
+  startJinaProxyServer,
   startOpenRouterProxyServer,
 } from "./openrouter/proxyServer.js";
 import { createGatewayEventForwarder } from "./openclaw/gatewayEventForwarder.js";
@@ -37,6 +38,10 @@ async function main(): Promise<void> {
       openrouterProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
       openrouterProxyPort: cfg.openrouterProxy.port,
       openrouterProxyPathPrefix: cfg.openrouterProxy.pathPrefix,
+      jinaProxyEnabled: cfg.jinaProxy.enabled,
+      jinaProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
+      jinaProxyPort: cfg.jinaProxy.port,
+      jinaProxyPathPrefix: cfg.jinaProxy.pathPrefix,
       googleAiProxyEnabled: cfg.googleAiProxy.enabled,
       googleAiProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
       googleAiProxyPort: cfg.googleAiProxy.port,
@@ -178,6 +183,15 @@ async function main(): Promise<void> {
         backendPathPrefix: cfg.openrouterProxy.backendPathPrefix,
       })
     : null;
+  const jinaProxyServer = cfg.jinaProxy.enabled
+    ? startJinaProxyServer({
+        port: cfg.jinaProxy.port,
+        backendBaseUrl: cfg.backendBaseUrl,
+        relayToken: cfg.relayToken,
+        pathPrefix: cfg.jinaProxy.pathPrefix,
+        backendPathPrefix: cfg.jinaProxy.backendPathPrefix,
+      })
+    : null;
   const googleAiProxyServer = cfg.googleAiProxy.enabled
     ? startGoogleAiProxyServer({
         port: cfg.googleAiProxy.port,
@@ -196,6 +210,9 @@ async function main(): Promise<void> {
   await closeServer(server);
   if (openrouterProxyServer) {
     await closeServer(openrouterProxyServer);
+  }
+  if (jinaProxyServer) {
+    await closeServer(jinaProxyServer);
   }
   if (googleAiProxyServer) {
     await closeServer(googleAiProxyServer);

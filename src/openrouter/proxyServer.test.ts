@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   LOCAL_PROXY_LISTEN_HOST,
   startGoogleAiProxyServer,
+  startJinaProxyServer,
   startOpenRouterProxyServer,
 } from "./proxyServer.js";
 
@@ -275,6 +276,73 @@ describe("startGoogleAiProxyServer", () => {
     );
     await expect(response.json()).resolves.toMatchObject({
       candidates: [{ content: { parts: [{ text: "ok" }] } }],
+    });
+  });
+});
+
+describe("startJinaProxyServer", () => {
+  const servers: http.Server[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+          })
+      )
+    );
+    servers.length = 0;
+  });
+
+  it("forwards Jina-compatible requests to backend proxy without trusting the client bearer token", async () => {
+    const backendPort = await getFreePort();
+    let receivedPath = "";
+    let backendAuthHeader: string | null = null;
+    let requestBody = "";
+    const backendServer = http.createServer((req, res) => {
+      receivedPath = req.url ?? "";
+      backendAuthHeader = req.headers.authorization ? String(req.headers.authorization) : null;
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        }
+        requestBody = Buffer.concat(chunks).toString("utf8");
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }], model: "jina-embeddings-v5-text-small" }));
+      })();
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startJinaProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/v1",
+      backendPathPrefix: "/api/v1/relays/jina",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/v1/embeddings`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer stub-jina-key",
+      },
+      body: JSON.stringify({ model: "jina-embeddings-v5-text-small", input: ["hello"] }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(backendAuthHeader).toBe("Bearer relay-token");
+    expect(receivedPath).toBe("/api/v1/relays/jina/v1/embeddings");
+    expect(requestBody).toContain("jina-embeddings-v5-text-small");
+    await expect(response.json()).resolves.toMatchObject({
+      data: [{ embedding: [0.1, 0.2] }],
+      model: "jina-embeddings-v5-text-small",
     });
   });
 });

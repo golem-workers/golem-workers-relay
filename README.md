@@ -32,11 +32,11 @@ The script:
 
 - installs base Ubuntu packages plus agent media/PDF tooling (`ffmpeg`, `poppler-utils`, `imagemagick`, `python3-pip`), Google Chrome Stable, Go, Linuxbrew, and Node 22;
 - pre-pulls and builds `golem-workers-relay` from `release` by default;
-- installs the latest OpenClaw, `@lancedb/lancedb`, plus full `playwright`;
+- installs the latest OpenClaw, `memory-lancedb-pro`, plus full `playwright`;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);
 - explicitly brings up root user-systemd (`loginctl enable-linger root`, `user@0.service`, `/run/user/0/bus`) before any OpenClaw daemon install work;
 - optionally runs `openclaw onboard --install-daemon`;
-- leaves the image ready for backend provisioning to enable `memory-lancedb` with the local OpenRouter-compatible embeddings proxy;
+- leaves the image ready for backend provisioning to enable `memory-lancedb-pro` from the prepared snapshot plugin path with the local OpenRouter-compatible embeddings proxy;
 - finishes image preparation by stopping and disabling `openclaw-gateway.service` so prepared images boot with OpenClaw cold and backend provisioning performs the first controlled start.
 
 Execution logs are written to:
@@ -152,6 +152,10 @@ Push transport settings:
 - `RELAY_OPENROUTER_PROXY_PORT=18080` (local proxy port used by agent-side rewrite rules; binds to `127.0.0.1` by default)
 - `RELAY_OPENROUTER_PROXY_PATH_PREFIX=/api/v1` (OpenRouter-compatible incoming path prefix)
 - `RELAY_OPENROUTER_BACKEND_PATH_PREFIX=/api/v1/relays/openrouter` (backend relay-auth proxy path)
+- `RELAY_JINA_PROXY_ENABLED=1` (enable local Jina-compatible proxy listener for `memory-lancedb-pro`)
+- `RELAY_JINA_PROXY_PORT=18082` (local proxy port used by Jina embeddings/rerank calls; binds to `127.0.0.1` by default)
+- `RELAY_JINA_PROXY_PATH_PREFIX=/v1` (Jina-compatible incoming path prefix)
+- `RELAY_JINA_BACKEND_PATH_PREFIX=/api/v1/relays/jina` (backend relay-auth proxy path)
 - `RELAY_GOOGLE_AI_PROXY_ENABLED=1` (enable local Google AI-compatible proxy listener)
 - `RELAY_GOOGLE_AI_PROXY_PORT=18081` (local plain-HTTP proxy port used by the agent-side TLS interceptor for Gemini web search; binds to `127.0.0.1` by default)
 - `RELAY_GOOGLE_AI_PROXY_PATH_PREFIX=/` (forward all Google AI request paths from the local interceptor)
@@ -163,8 +167,9 @@ Note: relay creates its own device identity on the host under `~/.openclaw` unle
 
 Provisioned agents use both local listeners together:
 - OpenClaw model traffic still goes through `OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1`.
+- `memory-lancedb-pro` Jina embedding/rerank traffic goes through `http://127.0.0.1:18082/v1` with a stub `JINA_API_KEY`; relay replaces it with the real backend-side key.
 - Gemini web-search traffic is intercepted transparently by the backend bootstrap via local TLS/hosts rewrites for `generativelanguage.googleapis.com` and then forwarded through relay to backend `/api/v1/relays/google-ai/*`.
-- Both relay proxy listeners are local-only by default and bind to `127.0.0.1`, so they are not exposed on external interfaces unless the code is changed intentionally.
+- All relay proxy listeners are local-only by default and bind to `127.0.0.1`, so they are not exposed on external interfaces unless the code is changed intentionally.
 
 ## Unified Message Flow Logging
 
