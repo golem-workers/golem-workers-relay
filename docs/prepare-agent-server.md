@@ -22,6 +22,8 @@ What it does:
 - installs Node 22 separately (Linuxbrew is not used to install Node);
 - pre-pulls and builds `golem-workers-relay` from `release` by default;
 - installs the latest OpenClaw, `@lancedb/lancedb`, plus full `playwright`;
+- applies a temporary upstream-compat workaround for the current OpenClaw npm bundle layout by linking `dist/package.json` back to the root `package.json`, because `memory-lancedb` runtime resolution currently expects that manifest under `dist/` on provisioned Linux agents;
+- fails the install immediately if the workaround did not make `memory-lancedb` resolvable after install, so broken OpenClaw package layouts are caught during image prep instead of surfacing later at runtime;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`) for current shell, future login shells, and systemd managers;
 - explicitly enables and starts the root user-systemd manager before OpenClaw daemon install (`loginctl enable-linger root`, `systemctl start user@0.service`, `XDG_RUNTIME_DIR=/run/user/0`, `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus`);
 - optionally runs `OPENCLAW_SKIP_CANVAS_HOST=1 OPENCLAW_LOG_LEVEL=debug systemctl --user import-environment OPENCLAW_SKIP_CANVAS_HOST OPENCLAW_LOG_LEVEL && openclaw onboard --install-daemon --non-interactive --accept-risk`; the script exports `NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps` before this so one-shot OpenClaw/Node commands also inherit the larger heap;
