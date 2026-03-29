@@ -3,6 +3,132 @@ import { createMessageProcessor } from "./messageProcessor.js";
 import type { InboundPushMessage } from "../backend/types.js";
 
 describe("createMessageProcessor", () => {
+  it("emits a technical callback before processing when disk usage is above threshold", async () => {
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        lowDiskAlertEnabled: true,
+        lowDiskAlertThresholdPercent: 80,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockResolvedValue({
+          result: {
+            outcome: "reply",
+            reply: { runId: "run_disk_1", message: { role: "assistant", content: "ok" } },
+          },
+          openclawMeta: { method: "chat.send", runId: "run_disk_1" },
+        }),
+      } as never,
+      backend: { submitInboundMessage } as never,
+      readDiskUsage: vi.fn().mockResolvedValue({
+        totalBytes: 100,
+        availableBytes: 15,
+        usedBytes: 85,
+        usedPercent: 85,
+      }),
+    });
+
+    await processor({
+      messageId: "msg_disk_1",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "ping",
+      },
+    });
+
+    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
+    const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
+      | {
+          body?: {
+            outcome?: string;
+            technical?: {
+              source?: string;
+              event?: string;
+              thresholdPercent?: number;
+              usedPercent?: number;
+              availableBytes?: number;
+              totalBytes?: number;
+            };
+          };
+        }
+      | undefined;
+    const secondCall = submitInboundMessage.mock.calls[1]?.[0] as
+      | {
+          body?: {
+            outcome?: string;
+          };
+        }
+      | undefined;
+    expect(firstCall?.body?.outcome).toBe("technical");
+    expect(firstCall?.body?.technical).toMatchObject({
+      source: "relay",
+      event: "disk.space_low",
+      thresholdPercent: 80,
+      usedPercent: 85,
+      availableBytes: 15,
+      totalBytes: 100,
+    });
+    expect(secondCall?.body?.outcome).toBe("reply");
+  });
+
+  it("does not emit a technical callback when disk usage is below threshold", async () => {
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        lowDiskAlertEnabled: true,
+        lowDiskAlertThresholdPercent: 80,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockResolvedValue({
+          result: {
+            outcome: "reply",
+            reply: { runId: "run_ok_1", message: { role: "assistant", content: "ok" } },
+          },
+          openclawMeta: { method: "chat.send", runId: "run_ok_1" },
+        }),
+      } as never,
+      backend: { submitInboundMessage } as never,
+      readDiskUsage: vi.fn().mockResolvedValue({
+        totalBytes: 100,
+        availableBytes: 40,
+        usedBytes: 60,
+        usedPercent: 60,
+      }),
+    });
+
+    await processor({
+      messageId: "msg_ok_1",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "ping",
+      },
+    });
+
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
+      | {
+          body?: {
+            outcome?: string;
+          };
+        }
+      | undefined;
+    expect(firstCall?.body?.outcome).toBe("reply");
+  });
+
   it("forwards only allowed openclawMeta fields", async () => {
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const openclawMeta = {

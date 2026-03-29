@@ -25,6 +25,8 @@ const envSchema = z.object({
   RELAY_INSTANCE_ID: z.string().min(1).optional(),
   RELAY_TASK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(2_147_483_647).optional(),
   RELAY_CHAT_BATCH_DEBOUNCE_MS: z.coerce.number().int().min(0).max(120_000).optional(),
+  RELAY_LOW_DISK_ALERT_ENABLED: envBooleanSchema.optional(),
+  RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT: z.coerce.number().min(1).max(100).optional(),
   RELAY_CONCURRENCY: z.coerce.number().int().min(1).max(20).optional(),
   RELAY_PUSH_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_PUSH_PATH: z.string().min(1).optional(),
@@ -67,6 +69,8 @@ export type RelayConfig = {
   relayInstanceId: string;
   taskTimeoutMs: number;
   chatBatchDebounceMs: number;
+  lowDiskAlertEnabled: boolean;
+  lowDiskAlertThresholdPercent: number;
   concurrency: number;
   pushPort: number;
   pushPath: string;
@@ -126,6 +130,8 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     relayInstanceId,
     taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 9_999_999,
     chatBatchDebounceMs: parsed.RELAY_CHAT_BATCH_DEBOUNCE_MS ?? 500,
+    lowDiskAlertEnabled: parsed.RELAY_LOW_DISK_ALERT_ENABLED ?? true,
+    lowDiskAlertThresholdPercent: parsed.RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT ?? 80,
     concurrency: parsed.RELAY_CONCURRENCY ?? 1,
     pushPort: parsed.RELAY_PUSH_PORT ?? 18790,
     pushPath: parsed.RELAY_PUSH_PATH ?? "/relay/messages",
@@ -187,6 +193,8 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     relayInstanceId: "test-relay",
     taskTimeoutMs: 5000,
     chatBatchDebounceMs: 500,
+    lowDiskAlertEnabled: true,
+    lowDiskAlertThresholdPercent: 80,
     concurrency: 1,
     pushPort: 18790,
     pushPath: "/relay/messages",

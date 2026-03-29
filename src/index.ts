@@ -114,6 +114,8 @@ async function main(): Promise<void> {
       relayInstanceId: cfg.relayInstanceId,
       taskTimeoutMs: cfg.taskTimeoutMs,
       chatBatchDebounceMs: cfg.chatBatchDebounceMs,
+      lowDiskAlertEnabled: cfg.lowDiskAlertEnabled,
+      lowDiskAlertThresholdPercent: cfg.lowDiskAlertThresholdPercent,
       devLogEnabled: cfg.devLogEnabled,
       devLogTextMaxLen: cfg.devLogTextMaxLen,
     },

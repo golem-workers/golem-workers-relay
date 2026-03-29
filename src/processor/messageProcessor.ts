@@ -14,22 +14,33 @@ type MessageProcessorInput = {
     relayInstanceId: string;
     taskTimeoutMs: number;
     chatBatchDebounceMs: number;
+    lowDiskAlertEnabled?: boolean;
+    lowDiskAlertThresholdPercent?: number;
     devLogEnabled: boolean;
     devLogTextMaxLen: number;
   };
   gateway: GatewayClient;
   runner: ChatRunner;
   backend: BackendClient;
+  readDiskUsage?: (path: string) => Promise<DiskUsageSnapshot>;
+};
+
+type DiskUsageSnapshot = {
+  totalBytes: number;
+  availableBytes: number;
+  usedBytes: number;
+  usedPercent: number;
 };
 
 export function createMessageProcessor(input: MessageProcessorInput): (msg: InboundPushMessage) => Promise<void> {
   const { cfg, gateway, runner, backend } = input;
+  const readDiskUsage = input.readDiskUsage ?? readDiskUsageSnapshot;
   const chatBatchesBySession = new Map<string, ChatBatchState>();
   const chatBatchDebounceMs = Math.max(0, Math.trunc(cfg.chatBatchDebounceMs));
 
   return async (msg: InboundPushMessage): Promise<void> => {
     if (msg.input.kind !== "chat" || chatBatchDebounceMs === 0) {
-      await processSingleMessage({ cfg, gateway, runner, backend, msg });
+      await processSingleMessage({ cfg, gateway, runner, backend, msg, readDiskUsage });
       return;
     }
     await enqueueChatBatch({
@@ -38,7 +49,7 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
       debounceMs: chatBatchDebounceMs,
       chatBatchesBySession,
       flush: async (items) => {
-        await flushChatBatch({ cfg, gateway, runner, backend, items });
+        await flushChatBatch({ cfg, gateway, runner, backend, items, readDiskUsage });
       },
     });
   };
@@ -99,6 +110,8 @@ async function flushChatBatch(input: {
     relayInstanceId: string;
     taskTimeoutMs: number;
     chatBatchDebounceMs: number;
+    lowDiskAlertEnabled?: boolean;
+    lowDiskAlertThresholdPercent?: number;
     devLogEnabled: boolean;
     devLogTextMaxLen: number;
   };
@@ -106,6 +119,7 @@ async function flushChatBatch(input: {
   runner: ChatRunner;
   backend: BackendClient;
   items: ChatBatchItem[];
+  readDiskUsage: (path: string) => Promise<DiskUsageSnapshot>;
 }): Promise<void> {
   if (input.items.length === 0) return;
   if (input.items.length === 1) {
@@ -117,6 +131,7 @@ async function flushChatBatch(input: {
         runner: input.runner,
         backend: input.backend,
         msg: only.msg,
+        readDiskUsage: input.readDiskUsage,
       });
       only.deferred.resolve();
     } catch (error) {
@@ -151,6 +166,7 @@ async function flushChatBatch(input: {
       runner: input.runner,
       backend: input.backend,
       msg: mergedMessage,
+      readDiskUsage: input.readDiskUsage,
     });
     target.deferred.resolve();
   } catch (error) {
@@ -242,6 +258,8 @@ async function processSingleMessage(input: {
     relayInstanceId: string;
     taskTimeoutMs: number;
     chatBatchDebounceMs: number;
+    lowDiskAlertEnabled?: boolean;
+    lowDiskAlertThresholdPercent?: number;
     devLogEnabled: boolean;
     devLogTextMaxLen: number;
   };
@@ -249,6 +267,7 @@ async function processSingleMessage(input: {
   runner: ChatRunner;
   backend: BackendClient;
   msg: InboundPushMessage;
+  readDiskUsage: (path: string) => Promise<DiskUsageSnapshot>;
 }): Promise<void> {
   const { cfg, gateway, runner, backend, msg } = input;
     const startedAt = Date.now();
@@ -270,6 +289,14 @@ async function processSingleMessage(input: {
           "Message flow transition"
         );
       }
+
+      await maybeSubmitLowDiskSpaceAlert({
+        cfg,
+        backend,
+        correlationMessageId: msg.messageId,
+        parentRelayMessageId: relayMessageId,
+        readDiskUsage: input.readDiskUsage,
+      });
 
       if (msg.input.kind === "handshake") {
         await withTimeout(gateway.start(), cfg.taskTimeoutMs, "gateway.start");
@@ -558,6 +585,80 @@ async function processSingleMessage(input: {
         );
       }
     }
+}
+
+async function maybeSubmitLowDiskSpaceAlert(input: {
+  cfg: {
+    relayInstanceId: string;
+    lowDiskAlertEnabled?: boolean;
+    lowDiskAlertThresholdPercent?: number;
+  };
+  backend: BackendClient;
+  correlationMessageId: string;
+  parentRelayMessageId: string;
+  readDiskUsage: (path: string) => Promise<DiskUsageSnapshot>;
+}): Promise<void> {
+  if (input.cfg.lowDiskAlertEnabled !== true) {
+    return;
+  }
+  const checkedPath = resolveOpenclawStateDir(process.env);
+  try {
+    const usage = await input.readDiskUsage(checkedPath);
+    if (usage.usedPercent < (input.cfg.lowDiskAlertThresholdPercent ?? 80)) {
+      return;
+    }
+    await input.backend.submitInboundMessage({
+      body: {
+        relayInstanceId: input.cfg.relayInstanceId,
+        relayMessageId: `${input.parentRelayMessageId}:disk-space-low`,
+        finishedAtMs: Date.now(),
+        outcome: "technical",
+        technical: {
+          source: "relay",
+          event: "disk.space_low",
+          checkedPath,
+          thresholdPercent: input.cfg.lowDiskAlertThresholdPercent ?? 80,
+          usedPercent: usage.usedPercent,
+          usedBytes: usage.usedBytes,
+          availableBytes: usage.availableBytes,
+          totalBytes: usage.totalBytes,
+        },
+        openclawMeta: buildOpenclawMetaWithTrace(
+          { method: "relay.disk.check" },
+          {
+            backendMessageId: input.correlationMessageId,
+            relayMessageId: `${input.parentRelayMessageId}:disk-space-low`,
+            relayInstanceId: input.cfg.relayInstanceId,
+          }
+        ),
+      },
+    });
+  } catch (error) {
+    logger.warn(
+      {
+        event: "relay_disk_space_check",
+        relayInstanceId: input.cfg.relayInstanceId,
+        checkedPath,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "Relay failed to evaluate disk usage"
+    );
+  }
+}
+
+async function readDiskUsageSnapshot(targetPath: string): Promise<DiskUsageSnapshot> {
+  const stats = await fs.statfs(targetPath);
+  const blockSize = stats.bsize;
+  const totalBytes = Number(stats.blocks) * blockSize;
+  const availableBytes = Number(stats.bavail) * blockSize;
+  const usedBytes = Math.max(0, totalBytes - availableBytes);
+  const usedPercent = totalBytes > 0 ? Number(((usedBytes / totalBytes) * 100).toFixed(2)) : 0;
+  return {
+    totalBytes,
+    availableBytes,
+    usedBytes,
+    usedPercent,
+  };
 }
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && (value as { constructor?: unknown }).constructor === Object;

@@ -148,6 +148,8 @@ Push transport settings:
 - `RELAY_PUSH_PORT=18790` (HTTP port where backend sends push messages)
 - `RELAY_PUSH_PATH=/relay/messages` (HTTP path for backend push endpoint)
 - `RELAY_CHAT_BATCH_DEBOUNCE_MS=500` (default 500ms debounce for chat batching; lower it to send chats closer to immediately, or raise it to batch more aggressively)
+- `RELAY_LOW_DISK_ALERT_ENABLED=1` (when enabled, relay checks disk usage on every processed inbound message and reports low-space technical alerts to backend)
+- `RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT=80` (send low-space alert when used disk percent is at or above this threshold)
 - `RELAY_OPENROUTER_PROXY_ENABLED=1` (enable local OpenRouter-compatible proxy listener)
 - `RELAY_OPENROUTER_PROXY_PORT=18080` (local proxy port used by agent-side rewrite rules; binds to `127.0.0.1` by default)
 - `RELAY_OPENROUTER_PROXY_PATH_PREFIX=/api/v1` (OpenRouter-compatible incoming path prefix)

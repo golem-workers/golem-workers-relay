@@ -46,6 +46,24 @@ describe("loadRelayConfig", () => {
     expect(custom.chatBatchDebounceMs).toBe(7500);
   });
 
+  it("enables low disk alerts by default and allows threshold override", () => {
+    const def = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+    });
+    expect(def.lowDiskAlertEnabled).toBe(true);
+    expect(def.lowDiskAlertThresholdPercent).toBe(80);
+
+    const custom = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+      RELAY_LOW_DISK_ALERT_ENABLED: "0",
+      RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT: "92",
+    });
+    expect(custom.lowDiskAlertEnabled).toBe(false);
+    expect(custom.lowDiskAlertThresholdPercent).toBe(92);
+  });
+
   it("enables final-only OpenClaw forwarding by default and allows override", () => {
     const def = loadRelayConfig({
       RELAY_TOKEN: "t",
