@@ -418,15 +418,29 @@ describe("createMessageProcessor", () => {
     );
     expect(submitInboundMessage).toHaveBeenCalledTimes(2);
     const notice = submitInboundMessage.mock.calls[0]?.[0] as
-      | { body?: { reply?: { message?: { content?: string } } } }
+      | { body?: { reply?: { message?: { content?: string } }; openclawMeta?: { artifactDelivery?: { stage?: string; originalRunId?: string } } } }
       | undefined;
     const retried = submitInboundMessage.mock.calls[1]?.[0] as
-      | { body?: { reply?: { artifacts?: Array<{ path?: string }> } } }
+      | {
+          body?: {
+            reply?: { artifacts?: Array<{ path?: string }> };
+            openclawMeta?: { artifactDelivery?: { stage?: string; originalRunId?: string; retryRunId?: string } };
+          };
+        }
       | undefined;
     expect(notice?.body?.reply?.message?.content).toBe(
       "We hit a temporary issue while preparing the file attachment. We are trying one more time now."
     );
+    expect(notice?.body?.openclawMeta?.artifactDelivery).toMatchObject({
+      stage: "retry_notice",
+      originalRunId: "run_first",
+    });
     expect(retried?.body?.reply?.artifacts?.[0]?.path).toBe("files/final_ytp.mp4");
+    expect(retried?.body?.openclawMeta?.artifactDelivery).toMatchObject({
+      stage: "retry_succeeded",
+      originalRunId: "run_first",
+      retryRunId: "run_retry",
+    });
   });
 
   it("falls back to original text and a technical notice after one failed artifact retry", async () => {
@@ -499,15 +513,41 @@ describe("createMessageProcessor", () => {
 
     expect(submitInboundMessage).toHaveBeenCalledTimes(3);
     const originalReply = submitInboundMessage.mock.calls[1]?.[0] as
-      | { body?: { reply?: { message?: { content?: string } } } }
+      | {
+          body?: {
+            reply?: { message?: { content?: string } };
+            openclawMeta?: {
+              artifactDelivery?: { stage?: string; originalRunId?: string; retryRunId?: string; retryOutcome?: string };
+            };
+          };
+        }
       | undefined;
     const technicalNotice = submitInboundMessage.mock.calls[2]?.[0] as
-      | { body?: { reply?: { message?: { content?: string } } } }
+      | {
+          body?: {
+            reply?: { message?: { content?: string } };
+            openclawMeta?: {
+              artifactDelivery?: { stage?: string; originalRunId?: string; retryRunId?: string; retryOutcome?: string };
+            };
+          };
+        }
       | undefined;
     expect(originalReply?.body?.reply?.message?.content).toBe("Original agent text");
+    expect(originalReply?.body?.openclawMeta?.artifactDelivery).toMatchObject({
+      stage: "fallback_text",
+      originalRunId: "run_first_fail",
+      retryRunId: "run_retry_fail",
+      retryOutcome: "reply",
+    });
     expect(technicalNotice?.body?.reply?.message?.content).toBe(
       "Technical note: the agent message was delivered, but the file attachment could not be sent."
     );
+    expect(technicalNotice?.body?.openclawMeta?.artifactDelivery).toMatchObject({
+      stage: "failure_notice",
+      originalRunId: "run_first_fail",
+      retryRunId: "run_retry_fail",
+      retryOutcome: "reply",
+    });
   });
 
   it("debounces chat messages per session and sends batch", async () => {

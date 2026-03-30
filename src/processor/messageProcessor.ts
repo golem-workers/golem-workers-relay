@@ -43,6 +43,15 @@ type ArtifactResolutionIssue = {
   candidatePaths?: string[];
 };
 
+type ArtifactDeliveryMeta = {
+  stage: "retry_notice" | "retry_succeeded" | "fallback_text" | "failure_notice";
+  originalRunId?: string;
+  retryRunId?: string;
+  retryOutcome?: string;
+  unresolvedCount?: number;
+  unresolvedReasons?: Record<string, number>;
+};
+
 export function createMessageProcessor(input: MessageProcessorInput): (msg: InboundPushMessage) => Promise<void> {
   const { cfg, gateway, runner, backend } = input;
   const readDiskUsage = input.readDiskUsage ?? readDiskUsageSnapshot;
@@ -389,7 +398,16 @@ async function processSingleMessage(input: {
                 message: buildArtifactRetryNotice(),
                 runId: `${result.reply.runId}:artifact-retry-notice`,
               },
-              openclawMeta: { method: "artifact.retry_notice" },
+              openclawMeta: {
+                method: "artifact.retry_notice",
+                runId: `${result.reply.runId}:artifact-retry-notice`,
+                artifactDelivery: {
+                  stage: "retry_notice",
+                  originalRunId: result.reply.runId,
+                  unresolvedCount: unresolvedArtifacts.length,
+                  unresolvedReasons: unresolvedArtifactReasons,
+                } satisfies ArtifactDeliveryMeta,
+              },
             });
 
             const retryTimeoutMs = Math.max(0, cfg.taskTimeoutMs - (Date.now() - startedAt));
@@ -420,7 +438,16 @@ async function processSingleMessage(input: {
                   backend,
                   correlationMessageId: msg.messageId,
                   reply: retryOutcome.result.reply,
-                  openclawMeta: retryOutcome.openclawMeta,
+                  openclawMeta: {
+                    ...normalizeOpenclawMeta(retryOutcome.openclawMeta),
+                    artifactDelivery: {
+                      stage: "retry_succeeded",
+                      originalRunId: result.reply.runId,
+                      retryRunId: retryOutcome.result.reply.runId,
+                      unresolvedCount: unresolvedArtifacts.length,
+                      unresolvedReasons: unresolvedArtifactReasons,
+                    } satisfies ArtifactDeliveryMeta,
+                  },
                 });
               } else {
                 const retryIssues =
@@ -450,7 +477,19 @@ async function processSingleMessage(input: {
                       message: originalText,
                       runId: `${result.reply.runId}:artifact-fallback-text`,
                     },
-                    openclawMeta: { method: "artifact.fallback_text" },
+                    openclawMeta: {
+                      method: "artifact.fallback_text",
+                      runId: `${result.reply.runId}:artifact-fallback-text`,
+                      artifactDelivery: {
+                        stage: "fallback_text",
+                        originalRunId: result.reply.runId,
+                        retryRunId:
+                          retryOutcome.result.outcome === "reply" ? retryOutcome.result.reply.runId : undefined,
+                        retryOutcome: retryOutcome.result.outcome,
+                        unresolvedCount: unresolvedArtifacts.length,
+                        unresolvedReasons: countArtifactResolutionReasons(retryIssues),
+                      } satisfies ArtifactDeliveryMeta,
+                    },
                   });
                 }
                 await submitReplyCallback({
@@ -461,7 +500,19 @@ async function processSingleMessage(input: {
                     message: buildArtifactFailureNotice(),
                     runId: `${result.reply.runId}:artifact-failure-notice`,
                   },
-                  openclawMeta: { method: "artifact.failure_notice" },
+                  openclawMeta: {
+                    method: "artifact.failure_notice",
+                    runId: `${result.reply.runId}:artifact-failure-notice`,
+                    artifactDelivery: {
+                      stage: "failure_notice",
+                      originalRunId: result.reply.runId,
+                      retryRunId:
+                        retryOutcome.result.outcome === "reply" ? retryOutcome.result.reply.runId : undefined,
+                      retryOutcome: retryOutcome.result.outcome,
+                      unresolvedCount: unresolvedArtifacts.length,
+                      unresolvedReasons: countArtifactResolutionReasons(retryIssues),
+                    } satisfies ArtifactDeliveryMeta,
+                  },
                 });
               }
             } else {
@@ -485,7 +536,17 @@ async function processSingleMessage(input: {
                     message: originalText,
                     runId: `${result.reply.runId}:artifact-fallback-text`,
                   },
-                  openclawMeta: { method: "artifact.fallback_text" },
+                  openclawMeta: {
+                    method: "artifact.fallback_text",
+                    runId: `${result.reply.runId}:artifact-fallback-text`,
+                    artifactDelivery: {
+                      stage: "fallback_text",
+                      originalRunId: result.reply.runId,
+                      retryOutcome: "retry_skipped",
+                      unresolvedCount: unresolvedArtifacts.length,
+                      unresolvedReasons: unresolvedArtifactReasons,
+                    } satisfies ArtifactDeliveryMeta,
+                  },
                 });
               }
               await submitReplyCallback({
@@ -496,7 +557,17 @@ async function processSingleMessage(input: {
                   message: buildArtifactFailureNotice(),
                   runId: `${result.reply.runId}:artifact-failure-notice`,
                 },
-                openclawMeta: { method: "artifact.failure_notice" },
+                openclawMeta: {
+                  method: "artifact.failure_notice",
+                  runId: `${result.reply.runId}:artifact-failure-notice`,
+                  artifactDelivery: {
+                    stage: "failure_notice",
+                    originalRunId: result.reply.runId,
+                    retryOutcome: "retry_skipped",
+                    unresolvedCount: unresolvedArtifacts.length,
+                    unresolvedReasons: unresolvedArtifactReasons,
+                  } satisfies ArtifactDeliveryMeta,
+                },
               });
             }
           } else {
@@ -688,10 +759,12 @@ function normalizeOpenclawMeta(meta: unknown): Record<string, unknown> | undefin
   const runId = readNonEmptyString(meta.runId);
   const model = readNonEmptyString(meta.model);
   const trace = normalizeOpenclawMetaTrace(meta.trace);
+  const artifactDelivery = normalizeArtifactDeliveryMeta(meta.artifactDelivery);
   const normalized = {
     ...(method ? { method } : {}),
     ...(runId ? { runId } : {}),
     ...(model ? { model } : {}),
+    ...(artifactDelivery ? { artifactDelivery } : {}),
     ...(trace ? { trace } : {}),
   };
   return Object.keys(normalized).length > 0 ? normalized : undefined;
@@ -729,6 +802,34 @@ function normalizeOpenclawMetaTrace(trace: unknown): Record<string, string> | un
     ...(relayMessageId ? { relayMessageId } : {}),
     ...(relayInstanceId ? { relayInstanceId } : {}),
     ...(openclawRunId ? { openclawRunId } : {}),
+  };
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeArtifactDeliveryMeta(meta: unknown): Record<string, unknown> | undefined {
+  if (!isPlainObject(meta)) return undefined;
+  const stage = readNonEmptyString(meta.stage);
+  const originalRunId = readNonEmptyString(meta.originalRunId);
+  const retryRunId = readNonEmptyString(meta.retryRunId);
+  const retryOutcome = readNonEmptyString(meta.retryOutcome);
+  const unresolvedCount =
+    typeof meta.unresolvedCount === "number" && Number.isFinite(meta.unresolvedCount)
+      ? meta.unresolvedCount
+      : undefined;
+  const unresolvedReasons = isPlainObject(meta.unresolvedReasons)
+    ? Object.fromEntries(
+        Object.entries(meta.unresolvedReasons).filter(
+          (entry): entry is [string, number] => typeof entry[0] === "string" && typeof entry[1] === "number"
+        )
+      )
+    : undefined;
+  const normalized = {
+    ...(stage ? { stage } : {}),
+    ...(originalRunId ? { originalRunId } : {}),
+    ...(retryRunId ? { retryRunId } : {}),
+    ...(retryOutcome ? { retryOutcome } : {}),
+    ...(unresolvedCount !== undefined ? { unresolvedCount } : {}),
+    ...(unresolvedReasons && Object.keys(unresolvedReasons).length > 0 ? { unresolvedReasons } : {}),
   };
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
