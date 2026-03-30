@@ -32,6 +32,17 @@ type DiskUsageSnapshot = {
   usedPercent: number;
 };
 
+type ArtifactResolutionIssue = {
+  source?: string;
+  reason?: string;
+  path?: string;
+  fileName?: string;
+  kind?: string;
+  contentType?: string;
+  sizeBytes?: number;
+  candidatePaths?: string[];
+};
+
 export function createMessageProcessor(input: MessageProcessorInput): (msg: InboundPushMessage) => Promise<void> {
   const { cfg, gateway, runner, backend } = input;
   const readDiskUsage = input.readDiskUsage ?? readDiskUsageSnapshot;
@@ -355,6 +366,8 @@ async function processSingleMessage(input: {
         if (result.outcome === "reply") {
           const unresolvedArtifacts = readArtifactResolutionIssues(result.reply);
           if (unresolvedArtifacts.length > 0) {
+            const unresolvedArtifactReasons = countArtifactResolutionReasons(unresolvedArtifacts);
+            const unresolvedArtifactDetails = summarizeArtifactResolutionIssues(unresolvedArtifacts);
             logger.warn(
               {
                 event: "artifact_delivery",
@@ -362,6 +375,8 @@ async function processSingleMessage(input: {
                 backendMessageId: msg.messageId,
                 relayMessageId,
                 unresolvedCount: unresolvedArtifacts.length,
+                unresolvedArtifactReasons,
+                unresolvedArtifactDetails,
                 unresolvedArtifacts,
               },
               "Reply contains unresolved artifacts; scheduling one internal retry"
@@ -408,6 +423,10 @@ async function processSingleMessage(input: {
                   openclawMeta: retryOutcome.openclawMeta,
                 });
               } else {
+                const retryIssues =
+                  retryOutcome.result.outcome === "reply"
+                    ? readArtifactResolutionIssues(retryOutcome.result.reply)
+                    : [];
                 logger.warn(
                   {
                     event: "artifact_delivery",
@@ -415,10 +434,9 @@ async function processSingleMessage(input: {
                     backendMessageId: msg.messageId,
                     originalRunId: result.reply.runId,
                     retryOutcome: retryOutcome.result.outcome,
-                    retryIssues:
-                      retryOutcome.result.outcome === "reply"
-                        ? readArtifactResolutionIssues(retryOutcome.result.reply)
-                        : [],
+                    retryIssueReasons: countArtifactResolutionReasons(retryIssues),
+                    retryIssueDetails: summarizeArtifactResolutionIssues(retryIssues),
+                    retryIssues,
                   },
                   "Artifact retry did not produce deliverable artifacts"
                 );
@@ -776,28 +794,45 @@ function extractReplyText(message: unknown): string {
 
 function readArtifactResolutionIssues(reply: {
   artifactResolution?: {
-    unresolved?: Array<{
-      source?: string;
-      reason?: string;
-      path?: string;
-      fileName?: string;
-      kind?: string;
-      contentType?: string;
-      sizeBytes?: number;
-      candidatePaths?: string[];
-    }>;
+    unresolved?: ArtifactResolutionIssue[];
   };
-}): Array<{
-  source?: string;
-  reason?: string;
-  path?: string;
-  fileName?: string;
-  kind?: string;
-  contentType?: string;
-  sizeBytes?: number;
-  candidatePaths?: string[];
-}> {
+}): ArtifactResolutionIssue[] {
   return Array.isArray(reply.artifactResolution?.unresolved) ? reply.artifactResolution.unresolved : [];
+}
+
+function summarizeArtifactResolutionIssues(
+  issues: ArtifactResolutionIssue[]
+): Array<{
+  source: string | null;
+  reason: string | null;
+  path: string | null;
+  fileName: string | null;
+  kind: string | null;
+  contentType: string | null;
+  sizeBytes: number | null;
+  candidatePaths: string[];
+}> {
+  return issues.map((issue) => ({
+    source: typeof issue.source === "string" ? issue.source : null,
+    reason: typeof issue.reason === "string" ? issue.reason : null,
+    path: typeof issue.path === "string" ? issue.path : null,
+    fileName: typeof issue.fileName === "string" ? issue.fileName : null,
+    kind: typeof issue.kind === "string" ? issue.kind : null,
+    contentType: typeof issue.contentType === "string" ? issue.contentType : null,
+    sizeBytes: typeof issue.sizeBytes === "number" ? issue.sizeBytes : null,
+    candidatePaths: Array.isArray(issue.candidatePaths)
+      ? issue.candidatePaths.filter((candidatePath): candidatePath is string => typeof candidatePath === "string")
+      : [],
+  }));
+}
+
+function countArtifactResolutionReasons(issues: ArtifactResolutionIssue[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const issue of issues) {
+    const reason = typeof issue.reason === "string" && issue.reason.length > 0 ? issue.reason : "unspecified";
+    counts[reason] = (counts[reason] ?? 0) + 1;
+  }
+  return counts;
 }
 
 function buildArtifactRetryNotice(): string {
@@ -809,16 +844,7 @@ function buildArtifactFailureNotice(): string {
 }
 
 function buildArtifactRetryPrompt(input: {
-  unresolved: Array<{
-    source?: string;
-    reason?: string;
-    path?: string;
-    fileName?: string;
-    kind?: string;
-    contentType?: string;
-    sizeBytes?: number;
-    candidatePaths?: string[];
-  }>;
+  unresolved: ArtifactResolutionIssue[];
 }): string {
   const details = input.unresolved
     .map((issue, index) => {
