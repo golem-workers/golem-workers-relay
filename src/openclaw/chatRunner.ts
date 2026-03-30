@@ -715,14 +715,22 @@ export class ChatRunner {
                 },
               },
             }).catch((err) => {
+              const message = err instanceof Error ? err.message : String(err);
               logger.warn(
-                { taskId: input.taskId, runId, err: err instanceof Error ? err.message : String(err) },
+                { taskId: input.taskId, runId, err: message },
                 "Failed to collect transcript artifacts"
               );
               return {
                 artifacts: [],
-                unresolved: [],
-                requestedCount: 0,
+                unresolved: [
+                  {
+                    source: "structured_artifact",
+                    reason: "collection_failed",
+                    fileName: "artifact-resolution",
+                    candidatePaths: [message],
+                  },
+                ],
+                requestedCount: 1,
                 recoveredCount: 0,
                 usedStructuredArtifacts: false,
                 usedLegacyMediaDirectives: false,

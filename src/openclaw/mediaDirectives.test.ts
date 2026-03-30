@@ -99,5 +99,65 @@ describe("collectTranscriptMedia", () => {
     expect(report.unresolved[0]?.reason).toBe("ambiguous_file_name");
     expect(report.unresolved[0]?.candidatePaths).toEqual(["a/final_ytp.mp4", "b/final_ytp.mp4"]);
   });
+
+  it("keeps MEDIA fallback available even when structured artifacts are present", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-media-mixed-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    const workspaceRoot = path.join(stateDir, "workspace");
+    await fs.mkdir(path.join(workspaceRoot, "proofs"), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, "proofs", "storyboard.md"), "# storyboard", "utf8");
+
+    const report = await collectTranscriptArtifacts({
+      message: {
+        role: "assistant",
+        artifacts: [
+          {
+            path: "missing/storyboard-does-not-exist.md",
+            fileName: "storyboard-does-not-exist.md",
+            contentType: "text/markdown",
+            kind: "file",
+          },
+        ],
+        content: [{ type: "text", text: "Attach this proof\nMEDIA: proofs/storyboard.md" }],
+      },
+    });
+
+    expect(report.artifacts).toEqual([
+      {
+        path: "proofs/storyboard.md",
+        fileName: "storyboard.md",
+        kind: "file",
+        contentType: "application/octet-stream",
+        sizeBytes: Buffer.byteLength("# storyboard"),
+      },
+    ]);
+    expect(report.usedStructuredArtifacts).toBe(true);
+    expect(report.usedLegacyMediaDirectives).toBe(true);
+    expect(report.unresolved).toHaveLength(1);
+    expect(report.unresolved[0]?.reason).toBe("no_recovery_match");
+  });
+
+  it("uses the larger default artifact limit so proof files above 5MB still resolve", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-media-large-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    const workspaceRoot = path.join(stateDir, "workspace");
+    await fs.mkdir(path.join(workspaceRoot, "videos"), { recursive: true });
+    const bigVideo = Buffer.alloc(6_000_000, 7);
+    await fs.writeFile(path.join(workspaceRoot, "videos", "proof.mp4"), bigVideo);
+
+    const report = await collectTranscriptArtifacts({
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Large proof\nMEDIA: videos/proof.mp4" }],
+      },
+    });
+
+    expect(report.artifacts).toHaveLength(1);
+    expect(report.artifacts[0]?.path).toBe("videos/proof.mp4");
+    expect(report.artifacts[0]?.sizeBytes).toBe(bigVideo.byteLength);
+    expect(report.unresolved).toEqual([]);
+  });
 });
 

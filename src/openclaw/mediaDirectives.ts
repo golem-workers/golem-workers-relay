@@ -4,6 +4,8 @@ import { logger } from "../logger.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 import { type ChatEvent } from "./protocol.js";
 
+const DEFAULT_TRANSCRIPT_ARTIFACT_MAX_BYTES = 500_000_000;
+
 export type TranscriptArtifactKind = "image" | "video" | "audio" | "file";
 
 export type TranscriptArtifact = {
@@ -40,6 +42,7 @@ export type TranscriptArtifactResolutionIssue = {
     | "missing_file"
     | "empty_file"
     | "too_large"
+    | "collection_failed"
     | "missing_search_fields"
     | "no_recovery_match"
     | "ambiguous_file_name"
@@ -276,21 +279,22 @@ async function listWorkspaceArtifactCandidates(input: {
   const rootPrefix = rootReal.endsWith(path.sep) ? rootReal : `${rootReal}${path.sep}`;
   const out: WorkspaceArtifactCandidate[] = [];
   const stack = [rootReal];
+  const visitedDirs = new Set<string>();
   while (stack.length > 0) {
     const current = stack.pop();
     if (!current) continue;
+    if (visitedDirs.has(current)) continue;
+    visitedDirs.add(current);
     const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
       const absPath = path.join(current, entry.name);
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
-        stack.push(absPath);
-        continue;
-      }
-      if (!entry.isFile()) continue;
       const realPath = await fs.realpath(absPath).catch(() => absPath);
       if (!(realPath === rootReal || realPath.startsWith(rootPrefix))) continue;
       const stat = await fs.stat(realPath).catch(() => null);
+      if (stat?.isDirectory()) {
+        stack.push(realPath);
+        continue;
+      }
       if (!stat || !stat.isFile() || stat.size <= 0 || stat.size > input.maxBytes) continue;
       const relPath = path.relative(rootReal, realPath).replace(/\\/g, "/");
       const contentType = sniffContentType(relPath);
@@ -303,6 +307,34 @@ async function listWorkspaceArtifactCandidates(input: {
         kind: inferArtifactKind({ contentType, filePath: relPath }),
       });
     }
+  }
+  return out;
+}
+
+function buildLegacyMediaRequests(mediaPaths: string[]): TranscriptArtifactRequest[] {
+  return mediaPaths.map((mediaPath) => ({
+    source: "media_directive" as const,
+    path: mediaPath,
+    fileName: path.basename(mediaPath.trim().replace(/\\/g, "/")),
+    contentType: sniffContentType(mediaPath),
+    kind: inferArtifactKind({ filePath: mediaPath, contentType: sniffContentType(mediaPath) }),
+  }));
+}
+
+function dedupeArtifactRequests(requests: TranscriptArtifactRequest[]): TranscriptArtifactRequest[] {
+  const seen = new Set<string>();
+  const out: TranscriptArtifactRequest[] = [];
+  for (const request of requests) {
+    const key = [
+      request.path?.trim().replace(/\\/g, "/") ?? "",
+      request.fileName?.trim() ?? "",
+      request.kind ?? "",
+      request.contentType?.trim() ?? "",
+      typeof request.sizeBytes === "number" ? String(request.sizeBytes) : "",
+    ].join("::");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(request);
   }
   return out;
 }
@@ -483,7 +515,7 @@ export async function collectTranscriptArtifacts(params: {
 }): Promise<TranscriptArtifactCollectionReport> {
   const stateDir = params.opts?.stateDir ?? resolveDefaultStateDir();
   const maxFiles = Math.max(0, Math.min(10, Math.trunc(params.opts?.maxFiles ?? 4)));
-  const maxBytes = Math.max(1, Math.trunc(params.opts?.maxBytes ?? 5_000_000));
+  const maxBytes = Math.max(1, Math.trunc(params.opts?.maxBytes ?? DEFAULT_TRANSCRIPT_ARTIFACT_MAX_BYTES));
   if (maxFiles === 0) {
     return {
       artifacts: [],
@@ -499,23 +531,11 @@ export async function collectTranscriptArtifacts(params: {
     message: params.message,
     openclawEvents: params.openclawEvents,
   });
-  const legacyMediaPaths =
-    structuredArtifacts.length === 0
-      ? readLatestMediaPathsFromCurrentReply({
-          message: params.message,
-          openclawEvents: params.openclawEvents,
-        })
-      : [];
-  const requests: TranscriptArtifactRequest[] =
-    structuredArtifacts.length > 0
-      ? structuredArtifacts
-      : legacyMediaPaths.map((mediaPath) => ({
-          source: "media_directive" as const,
-          path: mediaPath,
-          fileName: path.basename(mediaPath.trim().replace(/\\/g, "/")),
-          contentType: sniffContentType(mediaPath),
-          kind: inferArtifactKind({ filePath: mediaPath, contentType: sniffContentType(mediaPath) }),
-        }));
+  const legacyMediaPaths = readLatestMediaPathsFromCurrentReply({
+    message: params.message,
+    openclawEvents: params.openclawEvents,
+  });
+  const requests = dedupeArtifactRequests([...structuredArtifacts, ...buildLegacyMediaRequests(legacyMediaPaths)]);
   if (requests.length === 0) {
     return {
       artifacts: [],
@@ -595,7 +615,7 @@ export async function collectTranscriptArtifacts(params: {
     requestedCount: requests.length,
     recoveredCount,
     usedStructuredArtifacts: structuredArtifacts.length > 0,
-    usedLegacyMediaDirectives: structuredArtifacts.length === 0 && legacyMediaPaths.length > 0,
+    usedLegacyMediaDirectives: legacyMediaPaths.length > 0,
   };
 }
 
