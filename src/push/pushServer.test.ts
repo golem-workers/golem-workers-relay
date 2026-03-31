@@ -18,15 +18,16 @@ describe("pushServer", () => {
   });
 
   it("serves health/readiness endpoints", async () => {
-    const port = await getFreePort();
-    const server = startPushServer({
-      port,
-      path: "/relay/messages",
-      relayToken: "token",
-      getHealth: () => ({ ok: true, ready: false, details: { queueLength: 10 } }),
-      onMessage: async () => {},
-    });
-    servers.push(server);
+    const { port } = await startTestPushServer(
+      {
+        port: 0,
+        path: "/relay/messages",
+        relayToken: "token",
+        getHealth: () => ({ ok: true, ready: false, details: { queueLength: 10 } }),
+        onMessage: async () => {},
+      },
+      servers
+    );
 
     const healthResp = await fetch(`http://127.0.0.1:${port}/health`);
     expect(healthResp.status).toBe(200);
@@ -38,15 +39,16 @@ describe("pushServer", () => {
   });
 
   it("applies request rate limiting", async () => {
-    const port = await getFreePort();
-    const server = startPushServer({
-      port,
-      path: "/relay/messages",
-      relayToken: "token",
-      rateLimitPerSecond: 1,
-      onMessage: async () => {},
-    });
-    servers.push(server);
+    const { port } = await startTestPushServer(
+      {
+        port: 0,
+        path: "/relay/messages",
+        relayToken: "token",
+        rateLimitPerSecond: 1,
+        onMessage: async () => {},
+      },
+      servers
+    );
 
     const body = {
       messageId: "m1",
@@ -74,14 +76,15 @@ describe("pushServer", () => {
   });
 
   it("stays alive when the client disconnects during request upload", async () => {
-    const port = await getFreePort();
-    const server = startPushServer({
-      port,
-      path: "/relay/messages",
-      relayToken: "token",
-      onMessage: async () => {},
-    });
-    servers.push(server);
+    const { port } = await startTestPushServer(
+      {
+        port: 0,
+        path: "/relay/messages",
+        relayToken: "token",
+        onMessage: async () => {},
+      },
+      servers
+    );
 
     await new Promise<void>((resolve) => {
       const req = http.request(
@@ -112,20 +115,21 @@ describe("pushServer", () => {
   });
 });
 
-async function getFreePort(): Promise<number> {
-  return await new Promise<number>((resolve, reject) => {
-    const srv = http.createServer();
-    srv.once("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const addr = srv.address();
-      if (!addr || typeof addr === "string") {
-        reject(new Error("Failed to determine free port"));
-        return;
-      }
-      const port = addr.port;
-      srv.close((err) => (err ? reject(err) : resolve(port)));
-    });
+async function startTestPushServer(
+  input: Parameters<typeof startPushServer>[0],
+  servers: http.Server[]
+): Promise<{ server: http.Server; port: number }> {
+  const server = startPushServer(input);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.once("listening", () => resolve());
   });
+  const addr = server.address();
+  if (!addr || typeof addr === "string") {
+    throw new Error("Failed to determine push server port");
+  }
+  servers.push(server);
+  return { server, port: addr.port };
 }
 
 async function sleep(ms: number): Promise<void> {
