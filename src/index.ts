@@ -10,6 +10,7 @@ import { transcribeAudioWithOpenAi } from "./openclaw/openaiTranscription.js";
 import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
 import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inMemoryTaskQueue.js";
 import { createMessageProcessor } from "./processor/messageProcessor.js";
+import { createDevicePairingAutoApprover } from "./openclaw/devicePairingAutoApprover.js";
 import {
   LOCAL_PROXY_LISTEN_HOST,
   startGoogleAiProxyServer,
@@ -70,6 +71,9 @@ async function main(): Promise<void> {
     forwardFinalOnly: cfg.openclawForwardFinalOnly,
     getChatRunTrace: (runId) => chatRunner?.getRunTrace(runId) ?? null,
   });
+  let devicePairingAutoApprover:
+    | ReturnType<typeof createDevicePairingAutoApprover>
+    | null = null;
 
   const gateway = new GatewayClient({
     url: openclaw.gateway.wsUrl,
@@ -79,8 +83,12 @@ async function main(): Promise<void> {
     role: "operator",
     scopes: cfg.openclaw.scopes,
     onEvent: (evt) => {
+      devicePairingAutoApprover?.handleEvent(evt);
       chatRunner?.handleEvent(evt);
       void forwardGatewayEvent(evt);
+    },
+    onHelloOk: (hello) => {
+      devicePairingAutoApprover?.handleHello(hello);
     },
     onConnectionStateChange: (state) => {
       void reportOpenclawConnectionStatus(state);
@@ -89,6 +97,8 @@ async function main(): Promise<void> {
     devLogTextMaxLen: cfg.devLogTextMaxLen,
     devLogGatewayFrames: cfg.devLogGatewayFrames,
   });
+  devicePairingAutoApprover = createDevicePairingAutoApprover({ gateway });
+  devicePairingAutoApprover.start();
   chatRunner = new ChatRunner(gateway, {
     devLogEnabled: cfg.devLogEnabled,
     devLogTextMaxLen: cfg.devLogTextMaxLen,
@@ -228,6 +238,7 @@ async function main(): Promise<void> {
     );
   }
   gateway.stop();
+  devicePairingAutoApprover.stop();
   logger.info("Relay stopped");
 }
 

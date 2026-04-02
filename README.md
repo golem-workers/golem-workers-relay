@@ -167,6 +167,10 @@ Push transport settings:
 Note: relay creates its own device identity on the host under `~/.openclaw` unless
 `OPENCLAW_STATE_DIR` is set. This is separate from the gateway's container state.
 
+Relay also performs a narrow internal device-pairing auto-approve pass via the same root-run relay process:
+- it only auto-approves pending requests where `clientId=gateway-client`, `clientMode=backend`, `role=operator`, and every requested scope starts with `operator.`;
+- this is intended to unblock local bootstrap/runtime calls such as agent-side `exec` without approving unrelated external device requests.
+
 Provisioned agents use both local listeners together:
 - OpenClaw model traffic still goes through `OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1`.
 - `memory-lancedb-pro` Jina embedding/rerank traffic goes through `http://127.0.0.1:18082/v1` with a stub `JINA_API_KEY`; relay replaces it with the real backend-side key.
