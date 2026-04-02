@@ -5,13 +5,24 @@ import {
 } from "./devicePairingAutoApprover.js";
 
 describe("devicePairingAutoApprover", () => {
-  it("matches only internal gateway-client operator requests", () => {
+  it("matches only internal relay/backend or local cli operator requests", () => {
     expect(
       isEligibleInternalPairingRequest({
         requestId: "req_internal_1",
         deviceId: "dev_1",
         clientId: "gateway-client",
         clientMode: "backend",
+        role: "operator",
+        scopes: ["operator.read", "operator.approvals"],
+      })
+    ).toBe(true);
+
+    expect(
+      isEligibleInternalPairingRequest({
+        requestId: "req_internal_cli_1",
+        deviceId: "dev_cli_1",
+        clientId: "cli",
+        clientMode: "cli",
         role: "operator",
         scopes: ["operator.read", "operator.approvals"],
       })
@@ -63,6 +74,14 @@ describe("devicePairingAutoApprover", () => {
                 role: "operator",
                 scopes: ["operator.approvals"],
               },
+              {
+                requestId: "req_internal_cli_1",
+                deviceId: "dev_cli_1",
+                clientId: "cli",
+                clientMode: "cli",
+                role: "operator",
+                scopes: ["operator.read", "operator.approvals"],
+              },
             ],
           });
         }
@@ -78,6 +97,7 @@ describe("devicePairingAutoApprover", () => {
 
     expect(gateway.request).toHaveBeenCalledWith("device.pair.list", {});
     expect(gateway.request).toHaveBeenCalledWith("device.pair.approve", { requestId: "req_internal_1" });
+    expect(gateway.request).toHaveBeenCalledWith("device.pair.approve", { requestId: "req_internal_cli_1" });
     expect(gateway.request).not.toHaveBeenCalledWith("device.pair.approve", { requestId: "req_external_1" });
   });
 

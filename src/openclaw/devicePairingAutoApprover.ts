@@ -167,11 +167,20 @@ export function createDevicePairingAutoApprover(input: {
 export function isEligibleInternalPairingRequest(input: PendingDevicePairingRequest): boolean {
   return (
     input.requestId.length > 0 &&
-    input.clientId === "gateway-client" &&
-    input.clientMode === "backend" &&
+    isEligibleInternalClientIdentity(input.clientId, input.clientMode) &&
     input.role === "operator" &&
     input.scopes.length > 0 &&
     input.scopes.every((scope) => scope.startsWith("operator."))
+  );
+}
+
+function isEligibleInternalClientIdentity(
+  clientId: string | null,
+  clientMode: string | null
+): boolean {
+  return (
+    (clientId === "gateway-client" && clientMode === "backend") ||
+    (clientId === "cli" && clientMode === "cli")
   );
 }
 

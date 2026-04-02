@@ -168,8 +168,8 @@ Note: relay creates its own device identity on the host under `~/.openclaw` unle
 `OPENCLAW_STATE_DIR` is set. This is separate from the gateway's container state.
 
 Relay also performs a narrow internal device-pairing auto-approve pass via the same root-run relay process:
-- it only auto-approves pending requests where `clientId=gateway-client`, `clientMode=backend`, `role=operator`, and every requested scope starts with `operator.`;
-- this is intended to unblock local bootstrap/runtime calls such as agent-side `exec` without approving unrelated external device requests.
+- it auto-approves pending requests where `role=operator`, every requested scope starts with `operator.`, and the client identity is either `clientId=gateway-client` with `clientMode=backend` or the local OpenClaw CLI identity `clientId=cli` with `clientMode=cli`;
+- this is intended to unblock local bootstrap/runtime calls such as agent-side `exec` and native `openclaw cron` commands without approving unrelated external device requests.
 
 Provisioned agents use both local listeners together:
 - OpenClaw model traffic still goes through `OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1`.
