@@ -11,6 +11,7 @@ import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
 import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inMemoryTaskQueue.js";
 import { createMessageProcessor } from "./processor/messageProcessor.js";
 import { createDevicePairingAutoApprover } from "./openclaw/devicePairingAutoApprover.js";
+import { createExecApprovalAutoApprover } from "./openclaw/execApprovalAutoApprover.js";
 import {
   LOCAL_PROXY_LISTEN_HOST,
   startGoogleAiProxyServer,
@@ -74,6 +75,9 @@ async function main(): Promise<void> {
   let devicePairingAutoApprover:
     | ReturnType<typeof createDevicePairingAutoApprover>
     | null = null;
+  let execApprovalAutoApprover:
+    | ReturnType<typeof createExecApprovalAutoApprover>
+    | null = null;
 
   const gateway = new GatewayClient({
     url: openclaw.gateway.wsUrl,
@@ -84,11 +88,13 @@ async function main(): Promise<void> {
     scopes: cfg.openclaw.scopes,
     onEvent: (evt) => {
       devicePairingAutoApprover?.handleEvent(evt);
+      execApprovalAutoApprover?.handleEvent(evt);
       chatRunner?.handleEvent(evt);
       void forwardGatewayEvent(evt);
     },
     onHelloOk: (hello) => {
       devicePairingAutoApprover?.handleHello(hello);
+      execApprovalAutoApprover?.handleHello(hello);
     },
     onConnectionStateChange: (state) => {
       void reportOpenclawConnectionStatus(state);
@@ -99,6 +105,8 @@ async function main(): Promise<void> {
   });
   devicePairingAutoApprover = createDevicePairingAutoApprover({ gateway });
   devicePairingAutoApprover.start();
+  execApprovalAutoApprover = createExecApprovalAutoApprover({ gateway });
+  execApprovalAutoApprover.start();
   chatRunner = new ChatRunner(gateway, {
     devLogEnabled: cfg.devLogEnabled,
     devLogTextMaxLen: cfg.devLogTextMaxLen,
@@ -239,6 +247,7 @@ async function main(): Promise<void> {
   }
   gateway.stop();
   devicePairingAutoApprover.stop();
+  execApprovalAutoApprover.stop();
   logger.info("Relay stopped");
 }
 

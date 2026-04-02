@@ -167,9 +167,10 @@ Push transport settings:
 Note: relay creates its own device identity on the host under `~/.openclaw` unless
 `OPENCLAW_STATE_DIR` is set. This is separate from the gateway's container state.
 
-Relay also performs a narrow internal device-pairing auto-approve pass via the same root-run relay process:
+Relay also performs internal local auto-approve passes via the same root-run relay process:
 - it auto-approves pending requests where `role=operator`, every requested scope starts with `operator.`, and the client identity is either `clientId=gateway-client` with `clientMode=backend` or the local OpenClaw CLI identity `clientId=cli` with `clientMode=cli`;
 - this is intended to unblock local bootstrap/runtime calls such as agent-side `exec` and native `openclaw cron` commands without approving unrelated external device requests.
+- it also auto-approves local OpenClaw exec approvals with `allow-once` when the request targets the local host (`host=sandbox` or `host=gateway`) instead of a remote node. This keeps dedicated agent hosts non-interactive for bootstrap/runtime helper commands while leaving node-host approvals untouched.
 
 Provisioned agents use both local listeners together:
 - OpenClaw model traffic still goes through `OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1`.

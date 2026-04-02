@@ -36,6 +36,7 @@ Provisioning warning for 256 MiB snapshots:
 - Current bootstrap policy is: allow `device-pair` plus `memory-lancedb-pro` during the first gateway start, explicitly deny heavy/problematic plugins (`ollama`, `sglang`, `vllm`, `phone-control`, `talk-voice`, `telegram`), then continue with relay provisioning after readiness succeeds.
 - Backend provisioning configures `memory-lancedb-pro` to use the local Jina-compatible proxy (`http://127.0.0.1:18082/v1`) with a stub `JINA_API_KEY`, Jina task-aware embeddings, and Jina cross-encoder rerank; the relay replaces that stub with the real backend-side `JINA_API_KEY`. `agents.defaults.memorySearch` keeps using the local OpenRouter-compatible embeddings proxy (`OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1`) with `text-embedding-3-large`.
 - Internal OpenClaw device pairing is auto-approved by the running `golem-workers-relay.service` process after it connects to the local gateway. That includes the relay backend identity and the local OpenClaw CLI operator identity used by native commands such as `openclaw cron add`. There is no separate agent-side `openclaw-device-pair-auto-approve.service` or timer anymore.
+- Local OpenClaw exec approvals are also auto-approved by relay with `allow-once` when the approval targets the local host (`host=sandbox` or `host=gateway`) rather than a remote node. This is intentional for dedicated agent servers so bootstrap/runtime helper commands do not block on `/approve`.
 - `telegram` is explicitly denied even though Telegram channel config may exist, because OpenClaw doctor/auto-fix can auto-enable that plugin from config and silently break the bootstrap assumptions.
 - Do not "clean this up" by restoring bundled-default plugins in bootstrap unless a fresh real `256 MiB` snapshot replay (`npm run test:e2e:golem-snapshot-debug`) passes end-to-end.
 
@@ -47,7 +48,7 @@ Logs:
 Runtime verification after backend provisioning:
 
 ```bash
-journalctl -u golem-workers-relay -n 100 --no-pager | rg 'device_pair_auto_approve|pair'
+journalctl -u golem-workers-relay -n 100 --no-pager | rg 'device_pair_auto_approve|exec_approval_auto_approve|pair'
 openclaw devices list --json
 ```
 
