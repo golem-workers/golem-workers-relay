@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { logger } from "./logger.js";
-import { loadRelayConfig } from "./config/env.js";
+import { loadRelayConfig, type RelayConfig } from "./config/env.js";
 import { resolveOpenclawConfig } from "./openclaw/openclawConfig.js";
 import { BackendClient } from "./backend/backendClient.js";
 import { type InboundPushMessage } from "./backend/types.js";
@@ -20,6 +20,8 @@ import {
 } from "./openrouter/proxyServer.js";
 import { createGatewayEventForwarder } from "./openclaw/gatewayEventForwarder.js";
 import { createOpenclawConnectionStatusReporter } from "./openclaw/connectionStatusReporter.js";
+import { closeHttpServer, startRelayChannelDataPlaneServer } from "./relayChannel/startDataPlaneServer.js";
+import { startRelayChannelControlPlane } from "./relayChannel/startControlPlaneServer.js";
 
 async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
@@ -51,6 +53,13 @@ async function main(): Promise<void> {
       pushRateLimitPerSecond: cfg.pushRateLimitPerSecond,
       pushMaxConcurrentRequests: cfg.pushMaxConcurrentRequests,
       pushMaxQueue: cfg.pushMaxQueue,
+      relayChannelEnabled: cfg.relayChannel.enabled,
+      relayChannelControlPlane: cfg.relayChannel.enabled
+        ? `${cfg.relayChannel.controlPlaneHost}:${cfg.relayChannel.controlPlanePort}`
+        : null,
+      relayChannelDataPlane: cfg.relayChannel.enabled
+        ? `${cfg.relayChannel.dataPlaneHost}:${cfg.relayChannel.dataPlanePort}`
+        : null,
     },
     "Relay starting"
   );
@@ -60,9 +69,42 @@ async function main(): Promise<void> {
     relayToken: cfg.relayToken,
     devLogEnabled: cfg.devLogEnabled,
   });
+
+  let getRelayChannelHealth: () => Record<string, unknown> = () => ({ enabled: false });
+  let relayChannelCleanup: (() => Promise<void>) | null = null;
+  if (cfg.relayChannel.enabled) {
+    const dp = startRelayChannelDataPlaneServer({
+      host: cfg.relayChannel.dataPlaneHost,
+      port: cfg.relayChannel.dataPlanePort,
+    });
+    const cp = startRelayChannelControlPlane({
+      host: cfg.relayChannel.controlPlaneHost,
+      port: cfg.relayChannel.controlPlanePort,
+      relayInstanceId: cfg.relayInstanceId,
+      getDataPlaneUrls: () => {
+        const s = dp.getState();
+        return { uploadBaseUrl: s.uploadBaseUrl, downloadBaseUrl: s.downloadBaseUrl };
+      },
+    });
+    getRelayChannelHealth = () => ({
+      enabled: true,
+      controlPlane: cp.getState(),
+      dataPlane: {
+        host: cfg.relayChannel.dataPlaneHost,
+        port: cfg.relayChannel.dataPlanePort,
+        listening: dp.getState().listening,
+      },
+    });
+    relayChannelCleanup = async () => {
+      await cp.close();
+      await closeHttpServer(dp.server);
+    };
+  }
+
   const reportOpenclawConnectionStatus = createOpenclawConnectionStatusReporter({
     backend,
     relayInstanceId: cfg.relayInstanceId,
+    buildDeliveryReport: () => buildRelayDeliveryReportForBackend(cfg, getRelayChannelHealth),
   });
 
   let chatRunner: ChatRunner | null = null;
@@ -167,6 +209,7 @@ async function main(): Promise<void> {
           inFlight: queueState.inFlight,
           maxQueue: queueState.maxQueue,
           backendResilience,
+          relayChannel: getRelayChannelHealth(),
         },
       };
     },
@@ -237,6 +280,9 @@ async function main(): Promise<void> {
   if (googleAiProxyServer) {
     await closeServer(googleAiProxyServer);
   }
+  if (relayChannelCleanup) {
+    await relayChannelCleanup();
+  }
   const drained = await queue.drain(Math.max(15_000, cfg.taskTimeoutMs * 2));
   if (!drained) {
     const finalState = queue.getState();
@@ -255,6 +301,43 @@ main().catch((err) => {
   logger.error({ err: err instanceof Error ? err.message : String(err) }, "Relay crashed");
   process.exit(1);
 });
+
+function buildRelayDeliveryReportForBackend(
+  cfg: RelayConfig,
+  getHealth: () => Record<string, unknown>
+): Record<string, unknown> {
+  if (!cfg.relayChannel.enabled) {
+    return {
+      modeEffective: "legacy_push_v1",
+      legacyPushReady: true,
+      relayChannelReady: false,
+      relayChannelConnected: false,
+    };
+  }
+  const h = getHealth() as {
+    enabled?: boolean;
+    controlPlane?: {
+      listening?: boolean;
+      clientConnected?: boolean;
+    };
+  };
+  if (!h.enabled) {
+    return {
+      modeEffective: "legacy_push_v1",
+      legacyPushReady: true,
+      relayChannelReady: false,
+      relayChannelConnected: false,
+    };
+  }
+  const cp = h.controlPlane;
+  return {
+    modeEffective: "relay_channel_v2",
+    legacyPushReady: true,
+    relayChannelReady: Boolean(cp?.listening),
+    relayChannelConnected: Boolean(cp?.clientConnected),
+    relayChannelLastError: null,
+  };
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));

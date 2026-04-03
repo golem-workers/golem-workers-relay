@@ -155,11 +155,22 @@ export const relayInboundMessageRequestSchema = z.discriminatedUnion("outcome", 
 ]);
 export type RelayInboundMessageRequest = z.infer<typeof relayInboundMessageRequestSchema>;
 
+const relayDeliveryReportSchema = z
+  .object({
+    modeEffective: z.enum(["legacy_push_v1", "relay_channel_v2"]).optional(),
+    legacyPushReady: z.boolean().nullable().optional(),
+    relayChannelReady: z.boolean().nullable().optional(),
+    relayChannelConnected: z.boolean().nullable().optional(),
+    relayChannelLastError: z.string().nullable().optional(),
+  })
+  .strict();
+
 export const relayOpenclawStatusRequestSchema = z.object({
   relayInstanceId: z.string().min(1),
   observedAtMs: z.number().int().nonnegative(),
   status: z.enum(["CONNECTED", "DISCONNECTED"]),
   reason: z.string().min(1).max(1000).optional(),
+  delivery: relayDeliveryReportSchema.optional(),
 });
 export type RelayOpenclawStatusRequest = z.infer<typeof relayOpenclawStatusRequestSchema>;
 

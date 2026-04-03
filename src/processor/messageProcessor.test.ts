@@ -199,6 +199,7 @@ describe("createMessageProcessor", () => {
     expect(meta?.trace?.openclawRunId).toBe("run_1");
     expect(meta?.trace?.extra).toBeUndefined();
     expect(typeof meta?.trace?.relayMessageId).toBe("string");
+    expect(meta?.deliverySystem).toBe("legacy_push_v1");
   });
 
   it("preserves extra reply fields from ChatRunner", async () => {

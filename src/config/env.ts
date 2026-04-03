@@ -47,6 +47,12 @@ const envSchema = z.object({
   RELAY_GOOGLE_AI_BACKEND_PATH_PREFIX: z.string().min(1).optional(),
   RELAY_OPENCLAW_FORWARD_FINAL_ONLY: envBooleanSchema.optional(),
 
+  RELAY_CHANNEL_ENABLED: envBooleanSchema.optional(),
+  RELAY_CHANNEL_CONTROL_PLANE_HOST: z.string().min(1).optional(),
+  RELAY_CHANNEL_CONTROL_PLANE_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+  RELAY_CHANNEL_DATA_PLANE_HOST: z.string().min(1).optional(),
+  RELAY_CHANNEL_DATA_PLANE_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+
   MESSAGE_FLOW_LOG: z.coerce.boolean().optional(),
 
   OPENCLAW_GATEWAY_WS_URL: z.string().url().optional(),
@@ -111,6 +117,13 @@ export type RelayConfig = {
     baseUrl: string;
     model: string;
     timeoutMs: number;
+  };
+  relayChannel: {
+    enabled: boolean;
+    controlPlaneHost: string;
+    controlPlanePort: number;
+    dataPlaneHost: string;
+    dataPlanePort: number;
   };
 };
 
@@ -182,6 +195,13 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
       model: parsed.OPENAI_STT_MODEL ?? "gpt-4o-transcribe",
       timeoutMs: parsed.STT_TIMEOUT_MS ?? 15_000,
     },
+    relayChannel: {
+      enabled: parsed.RELAY_CHANNEL_ENABLED ?? true,
+      controlPlaneHost: parsed.RELAY_CHANNEL_CONTROL_PLANE_HOST ?? "127.0.0.1",
+      controlPlanePort: parsed.RELAY_CHANNEL_CONTROL_PLANE_PORT ?? 43_129,
+      dataPlaneHost: parsed.RELAY_CHANNEL_DATA_PLANE_HOST ?? "127.0.0.1",
+      dataPlanePort: parsed.RELAY_CHANNEL_DATA_PLANE_PORT ?? 43_130,
+    },
   };
 }
 
@@ -229,6 +249,13 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
       model: "gpt-4o-transcribe",
       timeoutMs: 15_000,
     },
+    relayChannel: {
+      enabled: false,
+      controlPlaneHost: "127.0.0.1",
+      controlPlanePort: 43_129,
+      dataPlaneHost: "127.0.0.1",
+      dataPlanePort: 43_130,
+    },
   };
   return {
     ...base,
@@ -238,6 +265,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     googleAiProxy: { ...base.googleAiProxy, ...(overrides.googleAiProxy ?? {}) },
     openclaw: { ...base.openclaw, ...(overrides.openclaw ?? {}) },
     stt: { ...base.stt, ...(overrides.stt ?? {}) },
+    relayChannel: { ...base.relayChannel, ...(overrides.relayChannel ?? {}) },
   };
 }
 

@@ -760,12 +760,23 @@ function normalizeOpenclawMeta(meta: unknown): Record<string, unknown> | undefin
   const model = readNonEmptyString(meta.model);
   const trace = normalizeOpenclawMetaTrace(meta.trace);
   const artifactDelivery = normalizeArtifactDeliveryMeta(meta.artifactDelivery);
+  const deliverySystem =
+    meta.deliverySystem === "relay_channel_v2" || meta.deliverySystem === "legacy_push_v1"
+      ? meta.deliverySystem
+      : undefined;
+  const transportChannelId = readNonEmptyString(meta.transportChannelId);
+  const transportAccountId = readNonEmptyString(meta.transportAccountId);
+  const transportMessageId = readNonEmptyString(meta.transportMessageId);
   const normalized = {
     ...(method ? { method } : {}),
     ...(runId ? { runId } : {}),
     ...(model ? { model } : {}),
     ...(artifactDelivery ? { artifactDelivery } : {}),
     ...(trace ? { trace } : {}),
+    ...(deliverySystem ? { deliverySystem } : {}),
+    ...(transportChannelId ? { transportChannelId } : {}),
+    ...(transportAccountId ? { transportAccountId } : {}),
+    ...(transportMessageId ? { transportMessageId } : {}),
   };
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
@@ -777,9 +788,25 @@ function buildOpenclawMetaWithTrace(
     relayMessageId: string;
     relayInstanceId: string;
     openclawRunId?: string;
+  },
+  deliveryOpts?: {
+    deliverySystem?: "legacy_push_v1" | "relay_channel_v2";
+    transportChannelId?: string;
+    transportAccountId?: string;
+    transportMessageId?: string;
   }
 ): Record<string, unknown> {
   const base = normalizeOpenclawMeta(meta) ?? {};
+  const fromBase = base.deliverySystem;
+  const deliverySystem =
+    deliveryOpts?.deliverySystem ??
+    (fromBase === "legacy_push_v1" || fromBase === "relay_channel_v2" ? fromBase : "legacy_push_v1");
+  const transportChannelId =
+    readNonEmptyString(deliveryOpts?.transportChannelId) ?? readNonEmptyString(base.transportChannelId);
+  const transportAccountId =
+    readNonEmptyString(deliveryOpts?.transportAccountId) ?? readNonEmptyString(base.transportAccountId);
+  const transportMessageId =
+    readNonEmptyString(deliveryOpts?.transportMessageId) ?? readNonEmptyString(base.transportMessageId);
   return {
     ...base,
     trace: {
@@ -788,6 +815,10 @@ function buildOpenclawMetaWithTrace(
       relayInstanceId: trace.relayInstanceId,
       ...(trace.openclawRunId ? { openclawRunId: trace.openclawRunId } : {}),
     },
+    deliverySystem,
+    ...(transportChannelId ? { transportChannelId } : {}),
+    ...(transportAccountId ? { transportAccountId } : {}),
+    ...(transportMessageId ? { transportMessageId } : {}),
   };
 }
 
