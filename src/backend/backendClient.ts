@@ -120,6 +120,49 @@ export class BackendClient {
     return { accepted: true };
   }
 
+  async getTelegramTransportConfig(): Promise<{
+    accessKey: string;
+    apiBaseUrl: string;
+    fileBaseUrl: string;
+  }> {
+    const url = `${this.opts.baseUrl}/api/v1/relays/transport/telegram-config`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const resp = await fetch(url, {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${this.opts.relayToken}`,
+        },
+        signal: controller.signal,
+      });
+      const text = await resp.text();
+      const json = safeParseJson(text);
+      if (!resp.ok || json.ok === false || !json.value || typeof json.value !== "object") {
+        throw new Error(`Backend telegram transport config request failed with HTTP ${resp.status}`);
+      }
+      const value = json.value as Record<string, unknown>;
+      const accessKey =
+        typeof value.accessKey === "string" && value.accessKey.trim().length > 0
+          ? value.accessKey.trim()
+          : "";
+      const apiBaseUrl =
+        typeof value.apiBaseUrl === "string" && value.apiBaseUrl.trim().length > 0
+          ? value.apiBaseUrl.trim()
+          : "";
+      const fileBaseUrl =
+        typeof value.fileBaseUrl === "string" && value.fileBaseUrl.trim().length > 0
+          ? value.fileBaseUrl.trim()
+          : "";
+      if (!accessKey || !apiBaseUrl || !fileBaseUrl) {
+        throw new Error("Backend telegram transport config response was incomplete");
+      }
+      return { accessKey, apiBaseUrl, fileBaseUrl };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   getResilienceState(): {
     writeBreaker: { state: "closed" | "open" | "half_open"; consecutiveFailures: number; retryAfterMs: number };
   } {

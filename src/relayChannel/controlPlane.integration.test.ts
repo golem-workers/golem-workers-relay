@@ -1,10 +1,23 @@
 import WebSocket from "ws";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { closeHttpServer, startRelayChannelDataPlaneServer } from "./startDataPlaneServer.js";
 import { startRelayChannelControlPlane } from "./startControlPlaneServer.js";
 
 describe("relay-channel control plane", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("completes hello and stub transport.action lifecycle", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, result: { message_id: 1001 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      )
+    );
     const dp = startRelayChannelDataPlaneServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve) => dp.server.once("listening", resolve));
 
@@ -12,6 +25,13 @@ describe("relay-channel control plane", () => {
       host: "127.0.0.1",
       port: 0,
       relayInstanceId: "relay-test",
+      backend: {
+        getTelegramTransportConfig: () => Promise.resolve({
+          accessKey: "test-token",
+          apiBaseUrl: "https://api.telegram.org",
+          fileBaseUrl: "https://api.telegram.org",
+        }),
+      } as never,
       getDataPlaneUrls: () => {
         const s = dp.getState();
         return { uploadBaseUrl: s.uploadBaseUrl, downloadBaseUrl: s.downloadBaseUrl };
@@ -78,7 +98,7 @@ describe("relay-channel control plane", () => {
           idempotencyKey: "idem-1",
           accountId: "acc-test",
           targetScope: "dm",
-          transportTarget: { peer: "u1" },
+          transportTarget: { channel: "telegram", chatId: "123" },
           conversation: { transportConversationId: "conv-1" },
           payload: { text: "hi" },
         },

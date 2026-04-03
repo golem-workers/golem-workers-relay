@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
+import { type BackendClient } from "../backend/backendClient.js";
 import { logger } from "../logger.js";
 import {
   buildActionAccepted,
@@ -9,6 +10,7 @@ import {
   helloRequestSchema,
   transportActionRequestSchema,
 } from "./controlPlaneProtocol.js";
+import { executeTelegramMessageSend } from "./telegramTransport.js";
 
 export type ControlPlaneRuntimeState = {
   enabled: boolean;
@@ -24,6 +26,7 @@ export function startRelayChannelControlPlane(input: {
   port: number;
   relayInstanceId: string;
   getDataPlaneUrls: () => { uploadBaseUrl: string; downloadBaseUrl: string };
+  backend: BackendClient;
 }): {
   wss: WebSocketServer;
   getState: () => ControlPlaneRuntimeState;
@@ -87,13 +90,41 @@ export function startRelayChannelControlPlane(input: {
         const req = transportActionRequestSchema.parse(data);
         const { requestId, action } = req;
         sendJson(buildActionAccepted({ requestId, actionId: action.actionId }));
-        sendJson(
-          buildActionCompleted({
-            requestId,
-            actionId: action.actionId,
-            transportMessageId: `stub_${randomUUID()}`,
-          })
-        );
+        void (async () => {
+          try {
+            const channel = action.transportTarget.channel;
+            if (channel !== "telegram") {
+              throw new Error(`UNSUPPORTED_TRANSPORT_CHANNEL: ${channel ?? "unknown"}`);
+            }
+            const transportConfig = await input.backend.getTelegramTransportConfig();
+            const result = await executeTelegramMessageSend({
+              accessKey: transportConfig.accessKey,
+              apiBaseUrl: transportConfig.apiBaseUrl,
+              action,
+            });
+            sendJson(
+              buildActionCompleted({
+                requestId,
+                actionId: action.actionId,
+                transportMessageId: result.transportMessageId ?? `relay_${randomUUID()}`,
+              })
+            );
+          } catch (error) {
+            sendJson({
+              type: "event",
+              eventType: "transport.action.failed",
+              payload: {
+                requestId,
+                actionId: action.actionId,
+                error: {
+                  code: "TRANSPORT_ACTION_FAILED",
+                  message: error instanceof Error ? error.message : String(error),
+                  retryable: false,
+                },
+              },
+            });
+          }
+        })();
       } catch (error) {
         logger.warn(
           { err: error instanceof Error ? error.message : String(error) },

@@ -81,6 +81,7 @@ async function main(): Promise<void> {
       host: cfg.relayChannel.controlPlaneHost,
       port: cfg.relayChannel.controlPlanePort,
       relayInstanceId: cfg.relayInstanceId,
+      backend,
       getDataPlaneUrls: () => {
         const s = dp.getState();
         return { uploadBaseUrl: s.uploadBaseUrl, downloadBaseUrl: s.downloadBaseUrl };

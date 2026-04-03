@@ -276,6 +276,74 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("uses native media directives instead of legacy MEDIA notes for relay_channel_v2", async () => {
+    let sentMessage = "";
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          const params = (frame.params ?? {}) as Record<string, unknown>;
+          sentMessage = typeof params.message === "string" ? params.message : "";
+          const runId = "run_tg_v2_1";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: { runId, sessionKey: "tg:123:srv_1", seq: 1, state: "final", message: { text: "ok" } },
+              })
+            );
+          }, 10);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "task_tg_v2_1",
+      sessionKey: "tg:123:srv_1",
+      messageText: "Please prepare a report",
+      deliverySystem: "relay_channel_v2",
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("reply");
+    expect(sentMessage).toContain("Please prepare a report");
+    expect(sentMessage).toContain("[Telegram plugin note]");
+    expect(sentMessage).toContain("[[media:relative/path.ext]]");
+    expect(sentMessage).not.toContain("MEDIA: relative/path.ext");
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("uses the latest delta message when final arrives without message", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
@@ -1729,6 +1797,135 @@ describe("ChatRunner", () => {
     if (result.outcome !== "reply") throw new Error("expected reply");
     expect(result.reply.artifacts?.[0]?.path).toBe("output/golem_awake.mp4");
     expect(JSON.stringify(result.reply.message)).toContain("MEDIA: output/golem_awake.mp4");
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
+  it("recovers transcript artifacts even when gateway and transcript reply texts diverge", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-artifacts-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    const workspaceRoot = path.join(stateDir, "workspace");
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    await fs.mkdir(path.join(workspaceRoot, "proofs"), { recursive: true });
+    await fs.mkdir(sessionsDir, { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, "proofs", "identity.md"), "# identity\n", "utf8");
+
+    const sessionKey = "tg:449:server";
+    const sessionId = "sess-transcript-artifacts";
+    const sessionFile = path.join(sessionsDir, `${sessionId}.jsonl`);
+    await fs.writeFile(
+      path.join(sessionsDir, "sessions.json"),
+      JSON.stringify({
+        [`agent:main:${sessionKey}`]: {
+          sessionId,
+          updatedAt: Date.now(),
+          sessionFile,
+        },
+      }),
+      "utf8"
+    );
+    await fs.writeFile(sessionFile, "", "utf8");
+
+    let sentMessage: unknown = null;
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          sentMessage = ((frame.params ?? {}) as Record<string, unknown>).message;
+          const runId = "run_transcript_artifacts";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            void (async () => {
+              await fs.writeFile(
+                sessionFile,
+                [
+                  JSON.stringify({
+                    type: "message",
+                    message:
+                      typeof sentMessage === "string"
+                        ? {
+                            role: "user",
+                            content: sentMessage,
+                          }
+                        : sentMessage,
+                  }),
+                  JSON.stringify({
+                    type: "message",
+                    message: {
+                      role: "assistant",
+                      content: [
+                        {
+                          type: "text",
+                          text: "I prepared the file and attached it below.\n\nMEDIA: proofs/identity.md",
+                        },
+                      ],
+                    },
+                  }),
+                ].join("\n") + "\n",
+                "utf8"
+              );
+              ws.send(
+                JSON.stringify({
+                  type: "event",
+                  event: "chat",
+                  payload: {
+                    runId,
+                    sessionKey,
+                    seq: 1,
+                    state: "final",
+                    message: {
+                      role: "assistant",
+                      content: [{ type: "text", text: "The file is ready." }],
+                    },
+                  },
+                })
+              );
+            })();
+          }, 10);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "task_transcript_artifacts",
+      sessionKey,
+      messageText: "send me any file",
+      timeoutMs: 1500,
+    });
+    expect(result.outcome).toBe("reply");
+    if (result.outcome !== "reply") throw new Error("expected reply");
+    expect(result.reply.artifacts?.[0]?.path).toBe("proofs/identity.md");
+    expect(JSON.stringify(result.reply.message)).not.toContain("MEDIA: proofs/identity.md");
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));

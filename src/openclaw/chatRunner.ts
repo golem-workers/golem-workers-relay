@@ -85,6 +85,8 @@ type OpenclawChatMeta = {
   model?: string;
 };
 
+type DeliverySystem = "legacy_push_v1" | "relay_channel_v2";
+
 const TRANSPORT_INTERRUPTION_PATTERNS = [
   /network connection lost/i,
   /socket hang up/i,
@@ -504,6 +506,7 @@ export class ChatRunner {
     sessionKey: string;
     messageText: string;
     media?: TaskMedia[];
+    deliverySystem?: DeliverySystem;
     timeoutMs: number;
   }): Promise<{ result: ChatRunResult; openclawMeta: OpenclawChatMeta }> {
     await this.waitForSessionMaintenance();
@@ -525,9 +528,10 @@ export class ChatRunner {
       }
       throw error;
     }
-    baseMessageText = applyTelegramArtifactDeliveryInstructions({
+    baseMessageText = applyTelegramDeliveryInstructions({
       sessionKey: input.sessionKey,
       messageText: baseMessageText,
+      deliverySystem: input.deliverySystem ?? "legacy_push_v1",
     });
     const gatewayMessage = await buildGatewayChatMessage({
       messageText: baseMessageText,
@@ -704,38 +708,87 @@ export class ChatRunner {
                 "Message flow transition"
               );
             }
-            const artifactResolution = await collectTranscriptArtifacts({
-              message: finalMessage,
-              openclawEvents,
-              opts: {
-                logContext: {
-                  taskId: input.taskId,
-                  runId,
-                  sessionKey: input.sessionKey,
-                },
-              },
-            }).catch((err) => {
-              const message = err instanceof Error ? err.message : String(err);
-              logger.warn(
-                { taskId: input.taskId, runId, err: message },
-                "Failed to collect transcript artifacts"
-              );
-              return {
+            let artifactResolution: TranscriptArtifactCollectionReport;
+            if ((input.deliverySystem ?? "legacy_push_v1") === "relay_channel_v2") {
+              artifactResolution = {
                 artifacts: [],
-                unresolved: [
-                  {
-                    source: "structured_artifact",
-                    reason: "collection_failed",
-                    fileName: "artifact-resolution",
-                    candidatePaths: [message],
-                  },
-                ],
-                requestedCount: 1,
+                unresolved: [],
+                requestedCount: 0,
                 recoveredCount: 0,
                 usedStructuredArtifacts: false,
                 usedLegacyMediaDirectives: false,
-              } satisfies TranscriptArtifactCollectionReport;
-            });
+              };
+            } else {
+              artifactResolution = await collectTranscriptArtifacts({
+                message: finalMessage,
+                openclawEvents,
+                opts: {
+                  logContext: {
+                    taskId: input.taskId,
+                    runId,
+                    sessionKey: input.sessionKey,
+                  },
+                },
+              }).catch((err) => {
+                const message = err instanceof Error ? err.message : String(err);
+                logger.warn(
+                  { taskId: input.taskId, runId, err: message },
+                  "Failed to collect transcript artifacts"
+                );
+                return {
+                  artifacts: [],
+                  unresolved: [
+                    {
+                      source: "structured_artifact",
+                      reason: "collection_failed",
+                      fileName: "artifact-resolution",
+                      candidatePaths: [message],
+                    },
+                  ],
+                  requestedCount: 1,
+                  recoveredCount: 0,
+                  usedStructuredArtifacts: false,
+                  usedLegacyMediaDirectives: false,
+                } satisfies TranscriptArtifactCollectionReport;
+              });
+            }
+            if (
+              (input.deliverySystem ?? "legacy_push_v1") !== "relay_channel_v2" &&
+              artifactResolution.requestedCount === 0 &&
+              transcriptFinalMessage !== undefined &&
+              transcriptFinalMessage !== finalMessage
+            ) {
+              const transcriptArtifactResolution = await collectTranscriptArtifacts({
+                message: transcriptFinalMessage,
+                openclawEvents,
+                opts: {
+                  logContext: {
+                    taskId: input.taskId,
+                    runId,
+                    sessionKey: input.sessionKey,
+                  },
+                },
+              }).catch(() => null);
+              if (
+                transcriptArtifactResolution &&
+                transcriptArtifactResolution.requestedCount > 0
+              ) {
+                artifactResolution = transcriptArtifactResolution;
+                logger.info(
+                  {
+                    event: "artifact_delivery",
+                    stage: "transcript_artifacts_recovered",
+                    taskId: input.taskId,
+                    openclawRunId: runId,
+                    sessionKey: input.sessionKey,
+                    requestedCount: transcriptArtifactResolution.requestedCount,
+                    resolvedCount: transcriptArtifactResolution.artifacts.length,
+                    unresolvedCount: transcriptArtifactResolution.unresolved.length,
+                  },
+                  "Recovered reply artifacts from session transcript"
+                );
+              }
+            }
             const media = artifactResolution.artifacts.map((artifact) => ({
               path: artifact.path,
               fileName: artifact.fileName,
@@ -1115,23 +1168,36 @@ function normalizeVisionPromptText(messageText: string): string {
   return text.length > 0 ? text : "[image]";
 }
 
-function applyTelegramArtifactDeliveryInstructions(input: {
+function applyTelegramDeliveryInstructions(input: {
   sessionKey: string;
   messageText: string;
+  deliverySystem: DeliverySystem;
 }): string {
   if (!input.sessionKey.startsWith("tg:")) {
     return input.messageText;
   }
-  const instruction = [
-    "[Telegram bridge note]",
-    "If you need to send the user a file, first save or locate the exact file inside the OpenClaw workspace.",
-    "Before replying, verify that the file really exists at that exact workspace-relative path.",
-    "In your final answer, add a separate final line exactly as `MEDIA: relative/path.ext`.",
-    "Use the real workspace-relative path only. Do not invent directories, rename the file in the `MEDIA:` line, or point to an approximate match.",
-    "If you need to send multiple files, add one separate `MEDIA:` line per file.",
-    "If you are not sure about the exact path, inspect the workspace first and only then reply.",
-    "Do not paste the full file contents into the reply when the intended output is a file attachment.",
-  ].join("\n");
+  const instruction =
+    input.deliverySystem === "relay_channel_v2"
+      ? [
+          "[Telegram plugin note]",
+          "If you need to send the user a file, first save or locate the exact file inside the current workspace.",
+          "Before replying, verify that the file really exists at that exact local path.",
+          "In your final answer, add a separate final token exactly as `[[media:relative/path.ext]]`.",
+          "Use the real local path only. Do not rename the file inside the directive or point to an approximate match.",
+          "If you need to send multiple files, add one separate `[[media:...]]` directive per file.",
+          "If you are not sure about the exact path, inspect the workspace first and only then reply.",
+          "Do not paste the full file contents into the reply when the intended output is a file attachment.",
+        ].join("\n")
+      : [
+          "[Telegram bridge note]",
+          "If you need to send the user a file, first save or locate the exact file inside the OpenClaw workspace.",
+          "Before replying, verify that the file really exists at that exact workspace-relative path.",
+          "In your final answer, add a separate final line exactly as `MEDIA: relative/path.ext`.",
+          "Use the real workspace-relative path only. Do not invent directories, rename the file in the `MEDIA:` line, or point to an approximate match.",
+          "If you need to send multiple files, add one separate `MEDIA:` line per file.",
+          "If you are not sure about the exact path, inspect the workspace first and only then reply.",
+          "Do not paste the full file contents into the reply when the intended output is a file attachment.",
+        ].join("\n");
   const text = input.messageText.trim();
   return text ? `${text}\n\n${instruction}` : instruction;
 }

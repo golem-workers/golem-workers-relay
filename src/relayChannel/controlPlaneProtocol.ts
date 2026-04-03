@@ -92,8 +92,16 @@ export function buildHelloResponse(input: {
     relayInstanceId: input.relayInstanceId,
     accountId: input.accountId,
     transport: { provider: "stub", providerVersion: "0" },
-    coreCapabilities: { messageSend: true },
-    optionalCapabilities: {},
+    coreCapabilities: {
+      messageSend: true,
+      mediaSend: true,
+      inboundMessages: true,
+      replyTo: true,
+      threadRouting: true,
+    },
+    optionalCapabilities: {
+      fileDownloads: true,
+    },
     providerCapabilities: {},
     limits: {},
     dataPlane: input.dataPlane,

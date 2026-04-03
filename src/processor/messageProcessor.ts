@@ -52,6 +52,8 @@ type ArtifactDeliveryMeta = {
   unresolvedReasons?: Record<string, number>;
 };
 
+type DeliverySystem = "legacy_push_v1" | "relay_channel_v2";
+
 export function createMessageProcessor(input: MessageProcessorInput): (msg: InboundPushMessage) => Promise<void> {
   const { cfg, gateway, runner, backend } = input;
   const readDiskUsage = input.readDiskUsage ?? readDiskUsageSnapshot;
@@ -364,17 +366,19 @@ async function processSingleMessage(input: {
           },
         });
       } else {
+        const deliverySystem = readDeliverySystemFromTaskContext(msg.input.context);
         const { result, openclawMeta } = await runner.runChatTask({
           taskId: msg.messageId,
           sessionKey: msg.input.sessionKey,
           messageText: msg.input.messageText,
           media: msg.input.media,
+          deliverySystem,
           timeoutMs: cfg.taskTimeoutMs,
         });
         const finishedAtMs = Date.now();
         if (result.outcome === "reply") {
           const unresolvedArtifacts = readArtifactResolutionIssues(result.reply);
-          if (unresolvedArtifacts.length > 0) {
+          if (deliverySystem !== "relay_channel_v2" && unresolvedArtifacts.length > 0) {
             const unresolvedArtifactReasons = countArtifactResolutionReasons(unresolvedArtifacts);
             const unresolvedArtifactDetails = summarizeArtifactResolutionIssues(unresolvedArtifacts);
             logger.warn(
@@ -394,6 +398,7 @@ async function processSingleMessage(input: {
               cfg,
               backend,
               correlationMessageId: msg.messageId,
+              deliverySystem,
               reply: {
                 message: buildArtifactRetryNotice(),
                 runId: `${result.reply.runId}:artifact-retry-notice`,
@@ -437,6 +442,7 @@ async function processSingleMessage(input: {
                   cfg,
                   backend,
                   correlationMessageId: msg.messageId,
+                  deliverySystem,
                   reply: retryOutcome.result.reply,
                   openclawMeta: {
                     ...normalizeOpenclawMeta(retryOutcome.openclawMeta),
@@ -473,6 +479,7 @@ async function processSingleMessage(input: {
                     cfg,
                     backend,
                     correlationMessageId: msg.messageId,
+                    deliverySystem,
                     reply: {
                       message: originalText,
                       runId: `${result.reply.runId}:artifact-fallback-text`,
@@ -496,6 +503,7 @@ async function processSingleMessage(input: {
                   cfg,
                   backend,
                   correlationMessageId: msg.messageId,
+                  deliverySystem,
                   reply: {
                     message: buildArtifactFailureNotice(),
                     runId: `${result.reply.runId}:artifact-failure-notice`,
@@ -532,6 +540,7 @@ async function processSingleMessage(input: {
                   cfg,
                   backend,
                   correlationMessageId: msg.messageId,
+                  deliverySystem,
                   reply: {
                     message: originalText,
                     runId: `${result.reply.runId}:artifact-fallback-text`,
@@ -553,6 +562,7 @@ async function processSingleMessage(input: {
                 cfg,
                 backend,
                 correlationMessageId: msg.messageId,
+                deliverySystem,
                 reply: {
                   message: buildArtifactFailureNotice(),
                   runId: `${result.reply.runId}:artifact-failure-notice`,
@@ -583,7 +593,7 @@ async function processSingleMessage(input: {
                   relayMessageId,
                   relayInstanceId: cfg.relayInstanceId,
                   openclawRunId: result.reply.runId,
-                }),
+                }, { deliverySystem }),
               },
             });
           }
@@ -600,7 +610,7 @@ async function processSingleMessage(input: {
                 relayMessageId,
                 relayInstanceId: cfg.relayInstanceId,
                 openclawRunId: result.noReply?.runId,
-              }),
+              }, { deliverySystem }),
             },
           });
         } else {
@@ -616,7 +626,7 @@ async function processSingleMessage(input: {
                 relayMessageId,
                 relayInstanceId: cfg.relayInstanceId,
                 openclawRunId: result.error.runId,
-              }),
+              }, { deliverySystem }),
             },
           });
         }
@@ -820,6 +830,14 @@ function buildOpenclawMetaWithTrace(
     ...(transportAccountId ? { transportAccountId } : {}),
     ...(transportMessageId ? { transportMessageId } : {}),
   };
+}
+
+function readDeliverySystemFromTaskContext(context: unknown): DeliverySystem {
+  if (!context || typeof context !== "object" || Array.isArray(context)) {
+    return "legacy_push_v1";
+  }
+  const raw = (context as { deliverySystem?: unknown }).deliverySystem;
+  return raw === "relay_channel_v2" ? "relay_channel_v2" : "legacy_push_v1";
 }
 
 function normalizeOpenclawMetaTrace(trace: unknown): Record<string, string> | undefined {
@@ -1035,6 +1053,7 @@ async function submitReplyCallback(input: {
     }>;
   };
   openclawMeta?: unknown;
+  deliverySystem?: DeliverySystem;
 }): Promise<string> {
   const relayMessageId = `relay_${randomUUID()}`;
   const finishedAtMs = Date.now();
@@ -1050,7 +1069,7 @@ async function submitReplyCallback(input: {
         relayMessageId,
         relayInstanceId: input.cfg.relayInstanceId,
         openclawRunId: input.reply.runId,
-      }),
+      }, { deliverySystem: input.deliverySystem }),
     },
   });
   logger.info(
