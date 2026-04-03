@@ -32,11 +32,11 @@ The script:
 
 - installs base Ubuntu packages plus agent media/PDF tooling (`ffmpeg`, `poppler-utils`, `imagemagick`, `python3-pip`), Google Chrome Stable, Go, Linuxbrew, and Node 22;
 - pre-pulls and builds `golem-workers-relay` from `release` by default;
-- installs the latest OpenClaw, `memory-lancedb-pro@beta`, plus full `playwright`;
+- installs the latest OpenClaw, `memory-lancedb-pro@beta`, preinstalls `relay-channel` into the OpenClaw workspace plugin directory, plus full `playwright`;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);
 - explicitly brings up root user-systemd (`loginctl enable-linger root`, `user@0.service`, `/run/user/0/bus`) before any OpenClaw daemon install work;
 - optionally runs `openclaw onboard --install-daemon`;
-- leaves the image ready for backend provisioning to enable `memory-lancedb-pro` from the prepared snapshot plugin path with the local OpenRouter-compatible embeddings proxy;
+- leaves the image ready for backend provisioning to enable `memory-lancedb-pro` and reuse the prepared `relay-channel` files from the snapshot plugin path;
 - finishes image preparation by stopping and disabling `openclaw-gateway.service` so prepared images boot with OpenClaw cold and backend provisioning performs the first controlled start.
 
 Execution logs are written to:

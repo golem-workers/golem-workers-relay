@@ -10,6 +10,10 @@ CHROME_DEB="/tmp/google-chrome-stable_current_amd64.deb"
 RELAY_REPO_DIR="/root/golem-workers-relay"
 RELAY_REPO_URL="https://github.com/golem-workers/golem-workers-relay.git"
 RELAY_GIT_REF="${RELAY_GIT_REF:-release}"
+RELAY_CHANNEL_PLUGIN_REPO_DIR="/root/golem-workers-openclaw-channel-plugin"
+RELAY_CHANNEL_PLUGIN_REPO_URL="https://github.com/golem-workers/golem-workers-openclaw-channel-plugin.git"
+RELAY_CHANNEL_PLUGIN_GIT_REF="${RELAY_CHANNEL_PLUGIN_GIT_REF:-${RELAY_GIT_REF}}"
+RELAY_CHANNEL_PLUGIN_INSTALL_DIR="/root/.openclaw/workspace/plugins/relay-channel"
 NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 RUN_OPENCLAW_ONBOARD=1
@@ -335,6 +339,49 @@ if (resolvedLinkTarget !== resolvedPackageDir) {
 }
 console.log(`memory-lancedb-pro prepared: ${resolvedPackageDir}`)
 NODE
+
+  set_step "relay_channel_prepull"
+  if [[ -d "${RELAY_CHANNEL_PLUGIN_REPO_DIR}/.git" ]]; then
+    cd "${RELAY_CHANNEL_PLUGIN_REPO_DIR}"
+    git fetch --prune origin "${RELAY_CHANNEL_PLUGIN_GIT_REF}"
+    git checkout "${RELAY_CHANNEL_PLUGIN_GIT_REF}"
+    git reset --hard "origin/${RELAY_CHANNEL_PLUGIN_GIT_REF}"
+  else
+    rm -rf "${RELAY_CHANNEL_PLUGIN_REPO_DIR}"
+    git clone --branch "${RELAY_CHANNEL_PLUGIN_GIT_REF}" --single-branch "${RELAY_CHANNEL_PLUGIN_REPO_URL}" "${RELAY_CHANNEL_PLUGIN_REPO_DIR}"
+    cd "${RELAY_CHANNEL_PLUGIN_REPO_DIR}"
+  fi
+  npm ci
+  npm run bundle:agent
+  RELAY_CHANNEL_BUNDLE_TGZ="${RELAY_CHANNEL_PLUGIN_REPO_DIR}/.artifacts/relay-channel/relay-channel-bundle.tgz"
+  test -f "${RELAY_CHANNEL_BUNDLE_TGZ}"
+
+  set_step "relay_channel_install"
+  RELAY_CHANNEL_STAGE_DIR="$(mktemp -d /tmp/relay-channel-stage.XXXXXX)"
+  rm -rf "${RELAY_CHANNEL_PLUGIN_INSTALL_DIR}"
+  mkdir -p "$(dirname "${RELAY_CHANNEL_PLUGIN_INSTALL_DIR}")"
+  tar -xzf "${RELAY_CHANNEL_BUNDLE_TGZ}" -C "${RELAY_CHANNEL_STAGE_DIR}"
+  test -f "${RELAY_CHANNEL_STAGE_DIR}/relay-channel/openclaw.plugin.json"
+  test -f "${RELAY_CHANNEL_STAGE_DIR}/relay-channel/dist/index.js"
+  mv "${RELAY_CHANNEL_STAGE_DIR}/relay-channel" "${RELAY_CHANNEL_PLUGIN_INSTALL_DIR}"
+  chown -R root:root "${RELAY_CHANNEL_PLUGIN_INSTALL_DIR}"
+  rm -rf "${RELAY_CHANNEL_STAGE_DIR}"
+  node --input-type=module - "${RELAY_CHANNEL_PLUGIN_INSTALL_DIR}" <<'NODE'
+import fs from "node:fs"
+import path from "node:path"
+
+const installDir = process.argv[2]
+const manifestPath = path.join(installDir, "openclaw.plugin.json")
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+if (manifest?.id !== "relay-channel") {
+  throw new Error(`Unexpected relay-channel plugin id in ${manifestPath}`)
+}
+if (!fs.existsSync(path.join(installDir, "dist", "index.js"))) {
+  throw new Error(`Missing relay-channel dist/index.js in ${installDir}`)
+}
+console.log(`relay-channel prepared: ${installDir}`)
+NODE
+
   npm install -g playwright
   test -f "${GLOBAL_NPM_ROOT}/playwright/package.json"
   if [[ "${RUN_OPENCLAW_ONBOARD}" == "1" ]]; then
