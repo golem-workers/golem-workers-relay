@@ -70,6 +70,10 @@ async function main(): Promise<void> {
     devLogEnabled: cfg.devLogEnabled,
   });
 
+  let gateway: GatewayClient | null = null;
+  let reportOpenclawConnectionStatus:
+    | ReturnType<typeof createOpenclawConnectionStatusReporter>
+    | null = null;
   let getRelayChannelHealth: () => Record<string, unknown> = () => ({ enabled: false });
   let relayChannelCleanup: (() => Promise<void>) | null = null;
   if (cfg.relayChannel.enabled) {
@@ -85,6 +89,14 @@ async function main(): Promise<void> {
       getDataPlaneUrls: () => {
         const s = dp.getState();
         return { uploadBaseUrl: s.uploadBaseUrl, downloadBaseUrl: s.downloadBaseUrl };
+      },
+      onStateChange: (state) => {
+        if (!reportOpenclawConnectionStatus) return;
+        void reportOpenclawConnectionStatus({
+          connected: gateway?.isReady() ?? false,
+          observedAtMs: Date.now(),
+          reason: state.clientConnected ? undefined : "Relay-channel control plane disconnected",
+        });
       },
     });
     getRelayChannelHealth = () => ({
@@ -102,7 +114,7 @@ async function main(): Promise<void> {
     };
   }
 
-  const reportOpenclawConnectionStatus = createOpenclawConnectionStatusReporter({
+  reportOpenclawConnectionStatus = createOpenclawConnectionStatusReporter({
     backend,
     relayInstanceId: cfg.relayInstanceId,
     buildDeliveryReport: () => buildRelayDeliveryReportForBackend(cfg, getRelayChannelHealth),
@@ -122,7 +134,7 @@ async function main(): Promise<void> {
     | ReturnType<typeof createExecApprovalAutoApprover>
     | null = null;
 
-  const gateway = new GatewayClient({
+  gateway = new GatewayClient({
     url: openclaw.gateway.wsUrl,
     token: openclaw.gateway.auth.token,
     password: openclaw.gateway.auth.password,

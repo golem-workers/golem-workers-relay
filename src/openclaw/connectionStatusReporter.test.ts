@@ -79,4 +79,59 @@ describe("createOpenclawConnectionStatusReporter", () => {
       },
     });
   });
+
+  it("reports delivery snapshot changes while gateway stays connected", async () => {
+    const submitOpenclawStatus = vi.fn<SubmitOpenclawStatus>().mockResolvedValue({ accepted: true });
+    let relayChannelConnected = false;
+    const report = createOpenclawConnectionStatusReporter({
+      backend: { submitOpenclawStatus } as never,
+      relayInstanceId: "relay-1",
+      buildDeliveryReport: () => ({
+        modeEffective: "relay_channel_v2",
+        legacyPushReady: true,
+        relayChannelReady: true,
+        relayChannelConnected,
+      }),
+    });
+
+    await report({
+      connected: true,
+      observedAtMs: 1_741_850_800_000,
+    });
+    relayChannelConnected = true;
+    await report({
+      connected: true,
+      observedAtMs: 1_741_850_801_000,
+    });
+
+    expect(submitOpenclawStatus).toHaveBeenCalledTimes(2);
+    expect(submitOpenclawStatus).toHaveBeenNthCalledWith(1, {
+      body: {
+        relayInstanceId: "relay-1",
+        observedAtMs: 1_741_850_800_000,
+        status: "CONNECTED",
+        reason: undefined,
+        delivery: {
+          modeEffective: "relay_channel_v2",
+          legacyPushReady: true,
+          relayChannelReady: true,
+          relayChannelConnected: false,
+        },
+      },
+    });
+    expect(submitOpenclawStatus).toHaveBeenNthCalledWith(2, {
+      body: {
+        relayInstanceId: "relay-1",
+        observedAtMs: 1_741_850_801_000,
+        status: "CONNECTED",
+        reason: undefined,
+        delivery: {
+          modeEffective: "relay_channel_v2",
+          legacyPushReady: true,
+          relayChannelReady: true,
+          relayChannelConnected: true,
+        },
+      },
+    });
+  });
 });

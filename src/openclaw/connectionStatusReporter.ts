@@ -9,6 +9,7 @@ export function createOpenclawConnectionStatusReporter(input: {
   buildDeliveryReport?: () => Record<string, unknown>;
 }) {
   let lastSentConnected: boolean | null = null;
+  let lastSentDeliveryKey: string | null = null;
   let lastDisconnectedReportedAtMs = 0;
 
   return async function report(state: {
@@ -16,19 +17,22 @@ export function createOpenclawConnectionStatusReporter(input: {
     reason?: string;
     observedAtMs: number;
   }): Promise<void> {
+    const delivery = input.buildDeliveryReport?.();
+    const deliveryKey = JSON.stringify(delivery ?? null);
+
     if (!state.connected) {
       const withinThrottleWindow =
         lastSentConnected === false &&
+        lastSentDeliveryKey === deliveryKey &&
         state.observedAtMs - lastDisconnectedReportedAtMs < DISCONNECTED_REPORT_THROTTLE_MS;
       if (withinThrottleWindow) {
         return;
       }
-    } else if (lastSentConnected === true) {
+    } else if (lastSentConnected === true && lastSentDeliveryKey === deliveryKey) {
       return;
     }
 
     try {
-      const delivery = input.buildDeliveryReport?.();
       await input.backend.submitOpenclawStatus({
         body: {
           relayInstanceId: input.relayInstanceId,
@@ -39,6 +43,7 @@ export function createOpenclawConnectionStatusReporter(input: {
         },
       });
       lastSentConnected = state.connected;
+      lastSentDeliveryKey = deliveryKey;
       if (!state.connected) {
         lastDisconnectedReportedAtMs = state.observedAtMs;
       }

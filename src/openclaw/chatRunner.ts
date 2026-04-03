@@ -708,50 +708,38 @@ export class ChatRunner {
                 "Message flow transition"
               );
             }
-            let artifactResolution: TranscriptArtifactCollectionReport;
-            if ((input.deliverySystem ?? "legacy_push_v1") === "relay_channel_v2") {
-              artifactResolution = {
+            let artifactResolution = await collectTranscriptArtifacts({
+              message: finalMessage,
+              openclawEvents,
+              opts: {
+                logContext: {
+                  taskId: input.taskId,
+                  runId,
+                  sessionKey: input.sessionKey,
+                },
+              },
+            }).catch((err) => {
+              const message = err instanceof Error ? err.message : String(err);
+              logger.warn(
+                { taskId: input.taskId, runId, err: message },
+                "Failed to collect transcript artifacts"
+              );
+              return {
                 artifacts: [],
-                unresolved: [],
-                requestedCount: 0,
+                unresolved: [
+                  {
+                    source: "structured_artifact",
+                    reason: "collection_failed",
+                    fileName: "artifact-resolution",
+                    candidatePaths: [message],
+                  },
+                ],
+                requestedCount: 1,
                 recoveredCount: 0,
                 usedStructuredArtifacts: false,
                 usedLegacyMediaDirectives: false,
-              };
-            } else {
-              artifactResolution = await collectTranscriptArtifacts({
-                message: finalMessage,
-                openclawEvents,
-                opts: {
-                  logContext: {
-                    taskId: input.taskId,
-                    runId,
-                    sessionKey: input.sessionKey,
-                  },
-                },
-              }).catch((err) => {
-                const message = err instanceof Error ? err.message : String(err);
-                logger.warn(
-                  { taskId: input.taskId, runId, err: message },
-                  "Failed to collect transcript artifacts"
-                );
-                return {
-                  artifacts: [],
-                  unresolved: [
-                    {
-                      source: "structured_artifact",
-                      reason: "collection_failed",
-                      fileName: "artifact-resolution",
-                      candidatePaths: [message],
-                    },
-                  ],
-                  requestedCount: 1,
-                  recoveredCount: 0,
-                  usedStructuredArtifacts: false,
-                  usedLegacyMediaDirectives: false,
-                } satisfies TranscriptArtifactCollectionReport;
-              });
-            }
+              } satisfies TranscriptArtifactCollectionReport;
+            });
             if (
               (input.deliverySystem ?? "legacy_push_v1") !== "relay_channel_v2" &&
               artifactResolution.requestedCount === 0 &&

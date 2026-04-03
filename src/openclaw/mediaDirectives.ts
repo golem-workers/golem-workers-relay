@@ -96,6 +96,18 @@ export function extractMediaDirectivePaths(text: string): string[] {
   return Array.from(new Set(out));
 }
 
+export function extractNativeMediaDirectivePaths(text: string): string[] {
+  const out: string[] = [];
+  const re = /\[\[\s*media\s*:\s*([^\]\r\n]+?)\s*\]\]/gi;
+  for (;;) {
+    const m = re.exec(text);
+    if (!m) break;
+    const raw = (m[1] ?? "").trim();
+    if (raw) out.push(raw);
+  }
+  return Array.from(new Set(out));
+}
+
 function extractTextFromReplyMessage(message: unknown): string | null {
   if (typeof message === "string") {
     const normalized = message.trim();
@@ -141,7 +153,7 @@ function readLatestMediaPathsFromCurrentReply(input: { message?: unknown; opencl
   for (const candidate of candidates) {
     const text = extractTextFromReplyMessage(candidate);
     if (!text) continue;
-    const paths = extractMediaDirectivePaths(text);
+    const paths = [...extractMediaDirectivePaths(text), ...extractNativeMediaDirectivePaths(text)];
     if (paths.length > 0) return paths;
   }
   return [];

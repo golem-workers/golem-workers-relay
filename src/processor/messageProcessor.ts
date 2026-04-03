@@ -6,6 +6,7 @@ import { type InboundPushMessage, type RelayInboundMessageRequest } from "../bac
 import { logger } from "../logger.js";
 import { type ChatRunner } from "../openclaw/chatRunner.js";
 import { type GatewayClient } from "../openclaw/gatewayClient.js";
+import { executeTelegramMessageSend } from "../relayChannel/telegramTransport.js";
 import { makeTextPreview } from "../common/utils/text.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 
@@ -581,19 +582,30 @@ async function processSingleMessage(input: {
               });
             }
           } else {
+            const replyPayload = await buildReplyPayload(result.reply);
+            const directTransportMeta =
+              deliverySystem === "relay_channel_v2"
+                ? await maybeDeliverRelayChannelReplyDirectly({
+                    backend,
+                    context: msg.input.context,
+                    reply: replyPayload,
+                    backendMessageId: msg.messageId,
+                    relayMessageId,
+                  })
+                : null;
             await backend.submitInboundMessage({
               body: {
                 relayInstanceId: cfg.relayInstanceId,
                 relayMessageId,
                 finishedAtMs,
                 outcome: "reply",
-                reply: await buildReplyPayload(result.reply),
+                reply: replyPayload,
                 openclawMeta: buildOpenclawMetaWithTrace(normalizeOpenclawMeta(openclawMeta), {
                   backendMessageId: msg.messageId,
                   relayMessageId,
                   relayInstanceId: cfg.relayInstanceId,
                   openclawRunId: result.reply.runId,
-                }, { deliverySystem }),
+                }, { deliverySystem, ...directTransportMeta }),
               },
             });
           }
@@ -838,6 +850,128 @@ function readDeliverySystemFromTaskContext(context: unknown): DeliverySystem {
   }
   const raw = (context as { deliverySystem?: unknown }).deliverySystem;
   return raw === "relay_channel_v2" ? "relay_channel_v2" : "legacy_push_v1";
+}
+
+function readTelegramTaskContext(context: unknown):
+  | {
+      chatId: string;
+      messageId?: string;
+      chatType?: string;
+    }
+  | null {
+  if (!isPlainObject(context) || context.channel !== "telegram" || !isPlainObject(context.telegram)) {
+    return null;
+  }
+  const chatId = readNonEmptyString(context.telegram.chatId);
+  if (!chatId) {
+    return null;
+  }
+  return {
+    chatId,
+    ...(readNonEmptyString(context.telegram.messageId) ? { messageId: readNonEmptyString(context.telegram.messageId)! } : {}),
+    ...(readNonEmptyString(context.telegram.chatType) ? { chatType: readNonEmptyString(context.telegram.chatType)! } : {}),
+  };
+}
+
+function stripNativeMediaDirectives(text: string): string {
+  return text
+    .replace(/\[\[\s*media\s*:[^\]\r\n]+?\s*\]\]/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function maybeDeliverRelayChannelReplyDirectly(input: {
+  backend: BackendClient;
+  context: unknown;
+  reply: Extract<RelayInboundMessageRequest, { outcome: "reply" }>["reply"];
+  backendMessageId: string;
+  relayMessageId: string;
+}): Promise<{
+  transportChannelId: "telegram";
+  transportAccountId: "default";
+  transportMessageId?: string;
+} | null> {
+  const telegram = readTelegramTaskContext(input.context);
+  if (!telegram) {
+    return null;
+  }
+
+  const media = Array.isArray(input.reply.media) ? input.reply.media : [];
+  const text = stripNativeMediaDirectives(extractReplyText(input.reply.message));
+  if (!text && media.length === 0) {
+    return null;
+  }
+
+  const transport = await input.backend.getTelegramTransportConfig();
+  let firstTransportMessageId: string | undefined;
+  let remainingText = text;
+
+  if (media.length === 0) {
+    const sent = await executeTelegramMessageSend({
+      accessKey: transport.accessKey,
+      apiBaseUrl: transport.apiBaseUrl,
+      action: {
+        transportTarget: { channel: "telegram", chatId: telegram.chatId },
+        reply: { replyToTransportMessageId: telegram.messageId ?? null },
+        payload: { text: remainingText },
+      },
+    });
+    firstTransportMessageId = sent.transportMessageId;
+  } else {
+    for (const item of media) {
+      const sent = await executeTelegramMessageSend({
+        accessKey: transport.accessKey,
+        apiBaseUrl: transport.apiBaseUrl,
+        action: {
+          transportTarget: { channel: "telegram", chatId: telegram.chatId },
+          reply: { replyToTransportMessageId: firstTransportMessageId ? null : (telegram.messageId ?? null) },
+          payload: {
+            ...(remainingText ? { text: remainingText } : {}),
+            mediaUrl: item.path,
+            fileName: item.fileName,
+            contentType: item.contentType,
+          },
+        },
+      });
+      firstTransportMessageId ??= sent.transportMessageId;
+      remainingText = "";
+    }
+
+    if (remainingText) {
+      const sent = await executeTelegramMessageSend({
+        accessKey: transport.accessKey,
+        apiBaseUrl: transport.apiBaseUrl,
+        action: {
+          transportTarget: { channel: "telegram", chatId: telegram.chatId },
+          reply: { replyToTransportMessageId: telegram.messageId ?? null },
+          payload: { text: remainingText },
+        },
+      });
+      firstTransportMessageId ??= sent.transportMessageId;
+    }
+  }
+
+  logger.info(
+    {
+      event: "message_flow",
+      direction: "relay_to_transport",
+      stage: "sent",
+      backendMessageId: input.backendMessageId,
+      relayMessageId: input.relayMessageId,
+      transport: "telegram",
+      chatId: telegram.chatId,
+      textLen: text.length,
+      mediaCount: media.length,
+      transportMessageId: firstTransportMessageId ?? null,
+    },
+    "Message flow transition"
+  );
+
+  return {
+    transportChannelId: "telegram",
+    transportAccountId: "default",
+    ...(firstTransportMessageId ? { transportMessageId: firstTransportMessageId } : {}),
+  };
 }
 
 function normalizeOpenclawMetaTrace(trace: unknown): Record<string, string> | undefined {

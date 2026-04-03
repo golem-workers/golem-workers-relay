@@ -27,6 +27,7 @@ export function startRelayChannelControlPlane(input: {
   relayInstanceId: string;
   getDataPlaneUrls: () => { uploadBaseUrl: string; downloadBaseUrl: string };
   backend: BackendClient;
+  onStateChange?: (state: ControlPlaneRuntimeState) => void;
 }): {
   wss: WebSocketServer;
   getState: () => ControlPlaneRuntimeState;
@@ -54,6 +55,7 @@ export function startRelayChannelControlPlane(input: {
 
   wss.on("connection", (socket: WebSocket) => {
     let helloDone = false;
+    input.onStateChange?.(getState());
 
     const sendJson = (obj: Record<string, unknown>) => {
       if (socket.readyState === WebSocket.OPEN) {
@@ -137,6 +139,9 @@ export function startRelayChannelControlPlane(input: {
           })
         );
       }
+    });
+    socket.on("close", () => {
+      input.onStateChange?.(getState());
     });
   });
 

@@ -277,6 +277,10 @@ describe("ChatRunner", () => {
   });
 
   it("uses native media directives instead of legacy MEDIA notes for relay_channel_v2", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-native-media-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    await fs.mkdir(path.join(stateDir, "workspace", "files"), { recursive: true });
+    await fs.writeFile(path.join(stateDir, "workspace", "files", "report.pdf"), "pdf");
     let sentMessage = "";
     const { wss, port } = startServer((ws) => {
       ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
@@ -310,7 +314,13 @@ describe("ChatRunner", () => {
               JSON.stringify({
                 type: "event",
                 event: "chat",
-                payload: { runId, sessionKey: "tg:123:srv_1", seq: 1, state: "final", message: { text: "ok" } },
+                payload: {
+                  runId,
+                  sessionKey: "tg:123:srv_1",
+                  seq: 1,
+                  state: "final",
+                  message: { text: "done\n\n[[media:files/report.pdf]]" },
+                },
               })
             );
           }, 10);
@@ -339,9 +349,14 @@ describe("ChatRunner", () => {
     expect(sentMessage).toContain("[Telegram plugin note]");
     expect(sentMessage).toContain("[[media:relative/path.ext]]");
     expect(sentMessage).not.toContain("MEDIA: relative/path.ext");
+    if (result.outcome !== "reply") throw new Error("expected reply");
+    expect(result.reply.artifacts?.[0]?.path).toBe("files/report.pdf");
+    expect(result.reply.media?.[0]?.fileName).toBe("report.pdf");
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
+    vi.unstubAllEnvs();
+    await fs.rm(stateDir, { recursive: true, force: true });
   });
 
   it("uses the latest delta message when final arrives without message", async () => {

@@ -126,41 +126,35 @@ export class BackendClient {
     fileBaseUrl: string;
   }> {
     const url = `${this.opts.baseUrl}/api/v1/relays/transport/telegram-config`;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15_000);
-    try {
-      const resp = await fetch(url, {
-        method: "GET",
-        headers: {
-          authorization: `Bearer ${this.opts.relayToken}`,
-        },
-        signal: controller.signal,
-      });
-      const text = await resp.text();
-      const json = safeParseJson(text);
-      if (!resp.ok || json.ok === false || !json.value || typeof json.value !== "object") {
-        throw new Error(`Backend telegram transport config request failed with HTTP ${resp.status}`);
+    const value = await retryWithBackoff(
+      () => getJson(url, this.opts.relayToken, 15_000),
+      {
+        attempts: 5,
+        baseDelayMs: [500, 900, 1600, 3000, 6000, 10_000],
+        jitterMs: 250,
+        shouldRetry: (err) => isRetryableBackendError(err),
       }
-      const value = json.value as Record<string, unknown>;
-      const accessKey =
-        typeof value.accessKey === "string" && value.accessKey.trim().length > 0
-          ? value.accessKey.trim()
-          : "";
-      const apiBaseUrl =
-        typeof value.apiBaseUrl === "string" && value.apiBaseUrl.trim().length > 0
-          ? value.apiBaseUrl.trim()
-          : "";
-      const fileBaseUrl =
-        typeof value.fileBaseUrl === "string" && value.fileBaseUrl.trim().length > 0
-          ? value.fileBaseUrl.trim()
-          : "";
-      if (!accessKey || !apiBaseUrl || !fileBaseUrl) {
-        throw new Error("Backend telegram transport config response was incomplete");
-      }
-      return { accessKey, apiBaseUrl, fileBaseUrl };
-    } finally {
-      clearTimeout(timer);
+    );
+    if (!value || typeof value !== "object") {
+      throw new Error("Backend telegram transport config response was incomplete");
     }
+    const parsed = value as Record<string, unknown>;
+    const accessKey =
+      typeof parsed.accessKey === "string" && parsed.accessKey.trim().length > 0
+        ? parsed.accessKey.trim()
+        : "";
+    const apiBaseUrl =
+      typeof parsed.apiBaseUrl === "string" && parsed.apiBaseUrl.trim().length > 0
+        ? parsed.apiBaseUrl.trim()
+        : "";
+    const fileBaseUrl =
+      typeof parsed.fileBaseUrl === "string" && parsed.fileBaseUrl.trim().length > 0
+        ? parsed.fileBaseUrl.trim()
+        : "";
+    if (!accessKey || !apiBaseUrl || !fileBaseUrl) {
+      throw new Error("Backend telegram transport config response was incomplete");
+    }
+    return { accessKey, apiBaseUrl, fileBaseUrl };
   }
 
   getResilienceState(): {
@@ -210,6 +204,45 @@ async function postJson(url: string, token: string, body: unknown, timeoutMs: nu
         },
         "Message flow transition"
       );
+      const err = new Error(`Backend HTTP ${resp.status}`) as Error & { status?: number };
+      err.status = resp.status;
+      throw err;
+    }
+    return json.value;
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error("Backend request timed out");
+    }
+    throw err instanceof Error ? err : new Error(String(err));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getJson(url: string, token: string, timeoutMs: number): Promise<unknown> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${token}`,
+      },
+      signal: controller.signal,
+    });
+    const text = await resp.text();
+    const json = safeParseJson(text);
+    if (json.ok === false) {
+      const err = new Error(
+        `Backend returned non-JSON response (status ${resp.status}, content-type ${resp.headers.get("content-type") ?? "unknown"}): ${previewText(text)}`
+      ) as Error & NonJsonResponseError;
+      err.status = resp.status;
+      err.nonJsonResponse = true;
+      err.contentType = resp.headers.get("content-type") ?? "unknown";
+      err.bodyPreview = previewText(text);
+      throw err;
+    }
+    if (!resp.ok) {
       const err = new Error(`Backend HTTP ${resp.status}`) as Error & { status?: number };
       err.status = resp.status;
       throw err;
