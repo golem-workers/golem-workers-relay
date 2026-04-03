@@ -12,7 +12,13 @@ RELAY_REPO_URL="https://github.com/golem-workers/golem-workers-relay.git"
 RELAY_GIT_REF="${RELAY_GIT_REF:-release}"
 RELAY_CHANNEL_PLUGIN_REPO_DIR="/root/golem-workers-openclaw-channel-plugin"
 RELAY_CHANNEL_PLUGIN_REPO_URL="https://github.com/golem-workers/golem-workers-openclaw-channel-plugin.git"
-RELAY_CHANNEL_PLUGIN_GIT_REF="${RELAY_CHANNEL_PLUGIN_GIT_REF:-${RELAY_GIT_REF}}"
+if [[ -z "${RELAY_CHANNEL_PLUGIN_GIT_REF:-}" ]]; then
+  if [[ "${RELAY_GIT_REF}" == "main" ]]; then
+    RELAY_CHANNEL_PLUGIN_GIT_REF="main"
+  else
+    RELAY_CHANNEL_PLUGIN_GIT_REF="release"
+  fi
+fi
 RELAY_CHANNEL_PLUGIN_INSTALL_DIR="/root/.openclaw/workspace/plugins/relay-channel"
 NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
