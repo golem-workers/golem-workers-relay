@@ -507,6 +507,7 @@ export async function executeTelegramTransportAction(input: {
   threadId?: string;
   downloadUrl?: string;
   token?: string;
+  pollId?: string;
 }> {
   const api = new TelegramBotApi({
     token: input.accessKey,
@@ -649,7 +650,7 @@ export async function executeTelegramTransportAction(input: {
       if (!question || !options) {
         throw new Error("TELEGRAM_POLL_QUESTION_AND_OPTIONS_REQUIRED");
       }
-      const sent = await api.request<{ message_id: number }>("sendPoll", {
+      const sent = await api.request<{ message_id: number; poll?: { id?: string } }>("sendPoll", {
         chat_id: chatId,
         question,
         options,
@@ -666,6 +667,7 @@ export async function executeTelegramTransportAction(input: {
       return {
         ...baseResult,
         transportMessageId: String(sent.message_id),
+        ...(typeof sent.poll?.id === "string" && sent.poll.id.trim().length > 0 ? { pollId: sent.poll.id } : {}),
       };
     }
     case "message.pin": {

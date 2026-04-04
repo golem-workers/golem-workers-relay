@@ -26,9 +26,12 @@ includes:
 - `file.download.request` with a local download-token data plane
 
 The relay push ingress also accepts normalized `transport_event` payloads from
-backend, so backend-owned Telegram updates such as `transport.message.edited`
-can be forwarded to the connected channel plugin without introducing a second
-HTTP ingress.
+backend. In the current Telegram Bot API architecture, polling/webhook ownership
+stays on backend, and relay consumes backend-produced update families such as
+`transport.message.edited`, `transport.callback.received`,
+`transport.reaction.updated`, `transport.poll.updated`, and
+`transport.topic.updated` without introducing a second Telegram ingress on the
+agent.
 
 Legacy `MEDIA:` artifact recovery remains only for `legacy_push_v1`.
 

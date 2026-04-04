@@ -158,6 +158,34 @@ export function startRelayChannelControlPlane(input: {
                 ? { token: result.token }
                 : {}),
             };
+            if (
+              channel === "telegram" &&
+              typeof action.transportTarget.chatId === "string" &&
+              action.transportTarget.chatId.trim().length > 0 &&
+              typeof completedResult.transportMessageId === "string"
+            ) {
+              const threadId =
+                ("threadId" in result && typeof result.threadId === "string"
+                  ? result.threadId
+                  : typeof action.thread?.threadId === "string"
+                    ? action.thread.threadId
+                    : null) ?? null;
+              await input.backend.registerTelegramMessageCorrelation({
+                chatId: action.transportTarget.chatId,
+                transportMessageId: completedResult.transportMessageId,
+                targetScope: action.targetScope,
+                threadId,
+              });
+              if ("pollId" in result && typeof result.pollId === "string" && result.pollId.trim().length > 0) {
+                await input.backend.registerTelegramPollCorrelation({
+                  pollId: result.pollId,
+                  chatId: action.transportTarget.chatId,
+                  transportMessageId: completedResult.transportMessageId,
+                  targetScope: action.targetScope,
+                  threadId,
+                });
+              }
+            }
             sendJson(
               buildActionCompleted({
                 requestId,

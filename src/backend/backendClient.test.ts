@@ -78,4 +78,50 @@ describe("BackendClient", () => {
       })
     );
   });
+
+  it("registers telegram transport correlations with backend", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ accepted: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new BackendClient({
+      baseUrl: "http://127.0.0.1:3000",
+      relayToken: "token",
+      devLogEnabled: false,
+    });
+
+    await expect(
+      client.registerTelegramMessageCorrelation({
+        chatId: "-100123",
+        transportMessageId: "77",
+        targetScope: "group",
+      })
+    ).resolves.toEqual({ accepted: true });
+    await expect(
+      client.registerTelegramPollCorrelation({
+        pollId: "poll_1",
+        chatId: "-100123",
+        transportMessageId: "77",
+        targetScope: "topic",
+        threadId: "555",
+      })
+    ).resolves.toEqual({ accepted: true });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:3000/api/v1/relays/transport/telegram/message-correlation",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:3000/api/v1/relays/transport/telegram/poll-correlation",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
 });

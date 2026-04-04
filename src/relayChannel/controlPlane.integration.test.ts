@@ -31,6 +31,8 @@ describe("relay-channel control plane", () => {
           apiBaseUrl: "https://api.telegram.org",
           fileBaseUrl: "https://api.telegram.org",
         }),
+        registerTelegramMessageCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
+        registerTelegramPollCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
         sendWhatsAppPersonalTransportMessage: () =>
           Promise.resolve({
             transportMessageId: "wa-msg-1",
@@ -140,6 +142,8 @@ describe("relay-channel control plane", () => {
       relayInstanceId: "relay-test",
       backend: {
         getTelegramTransportConfig: vi.fn(),
+        registerTelegramMessageCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
+        registerTelegramPollCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
         sendWhatsAppPersonalTransportMessage: vi.fn().mockResolvedValue({
           transportMessageId: "wa-msg-1",
         }),
@@ -259,6 +263,8 @@ describe("relay-channel control plane", () => {
             apiBaseUrl: "https://api.telegram.org",
             fileBaseUrl: "https://api.telegram.org",
           }),
+        registerTelegramMessageCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
+        registerTelegramPollCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
         sendWhatsAppPersonalTransportMessage: vi.fn(),
       } as never,
       getDataPlane: () => {

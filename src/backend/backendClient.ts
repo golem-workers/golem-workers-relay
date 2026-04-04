@@ -7,6 +7,8 @@ import {
   relayInboundMessageRequestSchema,
   relayOpenclawStatusRequestSchema,
   acceptedResponseSchema,
+  relayTelegramMessageCorrelationRequestSchema,
+  relayTelegramPollCorrelationRequestSchema,
   whatsAppPersonalTransportSendRequestSchema,
   whatsAppPersonalTransportSendResponseSchema,
   type WhatsAppPersonalTransportSendRequest,
@@ -175,6 +177,49 @@ export class BackendClient {
       }
     );
     return whatsAppPersonalTransportSendResponseSchema.parse(value);
+  }
+
+  async registerTelegramMessageCorrelation(input: {
+    chatId: string;
+    transportMessageId: string;
+    targetScope: "dm" | "group" | "topic";
+    threadId?: string | null;
+  }): Promise<{ accepted: true }> {
+    const url = `${this.opts.baseUrl}/api/v1/relays/transport/telegram/message-correlation`;
+    const body = relayTelegramMessageCorrelationRequestSchema.parse(input);
+    const value = await retryWithBackoff(
+      () => postJson(url, this.opts.relayToken, body, 15_000),
+      {
+        attempts: 5,
+        baseDelayMs: [500, 900, 1600, 3000, 6000, 10_000],
+        jitterMs: 250,
+        shouldRetry: (err) => isRetryableBackendError(err),
+      }
+    );
+    acceptedResponseSchema.parse(value);
+    return { accepted: true };
+  }
+
+  async registerTelegramPollCorrelation(input: {
+    pollId: string;
+    chatId: string;
+    transportMessageId: string;
+    targetScope: "dm" | "group" | "topic";
+    threadId?: string | null;
+  }): Promise<{ accepted: true }> {
+    const url = `${this.opts.baseUrl}/api/v1/relays/transport/telegram/poll-correlation`;
+    const body = relayTelegramPollCorrelationRequestSchema.parse(input);
+    const value = await retryWithBackoff(
+      () => postJson(url, this.opts.relayToken, body, 15_000),
+      {
+        attempts: 5,
+        baseDelayMs: [500, 900, 1600, 3000, 6000, 10_000],
+        jitterMs: 250,
+        shouldRetry: (err) => isRetryableBackendError(err),
+      }
+    );
+    acceptedResponseSchema.parse(value);
+    return { accepted: true };
   }
 
   getResilienceState(): {

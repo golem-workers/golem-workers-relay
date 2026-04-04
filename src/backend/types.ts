@@ -244,3 +244,24 @@ export const whatsAppPersonalTransportSendResponseSchema = z.object({
 });
 export type WhatsAppPersonalTransportSendResponse = z.infer<typeof whatsAppPersonalTransportSendResponseSchema>;
 
+export const relayTelegramMessageCorrelationRequestSchema = z.object({
+  chatId: z.string().min(1),
+  transportMessageId: z.string().min(1),
+  targetScope: z.enum(["dm", "group", "topic"]),
+  threadId: z.string().min(1).nullable().optional(),
+});
+export type RelayTelegramMessageCorrelationRequest = z.infer<
+  typeof relayTelegramMessageCorrelationRequestSchema
+>;
+
+export const relayTelegramPollCorrelationRequestSchema = z.object({
+  pollId: z.string().min(1),
+  chatId: z.string().min(1),
+  transportMessageId: z.string().min(1),
+  targetScope: z.enum(["dm", "group", "topic"]),
+  threadId: z.string().min(1).nullable().optional(),
+});
+export type RelayTelegramPollCorrelationRequest = z.infer<
+  typeof relayTelegramPollCorrelationRequestSchema
+>;
+
