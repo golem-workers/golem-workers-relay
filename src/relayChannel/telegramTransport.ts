@@ -8,9 +8,34 @@ type TelegramSendOptions = {
   text?: string;
   caption?: string;
   parseMode?: TelegramParseMode;
-  replyToMessageId?: string | null;
-  messageThreadId?: string | null;
+  replyToMessageId?: number;
+  messageThreadId?: number;
 };
+
+type TelegramApiSuccess<T> = { ok: true; result: T };
+type TelegramApiFailure = { ok: false; error_code?: number; description?: string };
+type TelegramApiResponse<T> = TelegramApiSuccess<T> | TelegramApiFailure;
+
+function formatTelegramApiError(status: number, payload: TelegramApiFailure | null): Error {
+  if (payload) {
+    return new Error(`Telegram API error ${payload.error_code ?? status}: ${payload.description ?? "Unknown error"}`);
+  }
+  return new Error(`Telegram API HTTP error: ${status}`);
+}
+
+function parseTelegramInteger(value: string | null | undefined, fieldName: string): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (!/^\d+$/u.test(value)) {
+    throw new Error(`Telegram ${fieldName} must be a positive integer, got: ${value}`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`Telegram ${fieldName} must be a safe positive integer, got: ${value}`);
+  }
+  return parsed;
+}
 
 class TelegramBotApi {
   private readonly baseUrl: string;
@@ -27,17 +52,12 @@ class TelegramBotApi {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const payload = (await response.json().catch(() => null)) as
-      | { ok: true; result: T }
-      | { ok: false; error_code?: number; description?: string }
-      | null;
-    if (!response.ok || !payload) {
-      throw new Error(`Telegram API HTTP error: ${response.status}`);
+    const payload = (await response.json().catch(() => null)) as TelegramApiResponse<T> | null;
+    if (payload && !payload.ok) {
+      throw formatTelegramApiError(response.status, payload);
     }
-    if (!payload.ok) {
-      throw new Error(
-        `Telegram API error ${payload.error_code ?? response.status}: ${payload.description ?? "Unknown error"}`
-      );
+    if (!response.ok || !payload?.ok) {
+      throw formatTelegramApiError(response.status, null);
     }
     return payload.result;
   }
@@ -47,17 +67,12 @@ class TelegramBotApi {
       method: "POST",
       body: form,
     });
-    const payload = (await response.json().catch(() => null)) as
-      | { ok: true; result: T }
-      | { ok: false; error_code?: number; description?: string }
-      | null;
-    if (!response.ok || !payload) {
-      throw new Error(`Telegram API HTTP error: ${response.status}`);
+    const payload = (await response.json().catch(() => null)) as TelegramApiResponse<T> | null;
+    if (payload && !payload.ok) {
+      throw formatTelegramApiError(response.status, payload);
     }
-    if (!payload.ok) {
-      throw new Error(
-        `Telegram API error ${payload.error_code ?? response.status}: ${payload.description ?? "Unknown error"}`
-      );
+    if (!response.ok || !payload?.ok) {
+      throw formatTelegramApiError(response.status, null);
     }
     return payload.result;
   }
@@ -140,8 +155,11 @@ export async function executeTelegramMessageSend(input: {
   const mediaUrl = readString(input.action.payload.mediaUrl);
   const forceDocument = input.action.payload.forceDocument === true;
   const asVoice = input.action.payload.asVoice === true;
-  const replyToMessageId = readString(input.action.reply?.replyToTransportMessageId);
-  const messageThreadId = readString(input.action.thread?.threadId);
+  const replyToMessageId = parseTelegramInteger(
+    readString(input.action.reply?.replyToTransportMessageId),
+    "reply_to_message_id"
+  );
+  const messageThreadId = parseTelegramInteger(readString(input.action.thread?.threadId), "message_thread_id");
 
   if (!mediaUrl) {
     const sent = await api.sendMessage({
