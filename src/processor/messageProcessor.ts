@@ -380,6 +380,19 @@ async function processSingleMessage(input: {
             ),
           },
         });
+      } else if (msg.input.kind === "transport_event") {
+        logger.info(
+          {
+            event: "message_flow",
+            direction: "backend_to_relay",
+            stage: "accepted",
+            backendMessageId: msg.messageId,
+            relayMessageId,
+            kind: msg.input.kind,
+            eventType: msg.input.event.eventType,
+          },
+          "Transport event was accepted by relay ingress"
+        );
       } else {
         const deliverySystem = readDeliverySystemFromTaskContext(msg.input.context);
         const { result, openclawMeta } = await runner.runChatTask({

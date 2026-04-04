@@ -76,6 +76,7 @@ async function main(): Promise<void> {
     | null = null;
   let getRelayChannelHealth: () => Record<string, unknown> = () => ({ enabled: false });
   let relayChannelCleanup: (() => Promise<void>) | null = null;
+  let publishRelayChannelEvent: ((event: Record<string, unknown>) => void) | null = null;
   if (cfg.relayChannel.enabled) {
     const dp = startRelayChannelDataPlaneServer({
       host: cfg.relayChannel.dataPlaneHost,
@@ -86,9 +87,13 @@ async function main(): Promise<void> {
       port: cfg.relayChannel.controlPlanePort,
       relayInstanceId: cfg.relayInstanceId,
       backend,
-      getDataPlaneUrls: () => {
+      getDataPlane: () => {
         const s = dp.getState();
-        return { uploadBaseUrl: s.uploadBaseUrl, downloadBaseUrl: s.downloadBaseUrl };
+        return {
+          uploadBaseUrl: s.uploadBaseUrl,
+          downloadBaseUrl: s.downloadBaseUrl,
+          registerDownload: dp.registerDownload,
+        };
       },
       onStateChange: (state) => {
         if (!reportOpenclawConnectionStatus) return;
@@ -99,6 +104,7 @@ async function main(): Promise<void> {
         });
       },
     });
+    publishRelayChannelEvent = cp.publishEvent;
     getRelayChannelHealth = () => ({
       enabled: true,
       controlPlane: cp.getState(),
@@ -247,6 +253,24 @@ async function main(): Promise<void> {
         }
         throw error;
       }
+      return Promise.resolve();
+    },
+    onTransportEvent: (message) => {
+      if (!publishRelayChannelEvent) {
+        throw new PushServerHttpError({
+          statusCode: 503,
+          code: "RELAY_CHANNEL_DISABLED",
+          message: "Relay channel control plane is disabled",
+        });
+      }
+      if (message.input.kind !== "transport_event") {
+        throw new PushServerHttpError({
+          statusCode: 400,
+          code: "TRANSPORT_EVENT_EXPECTED",
+          message: "Push payload did not contain a transport event",
+        });
+      }
+      publishRelayChannelEvent(message.input.event);
       return Promise.resolve();
     },
   });

@@ -36,9 +36,13 @@ describe("relay-channel control plane", () => {
             transportMessageId: "wa-msg-1",
           }),
       } as never,
-      getDataPlaneUrls: () => {
+      getDataPlane: () => {
         const s = dp.getState();
-        return { uploadBaseUrl: s.uploadBaseUrl, downloadBaseUrl: s.downloadBaseUrl };
+        return {
+          uploadBaseUrl: s.uploadBaseUrl,
+          downloadBaseUrl: s.downloadBaseUrl,
+          registerDownload: dp.registerDownload,
+        };
       },
     });
     await new Promise<void>((resolve) => cp.wss.once("listening", resolve));
@@ -140,9 +144,13 @@ describe("relay-channel control plane", () => {
           transportMessageId: "wa-msg-1",
         }),
       } as never,
-      getDataPlaneUrls: () => {
+      getDataPlane: () => {
         const s = dp.getState();
-        return { uploadBaseUrl: s.uploadBaseUrl, downloadBaseUrl: s.downloadBaseUrl };
+        return {
+          uploadBaseUrl: s.uploadBaseUrl,
+          downloadBaseUrl: s.downloadBaseUrl,
+          registerDownload: dp.registerDownload,
+        };
       },
     });
     await new Promise<void>((resolve) => cp.wss.once("listening", resolve));
@@ -212,6 +220,124 @@ describe("relay-channel control plane", () => {
       (m) => typeof m === "object" && m !== null && (m as { eventType?: string }).eventType === "transport.action.completed"
     );
     expect(completed).toBeTruthy();
+
+    socket.close();
+    await new Promise<void>((resolve) => socket.once("close", resolve));
+    await cp.close();
+    await closeHttpServer(dp.server);
+  });
+
+  it("returns downloadUrl/token for telegram file download requests", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ok: true, result: { file_id: "file-1", file_path: "docs/test.pdf" } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+        )
+        .mockResolvedValueOnce(
+          new Response(Buffer.from("pdf-bytes"), {
+            status: 200,
+            headers: { "content-type": "application/pdf" },
+          })
+        )
+    );
+    const dp = startRelayChannelDataPlaneServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve) => dp.server.once("listening", resolve));
+
+    const cp = startRelayChannelControlPlane({
+      host: "127.0.0.1",
+      port: 0,
+      relayInstanceId: "relay-test",
+      backend: {
+        getTelegramTransportConfig: () =>
+          Promise.resolve({
+            accessKey: "test-token",
+            apiBaseUrl: "https://api.telegram.org",
+            fileBaseUrl: "https://api.telegram.org",
+          }),
+        sendWhatsAppPersonalTransportMessage: vi.fn(),
+      } as never,
+      getDataPlane: () => {
+        const s = dp.getState();
+        return {
+          uploadBaseUrl: s.uploadBaseUrl,
+          downloadBaseUrl: s.downloadBaseUrl,
+          registerDownload: dp.registerDownload,
+        };
+      },
+    });
+    await new Promise<void>((resolve) => cp.wss.once("listening", resolve));
+    const address = cp.wss.address();
+    const wsPort = typeof address === "object" && address ? address.port : 0;
+
+    const socket = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+    });
+
+    const messages: Array<Record<string, unknown>> = [];
+    socket.on("message", (raw) => {
+      const text =
+        typeof raw === "string"
+          ? raw
+          : Buffer.isBuffer(raw)
+            ? raw.toString("utf8")
+            : Array.isArray(raw)
+              ? Buffer.concat(raw).toString("utf8")
+              : "";
+      messages.push(JSON.parse(text) as Record<string, unknown>);
+    });
+
+    socket.send(
+      JSON.stringify({
+        type: "hello",
+        protocolVersion: 1,
+        role: "openclaw-channel-plugin",
+        channelId: "relay-channel",
+        instanceId: "inst",
+        accountId: "acc-test",
+        supports: {
+          asyncLifecycle: true,
+          fileDownloadRequests: true,
+          capabilityNegotiation: true,
+          accountScopedStatus: true,
+        },
+        requestedCapabilities: { core: ["messageSend"], optional: ["fileDownloads"] },
+      })
+    );
+    await new Promise<void>((r) => setTimeout(r, 30));
+
+    socket.send(
+      JSON.stringify({
+        type: "request",
+        requestType: "transport.action",
+        requestId: "req-dl-1",
+        action: {
+          actionId: "act-dl-1",
+          kind: "file.download.request",
+          idempotencyKey: "idem-dl-1",
+          accountId: "acc-test",
+          targetScope: "dm",
+          transportTarget: { channel: "telegram", chatId: "123" },
+          conversation: { transportConversationId: "conv-1" },
+          payload: { fileId: "file-1" },
+        },
+      })
+    );
+
+    await new Promise<void>((r) => setTimeout(r, 80));
+    const completed = messages.find((m) => m.eventType === "transport.action.completed");
+    const payload =
+      completed && typeof completed.payload === "object" && completed.payload !== null
+        ? (completed.payload as { result?: { downloadUrl?: string; token?: string } })
+        : null;
+    expect(payload?.result?.downloadUrl).toMatch(/\/v1\/download\//);
+    expect(payload?.result?.token).toBeTruthy();
 
     socket.close();
     await new Promise<void>((resolve) => socket.once("close", resolve));

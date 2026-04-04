@@ -9,6 +9,64 @@ export const relayTransportSchema = z.object({
 
 export const capabilityMapSchema = z.record(z.string(), z.boolean());
 
+const TELEGRAM_CORE_CAPABILITIES = {
+  messageSend: true,
+  mediaSend: true,
+  inboundMessages: true,
+  replyTo: true,
+  threadRouting: true,
+} as const;
+
+const TELEGRAM_OPTIONAL_CAPABILITIES = {
+  messageEdit: true,
+  messageDelete: true,
+  reactions: true,
+  typing: true,
+  polls: true,
+  pinning: true,
+  fileDownloads: true,
+} as const;
+
+const TELEGRAM_PROVIDER_CAPABILITIES = {
+  "telegram.inlineButtons": true,
+  "telegram.forumTopics": true,
+  "telegram.callbackAnswer": true,
+} as const;
+
+const TELEGRAM_TARGET_CAPABILITIES = {
+  dm: {
+    messageEdit: true,
+    messageDelete: true,
+    reactions: true,
+    typing: true,
+    polls: true,
+    pinning: true,
+    fileDownloads: true,
+    "telegram.inlineButtons": true,
+  },
+  group: {
+    messageEdit: true,
+    messageDelete: true,
+    reactions: true,
+    typing: true,
+    polls: true,
+    pinning: true,
+    fileDownloads: true,
+    "telegram.inlineButtons": true,
+  },
+  topic: {
+    messageEdit: true,
+    messageDelete: true,
+    reactions: true,
+    typing: true,
+    polls: true,
+    pinning: true,
+    fileDownloads: true,
+    "telegram.inlineButtons": true,
+    "telegram.forumTopics": true,
+  },
+} as const;
+
 export const helloRequestSchema = z.object({
   type: z.literal("hello"),
   protocolVersion: z.literal(1),
@@ -91,18 +149,11 @@ export function buildHelloResponse(input: {
     role: "local-relay",
     relayInstanceId: input.relayInstanceId,
     accountId: input.accountId,
-    transport: { provider: "stub", providerVersion: "0" },
-    coreCapabilities: {
-      messageSend: true,
-      mediaSend: true,
-      inboundMessages: true,
-      replyTo: true,
-      threadRouting: true,
-    },
-    optionalCapabilities: {
-      fileDownloads: true,
-    },
-    providerCapabilities: {},
+    transport: { provider: "telegram", providerVersion: "bot-api-compatible" },
+    coreCapabilities: TELEGRAM_CORE_CAPABILITIES,
+    optionalCapabilities: TELEGRAM_OPTIONAL_CAPABILITIES,
+    providerCapabilities: TELEGRAM_PROVIDER_CAPABILITIES,
+    targetCapabilities: TELEGRAM_TARGET_CAPABILITIES,
     limits: {},
     dataPlane: input.dataPlane,
   };
@@ -122,7 +173,14 @@ export function buildActionAccepted(input: { requestId: string; actionId: string
 export function buildActionCompleted(input: {
   requestId: string;
   actionId: string;
-  transportMessageId: string;
+  result: {
+    transportMessageId?: string;
+    conversationId?: string;
+    threadId?: string;
+    uploadUrl?: string;
+    downloadUrl?: string;
+    token?: string;
+  };
 }): Record<string, unknown> {
   return {
     type: "event",
@@ -130,9 +188,7 @@ export function buildActionCompleted(input: {
     payload: {
       requestId: input.requestId,
       actionId: input.actionId,
-      result: {
-        transportMessageId: input.transportMessageId,
-      },
+      result: input.result,
     },
   };
 }

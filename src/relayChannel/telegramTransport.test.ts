@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { executeTelegramMessageSend } from "./telegramTransport.js";
+import { executeTelegramMessageSend, executeTelegramTransportAction } from "./telegramTransport.js";
 
 describe("executeTelegramMessageSend", () => {
   afterEach(() => {
@@ -62,5 +62,80 @@ describe("executeTelegramMessageSend", () => {
         },
       })
     ).rejects.toThrow("Telegram API error 400: Bad Request: replied message not found");
+  });
+
+  it("maps message.edit to editMessageText", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, result: { message_id: 55 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeTelegramTransportAction({
+      accessKey: "bot-token",
+      action: {
+        kind: "message.edit",
+        transportTarget: { channel: "telegram", chatId: "-1001234567890" },
+        payload: {
+          transportMessageId: "55",
+          text: "updated",
+          parseMode: "HTML",
+        },
+      },
+    });
+
+    expect(result.transportMessageId).toBe("55");
+    const requestInit = fetchMock.mock.calls[0]?.[1];
+    if (!requestInit || typeof requestInit.body !== "string") {
+      throw new Error("Expected telegram edit request body to be a JSON string");
+    }
+    const body = JSON.parse(requestInit.body) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      chat_id: "-1001234567890",
+      message_id: 55,
+      text: "updated",
+      parse_mode: "HTML",
+    });
+  });
+
+  it("registers download tokens for file.download.request", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, result: { file_id: "file_1", file_path: "docs/test.pdf" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(Buffer.from("pdf-bytes"), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeTelegramTransportAction({
+      accessKey: "bot-token",
+      fileBaseUrl: "https://api.telegram.org",
+      action: {
+        kind: "file.download.request",
+        transportTarget: { channel: "telegram", chatId: "123" },
+        payload: { fileId: "file_1" },
+      },
+      registerDownload: ({ fileName, contentType, body }) => {
+        expect(fileName).toBe("test.pdf");
+        expect(contentType).toBe("application/pdf");
+        expect(body.toString("utf8")).toBe("pdf-bytes");
+        return { token: "download-1", downloadUrl: "http://127.0.0.1:43129/v1/download/download-1" };
+      },
+    });
+
+    expect(result).toMatchObject({
+      downloadUrl: "http://127.0.0.1:43129/v1/download/download-1",
+      token: "download-1",
+    });
   });
 });

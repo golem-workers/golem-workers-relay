@@ -113,6 +113,50 @@ describe("pushServer", () => {
     const healthJson = (await healthResp.json()) as { ok: boolean };
     expect(healthJson.ok).toBe(true);
   });
+
+  it("routes transport_event payloads to the dedicated callback", async () => {
+    const seenEvents: unknown[] = [];
+    const { port } = await startTestPushServer(
+      {
+        port: 0,
+        path: "/relay/messages",
+        relayToken: "token",
+        onMessage: () => {
+          throw new Error("chat callback should not be used");
+        },
+        onTransportEvent: (message) => {
+          seenEvents.push(message);
+          return Promise.resolve();
+        },
+      },
+      servers
+    );
+
+    const resp = await fetch(`http://127.0.0.1:${port}/relay/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer token",
+      },
+      body: JSON.stringify({
+        messageId: "evt_1",
+        input: {
+          kind: "transport_event",
+          event: {
+            type: "event",
+            eventType: "transport.message.edited",
+            payload: {
+              eventId: "edited-1",
+              accountId: "default",
+            },
+          },
+        },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(seenEvents).toHaveLength(1);
+  });
 });
 
 async function startTestPushServer(

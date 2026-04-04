@@ -9,11 +9,28 @@ The relay also reports the current OpenClaw connectivity state back to backend:
 - throttles repeated disconnect reports to at most once per minute
 - sends `CONNECTED` immediately after the gateway connection is restored
 
-For `relay_channel_v2` agents, the relay now advertises the baseline
-`messageSend`/`mediaSend`/`replyTo`/`threadRouting`/`inboundMessages`
-capabilities on the local control plane and executes Telegram `message.send`
-actions directly via the channel plugin path. Legacy `MEDIA:` artifact recovery
-remains only for `legacy_push_v1`.
+For `relay_channel_v2` agents, the relay now advertises Telegram Bot API
+capabilities on the local control plane and executes Telegram transport actions
+directly via the channel plugin path. The currently wired action surface
+includes:
+
+- `message.send`, including parse mode, reply markup, single media, media
+  groups, and `file_id` reuse
+- `message.edit` and `message.delete`
+- `reaction.set`
+- `typing.set`
+- `poll.send`
+- `message.pin` and `message.unpin`
+- `topic.create`, `topic.edit`, and `topic.close`
+- `callback.answer`
+- `file.download.request` with a local download-token data plane
+
+The relay push ingress also accepts normalized `transport_event` payloads from
+backend, so backend-owned Telegram updates such as `transport.message.edited`
+can be forwarded to the connected channel plugin without introducing a second
+HTTP ingress.
+
+Legacy `MEDIA:` artifact recovery remains only for `legacy_push_v1`.
 
 ## Git Line Endings
 

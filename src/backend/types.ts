@@ -96,10 +96,40 @@ const sessionNewTaskInputSchema = z.object({
   kind: z.literal("session_new"),
 });
 
+const relayTransportEventSchema = z.object({
+  type: z.literal("event"),
+  eventType: z.enum([
+    "transport.message.received",
+    "transport.message.edited",
+    "transport.message.deleted",
+    "transport.reaction.updated",
+    "transport.callback.received",
+    "transport.poll.updated",
+    "transport.topic.updated",
+    "transport.delivery.receipt",
+    "transport.typing.updated",
+    "transport.capabilities.updated",
+    "transport.account.connecting",
+    "transport.account.ready",
+    "transport.account.degraded",
+    "transport.account.disconnected",
+    "transport.account.status",
+    "transport.replay.gap",
+    "transport.protocol.error",
+  ]),
+  payload: z.record(z.string(), z.unknown()),
+});
+
+const transportEventTaskInputSchema = z.object({
+  kind: z.literal("transport_event"),
+  event: relayTransportEventSchema,
+});
+
 export const taskInputSchema = z.discriminatedUnion("kind", [
   chatTaskInputSchema,
   handshakeTaskInputSchema,
   sessionNewTaskInputSchema,
+  transportEventTaskInputSchema,
 ]);
 
 export type TaskInput = z.infer<typeof taskInputSchema>;

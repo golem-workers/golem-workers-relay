@@ -10,7 +10,7 @@ import {
   helloRequestSchema,
   transportActionRequestSchema,
 } from "./controlPlaneProtocol.js";
-import { executeTelegramMessageSend } from "./telegramTransport.js";
+import { executeTelegramTransportAction } from "./telegramTransport.js";
 import { executeWhatsAppPersonalMessageSend } from "./whatsappPersonalTransport.js";
 
 export type ControlPlaneRuntimeState = {
@@ -26,12 +26,23 @@ export function startRelayChannelControlPlane(input: {
   host: string;
   port: number;
   relayInstanceId: string;
-  getDataPlaneUrls: () => { uploadBaseUrl: string; downloadBaseUrl: string };
+  getDataPlane: () => {
+    uploadBaseUrl: string;
+    downloadBaseUrl: string;
+    registerDownload: (input: {
+      body: Buffer;
+      contentType: string;
+      fileName: string;
+      expiresAtMs?: number;
+      token?: string;
+    }) => { token: string; downloadUrl: string };
+  };
   backend: BackendClient;
   onStateChange?: (state: ControlPlaneRuntimeState) => void;
 }): {
   wss: WebSocketServer;
   getState: () => ControlPlaneRuntimeState;
+  publishEvent: (event: Record<string, unknown>) => void;
   close: () => Promise<void>;
 } {
   let lastAccountId: string | null = null;
@@ -79,12 +90,15 @@ export function startRelayChannelControlPlane(input: {
           const hello = helloRequestSchema.parse(data);
           lastAccountId = hello.accountId;
           helloDone = true;
-          const dp = input.getDataPlaneUrls();
+          const dp = input.getDataPlane();
           sendJson(
             buildHelloResponse({
               relayInstanceId: input.relayInstanceId,
               accountId: hello.accountId,
-              dataPlane: dp,
+              dataPlane: {
+                uploadBaseUrl: dp.uploadBaseUrl,
+                downloadBaseUrl: dp.downloadBaseUrl,
+              },
             })
           );
           return;
@@ -100,25 +114,55 @@ export function startRelayChannelControlPlane(input: {
               channel === "telegram"
                 ? await (async () => {
                     const transportConfig = await input.backend.getTelegramTransportConfig();
-                    return await executeTelegramMessageSend({
+                    const dataPlane = input.getDataPlane();
+                    return await executeTelegramTransportAction({
                       accessKey: transportConfig.accessKey,
                       apiBaseUrl: transportConfig.apiBaseUrl,
+                      fileBaseUrl: transportConfig.fileBaseUrl,
                       action,
+                      registerDownload: (download) => dataPlane.registerDownload(download),
                     });
                   })()
                 : channel === "whatsapp_personal"
-                  ? await executeWhatsAppPersonalMessageSend({
-                      backend: input.backend,
-                      action,
-                    })
+                  ? action.kind === "message.send"
+                    ? await executeWhatsAppPersonalMessageSend({
+                        backend: input.backend,
+                        action,
+                      })
+                    : (() => {
+                        throw new Error(`UNSUPPORTED_TRANSPORT_ACTION: ${action.kind}`);
+                      })()
                   : (() => {
                       throw new Error(`UNSUPPORTED_TRANSPORT_CHANNEL: ${channel ?? "unknown"}`);
                     })();
+            const completedResult = {
+              transportMessageId:
+                "transportMessageId" in result && typeof result.transportMessageId === "string"
+                  ? result.transportMessageId
+                  : `relay_${randomUUID()}`,
+              ...("conversationId" in result &&
+              typeof result.conversationId === "string"
+                ? { conversationId: result.conversationId }
+                : {}),
+              ...("threadId" in result && typeof result.threadId === "string"
+                ? { threadId: result.threadId }
+                : {}),
+              ...("uploadUrl" in result && typeof result.uploadUrl === "string"
+                ? { uploadUrl: result.uploadUrl }
+                : {}),
+              ...("downloadUrl" in result &&
+              typeof result.downloadUrl === "string"
+                ? { downloadUrl: result.downloadUrl }
+                : {}),
+              ...("token" in result && typeof result.token === "string"
+                ? { token: result.token }
+                : {}),
+            };
             sendJson(
               buildActionCompleted({
                 requestId,
                 actionId: action.actionId,
-                transportMessageId: result.transportMessageId ?? `relay_${randomUUID()}`,
+                result: completedResult,
               })
             );
           } catch (error) {
@@ -158,6 +202,14 @@ export function startRelayChannelControlPlane(input: {
   return {
     wss,
     getState,
+    publishEvent: (event) => {
+      const payload = JSON.stringify(event);
+      for (const client of wss.clients) {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(payload);
+        }
+      }
+    },
     close: async () => {
       closed = true;
       await new Promise<void>((resolve) => {

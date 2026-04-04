@@ -88,6 +88,7 @@ export function startPushServer(input: {
   readinessPath?: string;
   getHealth?: () => { ok: boolean; ready: boolean; details?: unknown };
   onMessage: (message: InboundPushMessage) => Promise<void>;
+  onTransportEvent?: (message: InboundPushMessage) => Promise<void>;
 }): http.Server {
   const pushPath = input.path.startsWith("/") ? input.path : `/${input.path}`;
   const mediaPath = replaceLastPathSegment(pushPath, "media");
@@ -239,7 +240,18 @@ export function startPushServer(input: {
         });
         return;
       }
-      await input.onMessage(parsed.data);
+      if (parsed.data.input.kind === "transport_event") {
+        if (!input.onTransportEvent) {
+          throw new PushServerHttpError({
+            statusCode: 503,
+            code: "TRANSPORT_EVENT_UNSUPPORTED",
+            message: "Relay transport event ingress is not enabled",
+          });
+        }
+        await input.onTransportEvent(parsed.data);
+      } else {
+        await input.onMessage(parsed.data);
+      }
       logger.info(
         {
           event: "message_flow",
