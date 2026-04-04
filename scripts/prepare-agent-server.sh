@@ -319,8 +319,9 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     OPENCLAW_LOG_LEVEL || true
   curl -fsSL https://openclaw.ai/install.sh | bash -s -- --install-method npm --no-onboard
   test -f "${GLOBAL_NPM_ROOT}/openclaw/package.json"
-  npm --prefix "${GLOBAL_NPM_ROOT}/openclaw" install memory-lancedb-pro@beta
+  npm --prefix "${GLOBAL_NPM_ROOT}/openclaw" install memory-lancedb-pro@beta grammy
   test -f "${GLOBAL_NPM_ROOT}/openclaw/node_modules/memory-lancedb-pro/package.json"
+  test -f "${GLOBAL_NPM_ROOT}/openclaw/node_modules/grammy/package.json"
   mkdir -p /root/.openclaw/workspace/plugins
   ln -sfn "${GLOBAL_NPM_ROOT}/openclaw/node_modules/memory-lancedb-pro" /root/.openclaw/workspace/plugins/memory-lancedb-pro
   node --input-type=module - "${GLOBAL_NPM_ROOT}/openclaw/node_modules/memory-lancedb-pro" "/root/.openclaw/workspace/plugins/memory-lancedb-pro" <<'NODE'

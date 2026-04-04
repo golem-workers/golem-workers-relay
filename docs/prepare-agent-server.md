@@ -21,7 +21,7 @@ What it does:
 - installs Go and Linuxbrew;
 - installs Node 22 separately (Linuxbrew is not used to install Node);
 - pre-pulls and builds `golem-workers-relay` from `release` by default;
-- installs the latest OpenClaw, `memory-lancedb-pro@beta`, preinstalls the `relay-channel` plugin into `/root/.openclaw/workspace/plugins/relay-channel`, and installs full `playwright`;
+- installs the latest OpenClaw, prepares runtime dependencies (`memory-lancedb-pro@beta`, `grammy`), preinstalls the `relay-channel` plugin into `/root/.openclaw/workspace/plugins/relay-channel`, and installs full `playwright`;
 - links the prepared `memory-lancedb-pro` package into `/root/.openclaw/workspace/plugins/memory-lancedb-pro`, so backend bootstrap can load it without re-installing anything on first start;
 - clones/builds `golem-workers-openclaw-channel-plugin` during image prep and unpacks the generated agent bundle into the OpenClaw workspace plugin path, so future `RELAY_CHANNEL_V2` provisioning can reuse the prepared plugin files from the snapshot;
 - fails the install immediately if `memory-lancedb-pro` is missing or the prepared symlink target is wrong, so broken snapshot images are caught during image prep instead of surfacing later at runtime;
