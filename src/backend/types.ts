@@ -180,3 +180,37 @@ export const acceptedResponseSchema = z.object({
 
 export type AcceptedResponse = z.infer<typeof acceptedResponseSchema>;
 
+export const whatsAppPersonalTransportSendRequestSchema = z.object({
+  action: z.object({
+    transportTarget: z.object({
+      channel: z.literal("whatsapp_personal"),
+      chatId: z.string().min(1),
+    }),
+    reply: z
+      .object({
+        replyToTransportMessageId: z.string().min(1).nullable().optional(),
+      })
+      .optional(),
+    payload: z
+      .object({
+        text: z.string().optional(),
+        media: z
+          .object({
+            type: z.enum(["audio", "file", "image", "video"]),
+            dataB64: z.string().min(1),
+            contentType: z.string().min(1),
+            fileName: z.string().min(1).optional(),
+            asVoice: z.boolean().optional(),
+          })
+          .optional(),
+      })
+      .strict(),
+  }),
+});
+export type WhatsAppPersonalTransportSendRequest = z.infer<typeof whatsAppPersonalTransportSendRequestSchema>;
+
+export const whatsAppPersonalTransportSendResponseSchema = z.object({
+  transportMessageId: z.string().min(1),
+});
+export type WhatsAppPersonalTransportSendResponse = z.infer<typeof whatsAppPersonalTransportSendResponseSchema>;
+

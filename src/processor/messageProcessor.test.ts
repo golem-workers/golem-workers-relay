@@ -1,10 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const { executeTelegramMessageSendMock } = vi.hoisted(() => ({
+const { executeTelegramMessageSendMock, executeWhatsAppPersonalMessageSendMock } = vi.hoisted(() => ({
   executeTelegramMessageSendMock: vi.fn(),
+  executeWhatsAppPersonalMessageSendMock: vi.fn(),
 }));
 
 vi.mock("../relayChannel/telegramTransport.js", () => ({
   executeTelegramMessageSend: executeTelegramMessageSendMock,
+}));
+
+vi.mock("../relayChannel/whatsappPersonalTransport.js", () => ({
+  executeWhatsAppPersonalMessageSend: executeWhatsAppPersonalMessageSendMock,
 }));
 
 import { createMessageProcessor } from "./messageProcessor.js";
@@ -102,6 +107,99 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.openclawMeta?.transportChannelId).toBe("telegram");
     expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
     expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("tg-msg-1");
+  });
+
+  it("delivers relay_channel_v2 WhatsApp Personal replies directly through the transport executor", async () => {
+    executeWhatsAppPersonalMessageSendMock.mockResolvedValueOnce({ transportMessageId: "wa-msg-1" });
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockResolvedValue({
+          result: {
+            outcome: "reply",
+            reply: {
+              runId: "run_wa_v2_1",
+              message: { role: "assistant", content: "hello from wa plugin\n\n[[media:files/report.pdf]]" },
+              media: [
+                {
+                  path: "files/report.pdf",
+                  fileName: "report.pdf",
+                  contentType: "application/pdf",
+                  sizeBytes: 123,
+                },
+              ],
+            },
+          },
+          openclawMeta: { method: "chat.send", runId: "run_wa_v2_1" },
+        }),
+      } as never,
+      backend: { submitInboundMessage, getTelegramTransportConfig: vi.fn() } as never,
+    });
+
+    await processor({
+      messageId: "msg_wa_v2_1",
+      input: {
+        kind: "chat",
+        sessionKey: "whatsapp-personal:12345@s.whatsapp.net",
+        messageText: "ping",
+        context: {
+          channel: "whatsapp_personal",
+          deliverySystem: "relay_channel_v2",
+          whatsappPersonal: {
+            chatId: "12345@s.whatsapp.net",
+            messageId: "wamid-1",
+          },
+        },
+      },
+    });
+
+    expect(executeWhatsAppPersonalMessageSendMock).toHaveBeenCalledTimes(1);
+    const waTransportCall = executeWhatsAppPersonalMessageSendMock.mock.calls[0]?.[0] as
+      | {
+          action?: {
+            transportTarget?: { channel?: string; chatId?: string };
+            reply?: { replyToTransportMessageId?: string | null };
+            payload?: {
+              text?: string;
+              mediaUrl?: string;
+              fileName?: string;
+              contentType?: string;
+            };
+          };
+        }
+      | undefined;
+    expect(waTransportCall?.action).toEqual({
+      transportTarget: { channel: "whatsapp_personal", chatId: "12345@s.whatsapp.net" },
+      reply: { replyToTransportMessageId: "wamid-1" },
+      payload: {
+        text: "hello from wa plugin",
+        mediaUrl: "files/report.pdf",
+        fileName: "report.pdf",
+        contentType: "application/pdf",
+      },
+    });
+    const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
+      | {
+          body?: {
+            openclawMeta?: {
+              transportChannelId?: string;
+              transportAccountId?: string;
+              transportMessageId?: string;
+            };
+          };
+        }
+      | undefined;
+    expect(firstCall?.body?.openclawMeta?.transportChannelId).toBe("whatsapp_personal");
+    expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
+    expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("wa-msg-1");
   });
 
   it("emits a technical callback before processing when disk usage is above threshold", async () => {

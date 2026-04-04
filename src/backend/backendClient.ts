@@ -7,6 +7,9 @@ import {
   relayInboundMessageRequestSchema,
   relayOpenclawStatusRequestSchema,
   acceptedResponseSchema,
+  whatsAppPersonalTransportSendRequestSchema,
+  whatsAppPersonalTransportSendResponseSchema,
+  type WhatsAppPersonalTransportSendRequest,
 } from "./types.js";
 
 export type BackendClientOptions = {
@@ -155,6 +158,23 @@ export class BackendClient {
       throw new Error("Backend telegram transport config response was incomplete");
     }
     return { accessKey, apiBaseUrl, fileBaseUrl };
+  }
+
+  async sendWhatsAppPersonalTransportMessage(input: WhatsAppPersonalTransportSendRequest): Promise<{
+    transportMessageId: string;
+  }> {
+    const url = `${this.opts.baseUrl}/api/v1/relays/transport/whatsapp-personal/send`;
+    const body = whatsAppPersonalTransportSendRequestSchema.parse(input);
+    const value = await retryWithBackoff(
+      () => postJson(url, this.opts.relayToken, body, 15_000),
+      {
+        attempts: 5,
+        baseDelayMs: [500, 900, 1600, 3000, 6000, 10_000],
+        jitterMs: 250,
+        shouldRetry: (err) => isRetryableBackendError(err),
+      }
+    );
+    return whatsAppPersonalTransportSendResponseSchema.parse(value);
   }
 
   getResilienceState(): {

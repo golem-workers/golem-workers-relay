@@ -11,6 +11,7 @@ import {
   transportActionRequestSchema,
 } from "./controlPlaneProtocol.js";
 import { executeTelegramMessageSend } from "./telegramTransport.js";
+import { executeWhatsAppPersonalMessageSend } from "./whatsappPersonalTransport.js";
 
 export type ControlPlaneRuntimeState = {
   enabled: boolean;
@@ -95,15 +96,24 @@ export function startRelayChannelControlPlane(input: {
         void (async () => {
           try {
             const channel = action.transportTarget.channel;
-            if (channel !== "telegram") {
-              throw new Error(`UNSUPPORTED_TRANSPORT_CHANNEL: ${channel ?? "unknown"}`);
-            }
-            const transportConfig = await input.backend.getTelegramTransportConfig();
-            const result = await executeTelegramMessageSend({
-              accessKey: transportConfig.accessKey,
-              apiBaseUrl: transportConfig.apiBaseUrl,
-              action,
-            });
+            const result =
+              channel === "telegram"
+                ? await (async () => {
+                    const transportConfig = await input.backend.getTelegramTransportConfig();
+                    return await executeTelegramMessageSend({
+                      accessKey: transportConfig.accessKey,
+                      apiBaseUrl: transportConfig.apiBaseUrl,
+                      action,
+                    });
+                  })()
+                : channel === "whatsapp_personal"
+                  ? await executeWhatsAppPersonalMessageSend({
+                      backend: input.backend,
+                      action,
+                    })
+                  : (() => {
+                      throw new Error(`UNSUPPORTED_TRANSPORT_CHANNEL: ${channel ?? "unknown"}`);
+                    })();
             sendJson(
               buildActionCompleted({
                 requestId,

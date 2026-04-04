@@ -528,7 +528,7 @@ export class ChatRunner {
       }
       throw error;
     }
-    baseMessageText = applyTelegramDeliveryInstructions({
+    baseMessageText = applyTransportDeliveryInstructions({
       sessionKey: input.sessionKey,
       messageText: baseMessageText,
       deliverySystem: input.deliverySystem ?? "legacy_push_v1",
@@ -1156,18 +1156,21 @@ function normalizeVisionPromptText(messageText: string): string {
   return text.length > 0 ? text : "[image]";
 }
 
-function applyTelegramDeliveryInstructions(input: {
+function applyTransportDeliveryInstructions(input: {
   sessionKey: string;
   messageText: string;
   deliverySystem: DeliverySystem;
 }): string {
-  if (!input.sessionKey.startsWith("tg:")) {
+  const isTelegramSession = input.sessionKey.startsWith("tg:");
+  const isWhatsAppPersonalSession = input.sessionKey.startsWith("whatsapp-personal:");
+  if (!isTelegramSession && !isWhatsAppPersonalSession) {
     return input.messageText;
   }
+  const transportLabel = isTelegramSession ? "Telegram" : "WhatsApp Personal";
   const instruction =
     input.deliverySystem === "relay_channel_v2"
       ? [
-          "[Telegram plugin note]",
+          `[${transportLabel} plugin note]`,
           "If you need to send the user a file, first save or locate the exact file inside the current workspace.",
           "Before replying, verify that the file really exists at that exact local path.",
           "In your final answer, add a separate final token exactly as `[[media:relative/path.ext]]`.",
@@ -1177,7 +1180,7 @@ function applyTelegramDeliveryInstructions(input: {
           "Do not paste the full file contents into the reply when the intended output is a file attachment.",
         ].join("\n")
       : [
-          "[Telegram bridge note]",
+          `[${transportLabel} bridge note]`,
           "If you need to send the user a file, first save or locate the exact file inside the OpenClaw workspace.",
           "Before replying, verify that the file really exists at that exact workspace-relative path.",
           "In your final answer, add a separate final line exactly as `MEDIA: relative/path.ext`.",
