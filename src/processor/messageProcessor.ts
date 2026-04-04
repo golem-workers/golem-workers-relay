@@ -55,6 +55,19 @@ type ArtifactDeliveryMeta = {
 };
 
 type DeliverySystem = "legacy_push_v1" | "relay_channel_v2";
+type RelayProcessingErrorCode =
+  | "RELAY_INTERNAL_ERROR"
+  | "RELAY_DIRECT_TRANSPORT_DELIVERY_FAILED";
+
+class RelayProcessingError extends Error {
+  readonly code: RelayProcessingErrorCode;
+
+  constructor(input: { code: RelayProcessingErrorCode; message: string; cause?: unknown }) {
+    super(input.message, input.cause !== undefined ? { cause: input.cause } : undefined);
+    this.name = "RelayProcessingError";
+    this.code = input.code;
+  }
+}
 
 export function createMessageProcessor(input: MessageProcessorInput): (msg: InboundPushMessage) => Promise<void> {
   const { cfg, gateway, runner, backend } = input;
@@ -658,6 +671,7 @@ async function processSingleMessage(input: {
       );
     } catch (err) {
       const finishedAtMs = Date.now();
+      const normalizedError = normalizeRelayProcessingError(err);
       logger.warn(
         {
           event: "message_flow",
@@ -665,7 +679,8 @@ async function processSingleMessage(input: {
           stage: "failed",
           backendMessageId: msg.messageId,
           relayMessageId,
-          error: err instanceof Error ? err.message : String(err),
+          error: normalizedError.message,
+          errorCode: normalizedError.code,
         },
         "Message flow transition"
       );
@@ -676,7 +691,10 @@ async function processSingleMessage(input: {
             relayMessageId,
             finishedAtMs,
             outcome: "error",
-            error: { code: "RELAY_INTERNAL_ERROR", message: "Relay failed to process message" },
+            error: {
+              code: normalizedError.code,
+              message: normalizedError.message,
+            },
             openclawMeta: buildOpenclawMetaWithTrace(
               { method: "relay" },
               { backendMessageId: msg.messageId, relayMessageId, relayInstanceId: cfg.relayInstanceId }
@@ -938,67 +956,12 @@ async function maybeDeliverRelayChannelReplyDirectly(input: {
     return null;
   }
 
-  const telegramTransport = telegram ? await input.backend.getTelegramTransportConfig() : null;
-  let firstTransportMessageId: string | undefined;
-  let remainingText = text;
+  try {
+    const telegramTransport = telegram ? await input.backend.getTelegramTransportConfig() : null;
+    let firstTransportMessageId: string | undefined;
+    let remainingText = text;
 
-  if (media.length === 0) {
-    const sent = telegram
-      ? await executeTelegramMessageSend({
-          accessKey: telegramTransport!.accessKey,
-          apiBaseUrl: telegramTransport!.apiBaseUrl,
-          action: {
-            transportTarget: { channel: "telegram", chatId: telegram.chatId },
-            reply: { replyToTransportMessageId: telegram.messageId ?? null },
-            payload: { text: remainingText },
-          },
-        })
-      : await executeWhatsAppPersonalMessageSend({
-          backend: input.backend,
-          action: {
-            transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
-            reply: { replyToTransportMessageId: whatsAppPersonal!.messageId ?? null },
-            payload: { text: remainingText },
-          },
-        });
-    firstTransportMessageId = sent.transportMessageId;
-  } else {
-    for (const item of media) {
-      const sent = telegram
-        ? await executeTelegramMessageSend({
-            accessKey: telegramTransport!.accessKey,
-            apiBaseUrl: telegramTransport!.apiBaseUrl,
-            action: {
-              transportTarget: { channel: "telegram", chatId: telegram.chatId },
-              reply: { replyToTransportMessageId: firstTransportMessageId ? null : (telegram.messageId ?? null) },
-              payload: {
-                ...(remainingText ? { text: remainingText } : {}),
-                mediaUrl: item.path,
-                fileName: item.fileName,
-                contentType: item.contentType,
-              },
-            },
-          })
-        : await executeWhatsAppPersonalMessageSend({
-            backend: input.backend,
-            action: {
-              transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
-              reply: {
-                replyToTransportMessageId: firstTransportMessageId ? null : (whatsAppPersonal!.messageId ?? null),
-              },
-              payload: {
-                ...(remainingText ? { text: remainingText } : {}),
-                mediaUrl: item.path,
-                fileName: item.fileName,
-                contentType: item.contentType,
-              },
-            },
-          });
-      firstTransportMessageId ??= sent.transportMessageId;
-      remainingText = "";
-    }
-
-    if (remainingText) {
+    if (media.length === 0) {
       const sent = telegram
         ? await executeTelegramMessageSend({
             accessKey: telegramTransport!.accessKey,
@@ -1017,31 +980,136 @@ async function maybeDeliverRelayChannelReplyDirectly(input: {
               payload: { text: remainingText },
             },
           });
-      firstTransportMessageId ??= sent.transportMessageId;
+      firstTransportMessageId = sent.transportMessageId;
+    } else {
+      for (const item of media) {
+        const sent = telegram
+          ? await executeTelegramMessageSend({
+              accessKey: telegramTransport!.accessKey,
+              apiBaseUrl: telegramTransport!.apiBaseUrl,
+              action: {
+                transportTarget: { channel: "telegram", chatId: telegram.chatId },
+                reply: { replyToTransportMessageId: firstTransportMessageId ? null : (telegram.messageId ?? null) },
+                payload: {
+                  ...(remainingText ? { text: remainingText } : {}),
+                  mediaUrl: item.path,
+                  fileName: item.fileName,
+                  contentType: item.contentType,
+                },
+              },
+            })
+          : await executeWhatsAppPersonalMessageSend({
+              backend: input.backend,
+              action: {
+                transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
+                reply: {
+                  replyToTransportMessageId: firstTransportMessageId ? null : (whatsAppPersonal!.messageId ?? null),
+                },
+                payload: {
+                  ...(remainingText ? { text: remainingText } : {}),
+                  mediaUrl: item.path,
+                  fileName: item.fileName,
+                  contentType: item.contentType,
+                },
+              },
+            });
+        firstTransportMessageId ??= sent.transportMessageId;
+        remainingText = "";
+      }
+
+      if (remainingText) {
+        const sent = telegram
+          ? await executeTelegramMessageSend({
+              accessKey: telegramTransport!.accessKey,
+              apiBaseUrl: telegramTransport!.apiBaseUrl,
+              action: {
+                transportTarget: { channel: "telegram", chatId: telegram.chatId },
+                reply: { replyToTransportMessageId: telegram.messageId ?? null },
+                payload: { text: remainingText },
+              },
+            })
+          : await executeWhatsAppPersonalMessageSend({
+              backend: input.backend,
+              action: {
+                transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
+                reply: { replyToTransportMessageId: whatsAppPersonal!.messageId ?? null },
+                payload: { text: remainingText },
+              },
+            });
+        firstTransportMessageId ??= sent.transportMessageId;
+      }
     }
+
+    logger.info(
+      {
+        event: "message_flow",
+        direction: "relay_to_transport",
+        stage: "sent",
+        backendMessageId: input.backendMessageId,
+        relayMessageId: input.relayMessageId,
+        transport: telegram ? "telegram" : "whatsapp_personal",
+        chatId: telegram?.chatId ?? whatsAppPersonal?.chatId ?? null,
+        textLen: text.length,
+        mediaCount: media.length,
+        transportMessageId: firstTransportMessageId ?? null,
+      },
+      "Message flow transition"
+    );
+
+    return {
+      transportChannelId: telegram ? "telegram" : "whatsapp_personal",
+      transportAccountId: "default",
+      ...(firstTransportMessageId ? { transportMessageId: firstTransportMessageId } : {}),
+    };
+  } catch (error) {
+    const transport = telegram ? "telegram" : "whatsapp_personal";
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new RelayProcessingError({
+      code: "RELAY_DIRECT_TRANSPORT_DELIVERY_FAILED",
+      message: `Relay direct ${transport} delivery failed: ${detail}`,
+      cause: error,
+    });
   }
+}
 
-  logger.info(
-    {
-      event: "message_flow",
-      direction: "relay_to_transport",
-      stage: "sent",
-      backendMessageId: input.backendMessageId,
-      relayMessageId: input.relayMessageId,
-      transport: telegram ? "telegram" : "whatsapp_personal",
-      chatId: telegram?.chatId ?? whatsAppPersonal?.chatId ?? null,
-      textLen: text.length,
-      mediaCount: media.length,
-      transportMessageId: firstTransportMessageId ?? null,
-    },
-    "Message flow transition"
-  );
-
+function normalizeRelayProcessingError(error: unknown): {
+  code: RelayProcessingErrorCode;
+  message: string;
+} {
+  if (error instanceof RelayProcessingError) {
+    return {
+      code: error.code,
+      message: error.message.trim() || "Relay failed to process message",
+    };
+  }
+  if (error instanceof Error) {
+    return {
+      code: "RELAY_INTERNAL_ERROR",
+      message: error.message.trim() || "Relay failed to process message",
+    };
+  }
   return {
-    transportChannelId: telegram ? "telegram" : "whatsapp_personal",
-    transportAccountId: "default",
-    ...(firstTransportMessageId ? { transportMessageId: firstTransportMessageId } : {}),
+    code: "RELAY_INTERNAL_ERROR",
+    message: formatUnknownErrorMessage(error),
   };
+}
+
+function formatUnknownErrorMessage(error: unknown): string {
+  if (typeof error === "string") {
+    return error.trim() || "Relay failed to process message";
+  }
+  if (typeof error === "number" || typeof error === "boolean" || typeof error === "bigint") {
+    return String(error);
+  }
+  if (error == null) {
+    return "Relay failed to process message";
+  }
+  try {
+    const serialized = JSON.stringify(error);
+    return serialized && serialized !== "{}" ? serialized : "Relay failed to process message";
+  } catch {
+    return "Relay failed to process message";
+  }
 }
 
 function normalizeOpenclawMetaTrace(trace: unknown): Record<string, string> | undefined {

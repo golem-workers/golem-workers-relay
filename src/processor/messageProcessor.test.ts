@@ -202,6 +202,85 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("wa-msg-1");
   });
 
+  it("preserves direct transport delivery failures for relay_channel_v2 replies", async () => {
+    executeTelegramMessageSendMock.mockRejectedValueOnce(
+      new Error("Telegram API error 400: Bad Request: replied message not found")
+    );
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const getTelegramTransportConfig = vi.fn().mockResolvedValue({
+      accessKey: "bot-token",
+      apiBaseUrl: "https://api.telegram.org",
+      fileBaseUrl: "https://api.telegram.org/file",
+    });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockResolvedValue({
+          result: {
+            outcome: "reply",
+            reply: {
+              runId: "run_v2_fail_1",
+              message: { role: "assistant", content: "hello user\n\n[[media:files/report.pdf]]" },
+              media: [
+                {
+                  path: "files/report.pdf",
+                  fileName: "report.pdf",
+                  contentType: "application/pdf",
+                  sizeBytes: 123,
+                },
+              ],
+            },
+          },
+          openclawMeta: { method: "chat.send", runId: "run_v2_fail_1" },
+        }),
+      } as never,
+      backend: { submitInboundMessage, getTelegramTransportConfig } as never,
+    });
+
+    await processor({
+      messageId: "msg_v2_fail_1",
+      input: {
+        kind: "chat",
+        sessionKey: "tg:123:srv_1",
+        messageText: "ping",
+        context: {
+          channel: "telegram",
+          deliverySystem: "relay_channel_v2",
+          telegram: {
+            chatId: "123",
+            messageId: "55",
+          },
+        },
+      },
+    });
+
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
+      | {
+          body?: {
+            outcome?: string;
+            error?: {
+              code?: string;
+              message?: string;
+            };
+          };
+        }
+      | undefined;
+    expect(firstCall?.body?.outcome).toBe("error");
+    expect(firstCall?.body?.error).toEqual({
+      code: "RELAY_DIRECT_TRANSPORT_DELIVERY_FAILED",
+      message:
+        "Relay direct telegram delivery failed: Telegram API error 400: Bad Request: replied message not found",
+    });
+  });
+
   it("emits a technical callback before processing when disk usage is above threshold", async () => {
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const processor = createMessageProcessor({
