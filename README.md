@@ -200,8 +200,9 @@ For chat media:
 - `image` is normalized to `640x480` with aggressive PNG palette compression on relay and then forwarded to OpenClaw as multimodal `image_url` content parts using base64 `data:` URLs.
 - `video` is accepted too, and relay now saves the original uploaded video into the OpenClaw workspace so the agent/runtime can inspect the full file instead of a preview frame.
 - If the connected gateway rejects the structured multimodal payload, relay retries once using uploaded workspace files so the turn still reaches the agent with file references.
-- For Telegram-connected `legacy_push_v1` sessions, relay injects a delivery hint for generated artifacts: when the agent wants to return a real file to the user, it should save the artifact in the OpenClaw workspace and include a final `MEDIA: relative/path.ext` line so relay can attach that file in `reply.media`.
-- For Telegram-connected `relay_channel_v2` sessions, relay injects the native OpenClaw channel directive form instead: `[[media:relative/path.ext]]`. Those sends are executed directly on the relay control plane and are not re-delivered through backend Telegram outbound workers.
+- For Telegram-connected `legacy_push_v1` sessions, relay injects a delivery hint for generated artifacts: when the agent wants to return a real file to the user, it should save the artifact in the OpenClaw workspace and include a final `[[media:relative/path.ext]]` directive so relay can attach that file in `reply.media`.
+- For Telegram-connected `relay_channel_v2` sessions, relay uses the same native OpenClaw channel directive form: `[[media:relative/path.ext]]`. Those sends are executed directly on the relay control plane and are not re-delivered through backend Telegram outbound workers.
+- Relay still parses legacy `MEDIA: relative/path.ext` replies from older transcripts and agents for backward compatibility, but new prompts and skills should emit `[[media:...]]`.
 - `reply.media` now carries relay-side file references (`path`, `fileName`, `contentType`, `sizeBytes`) instead of embedding `dataB64`; backend downloads those files from relay only when it needs to deliver them to Telegram.
 
 ## OpenClaw event forwarding semantics

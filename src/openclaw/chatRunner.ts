@@ -6,6 +6,7 @@ import { logger } from "../logger.js";
 import {
   collectTranscriptArtifacts,
   extractMediaDirectivePaths,
+  extractNativeMediaDirectivePaths,
   type TranscriptArtifact,
   type TranscriptArtifactCollectionReport,
   type TranscriptMediaFile,
@@ -271,7 +272,7 @@ function matchesTranscriptUserMessage(candidateText: string, requestText: string
 function stripMediaDirectiveLines(text: string): string {
   return text
     .split(/\r?\n/)
-    .filter((line) => !/^\s*MEDIA:\s*/.test(line))
+    .filter((line) => !/^\s*MEDIA:\s*/.test(line) && !/^\s*\[\[\s*media\s*:/.test(line))
     .join("\n")
     .trim();
 }
@@ -369,8 +370,14 @@ function shouldPreferTranscriptReplyMessage(input: {
   const gatewayText = extractTextFromMessage(input.gatewayMessage);
   if (!gatewayText) return true;
 
-  const gatewayMediaPaths = extractMediaDirectivePaths(gatewayText);
-  const transcriptMediaPaths = extractMediaDirectivePaths(transcriptText);
+  const gatewayMediaPaths = [
+    ...extractMediaDirectivePaths(gatewayText),
+    ...extractNativeMediaDirectivePaths(gatewayText),
+  ];
+  const transcriptMediaPaths = [
+    ...extractMediaDirectivePaths(transcriptText),
+    ...extractNativeMediaDirectivePaths(transcriptText),
+  ];
   if (gatewayMediaPaths.length > 0 || transcriptMediaPaths.length === 0) {
     return false;
   }
@@ -1167,28 +1174,20 @@ function applyTransportDeliveryInstructions(input: {
     return input.messageText;
   }
   const transportLabel = isTelegramSession ? "Telegram" : "WhatsApp Personal";
-  const instruction =
-    input.deliverySystem === "relay_channel_v2"
-      ? [
-          `[${transportLabel} plugin note]`,
-          "If you need to send the user a file, first save or locate the exact file inside the current workspace.",
-          "Before replying, verify that the file really exists at that exact local path.",
-          "In your final answer, add a separate final token exactly as `[[media:relative/path.ext]]`.",
-          "Use the real local path only. Do not rename the file inside the directive or point to an approximate match.",
-          "If you need to send multiple files, add one separate `[[media:...]]` directive per file.",
-          "If you are not sure about the exact path, inspect the workspace first and only then reply.",
-          "Do not paste the full file contents into the reply when the intended output is a file attachment.",
-        ].join("\n")
-      : [
-          `[${transportLabel} bridge note]`,
-          "If you need to send the user a file, first save or locate the exact file inside the OpenClaw workspace.",
-          "Before replying, verify that the file really exists at that exact workspace-relative path.",
-          "In your final answer, add a separate final line exactly as `MEDIA: relative/path.ext`.",
-          "Use the real workspace-relative path only. Do not invent directories, rename the file in the `MEDIA:` line, or point to an approximate match.",
-          "If you need to send multiple files, add one separate `MEDIA:` line per file.",
-          "If you are not sure about the exact path, inspect the workspace first and only then reply.",
-          "Do not paste the full file contents into the reply when the intended output is a file attachment.",
-        ].join("\n");
+  const instruction = [
+    `[${transportLabel} ${input.deliverySystem === "relay_channel_v2" ? "plugin" : "bridge"} note]`,
+    `If you need to send the user a file, first save or locate the exact file inside the ${
+      input.deliverySystem === "relay_channel_v2" ? "current workspace" : "OpenClaw workspace"
+    }.`,
+    `Before replying, verify that the file really exists at that exact ${
+      input.deliverySystem === "relay_channel_v2" ? "local" : "workspace-relative"
+    } path.`,
+    "In your final answer, add a separate final token exactly as `[[media:relative/path.ext]]`.",
+    "Use the real path only. Do not invent directories, rename the file inside the directive, or point to an approximate match.",
+    "If you need to send multiple files, add one separate `[[media:...]]` directive per file.",
+    "If you are not sure about the exact path, inspect the workspace first and only then reply.",
+    "Do not paste the full file contents into the reply when the intended output is a file attachment.",
+  ].join("\n");
   const text = input.messageText.trim();
   return text ? `${text}\n\n${instruction}` : instruction;
 }

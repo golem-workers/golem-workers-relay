@@ -242,21 +242,21 @@ export async function resolveRelayMediaFile(params: {
 }): Promise<{ absPath: string; relPath: string }> {
   const raw = params.mediaPath.trim();
   if (!raw) {
-    throw new Error("MEDIA path is empty");
+    throw new Error("Media directive path is empty");
   }
   const stateReal = await fs.realpath(params.stateDir).catch(() => params.stateDir);
   const workspaceReal = await fs.realpath(params.workspaceRoot).catch(() => params.workspaceRoot);
   const statePrefix = stateReal.endsWith(path.sep) ? stateReal : stateReal + path.sep;
   const workspacePrefix = workspaceReal.endsWith(path.sep) ? workspaceReal : workspaceReal + path.sep;
 
-  // OpenClaw can emit:
-  // - workspace-relative paths: MEDIA: avatars/foo.png
-  // - state absolute paths: MEDIA:/root/.openclaw/media/browser/foo.png
+  // OpenClaw media directives can reference:
+  // - workspace-relative paths: [[media:avatars/foo.png]]
+  // - state absolute paths carried inside a directive payload
   if (path.isAbsolute(raw)) {
     const absCandidate = path.resolve(raw);
     const absReal = await fs.realpath(absCandidate).catch(() => absCandidate);
     if (!(absReal === stateReal || absReal.startsWith(statePrefix))) {
-      throw new Error("MEDIA absolute path is outside stateDir");
+      throw new Error("Media directive absolute path is outside stateDir");
     }
     const relToState = path.relative(stateReal, absReal).replace(/\\/g, "/");
     return { absPath: absReal, relPath: relToState || path.basename(absReal) };
@@ -264,12 +264,12 @@ export async function resolveRelayMediaFile(params: {
 
   const normalized = raw.replace(/\\/g, "/");
   if (normalized.split("/").some((seg) => seg === "..")) {
-    throw new Error("MEDIA path traversal is not allowed");
+    throw new Error("Media directive path traversal is not allowed");
   }
   const workspaceCandidate = path.resolve(workspaceReal, normalized);
   const workspaceCandidateReal = await fs.realpath(workspaceCandidate).catch(() => workspaceCandidate);
   if (!(workspaceCandidateReal === workspaceReal || workspaceCandidateReal.startsWith(workspacePrefix))) {
-    throw new Error("MEDIA path is outside workspace");
+    throw new Error("Media directive path is outside workspace");
   }
   return { absPath: workspaceCandidateReal, relPath: normalized };
 }

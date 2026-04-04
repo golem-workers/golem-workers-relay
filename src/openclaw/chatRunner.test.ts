@@ -195,7 +195,7 @@ describe("ChatRunner", () => {
     expect(result.outcome).toBe("reply");
     expect(sentMessage).toContain("Please prepare a report");
     expect(sentMessage).toContain("[Telegram bridge note]");
-    expect(sentMessage).toContain("MEDIA: relative/path.ext");
+    expect(sentMessage).toContain("[[media:relative/path.ext]]");
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
@@ -276,7 +276,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("uses native media directives instead of legacy MEDIA notes for relay_channel_v2", async () => {
+  it("uses [[media:...]] directives for relay_channel_v2", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-native-media-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     await fs.mkdir(path.join(stateDir, "workspace", "files"), { recursive: true });
@@ -1644,7 +1644,7 @@ describe("ChatRunner", () => {
                     content: [
                       {
                         type: "text",
-                        text: "Here you go.\n\nMEDIA: avatars/klava.svg\n\n[[reply_to_current]]",
+                        text: "Here you go.\n\n[[media:avatars/klava.svg]]\n\n[[reply_to_current]]",
                       },
                     ],
                   },
@@ -1686,7 +1686,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("recovers MEDIA from the current session transcript when gateway final drops the directive", async () => {
+  it("recovers [[media:...]] from the current session transcript when gateway final drops the directive", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-media-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
 
@@ -1763,7 +1763,7 @@ describe("ChatRunner", () => {
                       content: [
                         {
                           type: "text",
-                          text: "Here is your video.\n\nMEDIA: output/golem_awake.mp4",
+                          text: "Here is your video.\n\n[[media:output/golem_awake.mp4]]",
                         },
                       ],
                     },
@@ -1811,7 +1811,7 @@ describe("ChatRunner", () => {
     expect(result.outcome).toBe("reply");
     if (result.outcome !== "reply") throw new Error("expected reply");
     expect(result.reply.artifacts?.[0]?.path).toBe("output/golem_awake.mp4");
-    expect(JSON.stringify(result.reply.message)).toContain("MEDIA: output/golem_awake.mp4");
+    expect(JSON.stringify(result.reply.message)).toContain("[[media:output/golem_awake.mp4]]");
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
@@ -1892,7 +1892,7 @@ describe("ChatRunner", () => {
                       content: [
                         {
                           type: "text",
-                          text: "I prepared the file and attached it below.\n\nMEDIA: proofs/identity.md",
+                          text: "I prepared the file and attached it below.\n\n[[media:proofs/identity.md]]",
                         },
                       ],
                     },
@@ -1940,7 +1940,7 @@ describe("ChatRunner", () => {
     expect(result.outcome).toBe("reply");
     if (result.outcome !== "reply") throw new Error("expected reply");
     expect(result.reply.artifacts?.[0]?.path).toBe("proofs/identity.md");
-    expect(JSON.stringify(result.reply.message)).not.toContain("MEDIA: proofs/identity.md");
+    expect(JSON.stringify(result.reply.message)).not.toContain("[[media:proofs/identity.md]]");
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));

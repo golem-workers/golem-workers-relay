@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { collectTranscriptArtifacts, collectTranscriptMedia } from "./mediaDirectives.js";
 
 describe("collectTranscriptMedia", () => {
-  it("collects MEDIA from the current reply message", async () => {
+  it("collects [[media:...]] from the current reply message", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-media-state-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
 
@@ -21,7 +21,7 @@ describe("collectTranscriptMedia", () => {
     const media = await collectTranscriptMedia({
       message: {
         role: "assistant",
-        content: [{ type: "text", text: `screenshot\nMEDIA:${imageAbsPath}` }],
+        content: [{ type: "text", text: `screenshot\n[[media:${imageAbsPath}]]` }],
       },
     });
     expect(media).toHaveLength(1);
@@ -31,7 +31,7 @@ describe("collectTranscriptMedia", () => {
     expect(media[0]?.sizeBytes).toBe(imageBuf.byteLength);
   });
 
-  it("does not attach media when the current reply has no MEDIA directives", async () => {
+  it("does not attach media when the current reply has no media directives", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-media-history-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
 
@@ -54,7 +54,7 @@ describe("collectTranscriptMedia", () => {
     expect(media).toEqual([]);
   });
 
-  it("recovers a missing MEDIA path by exact file name when there is a single candidate", async () => {
+  it("recovers a missing [[media:...]] path by exact file name when there is a single candidate", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-media-recover-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
 
@@ -67,7 +67,7 @@ describe("collectTranscriptMedia", () => {
     const report = await collectTranscriptArtifacts({
       message: {
         role: "assistant",
-        content: [{ type: "text", text: "retrying\nMEDIA: cyber_yytp/final_ytp.mp4" }],
+        content: [{ type: "text", text: "retrying\n[[media:cyber_yytp/final_ytp.mp4]]" }],
       },
     });
 
@@ -90,7 +90,7 @@ describe("collectTranscriptMedia", () => {
     const report = await collectTranscriptArtifacts({
       message: {
         role: "assistant",
-        content: [{ type: "text", text: "retrying\nMEDIA: cyber_yytp/final_ytp.mp4" }],
+        content: [{ type: "text", text: "retrying\n[[media:cyber_yytp/final_ytp.mp4]]" }],
       },
     });
 
@@ -100,7 +100,7 @@ describe("collectTranscriptMedia", () => {
     expect(report.unresolved[0]?.candidatePaths).toEqual(["a/final_ytp.mp4", "b/final_ytp.mp4"]);
   });
 
-  it("keeps MEDIA fallback available even when structured artifacts are present", async () => {
+  it("keeps media-directive fallback available even when structured artifacts are present", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-media-mixed-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
 
@@ -119,7 +119,7 @@ describe("collectTranscriptMedia", () => {
             kind: "file",
           },
         ],
-        content: [{ type: "text", text: "Attach this proof\nMEDIA: proofs/storyboard.md" }],
+        content: [{ type: "text", text: "Attach this proof\n[[media:proofs/storyboard.md]]" }],
       },
     });
 
@@ -138,6 +138,26 @@ describe("collectTranscriptMedia", () => {
     expect(report.unresolved[0]?.reason).toBe("no_recovery_match");
   });
 
+  it("keeps legacy MEDIA parsing available for backward compatibility", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-media-legacy-compat-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    const workspaceRoot = path.join(stateDir, "workspace");
+    await fs.mkdir(path.join(workspaceRoot, "proofs"), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, "proofs", "legacy.md"), "# legacy", "utf8");
+
+    const report = await collectTranscriptArtifacts({
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Older agent output\nMEDIA: proofs/legacy.md" }],
+      },
+    });
+
+    expect(report.artifacts).toHaveLength(1);
+    expect(report.artifacts[0]?.path).toBe("proofs/legacy.md");
+    expect(report.usedLegacyMediaDirectives).toBe(true);
+  });
+
   it("uses the larger default artifact limit so proof files above 5MB still resolve", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-media-large-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
@@ -150,7 +170,7 @@ describe("collectTranscriptMedia", () => {
     const report = await collectTranscriptArtifacts({
       message: {
         role: "assistant",
-        content: [{ type: "text", text: "Large proof\nMEDIA: videos/proof.mp4" }],
+        content: [{ type: "text", text: "Large proof\n[[media:videos/proof.mp4]]" }],
       },
     });
 

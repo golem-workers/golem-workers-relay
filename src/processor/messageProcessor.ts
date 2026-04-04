@@ -929,6 +929,7 @@ function readWhatsAppPersonalTaskContext(context: unknown):
 function stripNativeMediaDirectives(text: string): string {
   return text
     .replace(/\[\[\s*media\s*:[^\]\r\n]+?\s*\]\]/gi, "")
+    .replace(/(^|\n)\s*MEDIA:\s*[^\n\r]+(?=\r?\n|$)/g, "$1")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
