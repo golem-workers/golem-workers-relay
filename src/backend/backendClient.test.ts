@@ -100,7 +100,7 @@ describe("BackendClient", () => {
       client.registerTelegramMessageCorrelation({
         chatId: "-100123",
         transportMessageId: "77",
-        targetScope: "group",
+        conversationHandle: "-100123",
       })
     ).resolves.toEqual({ accepted: true });
     await expect(
@@ -108,8 +108,8 @@ describe("BackendClient", () => {
         pollId: "poll_1",
         chatId: "-100123",
         transportMessageId: "77",
-        targetScope: "topic",
-        threadId: "555",
+        conversationHandle: "-100123",
+        threadHandle: "555",
       })
     ).resolves.toEqual({ accepted: true });
 

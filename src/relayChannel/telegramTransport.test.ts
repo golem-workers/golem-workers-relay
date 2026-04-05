@@ -19,7 +19,7 @@ describe("executeTelegramMessageSend", () => {
       accessKey: "bot-token",
       action: {
         transportTarget: { channel: "telegram", chatId: "-1001234567890" },
-        thread: { threadId: "7" },
+        thread: { handle: "7" },
         reply: { replyToTransportMessageId: "55" },
         payload: { text: "hello" },
       },

@@ -182,8 +182,8 @@ export class BackendClient {
   async registerTelegramMessageCorrelation(input: {
     chatId: string;
     transportMessageId: string;
-    targetScope: "dm" | "group" | "topic";
-    threadId?: string | null;
+    conversationHandle?: string;
+    threadHandle?: string | null;
   }): Promise<{ accepted: true }> {
     const url = `${this.opts.baseUrl}/api/v1/relays/transport/telegram/message-correlation`;
     const body = relayTelegramMessageCorrelationRequestSchema.parse(input);
@@ -204,8 +204,8 @@ export class BackendClient {
     pollId: string;
     chatId: string;
     transportMessageId: string;
-    targetScope: "dm" | "group" | "topic";
-    threadId?: string | null;
+    conversationHandle?: string;
+    threadHandle?: string | null;
   }): Promise<{ accepted: true }> {
     const url = `${this.opts.baseUrl}/api/v1/relays/transport/telegram/poll-correlation`;
     const body = relayTelegramPollCorrelationRequestSchema.parse(input);

@@ -86,16 +86,40 @@ describe("relay-channel control plane", () => {
           capabilityNegotiation: true,
           accountScopedStatus: true,
         },
-        requestedCapabilities: { core: ["messageSend"], optional: [] },
+        requestedCapabilities: {
+          core: ["messageSend"],
+          optional: ["messageEdit", "telegram.inlineButtons"],
+        },
       })
     );
 
     await new Promise<void>((r) => setTimeout(r, 50));
     expect(messages.length).toBeGreaterThanOrEqual(1);
-    const helloBack = messages[0] as { type?: string; role?: string; dataPlane?: unknown };
+    const helloBack = messages[0] as {
+      type?: string;
+      role?: string;
+      dataPlane?: unknown;
+      transport?: { provider?: string };
+      optionalCapabilities?: Record<string, boolean>;
+      providerCapabilities?: Record<string, boolean>;
+      providerProfiles?: Record<string, unknown>;
+    };
     expect(helloBack.type).toBe("hello");
     expect(helloBack.role).toBe("local-relay");
     expect(helloBack.dataPlane).toBeTruthy();
+    expect(helloBack.transport?.provider).toBe("multi");
+    expect(helloBack.optionalCapabilities).toEqual({ messageEdit: true });
+    expect(helloBack.providerCapabilities).toEqual({ "telegram.inlineButtons": true });
+    expect(helloBack.providerProfiles).toMatchObject({
+      telegram: {
+        transport: { provider: "telegram" },
+        optionalCapabilities: { messageEdit: true },
+        providerCapabilities: { "telegram.inlineButtons": true },
+      },
+      whatsapp_personal: {
+        transport: { provider: "whatsapp_personal" },
+      },
+    });
 
     socket.send(
       JSON.stringify({
@@ -107,9 +131,8 @@ describe("relay-channel control plane", () => {
           kind: "message.send",
           idempotencyKey: "idem-1",
           accountId: "acc-test",
-          targetScope: "dm",
           transportTarget: { channel: "telegram", chatId: "123" },
-          conversation: { transportConversationId: "conv-1" },
+          conversation: { handle: "conv-1" },
           payload: { text: "hi" },
         },
       })
@@ -210,9 +233,8 @@ describe("relay-channel control plane", () => {
           kind: "message.send",
           idempotencyKey: "idem-wa-1",
           accountId: "acc-test",
-          targetScope: "dm",
           transportTarget: { channel: "whatsapp_personal", chatId: "12345@s.whatsapp.net" },
-          conversation: { transportConversationId: "conv-wa-1" },
+          conversation: { handle: "conv-wa-1" },
           payload: { text: "hi from wa" },
         },
       })
@@ -328,9 +350,8 @@ describe("relay-channel control plane", () => {
           kind: "file.download.request",
           idempotencyKey: "idem-dl-1",
           accountId: "acc-test",
-          targetScope: "dm",
           transportTarget: { channel: "telegram", chatId: "123" },
-          conversation: { transportConversationId: "conv-1" },
+          conversation: { handle: "conv-1" },
           payload: { fileId: "file-1" },
         },
       })

@@ -95,6 +95,7 @@ export function startRelayChannelControlPlane(input: {
             buildHelloResponse({
               relayInstanceId: input.relayInstanceId,
               accountId: hello.accountId,
+              requestedCapabilities: hello.requestedCapabilities,
               dataPlane: {
                 uploadBaseUrl: dp.uploadBaseUrl,
                 downloadBaseUrl: dp.downloadBaseUrl,
@@ -173,16 +174,16 @@ export function startRelayChannelControlPlane(input: {
               await input.backend.registerTelegramMessageCorrelation({
                 chatId: action.transportTarget.chatId,
                 transportMessageId: completedResult.transportMessageId,
-                targetScope: action.targetScope,
-                threadId,
+                conversationHandle: action.conversation.handle ?? action.transportTarget.chatId,
+                threadHandle: action.thread?.handle ?? threadId,
               });
               if ("pollId" in result && typeof result.pollId === "string" && result.pollId.trim().length > 0) {
                 await input.backend.registerTelegramPollCorrelation({
                   pollId: result.pollId,
                   chatId: action.transportTarget.chatId,
                   transportMessageId: completedResult.transportMessageId,
-                  targetScope: action.targetScope,
-                  threadId,
+                  conversationHandle: action.conversation.handle ?? action.transportTarget.chatId,
+                  threadHandle: action.thread?.handle ?? threadId,
                 });
               }
             }

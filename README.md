@@ -9,10 +9,12 @@ The relay also reports the current OpenClaw connectivity state back to backend:
 - throttles repeated disconnect reports to at most once per minute
 - sends `CONNECTED` immediately after the gateway connection is restored
 
-For `relay_channel_v2` agents, the relay now advertises Telegram Bot API
-capabilities on the local control plane and executes Telegram transport actions
-directly via the channel plugin path. The currently wired action surface
-includes:
+For `relay_channel_v2` agents, the relay now advertises provider-aware control
+plane capability profiles on the local control plane. The top-level hello frame
+keeps legacy aggregate capability maps for migration compatibility, while
+`providerProfiles` and normalized `providerFeatures` describe the actual
+provider/channel surfaces currently wired behind the relay. The currently wired
+action surface includes:
 
 - `message.send`, including parse mode, reply markup, single media, media
   groups, and `file_id` reuse
@@ -31,7 +33,9 @@ stays on backend, and relay consumes backend-produced update families such as
 `transport.message.edited`, `transport.callback.received`,
 `transport.reaction.updated`, `transport.poll.updated`, and
 `transport.topic.updated` without introducing a second Telegram ingress on the
-agent.
+agent. Those transport events are now handle-first on the wire
+(`conversation.handle`, `thread.handle`), while legacy `targetScope` and
+`transportConversationId` remain optional compatibility fields.
 
 Legacy `MEDIA:` artifact recovery remains only for `legacy_push_v1`.
 

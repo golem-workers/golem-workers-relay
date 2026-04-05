@@ -35,7 +35,7 @@ type TelegramApiResponse<T> = TelegramApiSuccess<T> | TelegramApiFailure;
 type TelegramActionEnvelope = {
   kind?: string;
   transportTarget: Record<string, string>;
-  thread?: { threadId?: string | null };
+  thread?: { handle?: string | null; threadId?: string | null };
   reply?: { replyToTransportMessageId?: string | null };
   payload: Record<string, unknown>;
 };
@@ -526,7 +526,10 @@ export async function executeTelegramTransportAction(input: {
     readString(input.action.reply?.replyToTransportMessageId),
     "reply_to_message_id"
   );
-  const messageThreadId = parseTelegramInteger(readString(input.action.thread?.threadId), "message_thread_id");
+  const messageThreadId = parseTelegramInteger(
+    readString(input.action.thread?.handle) ?? readString(input.action.thread?.threadId),
+    "message_thread_id"
+  );
   const baseResult = buildBaseResult({ chatId, messageThreadId });
 
   switch (input.action.kind) {
@@ -798,7 +801,7 @@ export async function executeTelegramMessageSend(input: {
   fileBaseUrl?: string;
   action: {
     transportTarget: Record<string, string>;
-    thread?: { threadId?: string | null };
+    thread?: { handle?: string | null; threadId?: string | null };
     reply?: { replyToTransportMessageId?: string | null };
     payload: Record<string, unknown>;
   };
