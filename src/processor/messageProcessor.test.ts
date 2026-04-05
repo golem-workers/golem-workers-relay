@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const { executeTelegramMessageSendMock, executeWhatsAppPersonalMessageSendMock } = vi.hoisted(() => ({
-  executeTelegramMessageSendMock: vi.fn(),
+const { executeTelegramTransportActionViaBackendMock, executeWhatsAppPersonalMessageSendMock } = vi.hoisted(() => ({
+  executeTelegramTransportActionViaBackendMock: vi.fn(),
   executeWhatsAppPersonalMessageSendMock: vi.fn(),
 }));
 
-vi.mock("../relayChannel/telegramTransport.js", () => ({
-  executeTelegramMessageSend: executeTelegramMessageSendMock,
+vi.mock("../relayChannel/telegramBackendTransport.js", () => ({
+  executeTelegramTransportActionViaBackend: executeTelegramTransportActionViaBackendMock,
 }));
 
 vi.mock("../relayChannel/whatsappPersonalTransport.js", () => ({
@@ -21,13 +21,8 @@ describe("createMessageProcessor", () => {
   });
 
   it("delivers relay_channel_v2 telegram replies directly through the transport executor", async () => {
-    executeTelegramMessageSendMock.mockResolvedValueOnce({ transportMessageId: "tg-msg-1" });
+    executeTelegramTransportActionViaBackendMock.mockResolvedValueOnce({ transportMessageId: "tg-msg-1" });
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
-    const getTelegramTransportConfig = vi.fn().mockResolvedValue({
-      accessKey: "bot-token",
-      apiBaseUrl: "https://api.telegram.org",
-      fileBaseUrl: "https://api.telegram.org/file",
-    });
     const processor = createMessageProcessor({
       cfg: {
         relayInstanceId: "relay_1",
@@ -57,7 +52,7 @@ describe("createMessageProcessor", () => {
           openclawMeta: { method: "chat.send", runId: "run_v2_1" },
         }),
       } as never,
-      backend: { submitInboundMessage, getTelegramTransportConfig } as never,
+      backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
     });
 
     await processor({
@@ -77,20 +72,31 @@ describe("createMessageProcessor", () => {
       },
     });
 
-    expect(getTelegramTransportConfig).toHaveBeenCalledTimes(1);
-    expect(executeTelegramMessageSendMock).toHaveBeenCalledTimes(1);
-    expect(executeTelegramMessageSendMock).toHaveBeenCalledWith({
-      accessKey: "bot-token",
-      apiBaseUrl: "https://api.telegram.org",
-      action: {
-        transportTarget: { channel: "telegram", chatId: "123" },
-        reply: { replyToTransportMessageId: "55" },
-        payload: {
-          text: "hello user",
-          mediaUrl: "files/report.pdf",
-          fileName: "report.pdf",
-          contentType: "application/pdf",
-        },
+    expect(executeTelegramTransportActionViaBackendMock).toHaveBeenCalledTimes(1);
+    const telegramTransportCall = executeTelegramTransportActionViaBackendMock.mock.calls[0]?.[0] as
+      | {
+          action?: {
+            kind?: string;
+            transportTarget?: { channel?: string; chatId?: string };
+            reply?: { replyToTransportMessageId?: string | null };
+            payload?: {
+              text?: string;
+              mediaUrl?: string;
+              fileName?: string;
+              contentType?: string;
+            };
+          };
+        }
+      | undefined;
+    expect(telegramTransportCall?.action).toEqual({
+      kind: "message.send",
+      transportTarget: { channel: "telegram", chatId: "123" },
+      reply: { replyToTransportMessageId: "55" },
+      payload: {
+        text: "hello user",
+        mediaUrl: "files/report.pdf",
+        fileName: "report.pdf",
+        contentType: "application/pdf",
       },
     });
     const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
@@ -141,7 +147,7 @@ describe("createMessageProcessor", () => {
           openclawMeta: { method: "chat.send", runId: "run_wa_v2_1" },
         }),
       } as never,
-      backend: { submitInboundMessage, getTelegramTransportConfig: vi.fn() } as never,
+      backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
     });
 
     await processor({
@@ -203,15 +209,10 @@ describe("createMessageProcessor", () => {
   });
 
   it("preserves direct transport delivery failures for relay_channel_v2 replies", async () => {
-    executeTelegramMessageSendMock.mockRejectedValueOnce(
+    executeTelegramTransportActionViaBackendMock.mockRejectedValueOnce(
       new Error("Telegram API error 400: Bad Request: replied message not found")
     );
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
-    const getTelegramTransportConfig = vi.fn().mockResolvedValue({
-      accessKey: "bot-token",
-      apiBaseUrl: "https://api.telegram.org",
-      fileBaseUrl: "https://api.telegram.org/file",
-    });
     const processor = createMessageProcessor({
       cfg: {
         relayInstanceId: "relay_1",
@@ -241,7 +242,7 @@ describe("createMessageProcessor", () => {
           openclawMeta: { method: "chat.send", runId: "run_v2_fail_1" },
         }),
       } as never,
-      backend: { submitInboundMessage, getTelegramTransportConfig } as never,
+      backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
     });
 
     await processor({

@@ -6,7 +6,7 @@ import { type InboundPushMessage, type RelayInboundMessageRequest } from "../bac
 import { logger } from "../logger.js";
 import { type ChatRunner } from "../openclaw/chatRunner.js";
 import { type GatewayClient } from "../openclaw/gatewayClient.js";
-import { executeTelegramMessageSend } from "../relayChannel/telegramTransport.js";
+import { executeTelegramTransportActionViaBackend } from "../relayChannel/telegramBackendTransport.js";
 import { executeWhatsAppPersonalMessageSend } from "../relayChannel/whatsappPersonalTransport.js";
 import { makeTextPreview } from "../common/utils/text.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
@@ -971,16 +971,15 @@ async function maybeDeliverRelayChannelReplyDirectly(input: {
   }
 
   try {
-    const telegramTransport = telegram ? await input.backend.getTelegramTransportConfig() : null;
     let firstTransportMessageId: string | undefined;
     let remainingText = text;
 
     if (media.length === 0) {
       const sent = telegram
-        ? await executeTelegramMessageSend({
-            accessKey: telegramTransport!.accessKey,
-            apiBaseUrl: telegramTransport!.apiBaseUrl,
+        ? await executeTelegramTransportActionViaBackend({
+            backend: input.backend,
             action: {
+              kind: "message.send",
               transportTarget: { channel: "telegram", chatId: telegram.chatId },
               reply: { replyToTransportMessageId: telegram.messageId ?? null },
               payload: { text: remainingText },
@@ -998,10 +997,10 @@ async function maybeDeliverRelayChannelReplyDirectly(input: {
     } else {
       for (const item of media) {
         const sent = telegram
-          ? await executeTelegramMessageSend({
-              accessKey: telegramTransport!.accessKey,
-              apiBaseUrl: telegramTransport!.apiBaseUrl,
+          ? await executeTelegramTransportActionViaBackend({
+              backend: input.backend,
               action: {
+                kind: "message.send",
                 transportTarget: { channel: "telegram", chatId: telegram.chatId },
                 reply: { replyToTransportMessageId: firstTransportMessageId ? null : (telegram.messageId ?? null) },
                 payload: {
@@ -1033,10 +1032,10 @@ async function maybeDeliverRelayChannelReplyDirectly(input: {
 
       if (remainingText) {
         const sent = telegram
-          ? await executeTelegramMessageSend({
-              accessKey: telegramTransport!.accessKey,
-              apiBaseUrl: telegramTransport!.apiBaseUrl,
+          ? await executeTelegramTransportActionViaBackend({
+              backend: input.backend,
               action: {
+                kind: "message.send",
                 transportTarget: { channel: "telegram", chatId: telegram.chatId },
                 reply: { replyToTransportMessageId: telegram.messageId ?? null },
                 payload: { text: remainingText },

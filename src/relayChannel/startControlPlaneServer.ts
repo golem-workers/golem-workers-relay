@@ -10,7 +10,7 @@ import {
   helloRequestSchema,
   transportActionRequestSchema,
 } from "./controlPlaneProtocol.js";
-import { executeTelegramTransportAction } from "./telegramTransport.js";
+import { executeTelegramTransportActionViaBackend } from "./telegramBackendTransport.js";
 import { executeWhatsAppPersonalMessageSend } from "./whatsappPersonalTransport.js";
 
 export type ControlPlaneRuntimeState = {
@@ -114,12 +114,9 @@ export function startRelayChannelControlPlane(input: {
             const result =
               channel === "telegram"
                 ? await (async () => {
-                    const transportConfig = await input.backend.getTelegramTransportConfig();
                     const dataPlane = input.getDataPlane();
-                    return await executeTelegramTransportAction({
-                      accessKey: transportConfig.accessKey,
-                      apiBaseUrl: transportConfig.apiBaseUrl,
-                      fileBaseUrl: transportConfig.fileBaseUrl,
+                    return await executeTelegramTransportActionViaBackend({
+                      backend: input.backend,
                       action,
                       registerDownload: (download) => dataPlane.registerDownload(download),
                     });

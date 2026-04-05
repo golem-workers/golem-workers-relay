@@ -5,6 +5,18 @@ import { readString, resolveMedia } from "./transportMedia.js";
 type TelegramParseMode = "HTML" | "MarkdownV2" | "Markdown";
 type TelegramMediaMethod = "sendPhoto" | "sendDocument" | "sendVideo" | "sendAudio" | "sendVoice";
 type TelegramMediaField = "photo" | "document" | "video" | "audio" | "voice";
+type TelegramChatAction =
+  | "typing"
+  | "upload_photo"
+  | "record_video"
+  | "upload_video"
+  | "record_voice"
+  | "upload_voice"
+  | "upload_document"
+  | "choose_sticker"
+  | "find_location"
+  | "record_video_note"
+  | "upload_video_note";
 
 type TelegramSendOptions = {
   chatId: string;
@@ -232,6 +244,13 @@ class TelegramBotApi {
       form.append(file.attachName, blob, file.fileName);
     }
     return await this.requestMultipart("sendMediaGroup", form);
+  }
+
+  async sendChatAction(input: { chatId: string; action: TelegramChatAction }): Promise<true> {
+    return await this.request("sendChatAction", {
+      chat_id: input.chatId,
+      action: input.action,
+    });
   }
 
   async getFile(input: { fileId: string }): Promise<{ file_id: string; file_path?: string; file_size?: number }> {
@@ -549,6 +568,16 @@ export async function executeTelegramTransportAction(input: {
         downloadUrl: download.downloadUrl,
         token: download.token,
       };
+    }
+    case "typing.set": {
+      const enabled = readBoolean(payload.enabled) ?? true;
+      if (enabled) {
+        await api.sendChatAction({
+          chatId,
+          action: (readString(payload.chatAction) as TelegramChatAction | null) ?? "typing",
+        });
+      }
+      return baseResult;
     }
     default:
       throw new Error(`UNSUPPORTED_TELEGRAM_ACTION: ${input.action.kind ?? "unknown"}`);

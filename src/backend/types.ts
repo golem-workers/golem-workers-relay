@@ -101,6 +101,7 @@ const relayTransportEventSchema = z.object({
   eventType: z.enum([
     "transport.message.received",
     "transport.delivery.receipt",
+    "transport.typing.updated",
     "transport.capabilities.updated",
     "transport.account.connecting",
     "transport.account.ready",
@@ -236,6 +237,80 @@ export const whatsAppPersonalTransportSendResponseSchema = z.object({
   transportMessageId: z.string().min(1),
 });
 export type WhatsAppPersonalTransportSendResponse = z.infer<typeof whatsAppPersonalTransportSendResponseSchema>;
+
+const telegramChatActionSchema = z.enum([
+  "typing",
+  "upload_photo",
+  "record_video",
+  "upload_video",
+  "record_voice",
+  "upload_voice",
+  "upload_document",
+  "choose_sticker",
+  "find_location",
+  "record_video_note",
+  "upload_video_note",
+]);
+
+const relayTelegramTransportMediaSchema = z.object({
+  dataB64: z.string().min(1),
+  fileName: z.string().min(1),
+  contentType: z.string().min(1),
+  asVoice: z.boolean().optional(),
+  forceDocument: z.boolean().optional(),
+});
+
+export const telegramTransportActionRequestSchema = z.object({
+  action: z.object({
+    kind: z.enum(["message.send", "typing.set", "file.download.request"]),
+    transportTarget: z.object({
+      channel: z.literal("telegram"),
+      chatId: z.string().min(1),
+    }),
+    thread: z
+      .object({
+        handle: z.string().min(1).nullable().optional(),
+        threadId: z.string().min(1).nullable().optional(),
+      })
+      .optional(),
+    reply: z
+      .object({
+        replyToTransportMessageId: z.string().min(1).nullable().optional(),
+      })
+      .optional(),
+    payload: z
+      .object({
+        text: z.string().optional(),
+        fileId: z.string().min(1).optional(),
+        media: relayTelegramTransportMediaSchema.optional(),
+        parseMode: z.enum(["HTML", "MarkdownV2", "Markdown"]).optional(),
+        disableWebPagePreview: z.boolean().optional(),
+        enabled: z.boolean().optional(),
+        chatAction: telegramChatActionSchema.optional(),
+      })
+      .strict(),
+  }),
+});
+export type TelegramTransportActionRequest = z.infer<typeof telegramTransportActionRequestSchema>;
+
+export const telegramTransportActionResponseSchema = z
+  .object({
+    transportMessageId: z.string().min(1).optional(),
+    conversationId: z.string().min(1).optional(),
+    threadId: z.string().min(1).optional(),
+    token: z.string().min(1).optional(),
+    downloadUrl: z.string().url().optional(),
+    download: z
+      .object({
+        fileName: z.string().min(1),
+        contentType: z.string().min(1),
+        dataB64: z.string().min(1),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type TelegramTransportActionResponse = z.infer<typeof telegramTransportActionResponseSchema>;
 
 export const relayTelegramMessageCorrelationRequestSchema = z.object({
   chatId: z.string().min(1),

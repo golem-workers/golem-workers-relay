@@ -102,4 +102,35 @@ describe("executeTelegramMessageSend", () => {
       token: "download-1",
     });
   });
+
+  it("executes typing.set via sendChatAction", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, result: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeTelegramTransportAction({
+      accessKey: "bot-token",
+      action: {
+        kind: "typing.set",
+        transportTarget: { channel: "telegram", chatId: "123" },
+        payload: { chatAction: "typing" },
+      },
+    });
+
+    expect(result).toMatchObject({
+      conversationId: "123",
+    });
+    const requestInit = fetchMock.mock.calls[0]?.[1];
+    if (typeof requestInit?.body !== "string") {
+      throw new Error("Expected telegram transport request body to be a JSON string");
+    }
+    expect(JSON.parse(requestInit.body)).toMatchObject({
+      chat_id: "123",
+      action: "typing",
+    });
+  });
 });

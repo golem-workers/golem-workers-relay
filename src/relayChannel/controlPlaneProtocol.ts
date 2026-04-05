@@ -37,15 +37,18 @@ const RELAY_PROVIDER_PROFILES = {
       threadRouting: true,
     },
     optionalCapabilities: {
+      typing: true,
       fileDownloads: true,
     },
     providerCapabilities: {},
     providerFeatures: {},
     targetCapabilities: {
       dm: {
+        typing: true,
         fileDownloads: true,
       },
       group: {
+        typing: true,
         fileDownloads: true,
       },
     },
@@ -90,7 +93,7 @@ export const helloRequestSchema = z.object({
 
 export const transportActionSchema = z.object({
   actionId: z.string(),
-  kind: z.enum(["message.send", "file.download.request"]),
+  kind: z.enum(["message.send", "typing.set", "file.download.request"]),
   idempotencyKey: z.string(),
   accountId: z.string(),
   targetScope: z.enum(["dm", "group", "topic"]).optional(),

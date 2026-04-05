@@ -52,11 +52,11 @@ describe("relay-channel control plane", () => {
       port: 0,
       relayInstanceId: "relay-test",
       backend: {
-        getTelegramTransportConfig: () => Promise.resolve({
-          accessKey: "test-token",
-          apiBaseUrl: "https://api.telegram.org",
-          fileBaseUrl: "https://api.telegram.org",
-        }),
+        sendTelegramTransportAction: () =>
+          Promise.resolve({
+            transportMessageId: "1001",
+            conversationId: "123",
+          }),
         registerTelegramMessageCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
         sendWhatsAppPersonalTransportMessage: () =>
           Promise.resolve({
@@ -134,12 +134,14 @@ describe("relay-channel control plane", () => {
     expect(helloBack.dataPlane).toBeTruthy();
     expect(helloBack.transport?.provider).toBe("multi");
     expect(helloBack.optionalCapabilities).toEqual({
+      typing: true,
       fileDownloads: true,
     });
     expect(helloBack.providerProfiles).toMatchObject({
       telegram: {
         transport: { provider: "telegram" },
         optionalCapabilities: {
+          typing: true,
           fileDownloads: true,
         },
         providerCapabilities: {},
@@ -186,7 +188,7 @@ describe("relay-channel control plane", () => {
       port: 0,
       relayInstanceId: "relay-test",
       backend: {
-        getTelegramTransportConfig: vi.fn(),
+        sendTelegramTransportAction: vi.fn(),
         registerTelegramMessageCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
         sendWhatsAppPersonalTransportMessage: vi.fn().mockResolvedValue({
           transportMessageId: "wa-msg-1",
@@ -271,23 +273,6 @@ describe("relay-channel control plane", () => {
   });
 
   it("returns downloadUrl/token for telegram file download requests", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn<typeof fetch>()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ ok: true, result: { file_id: "file-1", file_path: "docs/test.pdf" } }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          })
-        )
-        .mockResolvedValueOnce(
-          new Response(Buffer.from("pdf-bytes"), {
-            status: 200,
-            headers: { "content-type": "application/pdf" },
-          })
-        )
-    );
     const dp = startRelayChannelDataPlaneServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve) => dp.server.once("listening", resolve));
 
@@ -296,11 +281,14 @@ describe("relay-channel control plane", () => {
       port: 0,
       relayInstanceId: "relay-test",
       backend: {
-        getTelegramTransportConfig: () =>
+        sendTelegramTransportAction: () =>
           Promise.resolve({
-            accessKey: "test-token",
-            apiBaseUrl: "https://api.telegram.org",
-            fileBaseUrl: "https://api.telegram.org",
+            conversationId: "123",
+            download: {
+              fileName: "test.pdf",
+              contentType: "application/pdf",
+              dataB64: Buffer.from("pdf-bytes").toString("base64"),
+            },
           }),
         registerTelegramMessageCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
         sendWhatsAppPersonalTransportMessage: vi.fn(),

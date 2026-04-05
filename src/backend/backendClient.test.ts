@@ -109,4 +109,44 @@ describe("BackendClient", () => {
       expect.objectContaining({ method: "POST" })
     );
   });
+
+  it("sends Telegram transport actions to backend transport endpoint", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ conversationId: "123", transportMessageId: "tg-msg-1" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new BackendClient({
+      baseUrl: "http://127.0.0.1:3000",
+      relayToken: "token",
+      devLogEnabled: false,
+    });
+
+    await expect(
+      client.sendTelegramTransportAction({
+        action: {
+          kind: "typing.set",
+          transportTarget: {
+            channel: "telegram",
+            chatId: "123",
+          },
+          payload: {
+            enabled: true,
+            chatAction: "typing",
+          },
+        },
+      })
+    ).resolves.toEqual({
+      conversationId: "123",
+      transportMessageId: "tg-msg-1",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:3000/api/v1/relays/transport/telegram/action",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
 });

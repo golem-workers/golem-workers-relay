@@ -144,10 +144,16 @@ describe("pushServer", () => {
           kind: "transport_event",
           event: {
             type: "event",
-            eventType: "transport.delivery.receipt",
+            eventType: "transport.typing.updated",
             payload: {
+              eventId: "typing-1",
               accountId: "default",
-              status: "delivered",
+              conversation: {
+                handle: "123",
+              },
+              typing: {
+                active: true,
+              },
             },
           },
         },
