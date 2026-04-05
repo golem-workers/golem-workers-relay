@@ -144,10 +144,10 @@ describe("pushServer", () => {
           kind: "transport_event",
           event: {
             type: "event",
-            eventType: "transport.reaction.updated",
+            eventType: "transport.delivery.receipt",
             payload: {
-              eventId: "reaction-1",
               accountId: "default",
+              status: "delivered",
             },
           },
         },

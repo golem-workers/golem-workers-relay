@@ -134,18 +134,12 @@ describe("relay-channel control plane", () => {
     expect(helloBack.dataPlane).toBeTruthy();
     expect(helloBack.transport?.provider).toBe("multi");
     expect(helloBack.optionalCapabilities).toEqual({
-      reactions: true,
-      typing: true,
-      pinning: true,
       fileDownloads: true,
     });
     expect(helloBack.providerProfiles).toMatchObject({
       telegram: {
         transport: { provider: "telegram" },
         optionalCapabilities: {
-          reactions: true,
-          typing: true,
-          pinning: true,
           fileDownloads: true,
         },
         providerCapabilities: {},

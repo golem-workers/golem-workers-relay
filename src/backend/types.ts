@@ -100,9 +100,7 @@ const relayTransportEventSchema = z.object({
   type: z.literal("event"),
   eventType: z.enum([
     "transport.message.received",
-    "transport.reaction.updated",
     "transport.delivery.receipt",
-    "transport.typing.updated",
     "transport.capabilities.updated",
     "transport.account.connecting",
     "transport.account.ready",

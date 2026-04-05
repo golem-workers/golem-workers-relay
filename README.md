@@ -18,15 +18,12 @@ action surface includes:
 
 - `message.send`, including parse mode, single media, media groups, and
   `file_id` reuse
-- `reaction.set`
-- `typing.set`
-- `message.pin` and `message.unpin`
 - `file.download.request` with a local download-token data plane
 
 The relay push ingress also accepts normalized `transport_event` payloads from
 backend. In the current Telegram Bot API architecture, polling/webhook ownership
 stays on backend, and relay consumes backend-produced update families such as
-`transport.reaction.updated` without introducing
+`transport.delivery.receipt` without introducing
 a second Telegram ingress on the agent. Those transport events are now
 handle-first on the wire
 (`conversation.handle`, `thread.handle`), while legacy `targetScope` and

@@ -5,18 +5,6 @@ import { readString, resolveMedia } from "./transportMedia.js";
 type TelegramParseMode = "HTML" | "MarkdownV2" | "Markdown";
 type TelegramMediaMethod = "sendPhoto" | "sendDocument" | "sendVideo" | "sendAudio" | "sendVoice";
 type TelegramMediaField = "photo" | "document" | "video" | "audio" | "voice";
-type TelegramChatAction =
-  | "typing"
-  | "upload_photo"
-  | "record_video"
-  | "upload_video"
-  | "record_voice"
-  | "upload_voice"
-  | "upload_document"
-  | "choose_sticker"
-  | "find_location"
-  | "record_video_note"
-  | "upload_video_note";
 
 type TelegramSendOptions = {
   chatId: string;
@@ -67,16 +55,6 @@ function parseTelegramInteger(value: string | null | undefined, fieldName: strin
 
 function readBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
-}
-
-function readStringArray(value: unknown): string[] | null {
-  if (!Array.isArray(value)) {
-    return null;
-  }
-  const items = value
-    .map((item) => (typeof item === "string" ? item.trim() : ""))
-    .filter((item) => item.length > 0);
-  return items.length > 0 ? items : null;
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -256,13 +234,6 @@ class TelegramBotApi {
     return await this.requestMultipart("sendMediaGroup", form);
   }
 
-  async sendChatAction(input: { chatId: string; action: TelegramChatAction }): Promise<true> {
-    return await this.request("sendChatAction", {
-      chat_id: input.chatId,
-      action: input.action,
-    });
-  }
-
   async getFile(input: { fileId: string }): Promise<{ file_id: string; file_path?: string; file_size?: number }> {
     return await this.request("getFile", {
       file_id: input.fileId,
@@ -336,17 +307,6 @@ function buildBaseResult(input: { chatId: string; messageThreadId?: number }) {
     conversationId: input.chatId,
     ...(input.messageThreadId ? { threadId: String(input.messageThreadId) } : {}),
   };
-}
-
-function readTransportMessageId(payload: Record<string, unknown>): string {
-  const transportMessageId =
-    readString(payload.transportMessageId) ??
-    readString(payload.messageId) ??
-    readString(payload.targetTransportMessageId);
-  if (!transportMessageId) {
-    throw new Error("TELEGRAM_TRANSPORT_MESSAGE_ID_MISSING");
-  }
-  return transportMessageId;
 }
 
 async function sendSingleTelegramMedia(input: {
@@ -563,59 +523,6 @@ export async function executeTelegramTransportAction(input: {
       return {
         ...baseResult,
         transportMessageId: String(sent.message_id),
-      };
-    }
-    case "reaction.set": {
-      const transportMessageId = parseTelegramInteger(
-        readTransportMessageId(payload),
-        "message_id"
-      );
-      const emoji = readStringArray(payload.emojis) ?? (readString(payload.emoji) ? [readString(payload.emoji)!] : []);
-      await api.request("setMessageReaction", {
-        chat_id: chatId,
-        message_id: transportMessageId,
-        reaction: emoji.map((value) => ({ type: "emoji", emoji: value })),
-        is_big: readBoolean(payload.isBig) ?? undefined,
-      });
-      return {
-        ...baseResult,
-        transportMessageId: String(transportMessageId),
-      };
-    }
-    case "typing.set": {
-      const enabled = readBoolean(payload.enabled) ?? true;
-      if (enabled) {
-        await api.sendChatAction({
-          chatId,
-          action: (readString(payload.chatAction) as TelegramChatAction | null) ?? "typing",
-        });
-      }
-      return baseResult;
-    }
-    case "message.pin": {
-      const transportMessageId = parseTelegramInteger(
-        readTransportMessageId(payload),
-        "message_id"
-      );
-      await api.request("pinChatMessage", {
-        chat_id: chatId,
-        message_id: transportMessageId,
-        disable_notification: readBoolean(payload.disableNotification) ?? undefined,
-      });
-      return {
-        ...baseResult,
-        transportMessageId: String(transportMessageId),
-      };
-    }
-    case "message.unpin": {
-      const messageId = readString(payload.transportMessageId) ?? readString(payload.messageId);
-      await api.request("unpinChatMessage", {
-        chat_id: chatId,
-        message_id: messageId ? parseTelegramInteger(messageId, "message_id") : undefined,
-      });
-      return {
-        ...baseResult,
-        ...(messageId ? { transportMessageId: messageId } : {}),
       };
     }
     case "file.download.request": {
