@@ -565,47 +565,6 @@ export async function executeTelegramTransportAction(input: {
         transportMessageId: String(sent.message_id),
       };
     }
-    case "message.edit": {
-      const transportMessageId = parseTelegramInteger(
-        readTransportMessageId(payload),
-        "message_id"
-      );
-      const caption = readString(payload.caption);
-      if (caption || readBoolean(payload.editCaptionOnly) === true) {
-        await api.request("editMessageCaption", {
-          chat_id: chatId,
-          message_id: transportMessageId,
-          caption: caption ?? text,
-          parse_mode: parseMode,
-        });
-      } else {
-        await api.request("editMessageText", {
-          chat_id: chatId,
-          message_id: transportMessageId,
-          text,
-          parse_mode: parseMode,
-          disable_web_page_preview: readBoolean(payload.disableWebPagePreview) ?? true,
-        });
-      }
-      return {
-        ...baseResult,
-        transportMessageId: String(transportMessageId),
-      };
-    }
-    case "message.delete": {
-      const transportMessageId = parseTelegramInteger(
-        readTransportMessageId(payload),
-        "message_id"
-      );
-      await api.request("deleteMessage", {
-        chat_id: chatId,
-        message_id: transportMessageId,
-      });
-      return {
-        ...baseResult,
-        transportMessageId: String(transportMessageId),
-      };
-    }
     case "reaction.set": {
       const transportMessageId = parseTelegramInteger(
         readTransportMessageId(payload),

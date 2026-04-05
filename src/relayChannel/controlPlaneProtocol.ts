@@ -37,8 +37,6 @@ const RELAY_PROVIDER_PROFILES = {
       threadRouting: true,
     },
     optionalCapabilities: {
-      messageEdit: true,
-      messageDelete: true,
       reactions: true,
       typing: true,
       pinning: true,
@@ -48,16 +46,12 @@ const RELAY_PROVIDER_PROFILES = {
     providerFeatures: {},
     targetCapabilities: {
       dm: {
-        messageEdit: true,
-        messageDelete: true,
         reactions: true,
         typing: true,
         pinning: true,
         fileDownloads: true,
       },
       group: {
-        messageEdit: true,
-        messageDelete: true,
         reactions: true,
         typing: true,
         pinning: true,
@@ -107,8 +101,6 @@ export const transportActionSchema = z.object({
   actionId: z.string(),
   kind: z.enum([
     "message.send",
-    "message.edit",
-    "message.delete",
     "reaction.set",
     "typing.set",
     "message.pin",

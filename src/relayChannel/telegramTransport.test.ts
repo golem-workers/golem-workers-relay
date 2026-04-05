@@ -64,42 +64,6 @@ describe("executeTelegramMessageSend", () => {
     ).rejects.toThrow("Telegram API error 400: Bad Request: replied message not found");
   });
 
-  it("maps message.edit to editMessageText", async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ ok: true, result: { message_id: 55 } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      })
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await executeTelegramTransportAction({
-      accessKey: "bot-token",
-      action: {
-        kind: "message.edit",
-        transportTarget: { channel: "telegram", chatId: "-1001234567890" },
-        payload: {
-          transportMessageId: "55",
-          text: "updated",
-          parseMode: "HTML",
-        },
-      },
-    });
-
-    expect(result.transportMessageId).toBe("55");
-    const requestInit = fetchMock.mock.calls[0]?.[1];
-    if (!requestInit || typeof requestInit.body !== "string") {
-      throw new Error("Expected telegram edit request body to be a JSON string");
-    }
-    const body = JSON.parse(requestInit.body) as Record<string, unknown>;
-    expect(body).toMatchObject({
-      chat_id: "-1001234567890",
-      message_id: 55,
-      text: "updated",
-      parse_mode: "HTML",
-    });
-  });
-
   it("registers download tokens for file.download.request", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

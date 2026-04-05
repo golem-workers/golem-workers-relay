@@ -144,9 +144,9 @@ describe("pushServer", () => {
           kind: "transport_event",
           event: {
             type: "event",
-            eventType: "transport.message.edited",
+            eventType: "transport.reaction.updated",
             payload: {
-              eventId: "edited-1",
+              eventId: "reaction-1",
               accountId: "default",
             },
           },
