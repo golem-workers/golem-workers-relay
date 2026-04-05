@@ -103,9 +103,6 @@ const relayTransportEventSchema = z.object({
     "transport.message.edited",
     "transport.message.deleted",
     "transport.reaction.updated",
-    "transport.callback.received",
-    "transport.poll.updated",
-    "transport.topic.updated",
     "transport.delivery.receipt",
     "transport.typing.updated",
     "transport.capabilities.updated",
@@ -254,18 +251,5 @@ export const relayTelegramMessageCorrelationRequestSchema = z.object({
 });
 export type RelayTelegramMessageCorrelationRequest = z.infer<
   typeof relayTelegramMessageCorrelationRequestSchema
->;
-
-export const relayTelegramPollCorrelationRequestSchema = z.object({
-  pollId: z.string().min(1),
-  chatId: z.string().min(1),
-  transportMessageId: z.string().min(1),
-  conversationHandle: z.string().min(1).optional(),
-  threadHandle: z.string().min(1).nullable().optional(),
-  targetScope: z.enum(["dm", "group", "topic"]).optional(),
-  threadId: z.string().min(1).nullable().optional(),
-});
-export type RelayTelegramPollCorrelationRequest = z.infer<
-  typeof relayTelegramPollCorrelationRequestSchema
 >;
 

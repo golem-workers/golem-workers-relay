@@ -25,7 +25,6 @@ type TelegramSendOptions = {
   parseMode?: TelegramParseMode;
   replyToMessageId?: number;
   messageThreadId?: number;
-  replyMarkup?: Record<string, unknown>;
 };
 
 type TelegramApiSuccess<T> = { ok: true; result: T };
@@ -166,7 +165,7 @@ class TelegramBotApi {
     form: FormData,
     input: Pick<
       TelegramSendOptions,
-      "chatId" | "caption" | "parseMode" | "replyToMessageId" | "messageThreadId" | "replyMarkup"
+      "chatId" | "caption" | "parseMode" | "replyToMessageId" | "messageThreadId"
     >
   ) {
     form.append("chat_id", input.chatId);
@@ -182,9 +181,6 @@ class TelegramBotApi {
     if (input.messageThreadId) {
       form.append("message_thread_id", String(input.messageThreadId));
     }
-    if (input.replyMarkup) {
-      form.append("reply_markup", JSON.stringify(input.replyMarkup));
-    }
   }
 
   async sendMessage(
@@ -197,7 +193,6 @@ class TelegramBotApi {
       disable_web_page_preview: input.disableWebPagePreview ?? true,
       reply_to_message_id: input.replyToMessageId ?? undefined,
       message_thread_id: input.messageThreadId ?? undefined,
-      reply_markup: input.replyMarkup ?? undefined,
     });
   }
 
@@ -233,7 +228,6 @@ class TelegramBotApi {
       parse_mode: input.parseMode,
       reply_to_message_id: input.replyToMessageId ?? undefined,
       message_thread_id: input.messageThreadId ?? undefined,
-      reply_markup: input.replyMarkup ?? undefined,
     });
   }
 
@@ -365,7 +359,6 @@ async function sendSingleTelegramMedia(input: {
   const text = readString(input.payload.text);
   const caption = readString(input.payload.caption) ?? text ?? undefined;
   const parseMode = readParseMode(input.payload.parseMode);
-  const replyMarkup = readRecord(input.payload.replyMarkup) ?? undefined;
   const forceDocument = input.payload.forceDocument === true;
   const asVoice = input.payload.asVoice === true;
   const explicitMediaType = readString(input.payload.mediaType);
@@ -385,7 +378,6 @@ async function sendSingleTelegramMedia(input: {
       parseMode,
       replyToMessageId: input.replyToMessageId,
       messageThreadId: input.messageThreadId,
-      replyMarkup,
       method: descriptor.method,
       fieldName: descriptor.fieldName,
       media: fileId,
@@ -408,7 +400,6 @@ async function sendSingleTelegramMedia(input: {
     parseMode,
     replyToMessageId: input.replyToMessageId,
     messageThreadId: input.messageThreadId,
-    replyMarkup,
     method: descriptor.method,
     fieldName: descriptor.fieldName,
     filePath: media.filePath,
@@ -507,7 +498,6 @@ export async function executeTelegramTransportAction(input: {
   threadId?: string;
   downloadUrl?: string;
   token?: string;
-  pollId?: string;
 }> {
   const api = new TelegramBotApi({
     token: input.accessKey,
@@ -521,7 +511,6 @@ export async function executeTelegramTransportAction(input: {
   const payload = input.action.payload;
   const text = readString(payload.text) ?? "";
   const parseMode = readParseMode(payload.parseMode);
-  const replyMarkup = readRecord(payload.replyMarkup) ?? undefined;
   const replyToMessageId = parseTelegramInteger(
     readString(input.action.reply?.replyToTransportMessageId),
     "reply_to_message_id"
@@ -569,7 +558,6 @@ export async function executeTelegramTransportAction(input: {
         parseMode,
         replyToMessageId,
         messageThreadId,
-        replyMarkup,
         disableWebPagePreview: readBoolean(payload.disableWebPagePreview) ?? true,
       });
       return {
@@ -589,7 +577,6 @@ export async function executeTelegramTransportAction(input: {
           message_id: transportMessageId,
           caption: caption ?? text,
           parse_mode: parseMode,
-          reply_markup: replyMarkup ?? undefined,
         });
       } else {
         await api.request("editMessageText", {
@@ -598,7 +585,6 @@ export async function executeTelegramTransportAction(input: {
           text,
           parse_mode: parseMode,
           disable_web_page_preview: readBoolean(payload.disableWebPagePreview) ?? true,
-          reply_markup: replyMarkup ?? undefined,
         });
       }
       return {
@@ -647,32 +633,6 @@ export async function executeTelegramTransportAction(input: {
       }
       return baseResult;
     }
-    case "poll.send": {
-      const question = readString(payload.question);
-      const options = readStringArray(payload.options);
-      if (!question || !options) {
-        throw new Error("TELEGRAM_POLL_QUESTION_AND_OPTIONS_REQUIRED");
-      }
-      const sent = await api.request<{ message_id: number; poll?: { id?: string } }>("sendPoll", {
-        chat_id: chatId,
-        question,
-        options,
-        is_anonymous: readBoolean(payload.isAnonymous) ?? undefined,
-        allows_multiple_answers: readBoolean(payload.allowsMultipleAnswers) ?? undefined,
-        type: readString(payload.pollType) ?? undefined,
-        correct_option_id:
-          typeof payload.correctOptionIndex === "number" ? payload.correctOptionIndex : undefined,
-        explanation: readString(payload.explanation) ?? undefined,
-        reply_to_message_id: replyToMessageId ?? undefined,
-        message_thread_id: messageThreadId ?? undefined,
-        reply_markup: replyMarkup ?? undefined,
-      });
-      return {
-        ...baseResult,
-        transportMessageId: String(sent.message_id),
-        ...(typeof sent.poll?.id === "string" && sent.poll.id.trim().length > 0 ? { pollId: sent.poll.id } : {}),
-      };
-    }
     case "message.pin": {
       const transportMessageId = parseTelegramInteger(
         readTransportMessageId(payload),
@@ -698,72 +658,6 @@ export async function executeTelegramTransportAction(input: {
         ...baseResult,
         ...(messageId ? { transportMessageId: messageId } : {}),
       };
-    }
-    case "topic.create": {
-      const topicName = readString(payload.name);
-      if (!topicName) {
-        throw new Error("TELEGRAM_TOPIC_NAME_REQUIRED");
-      }
-      const created = await api.request<{ message_thread_id: number }>("createForumTopic", {
-        chat_id: chatId,
-        name: topicName,
-        icon_color: typeof payload.iconColor === "number" ? payload.iconColor : undefined,
-        icon_custom_emoji_id: readString(payload.iconCustomEmojiId) ?? undefined,
-      });
-      return {
-        ...baseResult,
-        threadId: String(created.message_thread_id),
-      };
-    }
-    case "topic.edit": {
-      const topicId = parseTelegramInteger(
-        readString(payload.threadId) ?? readString(input.action.thread?.threadId),
-        "message_thread_id"
-      );
-      if (!topicId) {
-        throw new Error("TELEGRAM_TOPIC_ID_REQUIRED");
-      }
-      await api.request("editForumTopic", {
-        chat_id: chatId,
-        message_thread_id: topicId,
-        name: readString(payload.name) ?? undefined,
-        icon_custom_emoji_id: readString(payload.iconCustomEmojiId) ?? undefined,
-      });
-      return {
-        ...baseResult,
-        threadId: String(topicId),
-      };
-    }
-    case "topic.close": {
-      const topicId = parseTelegramInteger(
-        readString(payload.threadId) ?? readString(input.action.thread?.threadId),
-        "message_thread_id"
-      );
-      if (!topicId) {
-        throw new Error("TELEGRAM_TOPIC_ID_REQUIRED");
-      }
-      await api.request("closeForumTopic", {
-        chat_id: chatId,
-        message_thread_id: topicId,
-      });
-      return {
-        ...baseResult,
-        threadId: String(topicId),
-      };
-    }
-    case "callback.answer": {
-      const callbackQueryId = readString(payload.callbackQueryId);
-      if (!callbackQueryId) {
-        throw new Error("TELEGRAM_CALLBACK_QUERY_ID_REQUIRED");
-      }
-      await api.request("answerCallbackQuery", {
-        callback_query_id: callbackQueryId,
-        text: readString(payload.text) ?? undefined,
-        show_alert: readBoolean(payload.showAlert) ?? undefined,
-        url: readString(payload.url) ?? undefined,
-        cache_time: typeof payload.cacheTime === "number" ? payload.cacheTime : undefined,
-      });
-      return baseResult;
     }
     case "file.download.request": {
       const fileId = readString(payload.fileId);

@@ -177,15 +177,6 @@ export function startRelayChannelControlPlane(input: {
                 conversationHandle: action.conversation.handle ?? action.transportTarget.chatId,
                 threadHandle: action.thread?.handle ?? threadId,
               });
-              if ("pollId" in result && typeof result.pollId === "string" && result.pollId.trim().length > 0) {
-                await input.backend.registerTelegramPollCorrelation({
-                  pollId: result.pollId,
-                  chatId: action.transportTarget.chatId,
-                  transportMessageId: completedResult.transportMessageId,
-                  conversationHandle: action.conversation.handle ?? action.transportTarget.chatId,
-                  threadHandle: action.thread?.handle ?? threadId,
-                });
-              }
             }
             sendJson(
               buildActionCompleted({

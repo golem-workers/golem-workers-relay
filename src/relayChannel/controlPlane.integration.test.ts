@@ -3,6 +3,32 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { closeHttpServer, startRelayChannelDataPlaneServer } from "./startDataPlaneServer.js";
 import { startRelayChannelControlPlane } from "./startControlPlaneServer.js";
 
+async function waitForMessage(
+  messages: Array<Record<string, unknown>>,
+  eventType: string,
+  timeoutMs = 500
+): Promise<Record<string, unknown> | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const matched = messages.find(
+      (message) =>
+        typeof message === "object" &&
+        message !== null &&
+        (message as { eventType?: string }).eventType === eventType
+    );
+    if (matched) {
+      return matched;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  return messages.find(
+    (message) =>
+      typeof message === "object" &&
+      message !== null &&
+      (message as { eventType?: string }).eventType === eventType
+  );
+}
+
 describe("relay-channel control plane", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -32,7 +58,6 @@ describe("relay-channel control plane", () => {
           fileBaseUrl: "https://api.telegram.org",
         }),
         registerTelegramMessageCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
-        registerTelegramPollCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
         sendWhatsAppPersonalTransportMessage: () =>
           Promise.resolve({
             transportMessageId: "wa-msg-1",
@@ -59,7 +84,7 @@ describe("relay-channel control plane", () => {
       socket.once("error", reject);
     });
 
-    const messages: unknown[] = [];
+    const messages: Array<Record<string, unknown>> = [];
     socket.on("message", (raw) => {
       const text =
         typeof raw === "string"
@@ -69,7 +94,7 @@ describe("relay-channel control plane", () => {
             : Array.isArray(raw)
               ? Buffer.concat(raw).toString("utf8")
               : "";
-      messages.push(JSON.parse(text));
+      messages.push(JSON.parse(text) as Record<string, unknown>);
     });
 
     socket.send(
@@ -88,7 +113,7 @@ describe("relay-channel control plane", () => {
         },
         requestedCapabilities: {
           core: ["messageSend"],
-          optional: ["messageEdit", "telegram.inlineButtons"],
+          optional: ["messageEdit"],
         },
       })
     );
@@ -109,12 +134,11 @@ describe("relay-channel control plane", () => {
     expect(helloBack.dataPlane).toBeTruthy();
     expect(helloBack.transport?.provider).toBe("multi");
     expect(helloBack.optionalCapabilities).toEqual({ messageEdit: true });
-    expect(helloBack.providerCapabilities).toEqual({ "telegram.inlineButtons": true });
     expect(helloBack.providerProfiles).toMatchObject({
       telegram: {
         transport: { provider: "telegram" },
         optionalCapabilities: { messageEdit: true },
-        providerCapabilities: { "telegram.inlineButtons": true },
+        providerCapabilities: {},
       },
       whatsapp_personal: {
         transport: { provider: "whatsapp_personal" },
@@ -138,14 +162,8 @@ describe("relay-channel control plane", () => {
       })
     );
 
-    await new Promise<void>((r) => setTimeout(r, 100));
-    const events = messages.slice(1);
-    const accepted = events.find(
-      (m) => typeof m === "object" && m !== null && (m as { eventType?: string }).eventType === "transport.action.accepted"
-    );
-    const completed = events.find(
-      (m) => typeof m === "object" && m !== null && (m as { eventType?: string }).eventType === "transport.action.completed"
-    );
+    const accepted = await waitForMessage(messages, "transport.action.accepted");
+    const completed = await waitForMessage(messages, "transport.action.completed");
     expect(accepted).toBeTruthy();
     expect(completed).toBeTruthy();
 
@@ -166,7 +184,6 @@ describe("relay-channel control plane", () => {
       backend: {
         getTelegramTransportConfig: vi.fn(),
         registerTelegramMessageCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
-        registerTelegramPollCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
         sendWhatsAppPersonalTransportMessage: vi.fn().mockResolvedValue({
           transportMessageId: "wa-msg-1",
         }),
@@ -190,7 +207,7 @@ describe("relay-channel control plane", () => {
       socket.once("error", reject);
     });
 
-    const messages: unknown[] = [];
+    const messages: Array<Record<string, unknown>> = [];
     socket.on("message", (raw) => {
       const text =
         typeof raw === "string"
@@ -200,7 +217,7 @@ describe("relay-channel control plane", () => {
             : Array.isArray(raw)
               ? Buffer.concat(raw).toString("utf8")
               : "";
-      messages.push(JSON.parse(text));
+      messages.push(JSON.parse(text) as Record<string, unknown>);
     });
 
     socket.send(
@@ -240,11 +257,7 @@ describe("relay-channel control plane", () => {
       })
     );
 
-    await new Promise<void>((r) => setTimeout(r, 100));
-    const events = messages.slice(1);
-    const completed = events.find(
-      (m) => typeof m === "object" && m !== null && (m as { eventType?: string }).eventType === "transport.action.completed"
-    );
+    const completed = await waitForMessage(messages, "transport.action.completed");
     expect(completed).toBeTruthy();
 
     socket.close();
@@ -286,7 +299,6 @@ describe("relay-channel control plane", () => {
             fileBaseUrl: "https://api.telegram.org",
           }),
         registerTelegramMessageCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
-        registerTelegramPollCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
         sendWhatsAppPersonalTransportMessage: vi.fn(),
       } as never,
       getDataPlane: () => {
