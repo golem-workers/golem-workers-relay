@@ -404,8 +404,8 @@ if (!fs.existsSync(path.join(installDir, "dist", "index.js"))) {
 console.log(`relay-channel prepared: ${installDir}`)
 NODE
 
-  npm install -g playwright
-  test -f "${GLOBAL_NPM_ROOT}/playwright/package.json"
+  pnpm add -g playwright
+  test -f "${GLOBAL_PNPM_ROOT}/playwright/package.json"
   if [[ "${RUN_OPENCLAW_ONBOARD}" == "1" ]]; then
     openclaw onboard --install-daemon --non-interactive --accept-risk
   else
