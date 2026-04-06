@@ -334,12 +334,14 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   test -f "${PNPM_HOME_DIR}/openclaw"
   ln -sfn "${PNPM_HOME_DIR}/openclaw" /usr/local/bin/openclaw
   command -v openclaw >/dev/null 2>&1
-  pnpm --config.node-linker=hoisted --dir "${OPENCLAW_PACKAGE_DIR}" add memory-lancedb-pro@beta grammy
-  test -f "${OPENCLAW_PACKAGE_DIR}/node_modules/memory-lancedb-pro/package.json"
-  test -f "${OPENCLAW_PACKAGE_DIR}/node_modules/grammy/package.json"
+  pnpm --config.node-linker=hoisted add -g memory-lancedb-pro@beta grammy
+  OPENCLAW_MEMORY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/memory-lancedb-pro"
+  OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/grammy"
+  test -f "${OPENCLAW_MEMORY_PACKAGE_DIR}/package.json"
+  test -f "${OPENCLAW_GRAMMY_PACKAGE_DIR}/package.json"
   mkdir -p /root/.openclaw/workspace/plugins
-  ln -sfn "${OPENCLAW_PACKAGE_DIR}/node_modules/memory-lancedb-pro" /root/.openclaw/workspace/plugins/memory-lancedb-pro
-  node --input-type=module - "${OPENCLAW_PACKAGE_DIR}/node_modules/memory-lancedb-pro" "/root/.openclaw/workspace/plugins/memory-lancedb-pro" <<'NODE'
+  ln -sfn "${OPENCLAW_MEMORY_PACKAGE_DIR}" /root/.openclaw/workspace/plugins/memory-lancedb-pro
+  node --input-type=module - "${OPENCLAW_MEMORY_PACKAGE_DIR}" "/root/.openclaw/workspace/plugins/memory-lancedb-pro" <<'NODE'
 import fs from "node:fs"
 import path from "node:path"
 
