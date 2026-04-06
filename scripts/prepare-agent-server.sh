@@ -22,6 +22,7 @@ fi
 RELAY_CHANNEL_PLUGIN_INSTALL_DIR="/root/.openclaw/workspace/plugins/relay-channel"
 NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
+PNPM_HOME_DIR="/root/.local/share/pnpm"
 RUN_OPENCLAW_ONBOARD=1
 
 usage() {
@@ -277,36 +278,45 @@ EOF
   cd /root
 
   set_step "openclaw_install"
-  GLOBAL_NPM_ROOT="$(npm root -g)"
-  echo "Using global npm root: ${GLOBAL_NPM_ROOT}"
-  mkdir -p "${NODE_COMPILE_CACHE_DIR}"
+  npm install -g pnpm@10
+  hash -r
+  mkdir -p "${NODE_COMPILE_CACHE_DIR}" "${PNPM_HOME_DIR}"
   chmod 1777 "${NODE_COMPILE_CACHE_DIR}"
+  export PNPM_HOME="${PNPM_HOME_DIR}"
+  export PATH="${PNPM_HOME}:${PATH}"
+  GLOBAL_PNPM_ROOT="$(pnpm root -g)"
+  echo "Using global pnpm root: ${GLOBAL_PNPM_ROOT}"
   append_line_if_missing "${ROOT_BASHRC}" "export NODE_OPTIONS=\"${NODE_OPTIONS_VALUE}\""
   append_line_if_missing "${ROOT_BASHRC}" "export NODE_COMPILE_CACHE=\"${NODE_COMPILE_CACHE_DIR}\""
   append_line_if_missing "${ROOT_BASHRC}" 'export OPENCLAW_NO_RESPAWN=1'
-  append_line_if_missing "${ROOT_BASHRC}" "export NODE_PATH=\"${GLOBAL_NPM_ROOT}\""
+  append_line_if_missing "${ROOT_BASHRC}" "export PNPM_HOME=\"${PNPM_HOME_DIR}\""
+  append_line_if_missing "${ROOT_BASHRC}" 'export PATH="$PNPM_HOME:$PATH"'
+  append_line_if_missing "${ROOT_BASHRC}" "export NODE_PATH=\"${GLOBAL_PNPM_ROOT}\""
   upsert_env_file_key /etc/environment NODE_OPTIONS "${NODE_OPTIONS_VALUE}"
   upsert_env_file_key /etc/environment NODE_COMPILE_CACHE "${NODE_COMPILE_CACHE_DIR}"
   upsert_env_file_key /etc/environment OPENCLAW_NO_RESPAWN "1"
-  upsert_env_file_key /etc/environment NODE_PATH "${GLOBAL_NPM_ROOT}"
+  upsert_env_file_key /etc/environment PNPM_HOME "${PNPM_HOME_DIR}"
+  upsert_env_file_key /etc/environment NODE_PATH "${GLOBAL_PNPM_ROOT}"
   write_file /etc/profile.d/golem-node-runtime.sh "#!/usr/bin/env bash
 export NODE_OPTIONS=\"${NODE_OPTIONS_VALUE}\"
 export NODE_COMPILE_CACHE=\"${NODE_COMPILE_CACHE_DIR}\"
 export OPENCLAW_NO_RESPAWN=1
-export NODE_PATH=\"${GLOBAL_NPM_ROOT}\"
+export PNPM_HOME=\"${PNPM_HOME_DIR}\"
+export PATH=\"\$PNPM_HOME:\$PATH\"
+export NODE_PATH=\"${GLOBAL_PNPM_ROOT}\"
 "
   chmod 0644 /etc/profile.d/golem-node-runtime.sh
   rm -f /etc/systemd/system.conf.d/node-runtime.conf /etc/systemd/user.conf.d/node-runtime.conf
   write_file /etc/systemd/system.conf.d/node-runtime.conf "[Manager]
-DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
+DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"PNPM_HOME=${PNPM_HOME_DIR}\" \"NODE_PATH=${GLOBAL_PNPM_ROOT}\"
 "
   write_file /etc/systemd/user.conf.d/node-runtime.conf "[Manager]
-DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
+DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"PNPM_HOME=${PNPM_HOME_DIR}\" \"NODE_PATH=${GLOBAL_PNPM_ROOT}\"
 "
   export NODE_OPTIONS="${NODE_OPTIONS_VALUE}"
   export NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE_DIR}"
   export OPENCLAW_NO_RESPAWN=1
-  export NODE_PATH="${GLOBAL_NPM_ROOT}"
+  export NODE_PATH="${GLOBAL_PNPM_ROOT}"
   export OPENCLAW_SKIP_CANVAS_HOST=1
   export OPENCLAW_LOG_LEVEL=debug
   prepare_root_user_systemd
@@ -314,17 +324,22 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     NODE_OPTIONS \
     NODE_COMPILE_CACHE \
     OPENCLAW_NO_RESPAWN \
+    PNPM_HOME \
     NODE_PATH \
     OPENCLAW_SKIP_CANVAS_HOST \
     OPENCLAW_LOG_LEVEL || true
-  curl -fsSL https://openclaw.ai/install.sh | bash -s -- --install-method npm --no-onboard
-  test -f "${GLOBAL_NPM_ROOT}/openclaw/package.json"
-  npm --prefix "${GLOBAL_NPM_ROOT}/openclaw" install memory-lancedb-pro@beta grammy
-  test -f "${GLOBAL_NPM_ROOT}/openclaw/node_modules/memory-lancedb-pro/package.json"
-  test -f "${GLOBAL_NPM_ROOT}/openclaw/node_modules/grammy/package.json"
+  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm add -g openclaw@latest
+  OPENCLAW_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/openclaw"
+  test -f "${OPENCLAW_PACKAGE_DIR}/package.json"
+  test -f "${PNPM_HOME_DIR}/openclaw"
+  ln -sfn "${PNPM_HOME_DIR}/openclaw" /usr/local/bin/openclaw
+  command -v openclaw >/dev/null 2>&1
+  pnpm --dir "${OPENCLAW_PACKAGE_DIR}" add memory-lancedb-pro@beta grammy
+  test -f "${OPENCLAW_PACKAGE_DIR}/node_modules/memory-lancedb-pro/package.json"
+  test -f "${OPENCLAW_PACKAGE_DIR}/node_modules/grammy/package.json"
   mkdir -p /root/.openclaw/workspace/plugins
-  ln -sfn "${GLOBAL_NPM_ROOT}/openclaw/node_modules/memory-lancedb-pro" /root/.openclaw/workspace/plugins/memory-lancedb-pro
-  node --input-type=module - "${GLOBAL_NPM_ROOT}/openclaw/node_modules/memory-lancedb-pro" "/root/.openclaw/workspace/plugins/memory-lancedb-pro" <<'NODE'
+  ln -sfn "${OPENCLAW_PACKAGE_DIR}/node_modules/memory-lancedb-pro" /root/.openclaw/workspace/plugins/memory-lancedb-pro
+  node --input-type=module - "${OPENCLAW_PACKAGE_DIR}/node_modules/memory-lancedb-pro" "/root/.openclaw/workspace/plugins/memory-lancedb-pro" <<'NODE'
 import fs from "node:fs"
 import path from "node:path"
 
