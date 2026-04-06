@@ -339,28 +339,30 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   test -f "${OPENCLAW_MEMORY_PACKAGE_DIR}/package.json"
   test -f "${OPENCLAW_GRAMMY_PACKAGE_DIR}/package.json"
   mkdir -p /root/.openclaw/workspace/plugins
-  ln -sfn "${OPENCLAW_MEMORY_PACKAGE_DIR}" /root/.openclaw/workspace/plugins/memory-lancedb-pro
+  rm -rf /root/.openclaw/workspace/plugins/memory-lancedb-pro
+  mkdir -p /root/.openclaw/workspace/plugins/memory-lancedb-pro
+  cp -a "${OPENCLAW_MEMORY_PACKAGE_DIR}/." /root/.openclaw/workspace/plugins/memory-lancedb-pro/
   node --input-type=module - "${OPENCLAW_MEMORY_PACKAGE_DIR}" "/root/.openclaw/workspace/plugins/memory-lancedb-pro" <<'NODE'
 import fs from "node:fs"
 import path from "node:path"
 
 const packageDir = process.argv[2]
-const linkPath = process.argv[3]
+const installDir = process.argv[3]
 const packageJsonPath = path.join(packageDir, "package.json")
 const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"))
 if (pkg?.name !== "memory-lancedb-pro") {
   throw new Error(`Unexpected plugin package at ${packageJsonPath}`)
 }
-const stats = fs.lstatSync(linkPath)
-if (!stats.isSymbolicLink()) {
-  throw new Error(`Expected plugin link at ${linkPath}`)
+const stats = fs.lstatSync(installDir)
+if (!stats.isDirectory()) {
+  throw new Error(`Expected plugin directory at ${installDir}`)
 }
-const resolvedLinkTarget = fs.realpathSync(linkPath)
-const resolvedPackageDir = fs.realpathSync(packageDir)
-if (resolvedLinkTarget !== resolvedPackageDir) {
-  throw new Error(`Plugin link target mismatch: ${resolvedLinkTarget} !== ${resolvedPackageDir}`)
+const resolvedInstallDir = fs.realpathSync(installDir)
+const manifestPath = fs.realpathSync(path.join(installDir, "openclaw.plugin.json"))
+if (path.dirname(manifestPath) !== resolvedInstallDir) {
+  throw new Error(`Plugin manifest escaped install dir: ${manifestPath}`)
 }
-console.log(`memory-lancedb-pro prepared: ${resolvedPackageDir}`)
+console.log(`memory-lancedb-pro prepared: ${resolvedInstallDir}`)
 NODE
 
   set_step "relay_channel_prepull"
