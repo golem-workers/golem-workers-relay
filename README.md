@@ -23,6 +23,13 @@ action surface includes:
 - `typing.set`
 - `file.download.request` with a local download-token data plane
 
+Relay control-plane transport is now localhost HTTP:
+
+- plugin -> relay: `POST /hello` and synchronous `POST /actions`
+- relay -> plugin: local HTTP push into plugin-owned ingress endpoints
+- plain text inbound retries are coalesced before delivery with explicit merged boundaries
+- typing/account-status/capability updates are latest-wins
+
 The relay push ingress also accepts normalized `transport_event` payloads from
 backend. In the current Telegram Bot API architecture, polling/webhook ownership
 stays on backend, and relay consumes backend-produced update families such as
