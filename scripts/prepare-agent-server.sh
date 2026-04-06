@@ -328,13 +328,13 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     NODE_PATH \
     OPENCLAW_SKIP_CANVAS_HOST \
     OPENCLAW_LOG_LEVEL || true
-  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm add -g openclaw@latest
+  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm --config.node-linker=hoisted add -g openclaw@latest
   OPENCLAW_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/openclaw"
   test -f "${OPENCLAW_PACKAGE_DIR}/package.json"
   test -f "${PNPM_HOME_DIR}/openclaw"
   ln -sfn "${PNPM_HOME_DIR}/openclaw" /usr/local/bin/openclaw
   command -v openclaw >/dev/null 2>&1
-  pnpm --dir "${OPENCLAW_PACKAGE_DIR}" add memory-lancedb-pro@beta grammy
+  pnpm --config.node-linker=hoisted --dir "${OPENCLAW_PACKAGE_DIR}" add memory-lancedb-pro@beta grammy
   test -f "${OPENCLAW_PACKAGE_DIR}/node_modules/memory-lancedb-pro/package.json"
   test -f "${OPENCLAW_PACKAGE_DIR}/node_modules/grammy/package.json"
   mkdir -p /root/.openclaw/workspace/plugins
@@ -404,7 +404,7 @@ if (!fs.existsSync(path.join(installDir, "dist", "index.js"))) {
 console.log(`relay-channel prepared: ${installDir}`)
 NODE
 
-  pnpm add -g playwright
+  pnpm --config.node-linker=hoisted add -g playwright
   test -f "${GLOBAL_PNPM_ROOT}/playwright/package.json"
   if [[ "${RUN_OPENCLAW_ONBOARD}" == "1" ]]; then
     openclaw onboard --install-daemon --non-interactive --accept-risk
