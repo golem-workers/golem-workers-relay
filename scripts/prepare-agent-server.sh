@@ -328,13 +328,12 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     NODE_PATH \
     OPENCLAW_SKIP_CANVAS_HOST \
     OPENCLAW_LOG_LEVEL || true
-  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm --config.node-linker=hoisted add -g openclaw@latest
+  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm --config.node-linker=hoisted add -g openclaw@latest memory-lancedb-pro@beta grammy playwright @buape/carbon
   OPENCLAW_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/openclaw"
   test -f "${OPENCLAW_PACKAGE_DIR}/package.json"
   test -f "${PNPM_HOME_DIR}/openclaw"
   ln -sfn "${PNPM_HOME_DIR}/openclaw" /usr/local/bin/openclaw
   command -v openclaw >/dev/null 2>&1
-  pnpm --config.node-linker=hoisted add -g memory-lancedb-pro@beta grammy playwright
   OPENCLAW_MEMORY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/memory-lancedb-pro"
   OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/grammy"
   test -f "${OPENCLAW_MEMORY_PACKAGE_DIR}/package.json"

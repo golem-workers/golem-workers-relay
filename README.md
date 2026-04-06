@@ -64,7 +64,7 @@ The script:
 
 - installs base Ubuntu packages plus agent media/PDF tooling (`ffmpeg`, `poppler-utils`, `imagemagick`, `python3-pip`), Google Chrome Stable, Go, Linuxbrew, and Node 22;
 - pre-pulls and builds `golem-workers-relay` from `release` by default;
-- installs `pnpm`, installs the latest OpenClaw through a hoisted pnpm global package tree, prepares runtime dependencies (`memory-lancedb-pro@beta`, `grammy`), preinstalls `relay-channel` into the OpenClaw workspace plugin directory, plus full `playwright`;
+- installs `pnpm`, installs the latest OpenClaw through a hoisted pnpm global package tree, prepares runtime dependencies (`memory-lancedb-pro@beta`, `grammy`, `@buape/carbon` for the current OpenClaw Discord UI import bug), preinstalls `relay-channel` into the OpenClaw workspace plugin directory, plus full `playwright`;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `PNPM_HOME`, `NODE_PATH`);
 - explicitly brings up root user-systemd (`loginctl enable-linger root`, `user@0.service`, `/run/user/0/bus`) before any OpenClaw daemon install work;
 - optionally runs `openclaw onboard --install-daemon`;
