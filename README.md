@@ -184,8 +184,8 @@ Push transport settings:
 - `RELAY_JINA_PROXY_PATH_PREFIX=/v1` (Jina-compatible incoming path prefix)
 - `RELAY_JINA_BACKEND_PATH_PREFIX=/api/v1/relays/jina` (backend relay-auth proxy path)
 - `RELAY_GOOGLE_AI_PROXY_ENABLED=1` (enable local Google AI-compatible proxy listener)
-- `RELAY_GOOGLE_AI_PROXY_PORT=18081` (local plain-HTTP proxy port used by the agent-side TLS interceptor for Gemini web search; binds to `127.0.0.1` by default)
-- `RELAY_GOOGLE_AI_PROXY_PATH_PREFIX=/` (forward all Google AI request paths from the local interceptor)
+- `RELAY_GOOGLE_AI_PROXY_PORT=18081` (local plain-HTTP proxy port used by provisioned OpenClaw configs via `models.providers.google.baseUrl`; binds to `127.0.0.1` by default)
+- `RELAY_GOOGLE_AI_PROXY_PATH_PREFIX=/` (forward all Google AI request paths from the local OpenClaw Google provider)
 - `RELAY_GOOGLE_AI_BACKEND_PATH_PREFIX=/api/v1/relays/google-ai` (backend relay-auth proxy path)
 - `RELAY_OPENCLAW_FORWARD_FINAL_ONLY=1` (default: only forward compact `delta` typing signals; disable with `0` to forward all raw OpenClaw gateway events)
 
@@ -200,7 +200,7 @@ Relay also performs internal local auto-approve passes via the same root-run rel
 Provisioned agents use both local listeners together:
 - OpenClaw model traffic still goes through `OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1`.
 - `memory-lancedb-pro` Jina embedding/rerank traffic goes through `http://127.0.0.1:18082/v1` with a stub `JINA_API_KEY`; relay replaces it with the real backend-side key.
-- Gemini web-search traffic is intercepted transparently by the backend bootstrap via local TLS/hosts rewrites for `generativelanguage.googleapis.com` and then forwarded through relay to backend `/api/v1/relays/google-ai/*`.
+- Gemini web-search traffic goes directly to `http://127.0.0.1:18081/v1beta` via `models.providers.google.baseUrl`, and relay forwards it to backend `/api/v1/relays/google-ai/*`.
 - All relay proxy listeners are local-only by default and bind to `127.0.0.1`, so they are not exposed on external interfaces unless the code is changed intentionally.
 
 ## Unified Message Flow Logging
