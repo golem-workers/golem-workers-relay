@@ -336,6 +336,78 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/grammy"
   test -f "${OPENCLAW_GRAMMY_PACKAGE_DIR}/package.json"
   set_step "memory_plugin_install"
+  node --input-type=module - <<'NODE'
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+
+const pluginId = "memory-lancedb-pro"
+const configDir = path.join(os.homedir(), ".openclaw")
+const configPath = path.join(configDir, "openclaw.json")
+
+function ensureRecord(parent, key) {
+  const current = parent?.[key]
+  if (current && typeof current === "object" && !Array.isArray(current)) return current
+  const next = {}
+  parent[key] = next
+  return next
+}
+
+let cfg = {}
+if (fs.existsSync(configPath)) {
+  cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
+}
+if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+  cfg = {}
+}
+
+const envCfg = ensureRecord(cfg, "env")
+if (typeof envCfg.JINA_API_KEY !== "string" || envCfg.JINA_API_KEY.trim().length === 0) {
+  envCfg.JINA_API_KEY = "GOLEM_JINA_STUB"
+}
+
+const pluginsCfg = ensureRecord(cfg, "plugins")
+const entriesCfg = ensureRecord(pluginsCfg, "entries")
+const existingEntry = entriesCfg[pluginId]
+const enabled =
+  existingEntry && typeof existingEntry === "object" && !Array.isArray(existingEntry) && typeof existingEntry.enabled === "boolean"
+    ? existingEntry.enabled
+    : true
+
+entriesCfg[pluginId] = {
+  enabled,
+  config: {
+    sessionStrategy: "systemSessionMemory",
+    embedding: {
+      apiKey: "${JINA_API_KEY}",
+      baseURL: "http://127.0.0.1:18082/v1",
+      model: "jina-embeddings-v5-text-small",
+      dimensions: 1024,
+      taskQuery: "retrieval.query",
+      taskPassage: "retrieval.passage",
+      normalized: true,
+    },
+    dbPath: "~/.openclaw/memory/lancedb-pro",
+    autoCapture: true,
+    autoRecall: true,
+    retrieval: {
+      mode: "hybrid",
+      vectorWeight: 0.7,
+      bm25Weight: 0.3,
+      minScore: 0.45,
+      hardMinScore: 0.55,
+      candidatePoolSize: 20,
+      rerank: "cross-encoder",
+      rerankApiKey: "${JINA_API_KEY}",
+      rerankModel: "jina-reranker-v3",
+      filterNoise: true,
+    },
+  },
+}
+
+fs.mkdirSync(configDir, { recursive: true })
+fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`)
+NODE
   openclaw plugins uninstall memory-lancedb-pro --force >/dev/null 2>&1 || true
   openclaw plugins install memory-lancedb-pro@beta --dangerously-force-unsafe-install
   node --input-type=module - <<'NODE'
