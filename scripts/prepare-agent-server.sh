@@ -336,6 +336,8 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/grammy"
   test -f "${OPENCLAW_GRAMMY_PACKAGE_DIR}/package.json"
   set_step "memory_plugin_install"
+  openclaw plugins uninstall memory-lancedb-pro --force >/dev/null 2>&1 || true
+  rm -rf /root/.openclaw/extensions/memory-lancedb-pro
   node --input-type=module - <<'NODE'
 import fs from "node:fs"
 import os from "node:os"
@@ -394,7 +396,6 @@ fs.mkdirSync(configDir, { recursive: true })
 fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`)
 NODE
   export JINA_API_KEY="${JINA_API_KEY:-GOLEM_JINA_STUB}"
-  openclaw plugins uninstall memory-lancedb-pro --force >/dev/null 2>&1 || true
   openclaw plugins install memory-lancedb-pro@beta --dangerously-force-unsafe-install
   node --input-type=module - <<'NODE'
 import fs from "node:fs"
