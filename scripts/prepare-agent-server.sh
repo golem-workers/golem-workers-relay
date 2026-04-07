@@ -337,7 +337,7 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   test -f "${OPENCLAW_GRAMMY_PACKAGE_DIR}/package.json"
   set_step "memory_plugin_install"
   openclaw plugins uninstall memory-lancedb-pro --force >/dev/null 2>&1 || true
-  openclaw plugins install memory-lancedb-pro@beta
+  openclaw plugins install memory-lancedb-pro@beta --dangerously-force-unsafe-install
   node --input-type=module - <<'NODE'
 import fs from "node:fs"
 import os from "node:os"
