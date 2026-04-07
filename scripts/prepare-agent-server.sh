@@ -150,6 +150,26 @@ prepare_root_user_systemd() {
   return 1
 }
 
+stop_openclaw_gateway_if_present() {
+  prepare_root_user_systemd
+  systemctl --user daemon-reload || true
+
+  if [[ ! -f /root/.config/systemd/user/openclaw-gateway.service ]]; then
+    return 0
+  fi
+
+  systemctl --user stop openclaw-gateway.service || true
+  systemctl --user disable openclaw-gateway.service || true
+  systemctl --user reset-failed openclaw-gateway.service || true
+
+  local active_state
+  active_state="$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true)"
+  if [[ -n "${active_state}" && "${active_state}" != "inactive" && "${active_state}" != "failed" ]]; then
+    echo "OpenClaw gateway must be stopped before snapshot mutations, current state: ${active_state}" >&2
+    return 1
+  fi
+}
+
 main() {
   parse_args "$@"
   require_root
@@ -361,6 +381,8 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   command -v openclaw >/dev/null 2>&1
   OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/grammy"
   test -f "${OPENCLAW_GRAMMY_PACKAGE_DIR}/package.json"
+  set_step "openclaw_mutation_guard"
+  stop_openclaw_gateway_if_present
   set_step "memory_plugin_install"
   openclaw plugins uninstall memory-lancedb-pro --force >/dev/null 2>&1 || true
   rm -rf /root/.openclaw/extensions/memory-lancedb-pro
@@ -577,24 +599,15 @@ import path from "node:path"
 
 const configDir = path.join(os.homedir(), ".openclaw")
 const configPath = path.join(configDir, "openclaw.json")
-const candidatePaths = [
-  configPath,
-  `${configPath}.bak`,
-  `${configPath}.bak.1`,
-  `${configPath}.bak.2`,
-  `${configPath}.bak.3`,
-  `${configPath}.bak.4`,
-]
 const requiredPluginIds = ["memory-lancedb-pro", "relay-channel"]
 
-const sourcePath = candidatePaths.find((candidate) => fs.existsSync(candidate))
-if (!sourcePath) {
-  throw new Error(`Missing OpenClaw config and backups at ${configPath}`)
+if (!fs.existsSync(configPath)) {
+  throw new Error(`Missing canonical OpenClaw config at ${configPath}`)
 }
 
-const parsed = JSON.parse(fs.readFileSync(sourcePath, "utf8"))
+const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"))
 if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-  throw new Error(`Unexpected OpenClaw config shape in ${sourcePath}`)
+  throw new Error(`Unexpected OpenClaw config shape in ${configPath}`)
 }
 
 const installs =
@@ -607,16 +620,16 @@ const installs =
     ? parsed.plugins.installs
     : null
 if (!installs) {
-  throw new Error(`OpenClaw config is missing plugins.installs in ${sourcePath}`)
+  throw new Error(`OpenClaw config is missing plugins.installs in ${configPath}`)
 }
 
 for (const pluginId of requiredPluginIds) {
   const installRecord = installs[pluginId]
   if (!installRecord || typeof installRecord !== "object" || Array.isArray(installRecord)) {
-    throw new Error(`OpenClaw config is missing install record for ${pluginId} in ${sourcePath}`)
+    throw new Error(`OpenClaw config is missing install record for ${pluginId} in ${configPath}`)
   }
   if (typeof installRecord.installPath !== "string" || installRecord.installPath.trim().length === 0) {
-    throw new Error(`OpenClaw install record for ${pluginId} is missing installPath in ${sourcePath}`)
+    throw new Error(`OpenClaw install record for ${pluginId} is missing installPath in ${configPath}`)
   }
 }
 
@@ -645,7 +658,7 @@ try {
   }
 }
 
-console.log(`sealed openclaw config from ${sourcePath}`)
+console.log(`sealed canonical openclaw config at ${configPath}`)
 NODE
   test -f /root/.openclaw/openclaw.json
 
