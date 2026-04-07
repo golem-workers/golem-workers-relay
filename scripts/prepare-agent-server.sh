@@ -108,6 +108,27 @@ write_file() {
   printf '%s' "${content}" >"${path}"
 }
 
+log_git_checkout_state() {
+  local repo_dir="$1"
+  local label="$2"
+  local requested_ref="$3"
+  local head="unknown"
+  local branch="unknown"
+  local status="missing"
+
+  if [[ -d "${repo_dir}/.git" ]]; then
+    status="present"
+    head="$(git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo unknown)"
+    branch="$(git -C "${repo_dir}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+  fi
+
+  echo "${label}_requested_ref=${requested_ref}"
+  echo "${label}_repo_dir=${repo_dir}"
+  echo "${label}_repo_status=${status}"
+  echo "${label}_head=${head}"
+  echo "${label}_branch=${branch}"
+}
+
 prepare_root_user_systemd() {
   loginctl enable-linger root
   systemctl start user@0.service
@@ -138,6 +159,10 @@ main() {
   chmod 0600 "${LOG_FILE}" || true
   exec > >(tee -a "${LOG_FILE}") 2>&1
   trap on_error ERR
+
+  set_step "git_ref_selection"
+  log_git_checkout_state "${RELAY_REPO_DIR}" "relay_before_checkout" "${RELAY_GIT_REF}"
+  log_git_checkout_state "${RELAY_CHANNEL_PLUGIN_REPO_DIR}" "relay_channel_plugin_before_checkout" "${RELAY_CHANNEL_PLUGIN_GIT_REF}"
 
   export DEBIAN_FRONTEND=noninteractive
 
@@ -272,6 +297,7 @@ EOF
     git clone --branch "${RELAY_GIT_REF}" --single-branch "${RELAY_REPO_URL}" "${RELAY_REPO_DIR}"
     cd "${RELAY_REPO_DIR}"
   fi
+  log_git_checkout_state "${RELAY_REPO_DIR}" "relay_after_checkout" "${RELAY_GIT_REF}"
   npm ci
   npm run build
   cd /root
@@ -439,6 +465,7 @@ NODE
     git clone --branch "${RELAY_CHANNEL_PLUGIN_GIT_REF}" --single-branch "${RELAY_CHANNEL_PLUGIN_REPO_URL}" "${RELAY_CHANNEL_PLUGIN_REPO_DIR}"
     cd "${RELAY_CHANNEL_PLUGIN_REPO_DIR}"
   fi
+  log_git_checkout_state "${RELAY_CHANNEL_PLUGIN_REPO_DIR}" "relay_channel_plugin_after_checkout" "${RELAY_CHANNEL_PLUGIN_GIT_REF}"
   npm ci
   npm run bundle:agent
   RELAY_CHANNEL_BUNDLE_TGZ="${RELAY_CHANNEL_PLUGIN_REPO_DIR}/.artifacts/relay-channel/relay-channel-bundle.tgz"
