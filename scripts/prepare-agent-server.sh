@@ -377,8 +377,8 @@ const enabled =
 entriesCfg[pluginId] = {
   enabled,
   config: {
-    sessionStrategy: "systemSessionMemory",
     embedding: {
+      provider: "openai-compatible",
       apiKey: "${JINA_API_KEY}",
       baseURL: "http://127.0.0.1:18082/v1",
       model: "jina-embeddings-v5-text-small",
@@ -387,27 +387,13 @@ entriesCfg[pluginId] = {
       taskPassage: "retrieval.passage",
       normalized: true,
     },
-    dbPath: "~/.openclaw/memory/lancedb-pro",
-    autoCapture: true,
-    autoRecall: true,
-    retrieval: {
-      mode: "hybrid",
-      vectorWeight: 0.7,
-      bm25Weight: 0.3,
-      minScore: 0.45,
-      hardMinScore: 0.55,
-      candidatePoolSize: 20,
-      rerank: "cross-encoder",
-      rerankApiKey: "${JINA_API_KEY}",
-      rerankModel: "jina-reranker-v3",
-      filterNoise: true,
-    },
   },
 }
 
 fs.mkdirSync(configDir, { recursive: true })
 fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`)
 NODE
+  export JINA_API_KEY="${JINA_API_KEY:-GOLEM_JINA_STUB}"
   openclaw plugins uninstall memory-lancedb-pro --force >/dev/null 2>&1 || true
   openclaw plugins install memory-lancedb-pro@beta --dangerously-force-unsafe-install
   node --input-type=module - <<'NODE'

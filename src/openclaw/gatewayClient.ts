@@ -688,8 +688,10 @@ export class GatewayClient {
       this.readyReject = null;
       this.readyPromise = null;
     }
+    const ws = this.ws;
+    this.ws = null;
     try {
-      this.ws?.close(1008, "connect failed");
+      ws?.terminate();
     } catch {
       // ignore
     }
