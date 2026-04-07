@@ -19,7 +19,6 @@ if [[ -z "${RELAY_CHANNEL_PLUGIN_GIT_REF:-}" ]]; then
     RELAY_CHANNEL_PLUGIN_GIT_REF="release"
   fi
 fi
-RELAY_CHANNEL_PLUGIN_INSTALL_DIR="/root/.openclaw/workspace/plugins/relay-channel"
 NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 PNPM_HOME_DIR="/root/.local/share/pnpm"
@@ -382,20 +381,32 @@ NODE
   test -f "${RELAY_CHANNEL_BUNDLE_TGZ}"
 
   set_step "relay_channel_install"
-  RELAY_CHANNEL_STAGE_DIR="$(mktemp -d /tmp/relay-channel-stage.XXXXXX)"
-  rm -rf "${RELAY_CHANNEL_PLUGIN_INSTALL_DIR}"
-  mkdir -p "$(dirname "${RELAY_CHANNEL_PLUGIN_INSTALL_DIR}")"
-  tar -xzf "${RELAY_CHANNEL_BUNDLE_TGZ}" -C "${RELAY_CHANNEL_STAGE_DIR}"
-  test -f "${RELAY_CHANNEL_STAGE_DIR}/relay-channel/openclaw.plugin.json"
-  test -f "${RELAY_CHANNEL_STAGE_DIR}/relay-channel/dist/index.js"
-  mv "${RELAY_CHANNEL_STAGE_DIR}/relay-channel" "${RELAY_CHANNEL_PLUGIN_INSTALL_DIR}"
-  chown -R root:root "${RELAY_CHANNEL_PLUGIN_INSTALL_DIR}"
-  rm -rf "${RELAY_CHANNEL_STAGE_DIR}"
-  node --input-type=module - "${RELAY_CHANNEL_PLUGIN_INSTALL_DIR}" <<'NODE'
+  openclaw plugins uninstall relay-channel --force >/dev/null 2>&1 || true
+  openclaw plugins install "${RELAY_CHANNEL_BUNDLE_TGZ}"
+  openclaw plugins disable relay-channel
+  node --input-type=module - <<'NODE'
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 
-const installDir = process.argv[2]
+const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json")
+const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
+const installRecord =
+  cfg?.plugins &&
+  typeof cfg.plugins === "object" &&
+  !Array.isArray(cfg.plugins) &&
+  cfg.plugins.installs &&
+  typeof cfg.plugins.installs === "object" &&
+  !Array.isArray(cfg.plugins.installs)
+    ? cfg.plugins.installs["relay-channel"]
+    : null
+if (!installRecord || typeof installRecord !== "object" || Array.isArray(installRecord)) {
+  throw new Error("Missing relay-channel install record in openclaw.json")
+}
+if (typeof installRecord.installPath !== "string" || installRecord.installPath.trim().length === 0) {
+  throw new Error("relay-channel install record is missing installPath")
+}
+const installDir = fs.realpathSync(installRecord.installPath)
 const manifestPath = path.join(installDir, "openclaw.plugin.json")
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
 if (manifest?.id !== "relay-channel") {

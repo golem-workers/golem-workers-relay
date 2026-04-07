@@ -21,7 +21,7 @@ What it does:
 - installs Go and Linuxbrew;
 - installs Node 22 separately (Linuxbrew is not used to install Node);
 - pre-pulls and builds `golem-workers-relay` from `release` by default;
-- installs `pnpm`, installs the latest OpenClaw through a hoisted pnpm global package tree, prepares runtime dependencies (`memory-lancedb-pro@beta`, `grammy`, `@buape/carbon`, `@larksuiteoapi/node-sdk`, `@slack/bolt` for the current OpenClaw bundled-plugin import bugs), preinstalls the `relay-channel` plugin into `/root/.openclaw/workspace/plugins/relay-channel`, and installs full `playwright`;
+- installs `pnpm`, installs the latest OpenClaw through a hoisted pnpm global package tree, prepares runtime dependencies (`memory-lancedb-pro@beta`, `grammy`, `@buape/carbon`, `@larksuiteoapi/node-sdk`, `@slack/bolt` for the current OpenClaw bundled-plugin import bugs), preinstalls the `relay-channel` plugin through `openclaw plugins install`, leaves it disabled until backend provisioning wires the account config, and installs full `playwright`;
 - copies the prepared `memory-lancedb-pro` package into `/root/.openclaw/workspace/plugins/memory-lancedb-pro`, so backend bootstrap can load it from a safe workspace path without re-installing anything on first start;
 - clones/builds `golem-workers-openclaw-channel-plugin` during image prep and unpacks the generated agent bundle into the OpenClaw workspace plugin path, so future `RELAY_CHANNEL_V2` provisioning can reuse the prepared plugin files from the snapshot;
 - fails the install immediately if `memory-lancedb-pro` is missing or the prepared workspace copy is malformed, so broken snapshot images are caught during image prep instead of surfacing later at runtime;
