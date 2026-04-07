@@ -569,6 +569,86 @@ NODE
   systemctl --user disable openclaw-gateway.service || true
   systemctl --user reset-failed openclaw-gateway.service || true
 
+  set_step "openclaw_snapshot_config_seal"
+  node --input-type=module - <<'NODE'
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+
+const configDir = path.join(os.homedir(), ".openclaw")
+const configPath = path.join(configDir, "openclaw.json")
+const candidatePaths = [
+  configPath,
+  `${configPath}.bak`,
+  `${configPath}.bak.1`,
+  `${configPath}.bak.2`,
+  `${configPath}.bak.3`,
+  `${configPath}.bak.4`,
+]
+const requiredPluginIds = ["memory-lancedb-pro", "relay-channel"]
+
+const sourcePath = candidatePaths.find((candidate) => fs.existsSync(candidate))
+if (!sourcePath) {
+  throw new Error(`Missing OpenClaw config and backups at ${configPath}`)
+}
+
+const parsed = JSON.parse(fs.readFileSync(sourcePath, "utf8"))
+if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+  throw new Error(`Unexpected OpenClaw config shape in ${sourcePath}`)
+}
+
+const installs =
+  parsed.plugins &&
+  typeof parsed.plugins === "object" &&
+  !Array.isArray(parsed.plugins) &&
+  parsed.plugins.installs &&
+  typeof parsed.plugins.installs === "object" &&
+  !Array.isArray(parsed.plugins.installs)
+    ? parsed.plugins.installs
+    : null
+if (!installs) {
+  throw new Error(`OpenClaw config is missing plugins.installs in ${sourcePath}`)
+}
+
+for (const pluginId of requiredPluginIds) {
+  const installRecord = installs[pluginId]
+  if (!installRecord || typeof installRecord !== "object" || Array.isArray(installRecord)) {
+    throw new Error(`OpenClaw config is missing install record for ${pluginId} in ${sourcePath}`)
+  }
+  if (typeof installRecord.installPath !== "string" || installRecord.installPath.trim().length === 0) {
+    throw new Error(`OpenClaw install record for ${pluginId} is missing installPath in ${sourcePath}`)
+  }
+}
+
+const normalizedJson = `${JSON.stringify(parsed, null, 2)}\n`
+fs.mkdirSync(configDir, { recursive: true })
+const tmpPath = `${configPath}.gwtmp-${Date.now()}-${Math.random().toString(16).slice(2)}`
+
+try {
+  const fd = fs.openSync(tmpPath, "w")
+  try {
+    fs.writeFileSync(fd, normalizedJson, "utf8")
+    fs.fsyncSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+  fs.renameSync(tmpPath, configPath)
+  const dirFd = fs.openSync(configDir, "r")
+  try {
+    fs.fsyncSync(dirFd)
+  } finally {
+    fs.closeSync(dirFd)
+  }
+} finally {
+  if (fs.existsSync(tmpPath)) {
+    fs.unlinkSync(tmpPath)
+  }
+}
+
+console.log(`sealed openclaw config from ${sourcePath}`)
+NODE
+  test -f /root/.openclaw/openclaw.json
+
   set_step "done"
   echo "__GW_PREPARE_DONE__=1"
   echo "Prepare agent server completed successfully."
