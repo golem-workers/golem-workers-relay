@@ -333,35 +333,40 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   test -f "${PNPM_HOME_DIR}/openclaw"
   ln -sfn "${PNPM_HOME_DIR}/openclaw" /usr/local/bin/openclaw
   command -v openclaw >/dev/null 2>&1
-  OPENCLAW_MEMORY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/memory-lancedb-pro"
   OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/grammy"
-  test -f "${OPENCLAW_MEMORY_PACKAGE_DIR}/package.json"
   test -f "${OPENCLAW_GRAMMY_PACKAGE_DIR}/package.json"
-  mkdir -p /root/.openclaw/workspace/plugins
-  rm -rf /root/.openclaw/workspace/plugins/memory-lancedb-pro
-  mkdir -p /root/.openclaw/workspace/plugins/memory-lancedb-pro
-  cp -a "${OPENCLAW_MEMORY_PACKAGE_DIR}/." /root/.openclaw/workspace/plugins/memory-lancedb-pro/
-  node --input-type=module - "${OPENCLAW_MEMORY_PACKAGE_DIR}" "/root/.openclaw/workspace/plugins/memory-lancedb-pro" <<'NODE'
+  set_step "memory_plugin_install"
+  openclaw plugins uninstall memory-lancedb-pro --force >/dev/null 2>&1 || true
+  openclaw plugins install memory-lancedb-pro@beta
+  node --input-type=module - <<'NODE'
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 
-const packageDir = process.argv[2]
-const installDir = process.argv[3]
-const packageJsonPath = path.join(packageDir, "package.json")
-const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"))
-if (pkg?.name !== "memory-lancedb-pro") {
-  throw new Error(`Unexpected plugin package at ${packageJsonPath}`)
+const pluginId = "memory-lancedb-pro"
+const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json")
+const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
+const installRecord =
+  cfg?.plugins &&
+  typeof cfg.plugins === "object" &&
+  !Array.isArray(cfg.plugins) &&
+  cfg.plugins.installs &&
+  typeof cfg.plugins.installs === "object" &&
+  !Array.isArray(cfg.plugins.installs)
+    ? cfg.plugins.installs[pluginId]
+    : null
+if (!installRecord || typeof installRecord !== "object" || Array.isArray(installRecord)) {
+  throw new Error(`Missing ${pluginId} install record in openclaw.json`)
 }
-const stats = fs.lstatSync(installDir)
-if (!stats.isDirectory()) {
-  throw new Error(`Expected plugin directory at ${installDir}`)
+if (typeof installRecord.installPath !== "string" || installRecord.installPath.trim().length === 0) {
+  throw new Error(`${pluginId} install record is missing installPath`)
 }
-const resolvedInstallDir = fs.realpathSync(installDir)
-const manifestPath = fs.realpathSync(path.join(installDir, "openclaw.plugin.json"))
-if (path.dirname(manifestPath) !== resolvedInstallDir) {
-  throw new Error(`Plugin manifest escaped install dir: ${manifestPath}`)
+const installDir = fs.realpathSync(installRecord.installPath)
+const manifest = JSON.parse(fs.readFileSync(path.join(installDir, "openclaw.plugin.json"), "utf8"))
+if (manifest?.id !== pluginId) {
+  throw new Error(`Unexpected plugin id in ${installDir}`)
 }
-console.log(`memory-lancedb-pro prepared: ${resolvedInstallDir}`)
+console.log(`${pluginId} installed: ${installDir}`)
 NODE
 
   set_step "relay_channel_prepull"
