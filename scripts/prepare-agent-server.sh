@@ -446,6 +446,52 @@ NODE
 
   set_step "relay_channel_install"
   openclaw plugins uninstall relay-channel --force >/dev/null 2>&1 || true
+  rm -rf /root/.openclaw/extensions/relay-channel
+  node --input-type=module - <<'NODE'
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+
+const pluginId = "relay-channel"
+const configDir = path.join(os.homedir(), ".openclaw")
+const configPath = path.join(configDir, "openclaw.json")
+
+function ensureRecord(parent, key) {
+  const current = parent?.[key]
+  if (current && typeof current === "object" && !Array.isArray(current)) return current
+  const next = {}
+  parent[key] = next
+  return next
+}
+
+let cfg = {}
+if (fs.existsSync(configPath)) {
+  cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
+}
+if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+  cfg = {}
+}
+
+const pluginsCfg = ensureRecord(cfg, "plugins")
+const entriesCfg = ensureRecord(pluginsCfg, "entries")
+const existingEntry = entriesCfg[pluginId]
+const enabled =
+  existingEntry &&
+  typeof existingEntry === "object" &&
+  !Array.isArray(existingEntry) &&
+  typeof existingEntry.enabled === "boolean"
+    ? existingEntry.enabled
+    : true
+entriesCfg[pluginId] = {
+  enabled,
+  config: {
+    accounts: [{ id: "default" }],
+  },
+}
+
+fs.mkdirSync(configDir, { recursive: true })
+fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`)
+NODE
   openclaw plugins install "${RELAY_CHANNEL_BUNDLE_TGZ}"
   openclaw plugins disable relay-channel
   node --input-type=module - <<'NODE'
