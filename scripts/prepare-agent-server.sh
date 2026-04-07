@@ -364,6 +364,8 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   export NODE_PATH="${GLOBAL_PNPM_ROOT}"
   export OPENCLAW_SKIP_CANVAS_HOST=1
   export OPENCLAW_LOG_LEVEL=debug
+  MEMORY_LANCEDB_PRO_TARBALL_URL="https://github.com/CortexReach/memory-lancedb-pro/archive/refs/tags/v1.1.0-beta.10.tar.gz"
+  MEMORY_LANCEDB_PRO_TARBALL_PATH="/tmp/memory-lancedb-pro-v1.1.0-beta.10.tgz"
   prepare_root_user_systemd
   systemctl --user import-environment \
     NODE_OPTIONS \
@@ -373,7 +375,8 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     NODE_PATH \
     OPENCLAW_SKIP_CANVAS_HOST \
     OPENCLAW_LOG_LEVEL || true
-  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm --config.node-linker=hoisted add -g openclaw@latest memory-lancedb-pro@beta grammy playwright @buape/carbon @larksuiteoapi/node-sdk @slack/bolt
+  curl -fsSL "${MEMORY_LANCEDB_PRO_TARBALL_URL}" -o "${MEMORY_LANCEDB_PRO_TARBALL_PATH}"
+  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm --config.node-linker=hoisted add -g openclaw@latest "${MEMORY_LANCEDB_PRO_TARBALL_PATH}" grammy playwright @buape/carbon @larksuiteoapi/node-sdk @slack/bolt
   OPENCLAW_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/openclaw"
   test -f "${OPENCLAW_PACKAGE_DIR}/package.json"
   test -f "${PNPM_HOME_DIR}/openclaw"
@@ -444,7 +447,7 @@ fs.mkdirSync(configDir, { recursive: true })
 fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`)
 NODE
   export JINA_API_KEY="${JINA_API_KEY:-GOLEM_JINA_STUB}"
-  openclaw plugins install memory-lancedb-pro@beta --dangerously-force-unsafe-install
+  openclaw plugins install "${MEMORY_LANCEDB_PRO_TARBALL_PATH}" --dangerously-force-unsafe-install
   node --input-type=module - <<'NODE'
 import fs from "node:fs"
 import os from "node:os"
@@ -600,6 +603,7 @@ import path from "node:path"
 const configDir = path.join(os.homedir(), ".openclaw")
 const configPath = path.join(configDir, "openclaw.json")
 const requiredPluginIds = ["memory-lancedb-pro", "relay-channel"]
+const installedButDisabledPluginIds = ["relay-channel"]
 
 if (!fs.existsSync(configPath)) {
   throw new Error(`Missing canonical OpenClaw config at ${configPath}`)
@@ -608,6 +612,23 @@ if (!fs.existsSync(configPath)) {
 const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"))
 if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
   throw new Error(`Unexpected OpenClaw config shape in ${configPath}`)
+}
+
+function ensureRecord(parent, key) {
+  const current = parent?.[key]
+  if (current && typeof current === "object" && !Array.isArray(current)) return current
+  const next = {}
+  parent[key] = next
+  return next
+}
+
+function normalizeStringArray(value) {
+  return Array.isArray(value)
+    ? value
+        .filter((item) => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : []
 }
 
 const installs =
@@ -630,6 +651,30 @@ for (const pluginId of requiredPluginIds) {
   }
   if (typeof installRecord.installPath !== "string" || installRecord.installPath.trim().length === 0) {
     throw new Error(`OpenClaw install record for ${pluginId} is missing installPath in ${configPath}`)
+  }
+}
+
+const pluginsCfg = ensureRecord(parsed, "plugins")
+const entriesCfg = ensureRecord(pluginsCfg, "entries")
+for (const pluginId of installedButDisabledPluginIds) {
+  delete entriesCfg[pluginId]
+}
+
+const pluginAllow = Array.from(new Set(["memory-lancedb-pro", ...normalizeStringArray(pluginsCfg.allow)]))
+pluginsCfg.allow = pluginAllow
+pluginsCfg.deny = Array.from(
+  new Set([
+    ...normalizeStringArray(pluginsCfg.deny).filter((item) => !pluginAllow.includes(item)),
+    ...installedButDisabledPluginIds,
+  ])
+)
+
+if (parsed.channels && typeof parsed.channels === "object" && !Array.isArray(parsed.channels)) {
+  for (const pluginId of installedButDisabledPluginIds) {
+    delete parsed.channels[pluginId]
+  }
+  if (Object.keys(parsed.channels).length === 0) {
+    delete parsed.channels
   }
 }
 
