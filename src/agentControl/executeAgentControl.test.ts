@@ -134,9 +134,10 @@ describe("executeAgentControl channel pairing", () => {
 describe("executeAgentControl WhatsApp login", () => {
   it("starts WhatsApp QR login via gateway RPC", async () => {
     const gateway = {
-      request: (method: string, params?: unknown) => {
+      request: (method: string, params?: unknown, options?: { timeoutMs?: number }) => {
         expect(method).toBe("web.login.start");
         expect(params).toEqual({ force: true, timeoutMs: 15_000 });
+        expect(options).toEqual({ timeoutMs: 30_000 });
         return Promise.resolve({
           qrDataUrl: "data:image/png;base64,abc123",
           message: "Scan this QR in WhatsApp → Linked Devices.",

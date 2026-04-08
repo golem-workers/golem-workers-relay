@@ -17,7 +17,7 @@ const FILE_LOCK_RETRY_ATTEMPTS = 50;
 const FILE_LOCK_RETRY_DELAY_MS = 100;
 
 type GatewayLike = {
-  request(method: string, params?: unknown): Promise<unknown>;
+  request(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
 };
 
 export class AgentControlError extends Error {
@@ -112,9 +112,12 @@ async function startWhatsAppLogin(
   gateway: GatewayLike,
   input: Extract<AgentControlAction, { kind: "whatsapp.login.start" }>
 ): Promise<AgentControlResult> {
+  const requestTimeoutMs = Math.max((input.timeoutMs ?? 120_000) + 5_000, 30_000);
   const payload = await gateway.request("web.login.start", {
     force: input.forceRelink === true,
     timeoutMs: input.timeoutMs,
+  }, {
+    timeoutMs: requestTimeoutMs,
   }) as { qrDataUrl?: unknown; message?: unknown };
   const qrDataUrl =
     typeof payload?.qrDataUrl === "string" && payload.qrDataUrl.trim().length > 0
