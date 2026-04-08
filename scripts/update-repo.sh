@@ -62,6 +62,33 @@ read_env_value() {
   ' "${env_file}"
 }
 
+resolve_explicit_git_ref() {
+  local candidate="${APP_GIT_REF:-}"
+
+  candidate="$(trim_spaces "${candidate}")"
+  candidate="$(printf '%s' "${candidate}" | tr -d '"' | tr -d "'")"
+  if [[ -n "${candidate}" ]]; then
+    echo "${candidate}"
+    return 0
+  fi
+
+  candidate="$(read_env_value "${ROOT_DIR}/.env" APP_GIT_REF 2>/dev/null || true)"
+  candidate="$(trim_spaces "${candidate}")"
+  candidate="$(printf '%s' "${candidate}" | tr -d '"' | tr -d "'")"
+  if [[ -n "${candidate}" ]]; then
+    echo "${candidate}"
+    return 0
+  fi
+
+  candidate="$(trim_spaces "${BRANCH:-}")"
+  if [[ -n "${candidate}" ]]; then
+    echo "${candidate}"
+    return 0
+  fi
+
+  echo ""
+}
+
 detect_runtime_env() {
   local candidate=""
   local systemd_env=""
@@ -99,26 +126,21 @@ detect_runtime_env() {
 
 resolve_branch() {
   local runtime_env="$1"
-  local explicit_branch="${BRANCH:-}"
+  local explicit_branch=""
+
+  explicit_branch="$(resolve_explicit_git_ref)"
+  if [[ -n "${explicit_branch}" ]]; then
+    echo "${explicit_branch}"
+    return 0
+  fi
 
   if [[ "${runtime_env}" == "production" ]]; then
-    if [[ -n "${explicit_branch}" && "${explicit_branch}" != "release" ]]; then
-      echo "Ignoring BRANCH=${explicit_branch} because runtime environment is production; forcing release."
-    fi
     echo "release"
     return 0
   fi
 
   if [[ "${runtime_env}" == "development" ]]; then
-    if [[ -n "${explicit_branch}" && "${explicit_branch}" != "main" ]]; then
-      echo "Ignoring BRANCH=${explicit_branch} because runtime environment is development; forcing main."
-    fi
     echo "main"
-    return 0
-  fi
-
-  if [[ -n "${explicit_branch}" ]]; then
-    echo "${explicit_branch}"
     return 0
   fi
 

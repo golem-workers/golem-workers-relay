@@ -63,7 +63,8 @@ curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/r
 The script:
 
 - installs base Ubuntu packages plus agent media/PDF tooling (`ffmpeg`, `poppler-utils`, `imagemagick`, `python3-pip`), Google Chrome Stable, Go, Linuxbrew, and Node 22;
-- pre-pulls and builds `golem-workers-relay` from `release` by default;
+- pre-pulls and builds `golem-workers-relay` from `release` by default, or from explicit `RELAY_GIT_REF` when exported before running the script;
+- installs the relay-channel plugin from explicit `RELAY_CHANNEL_PLUGIN_GIT_REF` when exported, otherwise keeps the existing default coupling to the relay ref (`main` -> `main`, everything else -> `release`);
 - installs `pnpm`, installs the latest OpenClaw through a hoisted pnpm global package tree, prepares runtime dependencies (pinned `memory-lancedb-pro` GitHub tarball `v1.1.0-beta.10`, `grammy`, `@buape/carbon`, `@larksuiteoapi/node-sdk`, `@slack/bolt` for the current OpenClaw bundled-plugin import bugs), preinstalls both `memory-lancedb-pro` and `relay-channel` through `openclaw plugins install`, leaves `relay-channel` disabled until backend provisioning wires its account config, plus full `playwright`;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `PNPM_HOME`, `NODE_PATH`);
 - explicitly brings up root user-systemd (`loginctl enable-linger root`, `user@0.service`, `/run/user/0/bus`) before any OpenClaw daemon install work;

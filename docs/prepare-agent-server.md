@@ -20,9 +20,9 @@ What it does:
 - configures journald, swap, and DNS;
 - installs Go and Linuxbrew;
 - installs Node 22 separately (Linuxbrew is not used to install Node);
-- pre-pulls and builds `golem-workers-relay` from `release` by default;
+- pre-pulls and builds `golem-workers-relay` from `release` by default, or from explicit `RELAY_GIT_REF` when exported before running the script;
 - installs `pnpm`, installs the latest OpenClaw through a hoisted pnpm global package tree, prepares runtime dependencies (pinned `memory-lancedb-pro` GitHub tarball `v1.1.0-beta.10`, `grammy`, `@buape/carbon`, `@larksuiteoapi/node-sdk`, `@slack/bolt` for the current OpenClaw bundled-plugin import bugs), preinstalls both `memory-lancedb-pro` and `relay-channel` through `openclaw plugins install`, leaves `relay-channel` disabled until backend provisioning wires the account config, and installs full `playwright`;
-- clones/builds `golem-workers-openclaw-channel-plugin` during image prep and installs the generated agent bundle through the OpenClaw plugin CLI, so future `RELAY_CHANNEL_V2` provisioning can reuse the prepared plugin install from the snapshot;
+- clones/builds `golem-workers-openclaw-channel-plugin` during image prep and installs the generated agent bundle through the OpenClaw plugin CLI, using explicit `RELAY_CHANNEL_PLUGIN_GIT_REF` when exported (otherwise defaulting to the existing relay-ref coupling), so future `RELAY_CHANNEL_V2` provisioning can reuse the prepared plugin install from the snapshot;
 - fails the install immediately if `memory-lancedb-pro` is missing or the OpenClaw install record is malformed, so broken snapshot images are caught during image prep instead of surfacing later at runtime;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `PNPM_HOME`, `NODE_PATH`) for current shell, future login shells, and systemd managers;
 - explicitly enables and starts the root user-systemd manager before OpenClaw daemon install (`loginctl enable-linger root`, `systemctl start user@0.service`, `XDG_RUNTIME_DIR=/run/user/0`, `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus`);
