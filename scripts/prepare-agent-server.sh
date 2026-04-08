@@ -364,8 +364,6 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   export NODE_PATH="${GLOBAL_PNPM_ROOT}"
   export OPENCLAW_SKIP_CANVAS_HOST=1
   export OPENCLAW_LOG_LEVEL=debug
-  MEMORY_LANCEDB_PRO_TARBALL_URL="https://github.com/CortexReach/memory-lancedb-pro/archive/refs/tags/v1.1.0-beta.10.tar.gz"
-  MEMORY_LANCEDB_PRO_TARBALL_PATH="/tmp/memory-lancedb-pro-v1.1.0-beta.10.tgz"
   prepare_root_user_systemd
   systemctl --user import-environment \
     NODE_OPTIONS \
@@ -375,8 +373,7 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     NODE_PATH \
     OPENCLAW_SKIP_CANVAS_HOST \
     OPENCLAW_LOG_LEVEL || true
-  curl -fsSL "${MEMORY_LANCEDB_PRO_TARBALL_URL}" -o "${MEMORY_LANCEDB_PRO_TARBALL_PATH}"
-  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm --config.node-linker=hoisted add -g openclaw@latest "${MEMORY_LANCEDB_PRO_TARBALL_PATH}" grammy playwright @buape/carbon @larksuiteoapi/node-sdk @slack/bolt
+  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm --config.node-linker=hoisted add -g openclaw@latest grammy playwright @buape/carbon @larksuiteoapi/node-sdk @slack/bolt
   OPENCLAW_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/openclaw"
   test -f "${OPENCLAW_PACKAGE_DIR}/package.json"
   test -f "${PNPM_HOME_DIR}/openclaw"
@@ -386,99 +383,6 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   test -f "${OPENCLAW_GRAMMY_PACKAGE_DIR}/package.json"
   set_step "openclaw_mutation_guard"
   stop_openclaw_gateway_if_present
-  set_step "memory_plugin_install"
-  openclaw plugins uninstall memory-lancedb-pro --force >/dev/null 2>&1 || true
-  rm -rf /root/.openclaw/extensions/memory-lancedb-pro
-  node --input-type=module - <<'NODE'
-import fs from "node:fs"
-import os from "node:os"
-import path from "node:path"
-
-const pluginId = "memory-lancedb-pro"
-const configDir = path.join(os.homedir(), ".openclaw")
-const configPath = path.join(configDir, "openclaw.json")
-
-function ensureRecord(parent, key) {
-  const current = parent?.[key]
-  if (current && typeof current === "object" && !Array.isArray(current)) return current
-  const next = {}
-  parent[key] = next
-  return next
-}
-
-let cfg = {}
-if (fs.existsSync(configPath)) {
-  cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
-}
-if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
-  cfg = {}
-}
-
-const envCfg = ensureRecord(cfg, "env")
-if (typeof envCfg.JINA_API_KEY !== "string" || envCfg.JINA_API_KEY.trim().length === 0) {
-  envCfg.JINA_API_KEY = "GOLEM_JINA_STUB"
-}
-
-const pluginsCfg = ensureRecord(cfg, "plugins")
-const entriesCfg = ensureRecord(pluginsCfg, "entries")
-const existingEntry = entriesCfg[pluginId]
-const enabled =
-  existingEntry && typeof existingEntry === "object" && !Array.isArray(existingEntry) && typeof existingEntry.enabled === "boolean"
-    ? existingEntry.enabled
-    : true
-
-entriesCfg[pluginId] = {
-  enabled,
-  config: {
-    embedding: {
-      provider: "openai-compatible",
-      apiKey: "${JINA_API_KEY}",
-      baseURL: "http://127.0.0.1:18082/v1",
-      model: "jina-embeddings-v5-text-small",
-      dimensions: 1024,
-      taskQuery: "retrieval.query",
-      taskPassage: "retrieval.passage",
-      normalized: true,
-    },
-  },
-}
-
-fs.mkdirSync(configDir, { recursive: true })
-fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`)
-NODE
-  export JINA_API_KEY="${JINA_API_KEY:-GOLEM_JINA_STUB}"
-  openclaw plugins install "${MEMORY_LANCEDB_PRO_TARBALL_PATH}" --dangerously-force-unsafe-install
-  node --input-type=module - <<'NODE'
-import fs from "node:fs"
-import os from "node:os"
-import path from "node:path"
-
-const pluginId = "memory-lancedb-pro"
-const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json")
-const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
-const installRecord =
-  cfg?.plugins &&
-  typeof cfg.plugins === "object" &&
-  !Array.isArray(cfg.plugins) &&
-  cfg.plugins.installs &&
-  typeof cfg.plugins.installs === "object" &&
-  !Array.isArray(cfg.plugins.installs)
-    ? cfg.plugins.installs[pluginId]
-    : null
-if (!installRecord || typeof installRecord !== "object" || Array.isArray(installRecord)) {
-  throw new Error(`Missing ${pluginId} install record in openclaw.json`)
-}
-if (typeof installRecord.installPath !== "string" || installRecord.installPath.trim().length === 0) {
-  throw new Error(`${pluginId} install record is missing installPath`)
-}
-const installDir = fs.realpathSync(installRecord.installPath)
-const manifest = JSON.parse(fs.readFileSync(path.join(installDir, "openclaw.plugin.json"), "utf8"))
-if (manifest?.id !== pluginId) {
-  throw new Error(`Unexpected plugin id in ${installDir}`)
-}
-console.log(`${pluginId} installed: ${installDir}`)
-NODE
-
   set_step "relay_channel_prepull"
   if [[ -d "${RELAY_CHANNEL_PLUGIN_REPO_DIR}/.git" ]]; then
     cd "${RELAY_CHANNEL_PLUGIN_REPO_DIR}"
@@ -602,8 +506,9 @@ import path from "node:path"
 
 const configDir = path.join(os.homedir(), ".openclaw")
 const configPath = path.join(configDir, "openclaw.json")
-const requiredPluginIds = ["memory-lancedb-pro", "relay-channel"]
+const requiredPluginIds = ["relay-channel"]
 const installedButDisabledPluginIds = ["relay-channel"]
+const stalePluginIds = ["memory-lancedb-pro", "memory-lancedb"]
 
 if (!fs.existsSync(configPath)) {
   throw new Error(`Missing canonical OpenClaw config at ${configPath}`)
@@ -656,11 +561,31 @@ for (const pluginId of requiredPluginIds) {
 
 const pluginsCfg = ensureRecord(parsed, "plugins")
 const entriesCfg = ensureRecord(pluginsCfg, "entries")
+for (const pluginId of stalePluginIds) {
+  delete entriesCfg[pluginId]
+}
 for (const pluginId of installedButDisabledPluginIds) {
   delete entriesCfg[pluginId]
 }
 
-const pluginAllow = Array.from(new Set(["memory-lancedb-pro", ...normalizeStringArray(pluginsCfg.allow)]))
+if (pluginsCfg.installs && typeof pluginsCfg.installs === "object" && !Array.isArray(pluginsCfg.installs)) {
+  for (const pluginId of stalePluginIds) {
+    delete pluginsCfg.installs[pluginId]
+  }
+  if (Object.keys(pluginsCfg.installs).length === 0) {
+    delete pluginsCfg.installs
+  }
+}
+
+const slotsCfg = ensureRecord(pluginsCfg, "slots")
+delete slotsCfg.memory
+if (Object.keys(slotsCfg).length === 0) {
+  delete pluginsCfg.slots
+}
+
+const pluginAllow = Array.from(
+  new Set(normalizeStringArray(pluginsCfg.allow).filter((item) => !stalePluginIds.includes(item)))
+)
 pluginsCfg.allow = pluginAllow
 pluginsCfg.deny = Array.from(
   new Set([

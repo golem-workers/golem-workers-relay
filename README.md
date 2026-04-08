@@ -65,11 +65,11 @@ The script:
 - installs base Ubuntu packages plus agent media/PDF tooling (`ffmpeg`, `poppler-utils`, `imagemagick`, `python3-pip`), Google Chrome Stable, Go, Linuxbrew, and Node 22;
 - pre-pulls and builds `golem-workers-relay` from `release` by default, or from explicit `RELAY_GIT_REF` when exported before running the script;
 - installs the relay-channel plugin from explicit `RELAY_CHANNEL_PLUGIN_GIT_REF` when exported, otherwise keeps the existing default coupling to the relay ref (`main` -> `main`, everything else -> `release`);
-- installs `pnpm`, installs the latest OpenClaw through a hoisted pnpm global package tree, prepares runtime dependencies (pinned `memory-lancedb-pro` GitHub tarball `v1.1.0-beta.10`, `grammy`, `@buape/carbon`, `@larksuiteoapi/node-sdk`, `@slack/bolt` for the current OpenClaw bundled-plugin import bugs), preinstalls both `memory-lancedb-pro` and `relay-channel` through `openclaw plugins install`, leaves `relay-channel` disabled until backend provisioning wires its account config, plus full `playwright`;
+- installs `pnpm`, installs the latest OpenClaw through a hoisted pnpm global package tree, prepares runtime dependencies (`grammy`, `@buape/carbon`, `@larksuiteoapi/node-sdk`, `@slack/bolt` for the current OpenClaw bundled-plugin import bugs), preinstalls `relay-channel` through `openclaw plugins install`, leaves `relay-channel` disabled until backend provisioning wires its account config, plus full `playwright`;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `PNPM_HOME`, `NODE_PATH`);
 - explicitly brings up root user-systemd (`loginctl enable-linger root`, `user@0.service`, `/run/user/0/bus`) before any OpenClaw daemon install work;
 - optionally runs `openclaw onboard --install-daemon`;
-- leaves the image ready for backend provisioning to enable `memory-lancedb-pro` and reuse the prepared `relay-channel` install from the snapshot;
+- leaves the image ready for backend provisioning to reuse the prepared `relay-channel` install from the snapshot;
 - finishes image preparation by stopping and disabling `openclaw-gateway.service` so prepared images boot with OpenClaw cold and backend provisioning performs the first controlled start.
 
 Execution logs are written to:
@@ -187,7 +187,7 @@ Push transport settings:
 - `RELAY_OPENROUTER_PROXY_PORT=18080` (local proxy port used by agent-side rewrite rules; binds to `127.0.0.1` by default)
 - `RELAY_OPENROUTER_PROXY_PATH_PREFIX=/api/v1` (OpenRouter-compatible incoming path prefix)
 - `RELAY_OPENROUTER_BACKEND_PATH_PREFIX=/api/v1/relays/openrouter` (backend relay-auth proxy path)
-- `RELAY_JINA_PROXY_ENABLED=1` (enable local Jina-compatible proxy listener for `memory-lancedb-pro`)
+- `RELAY_JINA_PROXY_ENABLED=1` (enable local Jina-compatible proxy listener for optional backend-side Jina relay traffic)
 - `RELAY_JINA_PROXY_PORT=18082` (local proxy port used by Jina embeddings/rerank calls; binds to `127.0.0.1` by default)
 - `RELAY_JINA_PROXY_PATH_PREFIX=/v1` (Jina-compatible incoming path prefix)
 - `RELAY_JINA_BACKEND_PATH_PREFIX=/api/v1/relays/jina` (backend relay-auth proxy path)
@@ -207,7 +207,7 @@ Relay also performs internal local auto-approve passes via the same root-run rel
 
 Provisioned agents use both local listeners together:
 - OpenClaw model traffic still goes through `OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1`.
-- `memory-lancedb-pro` Jina embedding/rerank traffic goes through `http://127.0.0.1:18082/v1` with a stub `JINA_API_KEY`; relay replaces it with the real backend-side key.
+- Optional Jina relay traffic goes through `http://127.0.0.1:18082/v1`; backend-side credentials stay on the backend and are proxied through relay.
 - Gemini web-search traffic goes directly to `http://127.0.0.1:18081/v1beta` via `models.providers.google.baseUrl`, and relay forwards it to backend `/api/v1/relays/google-ai/*`.
 - All relay proxy listeners are local-only by default and bind to `127.0.0.1`, so they are not exposed on external interfaces unless the code is changed intentionally.
 
