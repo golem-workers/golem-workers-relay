@@ -314,7 +314,7 @@ export class GatewayClient {
   }
 
   private async runStartLoop(): Promise<void> {
-    const maxAttempts = Math.max(1, Math.trunc(this.opts.startupMaxAttempts ?? 20));
+    const maxAttempts = Math.max(1, Math.trunc(this.opts.startupMaxAttempts ?? 90));
     const retryDelayMs = Math.max(0, Math.trunc(this.opts.startupRetryDelayMs ?? 1000));
     let lastError: Error = new Error("Gateway connect failed");
 

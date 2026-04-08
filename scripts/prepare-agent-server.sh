@@ -373,14 +373,18 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     NODE_PATH \
     OPENCLAW_SKIP_CANVAS_HOST \
     OPENCLAW_LOG_LEVEL || true
-  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm --config.node-linker=hoisted add -g openclaw@latest grammy playwright @buape/carbon @larksuiteoapi/node-sdk @slack/bolt
+  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm --config.node-linker=hoisted add -g openclaw@latest grammy playwright @grammyjs/runner @grammyjs/transformer-throttler @buape/carbon @larksuiteoapi/node-sdk @slack/bolt
   OPENCLAW_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/openclaw"
   test -f "${OPENCLAW_PACKAGE_DIR}/package.json"
   test -f "${PNPM_HOME_DIR}/openclaw"
   ln -sfn "${PNPM_HOME_DIR}/openclaw" /usr/local/bin/openclaw
   command -v openclaw >/dev/null 2>&1
   OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/grammy"
+  OPENCLAW_GRAMMY_RUNNER_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/@grammyjs/runner"
+  OPENCLAW_GRAMMY_TRANSFORMER_THROTTLER_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/@grammyjs/transformer-throttler"
   test -f "${OPENCLAW_GRAMMY_PACKAGE_DIR}/package.json"
+  test -f "${OPENCLAW_GRAMMY_RUNNER_PACKAGE_DIR}/package.json"
+  test -f "${OPENCLAW_GRAMMY_TRANSFORMER_THROTTLER_PACKAGE_DIR}/package.json"
   set_step "openclaw_mutation_guard"
   stop_openclaw_gateway_if_present
   set_step "relay_channel_prepull"
