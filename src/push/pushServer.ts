@@ -2,7 +2,11 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import fs from "node:fs/promises";
 import nodePath from "node:path";
 import { logger } from "../logger.js";
-import { inboundPushMessageSchema, type InboundPushMessage } from "../backend/types.js";
+import {
+  inboundPushMessageSchema,
+  type InboundPushMessage,
+  type AgentControlResult,
+} from "../backend/types.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 import { resolveRelayMediaFile } from "../openclaw/mediaDirectives.js";
 
@@ -89,6 +93,7 @@ export function startPushServer(input: {
   getHealth?: () => { ok: boolean; ready: boolean; details?: unknown };
   onMessage: (message: InboundPushMessage) => Promise<void>;
   onTransportEvent?: (message: InboundPushMessage) => Promise<void>;
+  onAgentControl?: (message: InboundPushMessage) => Promise<AgentControlResult>;
 }): http.Server {
   const pushPath = input.path.startsWith("/") ? input.path : `/${input.path}`;
   const mediaPath = replaceLastPathSegment(pushPath, "media");
@@ -249,6 +254,29 @@ export function startPushServer(input: {
           });
         }
         await input.onTransportEvent(parsed.data);
+      } else if (parsed.data.input.kind === "agent_control") {
+        if (!input.onAgentControl) {
+          throw new PushServerHttpError({
+            statusCode: 503,
+            code: "AGENT_CONTROL_UNSUPPORTED",
+            message: "Relay agent control ingress is not enabled",
+          });
+        }
+        const result = await input.onAgentControl(parsed.data);
+        logger.info(
+          {
+            event: "message_flow",
+            direction: "backend_to_relay",
+            stage: "accepted",
+            backendMessageId: parsed.data.messageId,
+            relayMessageId: null,
+            kind: parsed.data.input.kind,
+            status: 200,
+          },
+          "Message flow transition"
+        );
+        sendJson(res, 200, { accepted: true, result });
+        return;
       } else {
         await input.onMessage(parsed.data);
       }

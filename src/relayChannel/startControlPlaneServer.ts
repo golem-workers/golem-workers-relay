@@ -4,13 +4,16 @@ import { type BackendClient } from "../backend/backendClient.js";
 import { logger } from "../logger.js";
 import {
   buildActionCompleted,
+  buildAgentControlCompleted,
   buildHelloResponse,
   buildProtocolError,
+  agentControlRequestSchema,
   helloRequestSchema,
   transportActionRequestSchema,
 } from "./controlPlaneProtocol.js";
 import { executeTelegramTransportActionViaBackend } from "./telegramBackendTransport.js";
 import { executeWhatsAppPersonalMessageSend } from "./whatsappPersonalTransport.js";
+import type { AgentControlAction, AgentControlResult } from "../agentControl/protocol.js";
 
 const EVENT_DELIVERY_RETRY_MS = 10_000;
 const MAX_EVENT_DELIVERY_ATTEMPTS = 10;
@@ -49,6 +52,7 @@ export function startRelayChannelControlPlane(input: {
     }) => { token: string; downloadUrl: string };
   };
   backend: BackendClient;
+  executeAgentControl: (action: AgentControlAction) => Promise<AgentControlResult>;
   onStateChange?: (state: ControlPlaneRuntimeState) => void;
 }): {
   server: ReturnType<typeof createServer>;
@@ -136,6 +140,22 @@ export function startRelayChannelControlPlane(input: {
           buildActionCompleted({
             requestId: request.requestId,
             actionId: request.action.actionId,
+            result,
+          })
+        );
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/agent-control") {
+        const request = agentControlRequestSchema.parse(await readJsonBody(req));
+        const result = await input.executeAgentControl(request.action);
+        clientConnected = true;
+        input.onStateChange?.(getState());
+        sendJson(
+          res,
+          200,
+          buildAgentControlCompleted({
+            requestId: request.requestId,
             result,
           })
         );

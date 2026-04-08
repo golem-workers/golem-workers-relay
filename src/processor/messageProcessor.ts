@@ -393,6 +393,8 @@ async function processSingleMessage(input: {
           },
           "Transport event was accepted by relay ingress"
         );
+      } else if (msg.input.kind === "agent_control") {
+        throw new Error("agent_control tasks must be handled synchronously by relay ingress");
       } else {
         const deliverySystem = readDeliverySystemFromTaskContext(msg.input.context);
         const { result, openclawMeta } = await runner.runChatTask({

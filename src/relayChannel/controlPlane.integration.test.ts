@@ -43,6 +43,11 @@ describe("relay-channel control plane", () => {
           registerDownload: dp.registerDownload,
         };
       },
+      executeAgentControl: vi.fn().mockResolvedValue({
+        kind: "config.read",
+        configText: "{\n  \"ok\": true\n}\n",
+        config: { ok: true },
+      }),
     });
     await new Promise<void>((resolve) => cp.server.once("listening", resolve));
     const address = cp.server.address();
@@ -148,6 +153,11 @@ describe("relay-channel control plane", () => {
           registerDownload: dp.registerDownload,
         };
       },
+      executeAgentControl: vi.fn().mockResolvedValue({
+        kind: "config.read",
+        configText: "{\n  \"ok\": true\n}\n",
+        config: { ok: true },
+      }),
     });
     await new Promise<void>((resolve) => cp.server.once("listening", resolve));
     const address = cp.server.address();
@@ -221,6 +231,11 @@ describe("relay-channel control plane", () => {
           registerDownload: dp.registerDownload,
         };
       },
+      executeAgentControl: vi.fn().mockResolvedValue({
+        kind: "config.read",
+        configText: "{\n  \"ok\": true\n}\n",
+        config: { ok: true },
+      }),
     });
     await new Promise<void>((resolve) => cp.server.once("listening", resolve));
     const address = cp.server.address();
@@ -268,6 +283,64 @@ describe("relay-channel control plane", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(seenEvents).toHaveLength(1);
     expect(seenEvents[0]?.eventType).toBe("transport.typing.updated");
+
+    await cp.close();
+    await closeHttpServer(dp.server);
+  });
+
+  it("handles agent.control requests over local HTTP", async () => {
+    const dp = startRelayChannelDataPlaneServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve) => dp.server.once("listening", resolve));
+
+    const executeAgentControl = vi.fn().mockResolvedValue({
+      kind: "devicePairing.list",
+      pending: [{ requestId: "req_1" }],
+      paired: [{ deviceId: "dev_1" }],
+    });
+    const cp = startRelayChannelControlPlane({
+      host: "127.0.0.1",
+      port: 0,
+      relayInstanceId: "relay-test",
+      backend: {
+        sendTelegramTransportAction: vi.fn(),
+        registerTelegramMessageCorrelation: vi.fn(),
+        sendWhatsAppPersonalTransportMessage: vi.fn(),
+      } as never,
+      getDataPlane: () => {
+        const s = dp.getState();
+        return {
+          uploadBaseUrl: s.uploadBaseUrl,
+          downloadBaseUrl: s.downloadBaseUrl,
+          registerDownload: dp.registerDownload,
+        };
+      },
+      executeAgentControl,
+    });
+    await new Promise<void>((resolve) => cp.server.once("listening", resolve));
+    const address = cp.server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+
+    const completed = (await (
+      await fetch(`http://127.0.0.1:${port}/agent-control`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "request",
+          requestType: "agent.control",
+          requestId: "req-agent-1",
+          action: {
+            kind: "devicePairing.list",
+          },
+        }),
+      })
+    ).json()) as { eventType?: string; payload?: { result?: { kind?: string; pending?: unknown[] } } };
+
+    expect(executeAgentControl).toHaveBeenCalledWith({
+      kind: "devicePairing.list",
+    });
+    expect(completed.eventType).toBe("agent.control.completed");
+    expect(completed.payload?.result?.kind).toBe("devicePairing.list");
+    expect(completed.payload?.result?.pending).toEqual([{ requestId: "req_1" }]);
 
     await cp.close();
     await closeHttpServer(dp.server);

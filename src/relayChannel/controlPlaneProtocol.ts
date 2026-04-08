@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  agentControlActionSchema,
+  type AgentControlResult,
+} from "../agentControl/protocol.js";
 
 /** Mirrors golem-workers-openclaw-channel-plugin control-plane hello (relay side). */
 
@@ -129,6 +133,13 @@ export const transportActionRequestSchema = z.object({
   requestType: z.literal("transport.action"),
   requestId: z.string(),
   action: transportActionSchema,
+});
+
+export const agentControlRequestSchema = z.object({
+  type: z.literal("request"),
+  requestType: z.literal("agent.control"),
+  requestId: z.string(),
+  action: agentControlActionSchema,
 });
 
 export function buildHelloResponse(input: {
@@ -298,6 +309,20 @@ export function buildProtocolError(input: { code: string; message: string }): Re
     payload: {
       code: input.code,
       message: input.message,
+    },
+  };
+}
+
+export function buildAgentControlCompleted(input: {
+  requestId: string;
+  result: AgentControlResult;
+}): Record<string, unknown> {
+  return {
+    type: "event",
+    eventType: "agent.control.completed",
+    payload: {
+      requestId: input.requestId,
+      result: input.result,
     },
   };
 }

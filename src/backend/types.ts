@@ -1,4 +1,10 @@
 import { z } from "zod";
+import {
+  agentControlAcceptedResponseSchema,
+  agentControlActionSchema,
+  agentControlResultSchema,
+  type AgentControlResult,
+} from "../agentControl/protocol.js";
 
 const relayMediaSchema = z.discriminatedUnion("type", [
   z.object({
@@ -119,11 +125,17 @@ const transportEventTaskInputSchema = z.object({
   event: relayTransportEventSchema,
 });
 
+const agentControlTaskInputSchema = z.object({
+  kind: z.literal("agent_control"),
+  action: agentControlActionSchema,
+});
+
 export const taskInputSchema = z.discriminatedUnion("kind", [
   chatTaskInputSchema,
   handshakeTaskInputSchema,
   sessionNewTaskInputSchema,
   transportEventTaskInputSchema,
+  agentControlTaskInputSchema,
 ]);
 
 export type TaskInput = z.infer<typeof taskInputSchema>;
@@ -203,6 +215,8 @@ export const acceptedResponseSchema = z.object({
 });
 
 export type AcceptedResponse = z.infer<typeof acceptedResponseSchema>;
+export type { AgentControlResult };
+export { agentControlActionSchema, agentControlResultSchema, agentControlAcceptedResponseSchema };
 
 export const whatsAppPersonalTransportSendRequestSchema = z.object({
   action: z.object({

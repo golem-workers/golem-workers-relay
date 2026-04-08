@@ -22,6 +22,7 @@ import { createGatewayEventForwarder } from "./openclaw/gatewayEventForwarder.js
 import { createOpenclawConnectionStatusReporter } from "./openclaw/connectionStatusReporter.js";
 import { closeHttpServer, startRelayChannelDataPlaneServer } from "./relayChannel/startDataPlaneServer.js";
 import { startRelayChannelControlPlane } from "./relayChannel/startControlPlaneServer.js";
+import { executeAgentControl } from "./agentControl/executeAgentControl.js";
 
 async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
@@ -87,6 +88,16 @@ async function main(): Promise<void> {
       port: cfg.relayChannel.controlPlanePort,
       relayInstanceId: cfg.relayInstanceId,
       backend,
+      executeAgentControl: (action) =>
+        executeAgentControl({
+          action,
+          configPath: openclaw.configPath,
+          gateway: gateway ?? {
+            request: async () => {
+              throw new Error("Gateway is not initialized");
+            },
+          },
+        }),
       getDataPlane: () => {
         const s = dp.getState();
         return {
@@ -273,6 +284,12 @@ async function main(): Promise<void> {
       publishRelayChannelEvent(message.input.event);
       return Promise.resolve();
     },
+    onAgentControl: (message) =>
+      executeAgentControl({
+        action: message.input.action,
+        configPath: openclaw.configPath,
+        gateway,
+      }),
   });
   const openrouterProxyServer = cfg.openrouterProxy.enabled
     ? startOpenRouterProxyServer({
