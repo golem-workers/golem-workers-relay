@@ -23,6 +23,17 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     requestId: z.string().min(1),
   }),
   z.object({
+    kind: z.literal("channelPairing.list"),
+    channel: z.string().min(1),
+    accountId: z.string().min(1).optional(),
+  }),
+  z.object({
+    kind: z.literal("channelPairing.approve"),
+    channel: z.string().min(1),
+    code: z.string().min(1),
+    accountId: z.string().min(1).optional(),
+  }),
+  z.object({
     kind: z.literal("model.set"),
     model: z.string().min(1),
     contextTokens: z.number().int().positive().nullable().optional(),
@@ -55,6 +66,15 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("devicePairing.approve"),
+    approved: z.literal(true),
+    payload: z.unknown().optional(),
+  }),
+  z.object({
+    kind: z.literal("channelPairing.list"),
+    requests: z.array(z.unknown()),
+  }),
+  z.object({
+    kind: z.literal("channelPairing.approve"),
     approved: z.literal(true),
     payload: z.unknown().optional(),
   }),

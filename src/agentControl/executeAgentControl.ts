@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
+import os from "node:os";
 import JSON5 from "json5";
 import {
   type AgentControlAction,
@@ -12,6 +13,8 @@ import {
 const execFile = promisify(execFileCallback);
 const GATEWAY_RESTART_CHECK_ATTEMPTS = 20;
 const GATEWAY_RESTART_CHECK_DELAY_MS = 500;
+const FILE_LOCK_RETRY_ATTEMPTS = 50;
+const FILE_LOCK_RETRY_DELAY_MS = 100;
 
 type GatewayLike = {
   request(method: string, params?: unknown): Promise<unknown>;
@@ -48,6 +51,10 @@ export async function executeAgentControl(input: {
             ? await listDevicePairing(input.gateway)
             : input.action.kind === "devicePairing.approve"
               ? await approveDevicePairing(input.gateway, input.action.requestId)
+            : input.action.kind === "channelPairing.list"
+              ? await listChannelPairing(input.action.channel, input.action.accountId)
+              : input.action.kind === "channelPairing.approve"
+                ? await approveChannelPairing(input.action.channel, input.action.code, input.action.accountId)
               : await setModel({
                   configPath: input.configPath,
                   model: input.action.model,
@@ -95,6 +102,252 @@ async function approveDevicePairing(gateway: GatewayLike, requestId: string): Pr
     approved: true,
     payload,
   };
+}
+
+type ChannelPairingRequest = {
+  id: string;
+  code: string;
+  createdAt: string;
+  lastSeenAt?: string;
+  meta?: Record<string, unknown>;
+};
+
+const CHANNEL_PAIRING_TTL_MS = 3_600_000;
+
+function normalizeOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeLowercaseString(value: unknown): string {
+  return normalizeOptionalString(value)?.toLowerCase() ?? "";
+}
+
+function safeChannelKey(channel: string): string {
+  const safe = normalizeLowercaseString(channel).replace(/[\\/:*?"<>|]/g, "_").replace(/\.\./g, "_");
+  if (!safe || safe === "_") {
+    throw new AgentControlError("CHANNEL_PAIRING_INVALID_CHANNEL", "Invalid pairing channel", { channel });
+  }
+  return safe;
+}
+
+function safeAccountKey(accountId: string): string {
+  const safe = normalizeLowercaseString(accountId).replace(/[\\/:*?"<>|]/g, "_").replace(/\.\./g, "_");
+  if (!safe || safe === "_") {
+    throw new AgentControlError("CHANNEL_PAIRING_INVALID_ACCOUNT", "Invalid pairing account id", { accountId });
+  }
+  return safe;
+}
+
+function resolveOpenclawStateDir(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = normalizeOptionalString(env.OPENCLAW_STATE_DIR);
+  if (explicit) return explicit;
+  return path.join(env.HOME || os.homedir() || "/root", ".openclaw");
+}
+
+function resolveOpenclawCredentialsDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveOpenclawStateDir(env), "credentials");
+}
+
+function resolveChannelPairingPath(channel: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveOpenclawCredentialsDir(env), `${safeChannelKey(channel)}-pairing.json`);
+}
+
+function resolveChannelAllowFromPath(channel: string, accountId?: string, env: NodeJS.ProcessEnv = process.env): string {
+  const base = safeChannelKey(channel);
+  const normalizedAccountId = normalizeOptionalString(accountId);
+  if (!normalizedAccountId) {
+    return path.join(resolveOpenclawCredentialsDir(env), `${base}-allowFrom.json`);
+  }
+  return path.join(resolveOpenclawCredentialsDir(env), `${base}-${safeAccountKey(normalizedAccountId)}-allowFrom.json`);
+}
+
+function parseIsoTimestamp(value: unknown): number | null {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) return null;
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function isExpiredPairingRequest(entry: ChannelPairingRequest, nowMs: number): boolean {
+  const createdAtMs = parseIsoTimestamp(entry.createdAt);
+  if (createdAtMs === null) return true;
+  return nowMs - createdAtMs > CHANNEL_PAIRING_TTL_MS;
+}
+
+function normalizeChannelPairingRequest(value: unknown): ChannelPairingRequest | null {
+  if (!isRecord(value)) return null;
+  const id = normalizeOptionalString(value.id);
+  const code = normalizeOptionalString(value.code)?.toUpperCase() ?? null;
+  const createdAt = normalizeOptionalString(value.createdAt);
+  const lastSeenAt = normalizeOptionalString(value.lastSeenAt) ?? undefined;
+  const meta = isRecord(value.meta) ? value.meta : undefined;
+  if (!id || !code || !createdAt) return null;
+  return {
+    id,
+    code,
+    createdAt,
+    ...(lastSeenAt ? { lastSeenAt } : {}),
+    ...(meta ? { meta } : {}),
+  };
+}
+
+async function readJsonFileWithFallback<T>(filePath: string, fallback: T): Promise<T> {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+      return fallback;
+    }
+    throw error;
+  }
+}
+
+async function writeJsonFileAtomic(filePath: string, value: unknown): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.gwtmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await fs.rename(tempPath, filePath);
+}
+
+async function ensureJsonFile(filePath: string, fallback: unknown): Promise<void> {
+  try {
+    await fs.access(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
+      throw error;
+    }
+    await writeJsonFileAtomic(filePath, fallback);
+  }
+}
+
+async function withFileLock<T>(filePath: string, fallback: unknown, fn: () => Promise<T>): Promise<T> {
+  await ensureJsonFile(filePath, fallback);
+  const lockPath = `${filePath}.gwlock`;
+  for (let attempt = 0; attempt < FILE_LOCK_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      await fs.mkdir(lockPath);
+      try {
+        return await fn();
+      } finally {
+        await fs.rm(lockPath, { recursive: true, force: true });
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code !== "EEXIST") {
+        throw error;
+      }
+      await sleep(FILE_LOCK_RETRY_DELAY_MS);
+    }
+  }
+  throw new AgentControlError("CHANNEL_PAIRING_LOCK_TIMEOUT", "Timed out waiting for pairing store lock", {
+    filePath,
+  });
+}
+
+async function readChannelPairingRequests(channel: string, accountId?: string): Promise<ChannelPairingRequest[]> {
+  const filePath = resolveChannelPairingPath(channel);
+  return withFileLock(filePath, { version: 1, requests: [] }, async () => {
+    const payload = await readJsonFileWithFallback<{ requests?: unknown[] }>(filePath, { requests: [] });
+    const nowMs = Date.now();
+    const normalizedAccountId = normalizeOptionalString(accountId);
+    const requests = Array.isArray(payload.requests)
+      ? payload.requests
+          .map((entry) => normalizeChannelPairingRequest(entry))
+          .filter((entry): entry is ChannelPairingRequest => entry !== null)
+          .filter((entry) => !isExpiredPairingRequest(entry, nowMs))
+          .filter((entry) => {
+            if (!normalizedAccountId) return true;
+            return normalizeOptionalString(entry.meta?.accountId) === normalizedAccountId;
+          })
+          .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      : [];
+    return requests;
+  });
+}
+
+async function readAllowFromEntries(filePath: string): Promise<string[]> {
+  const payload = await readJsonFileWithFallback<{ allowFrom?: unknown[] }>(filePath, { allowFrom: [] });
+  return Array.isArray(payload.allowFrom)
+    ? payload.allowFrom
+        .map((entry) => normalizeOptionalString(entry))
+        .filter((entry): entry is string => entry !== null)
+    : [];
+}
+
+async function listChannelPairing(channel: string, accountId?: string): Promise<AgentControlResult> {
+  return {
+    kind: "channelPairing.list",
+    requests: await readChannelPairingRequests(channel, accountId),
+  };
+}
+
+async function approveChannelPairing(
+  channel: string,
+  code: string,
+  accountId?: string
+): Promise<AgentControlResult> {
+  const normalizedCode = normalizeOptionalString(code)?.toUpperCase() ?? "";
+  if (!normalizedCode) {
+    throw new AgentControlError("CHANNEL_PAIRING_INVALID_CODE", "Invalid pairing code");
+  }
+  const filePath = resolveChannelPairingPath(channel);
+  return withFileLock(filePath, { version: 1, requests: [] }, async () => {
+    const payload = await readJsonFileWithFallback<{ requests?: unknown[] }>(filePath, { requests: [] });
+    const requests = Array.isArray(payload.requests)
+      ? payload.requests
+          .map((entry) => normalizeChannelPairingRequest(entry))
+          .filter((entry): entry is ChannelPairingRequest => entry !== null)
+      : [];
+    const normalizedAccountId = normalizeOptionalString(accountId);
+    const matchIndex = requests.findIndex((entry) => {
+      if (entry.code !== normalizedCode) return false;
+      if (!normalizedAccountId) return true;
+      return normalizeOptionalString(entry.meta?.accountId) === normalizedAccountId;
+    });
+    if (matchIndex < 0) {
+      throw new AgentControlError("CHANNEL_PAIRING_UNKNOWN_CODE", "Unknown pairing code", {
+        channel,
+        code: normalizedCode,
+      });
+    }
+    const approved = requests[matchIndex];
+    if (!approved) {
+      throw new AgentControlError("CHANNEL_PAIRING_UNKNOWN_CODE", "Unknown pairing code", {
+        channel,
+        code: normalizedCode,
+      });
+    }
+    const nextRequests = requests.filter((_, index) => index !== matchIndex);
+    await writeJsonFileAtomic(filePath, {
+      version: 1,
+      requests: nextRequests,
+    });
+
+    const effectiveAccountId =
+      normalizeOptionalString(accountId) ?? normalizeOptionalString(approved.meta?.accountId) ?? undefined;
+    const allowFromPath = resolveChannelAllowFromPath(channel, effectiveAccountId);
+    await withFileLock(allowFromPath, { version: 1, allowFrom: [] }, async () => {
+      const currentAllowFrom = await readAllowFromEntries(allowFromPath);
+      if (!currentAllowFrom.includes(approved.id)) {
+        await writeJsonFileAtomic(allowFromPath, {
+          version: 1,
+          allowFrom: [...currentAllowFrom, approved.id],
+        });
+      }
+    });
+
+    return {
+      kind: "channelPairing.approve",
+      approved: true,
+      payload: {
+        id: approved.id,
+        code: approved.code,
+        entry: approved,
+      },
+    };
+  });
 }
 
 async function setModel(input: {
