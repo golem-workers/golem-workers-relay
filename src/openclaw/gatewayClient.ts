@@ -40,6 +40,7 @@ export type GatewayClientOptions = {
   devLogTextMaxLen?: number;
   devLogGatewayFrames?: boolean;
   connectReadyTimeoutMs?: number;
+  websocketHandshakeTimeoutMs?: number;
   startupMaxAttempts?: number;
   startupRetryDelayMs?: number;
   onConnectionStateChange?: (state: {
@@ -314,7 +315,7 @@ export class GatewayClient {
 
   private async runStartLoop(): Promise<void> {
     const maxAttempts = Math.max(1, Math.trunc(this.opts.startupMaxAttempts ?? 20));
-    const retryDelayMs = Math.max(0, Math.trunc(this.opts.startupRetryDelayMs ?? 5000));
+    const retryDelayMs = Math.max(0, Math.trunc(this.opts.startupRetryDelayMs ?? 1000));
     let lastError: Error = new Error("Gateway connect failed");
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -362,9 +363,11 @@ export class GatewayClient {
     this.hello = null;
 
     const url = this.opts.url;
+    const handshakeTimeoutMs = Math.max(1, Math.trunc(this.opts.websocketHandshakeTimeoutMs ?? 4000));
     logger.info({ url }, "Connecting to OpenClaw gateway");
     this.ws = new WebSocket(url, {
       maxPayload: 25 * 1024 * 1024,
+      handshakeTimeout: handshakeTimeoutMs,
     });
 
     this.ws.on("open", () => {

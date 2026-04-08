@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { GatewayClient } from "./gatewayClient.js";
@@ -122,6 +123,76 @@ describe("GatewayClient", () => {
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
+  });
+
+  it("retries when websocket upgrade handshake stalls before open", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+
+    let upgrades = 0;
+    const server = createServer();
+    const wss = new WebSocketServer({ noServer: true });
+    server.on("upgrade", (req, socket, head) => {
+      upgrades += 1;
+      if (upgrades < 3) {
+        setTimeout(() => {
+          try {
+            socket.destroy();
+          } catch {
+            // ignore
+          }
+        }, 120);
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
+    });
+    wss.on("connection", (ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce3", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string };
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000, maxPayload: 1, maxBufferedBytes: 1 },
+                server: { version: "x", connId: "c" },
+                snapshot: {},
+                features: { methods: [], events: [] },
+              },
+            })
+          );
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const addr = server.address();
+    if (!addr || typeof addr === "string") {
+      throw new Error("no addr");
+    }
+
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${addr.port}`,
+      token: "t",
+      websocketHandshakeTimeoutMs: 50,
+      startupRetryDelayMs: 25,
+      startupMaxAttempts: 3,
+    });
+
+    await client.start();
+    expect(client.isReady()).toBe(true);
+    expect(upgrades).toBe(3);
+
+    client.stop();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
   });
 
   it("emits connection state changes for disconnect and reconnect", async () => {
