@@ -39,6 +39,7 @@ describe("pushServer", () => {
   });
 
   it("applies request rate limiting", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
     const { port } = await startTestPushServer(
       {
         port: 0,
@@ -73,6 +74,7 @@ describe("pushServer", () => {
       body: JSON.stringify({ ...body, messageId: "m2" }),
     });
     expect(second.status).toBe(429);
+    nowSpy.mockRestore();
   });
 
   it("stays alive when the client disconnects during request upload", async () => {

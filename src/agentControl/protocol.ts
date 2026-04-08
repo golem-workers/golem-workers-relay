@@ -38,6 +38,15 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     model: z.string().min(1),
     contextTokens: z.number().int().positive().nullable().optional(),
   }),
+  z.object({
+    kind: z.literal("whatsapp.login.start"),
+    forceRelink: z.boolean().optional(),
+    timeoutMs: z.number().int().min(1_000).max(120_000).optional(),
+  }),
+  z.object({
+    kind: z.literal("whatsapp.login.wait"),
+    timeoutMs: z.number().int().min(1_000).max(120_000).optional(),
+  }),
 ]);
 
 export type AgentControlAction = z.infer<typeof agentControlActionSchema>;
@@ -87,6 +96,16 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     activeState: z.string().min(1),
     subState: z.string().min(1),
     result: z.string().nullable(),
+  }),
+  z.object({
+    kind: z.literal("whatsapp.login.start"),
+    qrDataUrl: z.string().min(1).nullable(),
+    message: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal("whatsapp.login.wait"),
+    connected: z.boolean(),
+    message: z.string().min(1),
   }),
 ]);
 

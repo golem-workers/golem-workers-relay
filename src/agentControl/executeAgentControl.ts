@@ -55,6 +55,10 @@ export async function executeAgentControl(input: {
               ? await listChannelPairing(input.action.channel, input.action.accountId)
               : input.action.kind === "channelPairing.approve"
                 ? await approveChannelPairing(input.action.channel, input.action.code, input.action.accountId)
+              : input.action.kind === "whatsapp.login.start"
+                ? await startWhatsAppLogin(input.gateway, input.action)
+              : input.action.kind === "whatsapp.login.wait"
+                ? await waitForWhatsAppLogin(input.gateway, input.action)
               : await setModel({
                   configPath: input.configPath,
                   model: input.action.model,
@@ -101,6 +105,46 @@ async function approveDevicePairing(gateway: GatewayLike, requestId: string): Pr
     kind: "devicePairing.approve",
     approved: true,
     payload,
+  };
+}
+
+async function startWhatsAppLogin(
+  gateway: GatewayLike,
+  input: Extract<AgentControlAction, { kind: "whatsapp.login.start" }>
+): Promise<AgentControlResult> {
+  const payload = await gateway.request("web.login.start", {
+    force: input.forceRelink === true,
+    timeoutMs: input.timeoutMs,
+  }) as { qrDataUrl?: unknown; message?: unknown };
+  const qrDataUrl =
+    typeof payload?.qrDataUrl === "string" && payload.qrDataUrl.trim().length > 0
+      ? payload.qrDataUrl
+      : null;
+  const message =
+    typeof payload?.message === "string" && payload.message.trim().length > 0
+      ? payload.message
+      : (qrDataUrl ? "Scan the QR in WhatsApp → Linked Devices." : "WhatsApp login started.");
+  return {
+    kind: "whatsapp.login.start",
+    qrDataUrl,
+    message,
+  };
+}
+
+async function waitForWhatsAppLogin(
+  gateway: GatewayLike,
+  input: Extract<AgentControlAction, { kind: "whatsapp.login.wait" }>
+): Promise<AgentControlResult> {
+  const payload = await gateway.request("web.login.wait", {
+    timeoutMs: input.timeoutMs,
+  }) as { connected?: unknown; message?: unknown };
+  return {
+    kind: "whatsapp.login.wait",
+    connected: payload?.connected === true,
+    message:
+      typeof payload?.message === "string" && payload.message.trim().length > 0
+        ? payload.message
+        : "WhatsApp login status updated.",
   };
 }
 

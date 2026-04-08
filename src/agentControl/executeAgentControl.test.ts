@@ -32,6 +32,7 @@ async function createTempStateDir() {
 describe("executeAgentControl channel pairing", () => {
   it("lists pending telegram pairing requests from the OpenClaw pairing store", async () => {
     const { credentialsDir } = await createTempStateDir();
+    const createdAt = new Date().toISOString();
     await fs.writeFile(
       path.join(credentialsDir, "telegram-pairing.json"),
       JSON.stringify({
@@ -40,7 +41,7 @@ describe("executeAgentControl channel pairing", () => {
           {
             id: "449985919",
             code: "ABCD2345",
-            createdAt: "2026-04-08T15:00:00.000Z",
+            createdAt,
             meta: {
               username: "belbix",
               accountId: "default",
@@ -63,7 +64,7 @@ describe("executeAgentControl channel pairing", () => {
         {
           id: "449985919",
           code: "ABCD2345",
-          createdAt: "2026-04-08T15:00:00.000Z",
+          createdAt,
           meta: {
             username: "belbix",
             accountId: "default",
@@ -75,6 +76,7 @@ describe("executeAgentControl channel pairing", () => {
 
   it("approves telegram pairing requests and appends the sender to allowFrom", async () => {
     const { credentialsDir } = await createTempStateDir();
+    const createdAt = new Date().toISOString();
     await fs.writeFile(
       path.join(credentialsDir, "telegram-pairing.json"),
       JSON.stringify({
@@ -83,7 +85,7 @@ describe("executeAgentControl channel pairing", () => {
           {
             id: "449985919",
             code: "ABCD2345",
-            createdAt: "2026-04-08T15:00:00.000Z",
+            createdAt,
             meta: {
               username: "belbix",
               accountId: "default",
@@ -116,7 +118,7 @@ describe("executeAgentControl channel pairing", () => {
         entry: {
           id: "449985919",
           code: "ABCD2345",
-          createdAt: "2026-04-08T15:00:00.000Z",
+          createdAt,
           meta: {
             username: "belbix",
             accountId: "default",
@@ -126,5 +128,57 @@ describe("executeAgentControl channel pairing", () => {
     });
     expect(pairingStore.requests).toEqual([]);
     expect(allowFromStore.allowFrom).toEqual(["449985919"]);
+  });
+});
+
+describe("executeAgentControl WhatsApp login", () => {
+  it("starts WhatsApp QR login via gateway RPC", async () => {
+    const gateway = {
+      request: (method: string, params?: unknown) => {
+        expect(method).toBe("web.login.start");
+        expect(params).toEqual({ force: true, timeoutMs: 15_000 });
+        return Promise.resolve({
+          qrDataUrl: "data:image/png;base64,abc123",
+          message: "Scan this QR in WhatsApp → Linked Devices.",
+        });
+      },
+    };
+
+    const result = await executeAgentControl({
+      action: { kind: "whatsapp.login.start", forceRelink: true, timeoutMs: 15_000 },
+      configPath: "/tmp/openclaw.json",
+      gateway,
+    });
+
+    expect(result).toEqual({
+      kind: "whatsapp.login.start",
+      qrDataUrl: "data:image/png;base64,abc123",
+      message: "Scan this QR in WhatsApp → Linked Devices.",
+    });
+  });
+
+  it("waits for WhatsApp QR login completion via gateway RPC", async () => {
+    const gateway = {
+      request: (method: string, params?: unknown) => {
+        expect(method).toBe("web.login.wait");
+        expect(params).toEqual({ timeoutMs: 5_000 });
+        return Promise.resolve({
+          connected: true,
+          message: "Linked!",
+        });
+      },
+    };
+
+    const result = await executeAgentControl({
+      action: { kind: "whatsapp.login.wait", timeoutMs: 5_000 },
+      configPath: "/tmp/openclaw.json",
+      gateway,
+    });
+
+    expect(result).toEqual({
+      kind: "whatsapp.login.wait",
+      connected: true,
+      message: "Linked!",
+    });
   });
 });
