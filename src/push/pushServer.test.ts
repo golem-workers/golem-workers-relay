@@ -1,5 +1,5 @@
 import http from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { startPushServer } from "./pushServer.js";
 
 describe("pushServer", () => {
@@ -162,6 +162,54 @@ describe("pushServer", () => {
 
     expect(resp.status).toBe(200);
     expect(seenEvents).toHaveLength(1);
+  });
+
+  it("handles agent_control payloads synchronously", async () => {
+    const onAgentControl = vi.fn().mockResolvedValue({
+      kind: "devicePairing.list",
+      pending: [{ requestId: "req_1" }],
+      paired: [{ deviceId: "dev_1" }],
+    });
+    const { port } = await startTestPushServer(
+      {
+        port: 0,
+        path: "/relay/messages",
+        relayToken: "token",
+        onMessage: () => {
+          throw new Error("chat callback should not be used");
+        },
+        onAgentControl,
+      },
+      servers
+    );
+
+    const resp = await fetch(`http://127.0.0.1:${port}/relay/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer token",
+      },
+      body: JSON.stringify({
+        messageId: "ctl_1",
+        input: {
+          kind: "agent_control",
+          action: {
+            kind: "devicePairing.list",
+          },
+        },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    await expect(resp.json()).resolves.toEqual({
+      accepted: true,
+      result: {
+        kind: "devicePairing.list",
+        pending: [{ requestId: "req_1" }],
+        paired: [{ deviceId: "dev_1" }],
+      },
+    });
+    expect(onAgentControl).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -93,7 +93,7 @@ async function main(): Promise<void> {
           action,
           configPath: openclaw.configPath,
           gateway: gateway ?? {
-            request: async () => {
+            request: () => {
               throw new Error("Gateway is not initialized");
             },
           },
@@ -284,12 +284,16 @@ async function main(): Promise<void> {
       publishRelayChannelEvent(message.input.event);
       return Promise.resolve();
     },
-    onAgentControl: (message) =>
-      executeAgentControl({
+    onAgentControl: (message) => {
+      if (message.input.kind !== "agent_control") {
+        throw new Error("agent_control payload expected");
+      }
+      return executeAgentControl({
         action: message.input.action,
         configPath: openclaw.configPath,
         gateway,
-      }),
+      });
+    },
   });
   const openrouterProxyServer = cfg.openrouterProxy.enabled
     ? startOpenRouterProxyServer({
