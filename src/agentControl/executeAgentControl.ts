@@ -15,10 +15,13 @@ const GATEWAY_RESTART_CHECK_ATTEMPTS = 20;
 const GATEWAY_RESTART_CHECK_DELAY_MS = 500;
 const FILE_LOCK_RETRY_ATTEMPTS = 50;
 const FILE_LOCK_RETRY_DELAY_MS = 100;
+const VALID_THINKING_DEFAULTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive"]);
 
 type GatewayLike = {
   request(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
 };
+
+type ModelSetThinkingDefault = Extract<AgentControlAction, { kind: "model.set" }>["thinkingDefault"];
 
 export class AgentControlError extends Error {
   readonly code: string;
@@ -30,6 +33,14 @@ export class AgentControlError extends Error {
     this.code = code;
     this.details = details;
   }
+}
+
+function readThinkingDefault(value: unknown): ModelSetThinkingDefault {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return VALID_THINKING_DEFAULTS.has(normalized) ? (normalized as NonNullable<ModelSetThinkingDefault>) : null;
 }
 
 export async function executeAgentControl(input: {
@@ -63,6 +74,7 @@ export async function executeAgentControl(input: {
                   configPath: input.configPath,
                   model: input.action.model,
                   contextTokens: input.action.contextTokens ?? null,
+                  thinkingDefault: input.action.thinkingDefault,
                 });
   return agentControlResultSchema.parse(result);
 }
@@ -401,6 +413,7 @@ async function setModel(input: {
   configPath: string;
   model: string;
   contextTokens: number | null;
+  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive" | null;
 }): Promise<AgentControlResult> {
   const { config } = await readConfigFile(input.configPath);
   const nextConfig = structuredClone(config);
@@ -411,6 +424,11 @@ async function setModel(input: {
   if (typeof input.contextTokens === "number" && Number.isFinite(input.contextTokens) && input.contextTokens > 0) {
     defaultsCfg.contextTokens = Math.floor(input.contextTokens);
   }
+  if (typeof input.thinkingDefault === "string" && input.thinkingDefault.trim()) {
+    defaultsCfg.thinkingDefault = input.thinkingDefault;
+  } else if (input.thinkingDefault === null) {
+    delete defaultsCfg.thinkingDefault;
+  }
   await atomicWriteUtf8(input.configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
   const restart = await restartGatewayService();
   return {
@@ -419,6 +437,7 @@ async function setModel(input: {
     restarted: true,
     model: input.model,
     contextTokens: input.contextTokens,
+    thinkingDefault: readThinkingDefault(defaultsCfg.thinkingDefault),
     activeState: restart.activeState,
     subState: restart.subState,
     result: restart.result,

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,12 +12,18 @@ const noopGateway = {
 };
 
 const originalStateDir = process.env.OPENCLAW_STATE_DIR;
+const originalPath = process.env.PATH;
 
 afterEach(() => {
   if (originalStateDir === undefined) {
     delete process.env.OPENCLAW_STATE_DIR;
   } else {
     process.env.OPENCLAW_STATE_DIR = originalStateDir;
+  }
+  if (originalPath === undefined) {
+    delete process.env.PATH;
+  } else {
+    process.env.PATH = originalPath;
   }
 });
 
@@ -27,6 +34,33 @@ async function createTempStateDir() {
   await fs.mkdir(credentialsDir, { recursive: true });
   process.env.OPENCLAW_STATE_DIR = stateDir;
   return { tempDir, stateDir, credentialsDir };
+}
+
+async function installFakeSystemctl() {
+  const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-systemctl-"));
+  const scriptPath = path.join(binDir, "systemctl");
+  await fs.writeFile(
+    scriptPath,
+    `#!/usr/bin/env bash
+set -eu
+if [ "$#" -ge 3 ] && [ "$1" = "--user" ] && [ "$2" = "restart" ] && [ "$3" = "openclaw-gateway.service" ]; then
+  exit 0
+fi
+if [ "$#" -ge 6 ] && [ "$1" = "--user" ] && [ "$2" = "show" ] && [ "$3" = "openclaw-gateway.service" ] && [ "$4" = "-p" ] && [ "$6" = "--value" ]; then
+  case "$5" in
+    ActiveState) printf 'active\\n' ;;
+    SubState) printf 'running\\n' ;;
+    Result) printf 'success\\n' ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+exit 1
+`,
+    "utf8"
+  );
+  fsSync.chmodSync(scriptPath, 0o755);
+  process.env.PATH = `${binDir}:${originalPath ?? ""}`;
 }
 
 describe("executeAgentControl channel pairing", () => {
@@ -181,5 +215,73 @@ describe("executeAgentControl WhatsApp login", () => {
       connected: true,
       message: "Linked!",
     });
+  });
+});
+
+describe("executeAgentControl model set", () => {
+  it("writes thinkingDefault for reasoning-capable models", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-set-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await installFakeSystemctl();
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+
+    const result = await executeAgentControl({
+      action: {
+        kind: "model.set",
+        model: "openrouter/google/gemini-3.1-pro-preview",
+        contextTokens: 300000,
+        thinkingDefault: "minimal",
+      },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+      agents?: { defaults?: { model?: { primary?: string }; contextTokens?: number; thinkingDefault?: string } };
+    };
+    expect(result).toMatchObject({
+      kind: "model.set",
+      model: "openrouter/google/gemini-3.1-pro-preview",
+      contextTokens: 300000,
+      thinkingDefault: "minimal",
+      activeState: "active",
+      subState: "running",
+      result: "success",
+    });
+    expect(config.agents?.defaults?.model?.primary).toBe("openrouter/google/gemini-3.1-pro-preview");
+    expect(config.agents?.defaults?.contextTokens).toBe(300000);
+    expect(config.agents?.defaults?.thinkingDefault).toBe("minimal");
+  });
+
+  it("removes stale thinkingDefault when reasoning is disabled", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-unset-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await installFakeSystemctl();
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ agents: { defaults: { thinkingDefault: "minimal" } } }, null, 2),
+      "utf8"
+    );
+
+    const result = await executeAgentControl({
+      action: {
+        kind: "model.set",
+        model: "openrouter/google/gemini-2.5-flash",
+        contextTokens: 300000,
+        thinkingDefault: null,
+      },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+      agents?: { defaults?: { thinkingDefault?: string } };
+    };
+    expect(result).toMatchObject({
+      kind: "model.set",
+      model: "openrouter/google/gemini-2.5-flash",
+      thinkingDefault: null,
+    });
+    expect(config.agents?.defaults?.thinkingDefault).toBeUndefined();
   });
 });

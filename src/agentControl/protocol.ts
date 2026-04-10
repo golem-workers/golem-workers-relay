@@ -3,6 +3,10 @@ import { z } from "zod";
 const jsonRecordSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
   z.record(z.string(), z.unknown())
 );
+const thinkingDefaultSchema = z
+  .enum(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive"])
+  .nullable()
+  .optional();
 
 export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -37,6 +41,7 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("model.set"),
     model: z.string().min(1),
     contextTokens: z.number().int().positive().nullable().optional(),
+    thinkingDefault: thinkingDefaultSchema,
   }),
   z.object({
     kind: z.literal("whatsapp.login.start"),
@@ -93,6 +98,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     restarted: z.literal(true),
     model: z.string().min(1),
     contextTokens: z.number().int().positive().nullable(),
+    thinkingDefault: thinkingDefaultSchema,
     activeState: z.string().min(1),
     subState: z.string().min(1),
     result: z.string().nullable(),
