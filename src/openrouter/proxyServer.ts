@@ -25,13 +25,13 @@ type RelayProxyServerInput = {
   port: number;
   backendBaseUrl: string;
   relayToken: string;
-  pathPrefix: string;
+  pathPrefixes: string[];
   backendPathPrefix: string;
   requestBodyMode: RequestBodyMode;
 };
 
 function startRelayProxyServer(input: RelayProxyServerInput): http.Server {
-  const pathPrefix = normalizePrefix(input.pathPrefix);
+  const pathPrefixes = dedupePrefixes(input.pathPrefixes.map((prefix) => normalizePrefix(prefix)));
   const backendPathPrefix = normalizePrefix(input.backendPathPrefix);
   const server = http.createServer((req, res) => {
     void handleProxyRequest(
@@ -41,7 +41,7 @@ function startRelayProxyServer(input: RelayProxyServerInput): http.Server {
         serviceName: input.serviceName,
         backendBaseUrl: input.backendBaseUrl,
         relayToken: input.relayToken,
-        pathPrefix,
+        pathPrefixes,
         backendPathPrefix,
         requestBodyMode: input.requestBodyMode,
       },
@@ -68,7 +68,7 @@ function startRelayProxyServer(input: RelayProxyServerInput): http.Server {
       {
         host: LOCAL_PROXY_LISTEN_HOST,
         port: input.port,
-        pathPrefix,
+        pathPrefixes,
         backendPathPrefix,
       },
       `${input.serviceName} server started`
@@ -87,6 +87,7 @@ export function startOpenRouterProxyServer(input: {
   return startRelayProxyServer({
     serviceName: "relay-openrouter-proxy",
     ...input,
+    pathPrefixes: [input.pathPrefix, "/api/v1"],
     requestBodyMode: "openrouter-model-rewrite",
   });
 }
@@ -101,6 +102,7 @@ export function startGoogleAiProxyServer(input: {
   return startRelayProxyServer({
     serviceName: "relay-google-ai-proxy",
     ...input,
+    pathPrefixes: [input.pathPrefix, "/"],
     requestBodyMode: "passthrough",
   });
 }
@@ -115,6 +117,22 @@ export function startJinaProxyServer(input: {
   return startRelayProxyServer({
     serviceName: "relay-jina-proxy",
     ...input,
+    pathPrefixes: [input.pathPrefix, "/v1"],
+    requestBodyMode: "passthrough",
+  });
+}
+
+export function startMoonshotProxyServer(input: {
+  port: number;
+  backendBaseUrl: string;
+  relayToken: string;
+  pathPrefix: string;
+  backendPathPrefix: string;
+}): http.Server {
+  return startRelayProxyServer({
+    serviceName: "relay-moonshot-proxy",
+    ...input,
+    pathPrefixes: [input.pathPrefix],
     requestBodyMode: "passthrough",
   });
 }
@@ -126,7 +144,7 @@ async function handleProxyRequest(
     serviceName: string;
     backendBaseUrl: string;
     relayToken: string;
-    pathPrefix: string;
+    pathPrefixes: string[];
     backendPathPrefix: string;
     requestBodyMode: RequestBodyMode;
   },
@@ -138,12 +156,13 @@ async function handleProxyRequest(
     sendJson(res, 200, { ok: true, status: "ok", service: input.serviceName });
     return;
   }
-  if (!url.pathname.startsWith(input.pathPrefix)) {
+  const matchedPathPrefix = matchPathPrefix(url.pathname, input.pathPrefixes);
+  if (!matchedPathPrefix) {
     sendJson(res, 404, { code: "NOT_FOUND", message: "Not found" });
     return;
   }
   const method = req.method?.toUpperCase() ?? "GET";
-  const upstreamPath = `${input.backendPathPrefix}${url.pathname}${url.search}`;
+  const upstreamPath = `${input.backendPathPrefix}${stripPathPrefix(url.pathname, matchedPathPrefix)}${url.search}`;
   const upstreamUrl = `${input.backendBaseUrl}${upstreamPath}`;
   const requestHeaders = buildUpstreamHeaders(req, input.relayToken);
   const timeout = setTimeout(() => abortRequest(controller, "timeout"), 120_000);
@@ -330,6 +349,30 @@ function normalizePrefix(input: string): string {
   if (trimmed === "/") return "/";
   const withSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
   return withSlash.endsWith("/") ? withSlash.slice(0, -1) : withSlash;
+}
+
+function dedupePrefixes(prefixes: string[]): string[] {
+  return [...new Set(prefixes)].sort((left, right) => right.length - left.length);
+}
+
+function matchPathPrefix(pathname: string, prefixes: readonly string[]): string | null {
+  for (const prefix of prefixes) {
+    if (prefix === "/") {
+      return prefix;
+    }
+    if (pathname === prefix || pathname.startsWith(`${prefix}/`)) {
+      return prefix;
+    }
+  }
+  return null;
+}
+
+function stripPathPrefix(pathname: string, prefix: string): string {
+  if (prefix === "/") {
+    return pathname || "/";
+  }
+  const stripped = pathname.slice(prefix.length);
+  return stripped.length > 0 ? stripped : "/";
 }
 
 function shouldRewriteModel(pathname: string, contentType: string | string[] | undefined): boolean {

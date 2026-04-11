@@ -45,6 +45,10 @@ const envSchema = z.object({
   RELAY_GOOGLE_AI_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_GOOGLE_AI_PROXY_PATH_PREFIX: z.string().min(1).optional(),
   RELAY_GOOGLE_AI_BACKEND_PATH_PREFIX: z.string().min(1).optional(),
+  RELAY_MOONSHOT_PROXY_ENABLED: z.coerce.boolean().optional(),
+  RELAY_MOONSHOT_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+  RELAY_MOONSHOT_PROXY_PATH_PREFIX: z.string().min(1).optional(),
+  RELAY_MOONSHOT_BACKEND_PATH_PREFIX: z.string().min(1).optional(),
   RELAY_OPENCLAW_FORWARD_FINAL_ONLY: envBooleanSchema.optional(),
 
   RELAY_CHANNEL_ENABLED: envBooleanSchema.optional(),
@@ -96,6 +100,12 @@ export type RelayConfig = {
     backendPathPrefix: string;
   };
   googleAiProxy: {
+    enabled: boolean;
+    port: number;
+    pathPrefix: string;
+    backendPathPrefix: string;
+  };
+  moonshotProxy: {
     enabled: boolean;
     port: number;
     pathPrefix: string;
@@ -154,7 +164,9 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     openrouterProxy: {
       enabled: parsed.RELAY_OPENROUTER_PROXY_ENABLED ?? true,
       port: parsed.RELAY_OPENROUTER_PROXY_PORT ?? 18080,
-      pathPrefix: withLeadingSlash(parsed.RELAY_OPENROUTER_PROXY_PATH_PREFIX ?? "/api/v1"),
+      pathPrefix: withLeadingSlash(
+        parsed.RELAY_OPENROUTER_PROXY_PATH_PREFIX ?? "/provider-proxy/openrouter"
+      ),
       backendPathPrefix: withLeadingSlash(
         parsed.RELAY_OPENROUTER_BACKEND_PATH_PREFIX ?? "/api/v1/relays/openrouter"
       ),
@@ -162,7 +174,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     jinaProxy: {
       enabled: parsed.RELAY_JINA_PROXY_ENABLED ?? true,
       port: parsed.RELAY_JINA_PROXY_PORT ?? 18082,
-      pathPrefix: withLeadingSlash(parsed.RELAY_JINA_PROXY_PATH_PREFIX ?? "/v1"),
+      pathPrefix: withLeadingSlash(parsed.RELAY_JINA_PROXY_PATH_PREFIX ?? "/provider-proxy/jina"),
       backendPathPrefix: withLeadingSlash(
         parsed.RELAY_JINA_BACKEND_PATH_PREFIX ?? "/api/v1/relays/jina"
       ),
@@ -170,9 +182,21 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     googleAiProxy: {
       enabled: parsed.RELAY_GOOGLE_AI_PROXY_ENABLED ?? true,
       port: parsed.RELAY_GOOGLE_AI_PROXY_PORT ?? 18081,
-      pathPrefix: withLeadingSlash(parsed.RELAY_GOOGLE_AI_PROXY_PATH_PREFIX ?? "/"),
+      pathPrefix: withLeadingSlash(
+        parsed.RELAY_GOOGLE_AI_PROXY_PATH_PREFIX ?? "/provider-proxy/google-ai"
+      ),
       backendPathPrefix: withLeadingSlash(
         parsed.RELAY_GOOGLE_AI_BACKEND_PATH_PREFIX ?? "/api/v1/relays/google-ai"
+      ),
+    },
+    moonshotProxy: {
+      enabled: parsed.RELAY_MOONSHOT_PROXY_ENABLED ?? true,
+      port: parsed.RELAY_MOONSHOT_PROXY_PORT ?? 18083,
+      pathPrefix: withLeadingSlash(
+        parsed.RELAY_MOONSHOT_PROXY_PATH_PREFIX ?? "/provider-proxy/moonshot"
+      ),
+      backendPathPrefix: withLeadingSlash(
+        parsed.RELAY_MOONSHOT_BACKEND_PATH_PREFIX ?? "/api/v1/relays/moonshot"
       ),
     },
     openclawForwardFinalOnly: parsed.RELAY_OPENCLAW_FORWARD_FINAL_ONLY ?? true,
@@ -224,20 +248,26 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     openrouterProxy: {
       enabled: true,
       port: 18080,
-      pathPrefix: "/api/v1",
+      pathPrefix: "/provider-proxy/openrouter",
       backendPathPrefix: "/api/v1/relays/openrouter",
     },
     jinaProxy: {
       enabled: true,
       port: 18082,
-      pathPrefix: "/v1",
+      pathPrefix: "/provider-proxy/jina",
       backendPathPrefix: "/api/v1/relays/jina",
     },
     googleAiProxy: {
       enabled: true,
       port: 18081,
-      pathPrefix: "/",
+      pathPrefix: "/provider-proxy/google-ai",
       backendPathPrefix: "/api/v1/relays/google-ai",
+    },
+    moonshotProxy: {
+      enabled: true,
+      port: 18083,
+      pathPrefix: "/provider-proxy/moonshot",
+      backendPathPrefix: "/api/v1/relays/moonshot",
     },
     openclawForwardFinalOnly: true,
     devLogEnabled: false,
@@ -263,6 +293,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     openrouterProxy: { ...base.openrouterProxy, ...(overrides.openrouterProxy ?? {}) },
     jinaProxy: { ...base.jinaProxy, ...(overrides.jinaProxy ?? {}) },
     googleAiProxy: { ...base.googleAiProxy, ...(overrides.googleAiProxy ?? {}) },
+    moonshotProxy: { ...base.moonshotProxy, ...(overrides.moonshotProxy ?? {}) },
     openclaw: { ...base.openclaw, ...(overrides.openclaw ?? {}) },
     stt: { ...base.stt, ...(overrides.stt ?? {}) },
     relayChannel: { ...base.relayChannel, ...(overrides.relayChannel ?? {}) },

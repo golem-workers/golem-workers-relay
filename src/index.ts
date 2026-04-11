@@ -16,6 +16,7 @@ import {
   LOCAL_PROXY_LISTEN_HOST,
   startGoogleAiProxyServer,
   startJinaProxyServer,
+  startMoonshotProxyServer,
   startOpenRouterProxyServer,
 } from "./openrouter/proxyServer.js";
 import { createGatewayEventForwarder } from "./openclaw/gatewayEventForwarder.js";
@@ -322,6 +323,15 @@ async function main(): Promise<void> {
         backendPathPrefix: cfg.googleAiProxy.backendPathPrefix,
       })
     : null;
+  const moonshotProxyServer = cfg.moonshotProxy.enabled
+    ? startMoonshotProxyServer({
+        port: cfg.moonshotProxy.port,
+        backendBaseUrl: cfg.backendBaseUrl,
+        relayToken: cfg.relayToken,
+        pathPrefix: cfg.moonshotProxy.pathPrefix,
+        backendPathPrefix: cfg.moonshotProxy.backendPathPrefix,
+      })
+    : null;
 
   await waitForStop(stop);
   shuttingDown = true;
@@ -337,6 +347,9 @@ async function main(): Promise<void> {
   }
   if (googleAiProxyServer) {
     await closeServer(googleAiProxyServer);
+  }
+  if (moonshotProxyServer) {
+    await closeServer(moonshotProxyServer);
   }
   if (relayChannelCleanup) {
     await relayChannelCleanup();

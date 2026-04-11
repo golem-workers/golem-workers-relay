@@ -34,7 +34,8 @@ Provisioning warning for 256 MiB snapshots:
 - The warm snapshot must stay cold: `openclaw-gateway.service` is expected to be stopped/disabled in the image, and backend provisioning performs the first controlled start.
 - Backend bootstrap intentionally does not restore the full bundled OpenClaw plugin set during that first start. On real `256 MiB` snapshot-debug e2e runs, enabling bundled self-hosted provider plugins before the gateway bound its port caused pre-listen hangs/readiness failures.
 - Current bootstrap policy is: allow `device-pair` during the first gateway start, explicitly deny heavy/problematic plugins (`ollama`, `sglang`, `vllm`, `phone-control`, `talk-voice`, `telegram`), then continue with relay provisioning after readiness succeeds.
-- `agents.defaults.memorySearch` keeps using the local OpenRouter-compatible embeddings proxy (`OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1`) with `text-embedding-3-large`.
+- `agents.defaults.memorySearch` keeps using the local OpenRouter-compatible embeddings proxy (`OPENROUTER_BASE_URL=http://127.0.0.1:18080/provider-proxy/openrouter/api/v1`) with `text-embedding-3-large`.
+- Backend provisioning now also rewrites `models.providers.moonshot.baseUrl` to the dedicated local Moonshot relay path `http://127.0.0.1:18083/provider-proxy/moonshot/v1` instead of routing Moonshot through the OpenRouter proxy.
 - Internal OpenClaw device pairing is auto-approved by the running `golem-workers-relay.service` process after it connects to the local gateway. That includes the relay backend identity and the local OpenClaw CLI operator identity used by native commands such as `openclaw cron add`. There is no separate agent-side `openclaw-device-pair-auto-approve.service` or timer anymore.
 - Local OpenClaw exec approvals are also auto-approved by relay with `allow-once` when the approval targets the local host (`host=sandbox` or `host=gateway`) rather than a remote node. This is intentional for dedicated agent servers so bootstrap/runtime helper commands do not block on `/approve`.
 - `telegram` is explicitly denied even though Telegram channel config may exist, because OpenClaw doctor/auto-fix can auto-enable that plugin from config and silently break the bootstrap assumptions.
@@ -81,7 +82,7 @@ Non-interactive OpenRouter-through-local-proxy setup closest to backend provisio
 ```bash
 source /root/.bashrc
 export OPENROUTER_API_KEY="<openrouter-api-key>"
-export OPENROUTER_BASE_URL="http://127.0.0.1:18080/api/v1"
+export OPENROUTER_BASE_URL="http://127.0.0.1:18080/provider-proxy/openrouter/api/v1"
 export OPENCLAW_GATEWAY_TOKEN="<gateway-token>"
 
 openclaw onboard \

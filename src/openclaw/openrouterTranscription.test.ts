@@ -26,7 +26,7 @@ describe("transcribeAudioWithOpenRouter", () => {
     );
 
     const transcript = await transcribeAudioWithOpenRouter({
-      baseUrl: "http://127.0.0.1:18080/api/v1/",
+      baseUrl: "http://127.0.0.1:18080/provider-proxy/openrouter/api/v1/",
       model: "openrouter/openai/gpt-audio",
       timeoutMs: 1000,
       media: {
@@ -38,7 +38,9 @@ describe("transcribeAudioWithOpenRouter", () => {
     });
 
     expect(transcript).toBe("hello from audio");
-    expect(fetchSpy.mock.calls[0]?.[0]).toBe("http://127.0.0.1:18080/api/v1/chat/completions");
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:18080/provider-proxy/openrouter/api/v1/chat/completions"
+    );
 
     const requestInit = fetchSpy.mock.calls[0]?.[1];
     expect(requestInit).toBeDefined();
@@ -86,7 +88,7 @@ describe("transcribeAudioWithOpenRouter", () => {
     );
 
     const transcript = await transcribeAudioWithOpenRouter({
-      baseUrl: "http://127.0.0.1:18080/api/v1",
+      baseUrl: "http://127.0.0.1:18080/provider-proxy/openrouter/api/v1",
       model: "openrouter/openai/gpt-audio",
       timeoutMs: 1000,
       media: {
@@ -102,7 +104,7 @@ describe("transcribeAudioWithOpenRouter", () => {
   it("fails fast on unsupported audio formats", async () => {
     await expect(
       transcribeAudioWithOpenRouter({
-        baseUrl: "http://127.0.0.1:18080/api/v1",
+        baseUrl: "http://127.0.0.1:18080/provider-proxy/openrouter/api/v1",
         model: "openrouter/openai/gpt-audio",
         timeoutMs: 1000,
         media: {

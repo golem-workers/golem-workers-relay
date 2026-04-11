@@ -4,6 +4,7 @@ import {
   LOCAL_PROXY_LISTEN_HOST,
   startGoogleAiProxyServer,
   startJinaProxyServer,
+  startMoonshotProxyServer,
   startOpenRouterProxyServer,
 } from "./proxyServer.js";
 
@@ -39,21 +40,24 @@ describe("startOpenRouterProxyServer", () => {
       port: relayPort,
       backendBaseUrl: `http://127.0.0.1:${backendPort}`,
       relayToken: "relay-token",
-      pathPrefix: "/api/v1",
+      pathPrefix: "/provider-proxy/openrouter",
       backendPathPrefix: "/api/v1/relays/openrouter",
     });
     servers.push(relayServer);
     await waitForListening(relayServer);
     expect(relayServer.address()).toMatchObject({ address: LOCAL_PROXY_LISTEN_HOST, port: relayPort });
 
-    const response = await fetch(`http://127.0.0.1:${relayPort}/api/v1/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: "Bearer stub-key",
-      },
-      body: JSON.stringify({ model: "openrouter/test", messages: [{ role: "user", content: "hi" }] }),
-    });
+    const response = await fetch(
+      `http://127.0.0.1:${relayPort}/provider-proxy/openrouter/api/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer stub-key",
+        },
+        body: JSON.stringify({ model: "openrouter/test", messages: [{ role: "user", content: "hi" }] }),
+      }
+    );
 
     expect(response.status).toBe(200);
     expect(backendAuthHeader).toBe("Bearer relay-token");
@@ -78,16 +82,19 @@ describe("startOpenRouterProxyServer", () => {
       port: relayPort,
       backendBaseUrl: `http://127.0.0.1:${backendPort}`,
       relayToken: "relay-token",
-      pathPrefix: "/api/v1",
+      pathPrefix: "/provider-proxy/openrouter",
       backendPathPrefix: "/api/v1/relays/openrouter",
     });
     servers.push(relayServer);
 
-    const response = await fetch(`http://127.0.0.1:${relayPort}/api/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "openrouter/test", stream: true, messages: [] }),
-    });
+    const response = await fetch(
+      `http://127.0.0.1:${relayPort}/provider-proxy/openrouter/api/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "openrouter/test", stream: true, messages: [] }),
+      }
+    );
     expect(response.status).toBe(200);
     const text = await response.text();
     expect(text).toContain("data:");
@@ -117,33 +124,36 @@ describe("startOpenRouterProxyServer", () => {
       port: relayPort,
       backendBaseUrl: `http://127.0.0.1:${backendPort}`,
       relayToken: "relay-token",
-      pathPrefix: "/api/v1",
+      pathPrefix: "/provider-proxy/openrouter",
       backendPathPrefix: "/api/v1/relays/openrouter",
     });
     servers.push(relayServer);
 
-    const response = await fetch(`http://127.0.0.1:${relayPort}/api/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: "openrouter/openai/gpt-audio",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "Transcribe this." },
-              {
-                type: "input_audio",
-                input_audio: {
-                  data: Buffer.from("voice").toString("base64"),
-                  format: "ogg",
+    const response = await fetch(
+      `http://127.0.0.1:${relayPort}/provider-proxy/openrouter/api/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "openrouter/openai/gpt-audio",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Transcribe this." },
+                {
+                  type: "input_audio",
+                  input_audio: {
+                    data: Buffer.from("voice").toString("base64"),
+                    format: "ogg",
+                  },
                 },
-              },
-            ],
-          },
-        ],
-      }),
-    });
+              ],
+            },
+          ],
+        }),
+      }
+    );
 
     expect(response.status).toBe(200);
     expect(upstreamBody).toMatchObject({
@@ -183,14 +193,14 @@ describe("startOpenRouterProxyServer", () => {
       port: relayPort,
       backendBaseUrl: `http://127.0.0.1:${backendPort}`,
       relayToken: "relay-token",
-      pathPrefix: "/api/v1",
+      pathPrefix: "/provider-proxy/openrouter",
       backendPathPrefix: "/api/v1/relays/openrouter",
     });
     servers.push(relayServer);
 
     await new Promise<void>((resolve, reject) => {
       const req = http.request(
-        `http://127.0.0.1:${relayPort}/api/v1/chat/completions`,
+        `http://127.0.0.1:${relayPort}/provider-proxy/openrouter/api/v1/chat/completions`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -212,6 +222,38 @@ describe("startOpenRouterProxyServer", () => {
     const health = await fetch(`http://127.0.0.1:${relayPort}/health`);
     expect(health.status).toBe(200);
     await expect(health.json()).resolves.toMatchObject({ ok: true, status: "ok" });
+  });
+
+  it("keeps the legacy /api/v1 OpenRouter local alias working", async () => {
+    const backendPort = await getFreePort();
+    let receivedPath = "";
+    const backendServer = http.createServer((req, res) => {
+      receivedPath = req.url ?? "";
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startOpenRouterProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/openrouter",
+      backendPathPrefix: "/api/v1/relays/openrouter",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/api/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "openrouter/test", messages: [] }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(receivedPath).toBe("/api/v1/relays/openrouter/chat/completions");
   });
 });
 
@@ -249,13 +291,13 @@ describe("startGoogleAiProxyServer", () => {
       port: relayPort,
       backendBaseUrl: `http://127.0.0.1:${backendPort}`,
       relayToken: "relay-token",
-      pathPrefix: "/",
+      pathPrefix: "/provider-proxy/google-ai",
       backendPathPrefix: "/api/v1/relays/google-ai",
     });
     servers.push(relayServer);
 
     const response = await fetch(
-      `http://127.0.0.1:${relayPort}/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?alt=sse&key=attacker`,
+      `http://127.0.0.1:${relayPort}/provider-proxy/google-ai/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?alt=sse&key=attacker`,
       {
         method: "POST",
         headers: {
@@ -277,6 +319,38 @@ describe("startGoogleAiProxyServer", () => {
     await expect(response.json()).resolves.toMatchObject({
       candidates: [{ content: { parts: [{ text: "ok" }] } }],
     });
+  });
+
+  it("keeps the legacy root Google AI local alias working", async () => {
+    const backendPort = await getFreePort();
+    let receivedPath = "";
+    const backendServer = http.createServer((req, res) => {
+      receivedPath = req.url ?? "";
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startGoogleAiProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/google-ai",
+      backendPathPrefix: "/api/v1/relays/google-ai",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/v1beta/models/test:generateContent`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contents: [] }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(receivedPath).toBe("/api/v1/relays/google-ai/v1beta/models/test:generateContent");
   });
 });
 
@@ -322,12 +396,12 @@ describe("startJinaProxyServer", () => {
       port: relayPort,
       backendBaseUrl: `http://127.0.0.1:${backendPort}`,
       relayToken: "relay-token",
-      pathPrefix: "/v1",
+      pathPrefix: "/provider-proxy/jina",
       backendPathPrefix: "/api/v1/relays/jina",
     });
     servers.push(relayServer);
 
-    const response = await fetch(`http://127.0.0.1:${relayPort}/v1/embeddings`, {
+    const response = await fetch(`http://127.0.0.1:${relayPort}/provider-proxy/jina/v1/embeddings`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -343,6 +417,113 @@ describe("startJinaProxyServer", () => {
     await expect(response.json()).resolves.toMatchObject({
       data: [{ embedding: [0.1, 0.2] }],
       model: "jina-embeddings-v5-text-small",
+    });
+  });
+
+  it("keeps the legacy /v1 Jina local alias working", async () => {
+    const backendPort = await getFreePort();
+    let receivedPath = "";
+    const backendServer = http.createServer((req, res) => {
+      receivedPath = req.url ?? "";
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startJinaProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/jina",
+      backendPathPrefix: "/api/v1/relays/jina",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/v1/embeddings`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "jina-embeddings-v5-text-small", input: ["hello"] }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(receivedPath).toBe("/api/v1/relays/jina/embeddings");
+  });
+});
+
+describe("startMoonshotProxyServer", () => {
+  const servers: http.Server[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+          })
+      )
+    );
+    servers.length = 0;
+  });
+
+  it("forwards Moonshot-compatible requests to backend proxy without trusting the client bearer token", async () => {
+    const backendPort = await getFreePort();
+    let receivedPath = "";
+    let backendAuthHeader: string | null = null;
+    let requestBody = "";
+    const backendServer = http.createServer((req, res) => {
+      receivedPath = req.url ?? "";
+      backendAuthHeader = req.headers.authorization ? String(req.headers.authorization) : null;
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        }
+        requestBody = Buffer.concat(chunks).toString("utf8");
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify({
+            model: "moonshot-v1-8k",
+            usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 },
+          })
+        );
+      })();
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startMoonshotProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/moonshot",
+      backendPathPrefix: "/api/v1/relays/moonshot",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(
+      `http://127.0.0.1:${relayPort}/provider-proxy/moonshot/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer stub-moonshot-key",
+        },
+        body: JSON.stringify({ model: "moonshot-v1-8k", messages: [{ role: "user", content: "hi" }] }),
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(backendAuthHeader).toBe("Bearer relay-token");
+    expect(receivedPath).toBe("/api/v1/relays/moonshot/v1/chat/completions");
+    expect(requestBody).toContain("moonshot-v1-8k");
+    await expect(response.json()).resolves.toMatchObject({
+      model: "moonshot-v1-8k",
+      usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 },
     });
   });
 });

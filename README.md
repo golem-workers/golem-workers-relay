@@ -185,16 +185,20 @@ Push transport settings:
 - `RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT=80` (send low-space alert when used disk percent is at or above this threshold)
 - `RELAY_OPENROUTER_PROXY_ENABLED=1` (enable local OpenRouter-compatible proxy listener)
 - `RELAY_OPENROUTER_PROXY_PORT=18080` (local proxy port used by agent-side rewrite rules; binds to `127.0.0.1` by default)
-- `RELAY_OPENROUTER_PROXY_PATH_PREFIX=/api/v1` (OpenRouter-compatible incoming path prefix)
+- `RELAY_OPENROUTER_PROXY_PATH_PREFIX=/provider-proxy/openrouter` (primary local OpenClaw -> relay OpenRouter path prefix; legacy `/api/v1` stays supported)
 - `RELAY_OPENROUTER_BACKEND_PATH_PREFIX=/api/v1/relays/openrouter` (backend relay-auth proxy path)
 - `RELAY_JINA_PROXY_ENABLED=1` (enable local Jina-compatible proxy listener for optional backend-side Jina relay traffic)
 - `RELAY_JINA_PROXY_PORT=18082` (local proxy port used by Jina embeddings/rerank calls; binds to `127.0.0.1` by default)
-- `RELAY_JINA_PROXY_PATH_PREFIX=/v1` (Jina-compatible incoming path prefix)
+- `RELAY_JINA_PROXY_PATH_PREFIX=/provider-proxy/jina` (primary local OpenClaw/client -> relay Jina path prefix; legacy `/v1` stays supported)
 - `RELAY_JINA_BACKEND_PATH_PREFIX=/api/v1/relays/jina` (backend relay-auth proxy path)
 - `RELAY_GOOGLE_AI_PROXY_ENABLED=1` (enable local Google AI-compatible proxy listener)
 - `RELAY_GOOGLE_AI_PROXY_PORT=18081` (local plain-HTTP proxy port used by provisioned OpenClaw configs via `models.providers.google.baseUrl`; binds to `127.0.0.1` by default)
-- `RELAY_GOOGLE_AI_PROXY_PATH_PREFIX=/` (forward all Google AI request paths from the local OpenClaw Google provider)
+- `RELAY_GOOGLE_AI_PROXY_PATH_PREFIX=/provider-proxy/google-ai` (primary local OpenClaw/client -> relay Google AI path prefix; legacy `/` stays supported)
 - `RELAY_GOOGLE_AI_BACKEND_PATH_PREFIX=/api/v1/relays/google-ai` (backend relay-auth proxy path)
+- `RELAY_MOONSHOT_PROXY_ENABLED=1` (enable local Moonshot-compatible proxy listener)
+- `RELAY_MOONSHOT_PROXY_PORT=18083` (local plain-HTTP proxy port used by provisioned OpenClaw configs via `models.providers.moonshot.baseUrl`; binds to `127.0.0.1` by default)
+- `RELAY_MOONSHOT_PROXY_PATH_PREFIX=/provider-proxy/moonshot` (primary local OpenClaw/client -> relay Moonshot path prefix)
+- `RELAY_MOONSHOT_BACKEND_PATH_PREFIX=/api/v1/relays/moonshot` (backend relay-auth proxy path)
 - `RELAY_OPENCLAW_FORWARD_FINAL_ONLY=1` (default: only forward compact `delta` typing signals; disable with `0` to forward all raw OpenClaw gateway events)
 
 Note: relay creates its own device identity on the host under `~/.openclaw` unless
@@ -206,9 +210,10 @@ Relay also performs internal local auto-approve passes via the same root-run rel
 - it also auto-approves local OpenClaw exec approvals with `allow-once` when the request targets the local host (`host=sandbox` or `host=gateway`) instead of a remote node. This keeps dedicated agent hosts non-interactive for bootstrap/runtime helper commands while leaving node-host approvals untouched.
 
 Provisioned agents use both local listeners together:
-- OpenClaw model traffic still goes through `OPENROUTER_BASE_URL=http://127.0.0.1:18080/api/v1`.
-- Optional Jina relay traffic goes through `http://127.0.0.1:18082/v1`; backend-side credentials stay on the backend and are proxied through relay.
-- Gemini web-search traffic goes directly to `http://127.0.0.1:18081/v1beta` via `models.providers.google.baseUrl`, and relay forwards it to backend `/api/v1/relays/google-ai/*`.
+- OpenClaw model traffic now goes through `OPENROUTER_BASE_URL=http://127.0.0.1:18080/provider-proxy/openrouter/api/v1`, while legacy local `/api/v1/*` stays supported.
+- Optional Jina relay traffic now goes through `http://127.0.0.1:18082/provider-proxy/jina/v1`, while legacy local `/v1/*` stays supported; backend-side credentials stay on the backend and are proxied through relay.
+- Gemini web-search traffic goes directly to `http://127.0.0.1:18081/provider-proxy/google-ai/v1beta` via `models.providers.google.baseUrl`, while legacy local root-based URLs stay supported; relay forwards it to backend `/api/v1/relays/google-ai/*`.
+- Moonshot traffic goes directly to `http://127.0.0.1:18083/provider-proxy/moonshot/v1` via `models.providers.moonshot.baseUrl`; relay forwards it to backend `/api/v1/relays/moonshot/*`.
 - All relay proxy listeners are local-only by default and bind to `127.0.0.1`, so they are not exposed on external interfaces unless the code is changed intentionally.
 
 ## Unified Message Flow Logging

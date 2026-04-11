@@ -79,6 +79,22 @@ describe("loadRelayConfig", () => {
     expect(custom.openclawForwardFinalOnly).toBe(false);
   });
 
+  it("uses explicit provider-proxy backend prefixes by default", () => {
+    const cfg = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+    });
+
+    expect(cfg.openrouterProxy.pathPrefix).toBe("/provider-proxy/openrouter");
+    expect(cfg.openrouterProxy.backendPathPrefix).toBe("/api/v1/relays/openrouter");
+    expect(cfg.jinaProxy.pathPrefix).toBe("/provider-proxy/jina");
+    expect(cfg.jinaProxy.backendPathPrefix).toBe("/api/v1/relays/jina");
+    expect(cfg.googleAiProxy.pathPrefix).toBe("/provider-proxy/google-ai");
+    expect(cfg.googleAiProxy.backendPathPrefix).toBe("/api/v1/relays/google-ai");
+    expect(cfg.moonshotProxy.pathPrefix).toBe("/provider-proxy/moonshot");
+    expect(cfg.moonshotProxy.backendPathPrefix).toBe("/api/v1/relays/moonshot");
+  });
+
   it("derives OpenAI STT base URL from the backend relay proxy by default", () => {
     const cfg = loadRelayConfig({
       RELAY_TOKEN: "t",

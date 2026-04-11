@@ -926,7 +926,11 @@ describe("ChatRunner", () => {
       onEvent: (evt) => runner?.handleEvent(evt),
     });
     runner = new ChatRunner(client, {
-      transcription: { baseUrl: "http://127.0.0.1:18080/api/v1", model: "openrouter/test-audio", timeoutMs: 1000 },
+      transcription: {
+        baseUrl: "http://127.0.0.1:18080/provider-proxy/openrouter/api/v1",
+        model: "openrouter/test-audio",
+        timeoutMs: 1000,
+      },
       transcribeAudio: vi.fn().mockResolvedValue("hello from voice"),
     });
 
@@ -1006,7 +1010,11 @@ describe("ChatRunner", () => {
       onEvent: (evt) => runner?.handleEvent(evt),
     });
     runner = new ChatRunner(client, {
-      transcription: { baseUrl: "http://127.0.0.1:18080/api/v1", model: "openrouter/test-audio", timeoutMs: 1000 },
+      transcription: {
+        baseUrl: "http://127.0.0.1:18080/provider-proxy/openrouter/api/v1",
+        model: "openrouter/test-audio",
+        timeoutMs: 1000,
+      },
       transcribeAudio: vi.fn().mockRejectedValue(new Error("stt down")),
     });
 
