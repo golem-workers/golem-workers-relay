@@ -7,6 +7,7 @@ import {
   startJinaProxyServer,
   startMoonshotProxyServer,
   startOpenRouterProxyServer,
+  startRunwayProxyServer,
 } from "./proxyServer.js";
 
 describe("startOpenRouterProxyServer", () => {
@@ -352,6 +353,106 @@ describe("startGoogleAiProxyServer", () => {
 
     expect(response.status).toBe(200);
     expect(receivedPath).toBe("/api/v1/relays/google-ai/v1beta/models/test:generateContent");
+  });
+});
+
+describe("startRunwayProxyServer", () => {
+  const servers: http.Server[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+          })
+      )
+    );
+    servers.length = 0;
+  });
+
+  it("forwards Runway-compatible requests to backend proxy without trusting the client bearer token", async () => {
+    const backendPort = await getFreePort();
+    let receivedPath = "";
+    let backendAuthHeader: string | null = null;
+    let requestBody = "";
+    const backendServer = http.createServer((req, res) => {
+      receivedPath = req.url ?? "";
+      backendAuthHeader = req.headers.authorization ? String(req.headers.authorization) : null;
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        }
+        requestBody = Buffer.concat(chunks).toString("utf8");
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ id: "task_123", status: "PENDING" }));
+      })();
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startRunwayProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/runway",
+      backendPathPrefix: "/api/v1/relays/runway",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/provider-proxy/runway/v1/image_to_video`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer stub-runway-key",
+      },
+      body: JSON.stringify({
+        model: "gen4.5",
+        promptText: "A slow camera orbit",
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(backendAuthHeader).toBe("Bearer relay-token");
+    expect(receivedPath).toBe("/api/v1/relays/runway/v1/image_to_video");
+    expect(requestBody).toContain("gen4.5");
+    await expect(response.json()).resolves.toMatchObject({
+      id: "task_123",
+      status: "PENDING",
+    });
+  });
+
+  it("keeps the legacy /v1 Runway local alias working", async () => {
+    const backendPort = await getFreePort();
+    let receivedPath = "";
+    const backendServer = http.createServer((req, res) => {
+      receivedPath = req.url ?? "";
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startRunwayProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/runway",
+      backendPathPrefix: "/api/v1/relays/runway",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/v1/tasks/task_123`, {
+      method: "GET",
+    });
+
+    expect(response.status).toBe(200);
+    expect(receivedPath).toBe("/api/v1/relays/runway/tasks/task_123");
   });
 });
 

@@ -49,6 +49,10 @@ const envSchema = z.object({
   RELAY_GOOGLE_AI_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_GOOGLE_AI_PROXY_PATH_PREFIX: z.string().min(1).optional(),
   RELAY_GOOGLE_AI_BACKEND_PATH_PREFIX: z.string().min(1).optional(),
+  RELAY_RUNWAY_PROXY_ENABLED: z.coerce.boolean().optional(),
+  RELAY_RUNWAY_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+  RELAY_RUNWAY_PROXY_PATH_PREFIX: z.string().min(1).optional(),
+  RELAY_RUNWAY_BACKEND_PATH_PREFIX: z.string().min(1).optional(),
   RELAY_MOONSHOT_PROXY_ENABLED: z.coerce.boolean().optional(),
   RELAY_MOONSHOT_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_MOONSHOT_PROXY_PATH_PREFIX: z.string().min(1).optional(),
@@ -110,6 +114,12 @@ export type RelayConfig = {
     backendPathPrefix: string;
   };
   googleAiProxy: {
+    enabled: boolean;
+    port: number;
+    pathPrefix: string;
+    backendPathPrefix: string;
+  };
+  runwayProxy: {
     enabled: boolean;
     port: number;
     pathPrefix: string;
@@ -207,6 +217,14 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
         parsed.RELAY_GOOGLE_AI_BACKEND_PATH_PREFIX ?? "/api/v1/relays/google-ai"
       ),
     },
+    runwayProxy: {
+      enabled: parsed.RELAY_RUNWAY_PROXY_ENABLED ?? true,
+      port: parsed.RELAY_RUNWAY_PROXY_PORT ?? 18085,
+      pathPrefix: withLeadingSlash(parsed.RELAY_RUNWAY_PROXY_PATH_PREFIX ?? "/provider-proxy/runway"),
+      backendPathPrefix: withLeadingSlash(
+        parsed.RELAY_RUNWAY_BACKEND_PATH_PREFIX ?? "/api/v1/relays/runway"
+      ),
+    },
     moonshotProxy: {
       enabled: parsed.RELAY_MOONSHOT_PROXY_ENABLED ?? true,
       port: parsed.RELAY_MOONSHOT_PROXY_PORT ?? 18083,
@@ -287,6 +305,12 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
       pathPrefix: "/provider-proxy/google-ai",
       backendPathPrefix: "/api/v1/relays/google-ai",
     },
+    runwayProxy: {
+      enabled: true,
+      port: 18085,
+      pathPrefix: "/provider-proxy/runway",
+      backendPathPrefix: "/api/v1/relays/runway",
+    },
     moonshotProxy: {
       enabled: true,
       port: 18083,
@@ -318,6 +342,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     openaiProxy: { ...base.openaiProxy, ...(overrides.openaiProxy ?? {}) },
     jinaProxy: { ...base.jinaProxy, ...(overrides.jinaProxy ?? {}) },
     googleAiProxy: { ...base.googleAiProxy, ...(overrides.googleAiProxy ?? {}) },
+    runwayProxy: { ...base.runwayProxy, ...(overrides.runwayProxy ?? {}) },
     moonshotProxy: { ...base.moonshotProxy, ...(overrides.moonshotProxy ?? {}) },
     openclaw: { ...base.openclaw, ...(overrides.openclaw ?? {}) },
     stt: { ...base.stt, ...(overrides.stt ?? {}) },

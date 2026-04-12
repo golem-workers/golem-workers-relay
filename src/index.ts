@@ -19,6 +19,7 @@ import {
   startJinaProxyServer,
   startMoonshotProxyServer,
   startOpenRouterProxyServer,
+  startRunwayProxyServer,
 } from "./openrouter/proxyServer.js";
 import { createGatewayEventForwarder } from "./openclaw/gatewayEventForwarder.js";
 import { createOpenclawConnectionStatusReporter } from "./openclaw/connectionStatusReporter.js";
@@ -57,6 +58,10 @@ async function main(): Promise<void> {
       googleAiProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
       googleAiProxyPort: cfg.googleAiProxy.port,
       googleAiProxyPathPrefix: cfg.googleAiProxy.pathPrefix,
+      runwayProxyEnabled: cfg.runwayProxy.enabled,
+      runwayProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
+      runwayProxyPort: cfg.runwayProxy.port,
+      runwayProxyPathPrefix: cfg.runwayProxy.pathPrefix,
       pushRateLimitPerSecond: cfg.pushRateLimitPerSecond,
       pushMaxConcurrentRequests: cfg.pushMaxConcurrentRequests,
       pushMaxQueue: cfg.pushMaxQueue,
@@ -337,6 +342,15 @@ async function main(): Promise<void> {
         backendPathPrefix: cfg.googleAiProxy.backendPathPrefix,
       })
     : null;
+  const runwayProxyServer = cfg.runwayProxy.enabled
+    ? startRunwayProxyServer({
+        port: cfg.runwayProxy.port,
+        backendBaseUrl: cfg.backendBaseUrl,
+        relayToken: cfg.relayToken,
+        pathPrefix: cfg.runwayProxy.pathPrefix,
+        backendPathPrefix: cfg.runwayProxy.backendPathPrefix,
+      })
+    : null;
   const moonshotProxyServer = cfg.moonshotProxy.enabled
     ? startMoonshotProxyServer({
         port: cfg.moonshotProxy.port,
@@ -364,6 +378,9 @@ async function main(): Promise<void> {
   }
   if (googleAiProxyServer) {
     await closeServer(googleAiProxyServer);
+  }
+  if (runwayProxyServer) {
+    await closeServer(runwayProxyServer);
   }
   if (moonshotProxyServer) {
     await closeServer(moonshotProxyServer);

@@ -122,6 +122,21 @@ export function startGoogleAiProxyServer(input: {
   });
 }
 
+export function startRunwayProxyServer(input: {
+  port: number;
+  backendBaseUrl: string;
+  relayToken: string;
+  pathPrefix: string;
+  backendPathPrefix: string;
+}): http.Server {
+  return startRelayProxyServer({
+    serviceName: "relay-runway-proxy",
+    ...input,
+    pathPrefixes: [input.pathPrefix, "/v1"],
+    requestBodyMode: "passthrough",
+  });
+}
+
 export function startJinaProxyServer(input: {
   port: number;
   backendBaseUrl: string;

@@ -93,6 +93,8 @@ describe("loadRelayConfig", () => {
     expect(cfg.jinaProxy.backendPathPrefix).toBe("/api/v1/relays/jina");
     expect(cfg.googleAiProxy.pathPrefix).toBe("/provider-proxy/google-ai");
     expect(cfg.googleAiProxy.backendPathPrefix).toBe("/api/v1/relays/google-ai");
+    expect(cfg.runwayProxy.pathPrefix).toBe("/provider-proxy/runway");
+    expect(cfg.runwayProxy.backendPathPrefix).toBe("/api/v1/relays/runway");
     expect(cfg.moonshotProxy.pathPrefix).toBe("/provider-proxy/moonshot");
     expect(cfg.moonshotProxy.backendPathPrefix).toBe("/api/v1/relays/moonshot");
   });
