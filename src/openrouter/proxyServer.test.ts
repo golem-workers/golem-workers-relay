@@ -2,6 +2,7 @@ import http from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   LOCAL_PROXY_LISTEN_HOST,
+  startOpenAiProxyServer,
   startGoogleAiProxyServer,
   startJinaProxyServer,
   startMoonshotProxyServer,
@@ -351,6 +352,111 @@ describe("startGoogleAiProxyServer", () => {
 
     expect(response.status).toBe(200);
     expect(receivedPath).toBe("/api/v1/relays/google-ai/v1beta/models/test:generateContent");
+  });
+});
+
+describe("startOpenAiProxyServer", () => {
+  const servers: http.Server[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+          })
+      )
+    );
+    servers.length = 0;
+  });
+
+  it("forwards OpenAI-compatible requests to backend proxy without trusting the client bearer token", async () => {
+    const backendPort = await getFreePort();
+    let receivedPath = "";
+    let backendAuthHeader: string | null = null;
+    let requestBody = "";
+    const backendServer = http.createServer((req, res) => {
+      receivedPath = req.url ?? "";
+      backendAuthHeader = req.headers.authorization ? String(req.headers.authorization) : null;
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        }
+        requestBody = Buffer.concat(chunks).toString("utf8");
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify({
+            id: "resp_123",
+            model: "gpt-5.4",
+            output: [],
+          })
+        );
+      })();
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startOpenAiProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/openai",
+      backendPathPrefix: "/api/v1/relays/openai",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/provider-proxy/openai/v1/responses`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer stub-openai-key",
+      },
+      body: JSON.stringify({ model: "gpt-5.4", input: "hi" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(backendAuthHeader).toBe("Bearer relay-token");
+    expect(receivedPath).toBe("/api/v1/relays/openai/v1/responses");
+    expect(requestBody).toContain(`"model":"gpt-5.4"`);
+    await expect(response.json()).resolves.toMatchObject({
+      id: "resp_123",
+      model: "gpt-5.4",
+    });
+  });
+
+  it("keeps the legacy /v1 OpenAI local alias working", async () => {
+    const backendPort = await getFreePort();
+    let receivedPath = "";
+    const backendServer = http.createServer((req, res) => {
+      receivedPath = req.url ?? "";
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startOpenAiProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/openai",
+      backendPathPrefix: "/api/v1/relays/openai",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.4", input: "hello" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(receivedPath).toBe("/api/v1/relays/openai/responses");
   });
 });
 

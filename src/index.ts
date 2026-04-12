@@ -14,6 +14,7 @@ import { createDevicePairingAutoApprover } from "./openclaw/devicePairingAutoApp
 import { createExecApprovalAutoApprover } from "./openclaw/execApprovalAutoApprover.js";
 import {
   LOCAL_PROXY_LISTEN_HOST,
+  startOpenAiProxyServer,
   startGoogleAiProxyServer,
   startJinaProxyServer,
   startMoonshotProxyServer,
@@ -44,6 +45,10 @@ async function main(): Promise<void> {
       openrouterProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
       openrouterProxyPort: cfg.openrouterProxy.port,
       openrouterProxyPathPrefix: cfg.openrouterProxy.pathPrefix,
+      openaiProxyEnabled: cfg.openaiProxy.enabled,
+      openaiProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
+      openaiProxyPort: cfg.openaiProxy.port,
+      openaiProxyPathPrefix: cfg.openaiProxy.pathPrefix,
       jinaProxyEnabled: cfg.jinaProxy.enabled,
       jinaProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
       jinaProxyPort: cfg.jinaProxy.port,
@@ -305,6 +310,15 @@ async function main(): Promise<void> {
         backendPathPrefix: cfg.openrouterProxy.backendPathPrefix,
       })
     : null;
+  const openaiProxyServer = cfg.openaiProxy.enabled
+    ? startOpenAiProxyServer({
+        port: cfg.openaiProxy.port,
+        backendBaseUrl: cfg.backendBaseUrl,
+        relayToken: cfg.relayToken,
+        pathPrefix: cfg.openaiProxy.pathPrefix,
+        backendPathPrefix: cfg.openaiProxy.backendPathPrefix,
+      })
+    : null;
   const jinaProxyServer = cfg.jinaProxy.enabled
     ? startJinaProxyServer({
         port: cfg.jinaProxy.port,
@@ -341,6 +355,9 @@ async function main(): Promise<void> {
   await closeServer(server);
   if (openrouterProxyServer) {
     await closeServer(openrouterProxyServer);
+  }
+  if (openaiProxyServer) {
+    await closeServer(openaiProxyServer);
   }
   if (jinaProxyServer) {
     await closeServer(jinaProxyServer);

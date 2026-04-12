@@ -87,6 +87,8 @@ describe("loadRelayConfig", () => {
 
     expect(cfg.openrouterProxy.pathPrefix).toBe("/provider-proxy/openrouter");
     expect(cfg.openrouterProxy.backendPathPrefix).toBe("/api/v1/relays/openrouter");
+    expect(cfg.openaiProxy.pathPrefix).toBe("/provider-proxy/openai");
+    expect(cfg.openaiProxy.backendPathPrefix).toBe("/api/v1/relays/openai");
     expect(cfg.jinaProxy.pathPrefix).toBe("/provider-proxy/jina");
     expect(cfg.jinaProxy.backendPathPrefix).toBe("/api/v1/relays/jina");
     expect(cfg.googleAiProxy.pathPrefix).toBe("/provider-proxy/google-ai");

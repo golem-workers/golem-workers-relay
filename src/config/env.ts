@@ -37,6 +37,10 @@ const envSchema = z.object({
   RELAY_OPENROUTER_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_OPENROUTER_PROXY_PATH_PREFIX: z.string().min(1).optional(),
   RELAY_OPENROUTER_BACKEND_PATH_PREFIX: z.string().min(1).optional(),
+  RELAY_OPENAI_PROXY_ENABLED: z.coerce.boolean().optional(),
+  RELAY_OPENAI_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+  RELAY_OPENAI_PROXY_PATH_PREFIX: z.string().min(1).optional(),
+  RELAY_OPENAI_BACKEND_PATH_PREFIX: z.string().min(1).optional(),
   RELAY_JINA_PROXY_ENABLED: z.coerce.boolean().optional(),
   RELAY_JINA_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_JINA_PROXY_PATH_PREFIX: z.string().min(1).optional(),
@@ -88,6 +92,12 @@ export type RelayConfig = {
   pushMaxConcurrentRequests: number;
   pushMaxQueue: number;
   openrouterProxy: {
+    enabled: boolean;
+    port: number;
+    pathPrefix: string;
+    backendPathPrefix: string;
+  };
+  openaiProxy: {
     enabled: boolean;
     port: number;
     pathPrefix: string;
@@ -171,6 +181,14 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
         parsed.RELAY_OPENROUTER_BACKEND_PATH_PREFIX ?? "/api/v1/relays/openrouter"
       ),
     },
+    openaiProxy: {
+      enabled: parsed.RELAY_OPENAI_PROXY_ENABLED ?? true,
+      port: parsed.RELAY_OPENAI_PROXY_PORT ?? 18084,
+      pathPrefix: withLeadingSlash(parsed.RELAY_OPENAI_PROXY_PATH_PREFIX ?? "/provider-proxy/openai"),
+      backendPathPrefix: withLeadingSlash(
+        parsed.RELAY_OPENAI_BACKEND_PATH_PREFIX ?? "/api/v1/relays/openai"
+      ),
+    },
     jinaProxy: {
       enabled: parsed.RELAY_JINA_PROXY_ENABLED ?? true,
       port: parsed.RELAY_JINA_PROXY_PORT ?? 18082,
@@ -251,6 +269,12 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
       pathPrefix: "/provider-proxy/openrouter",
       backendPathPrefix: "/api/v1/relays/openrouter",
     },
+    openaiProxy: {
+      enabled: true,
+      port: 18084,
+      pathPrefix: "/provider-proxy/openai",
+      backendPathPrefix: "/api/v1/relays/openai",
+    },
     jinaProxy: {
       enabled: true,
       port: 18082,
@@ -291,6 +315,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     ...base,
     ...overrides,
     openrouterProxy: { ...base.openrouterProxy, ...(overrides.openrouterProxy ?? {}) },
+    openaiProxy: { ...base.openaiProxy, ...(overrides.openaiProxy ?? {}) },
     jinaProxy: { ...base.jinaProxy, ...(overrides.jinaProxy ?? {}) },
     googleAiProxy: { ...base.googleAiProxy, ...(overrides.googleAiProxy ?? {}) },
     moonshotProxy: { ...base.moonshotProxy, ...(overrides.moonshotProxy ?? {}) },

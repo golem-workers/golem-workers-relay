@@ -92,6 +92,21 @@ export function startOpenRouterProxyServer(input: {
   });
 }
 
+export function startOpenAiProxyServer(input: {
+  port: number;
+  backendBaseUrl: string;
+  relayToken: string;
+  pathPrefix: string;
+  backendPathPrefix: string;
+}): http.Server {
+  return startRelayProxyServer({
+    serviceName: "relay-openai-proxy",
+    ...input,
+    pathPrefixes: [input.pathPrefix, "/v1"],
+    requestBodyMode: "passthrough",
+  });
+}
+
 export function startGoogleAiProxyServer(input: {
   port: number;
   backendBaseUrl: string;
