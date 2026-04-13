@@ -137,6 +137,21 @@ export function startElevenlabsProxyServer(input: {
   });
 }
 
+export function startFalProxyServer(input: {
+  port: number;
+  backendBaseUrl: string;
+  relayToken: string;
+  pathPrefix: string;
+  backendPathPrefix: string;
+}): http.Server {
+  return startRelayProxyServer({
+    serviceName: "relay-fal-proxy",
+    ...input,
+    pathPrefixes: [input.pathPrefix],
+    requestBodyMode: "passthrough",
+  });
+}
+
 export function startRunwayProxyServer(input: {
   port: number;
   backendBaseUrl: string;

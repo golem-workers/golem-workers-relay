@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   LOCAL_PROXY_LISTEN_HOST,
   startElevenlabsProxyServer,
+  startFalProxyServer,
   startOpenAiProxyServer,
   startGoogleAiProxyServer,
   startJinaProxyServer,
@@ -556,6 +557,72 @@ describe("startRunwayProxyServer", () => {
 
     expect(response.status).toBe(200);
     expect(receivedPath).toBe("/api/v1/relays/runway/tasks/task_123");
+  });
+});
+
+describe("startFalProxyServer", () => {
+  const servers: http.Server[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+          })
+      )
+    );
+    servers.length = 0;
+  });
+
+  it("forwards fal-compatible requests to backend proxy without trusting the client auth header", async () => {
+    const backendPort = await getFreePort();
+    let receivedPath = "";
+    let backendAuthHeader: string | null = null;
+    let forwardedTargetHeader: string | null = null;
+    const backendServer = http.createServer((req, res) => {
+      receivedPath = req.url ?? "";
+      backendAuthHeader = req.headers.authorization ? String(req.headers.authorization) : null;
+      forwardedTargetHeader = req.headers["x-fal-target-url"]
+        ? String(req.headers["x-fal-target-url"])
+        : null;
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ request_id: "fal_req_1", status: "IN_QUEUE" }));
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startFalProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/fal",
+      backendPathPrefix: "/api/v1/relays/fal",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/provider-proxy/fal`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Key stub-fal-key",
+        "x-fal-target-url": "https://queue.fal.run/bytedance/seedance-2.0/fast/text-to-video",
+      },
+      body: JSON.stringify({ prompt: "A premium product reveal" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(backendAuthHeader).toBe("Bearer relay-token");
+    expect(receivedPath).toBe("/api/v1/relays/fal/");
+    expect(forwardedTargetHeader).toBe(
+      "https://queue.fal.run/bytedance/seedance-2.0/fast/text-to-video"
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      request_id: "fal_req_1",
+      status: "IN_QUEUE",
+    });
   });
 });
 

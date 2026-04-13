@@ -95,6 +95,8 @@ describe("loadRelayConfig", () => {
     expect(cfg.googleAiProxy.backendPathPrefix).toBe("/api/v1/relays/google-ai");
     expect(cfg.elevenlabsProxy.pathPrefix).toBe("/provider-proxy/elevenlabs");
     expect(cfg.elevenlabsProxy.backendPathPrefix).toBe("/api/v1/relays/elevenlabs");
+    expect(cfg.falProxy.pathPrefix).toBe("/provider-proxy/fal");
+    expect(cfg.falProxy.backendPathPrefix).toBe("/api/v1/relays/fal");
     expect(cfg.runwayProxy.pathPrefix).toBe("/provider-proxy/runway");
     expect(cfg.runwayProxy.backendPathPrefix).toBe("/api/v1/relays/runway");
     expect(cfg.moonshotProxy.pathPrefix).toBe("/provider-proxy/moonshot");

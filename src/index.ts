@@ -15,6 +15,7 @@ import { createExecApprovalAutoApprover } from "./openclaw/execApprovalAutoAppro
 import {
   LOCAL_PROXY_LISTEN_HOST,
   startElevenlabsProxyServer,
+  startFalProxyServer,
   startOpenAiProxyServer,
   startGoogleAiProxyServer,
   startJinaProxyServer,
@@ -63,6 +64,10 @@ async function main(): Promise<void> {
       elevenlabsProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
       elevenlabsProxyPort: cfg.elevenlabsProxy.port,
       elevenlabsProxyPathPrefix: cfg.elevenlabsProxy.pathPrefix,
+      falProxyEnabled: cfg.falProxy.enabled,
+      falProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
+      falProxyPort: cfg.falProxy.port,
+      falProxyPathPrefix: cfg.falProxy.pathPrefix,
       runwayProxyEnabled: cfg.runwayProxy.enabled,
       runwayProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
       runwayProxyPort: cfg.runwayProxy.port,
@@ -356,6 +361,15 @@ async function main(): Promise<void> {
         backendPathPrefix: cfg.elevenlabsProxy.backendPathPrefix,
       })
     : null;
+  const falProxyServer = cfg.falProxy.enabled
+    ? startFalProxyServer({
+        port: cfg.falProxy.port,
+        backendBaseUrl: cfg.backendBaseUrl,
+        relayToken: cfg.relayToken,
+        pathPrefix: cfg.falProxy.pathPrefix,
+        backendPathPrefix: cfg.falProxy.backendPathPrefix,
+      })
+    : null;
   const runwayProxyServer = cfg.runwayProxy.enabled
     ? startRunwayProxyServer({
         port: cfg.runwayProxy.port,
@@ -395,6 +409,9 @@ async function main(): Promise<void> {
   }
   if (elevenlabsProxyServer) {
     await closeServer(elevenlabsProxyServer);
+  }
+  if (falProxyServer) {
+    await closeServer(falProxyServer);
   }
   if (runwayProxyServer) {
     await closeServer(runwayProxyServer);

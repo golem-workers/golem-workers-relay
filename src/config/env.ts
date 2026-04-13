@@ -53,6 +53,10 @@ const envSchema = z.object({
   RELAY_ELEVENLABS_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_ELEVENLABS_PROXY_PATH_PREFIX: z.string().min(1).optional(),
   RELAY_ELEVENLABS_BACKEND_PATH_PREFIX: z.string().min(1).optional(),
+  RELAY_FAL_PROXY_ENABLED: z.coerce.boolean().optional(),
+  RELAY_FAL_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+  RELAY_FAL_PROXY_PATH_PREFIX: z.string().min(1).optional(),
+  RELAY_FAL_BACKEND_PATH_PREFIX: z.string().min(1).optional(),
   RELAY_RUNWAY_PROXY_ENABLED: z.coerce.boolean().optional(),
   RELAY_RUNWAY_PROXY_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_RUNWAY_PROXY_PATH_PREFIX: z.string().min(1).optional(),
@@ -124,6 +128,12 @@ export type RelayConfig = {
     backendPathPrefix: string;
   };
   elevenlabsProxy: {
+    enabled: boolean;
+    port: number;
+    pathPrefix: string;
+    backendPathPrefix: string;
+  };
+  falProxy: {
     enabled: boolean;
     port: number;
     pathPrefix: string;
@@ -237,6 +247,14 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
         parsed.RELAY_ELEVENLABS_BACKEND_PATH_PREFIX ?? "/api/v1/relays/elevenlabs"
       ),
     },
+    falProxy: {
+      enabled: parsed.RELAY_FAL_PROXY_ENABLED ?? true,
+      port: parsed.RELAY_FAL_PROXY_PORT ?? 18087,
+      pathPrefix: withLeadingSlash(parsed.RELAY_FAL_PROXY_PATH_PREFIX ?? "/provider-proxy/fal"),
+      backendPathPrefix: withLeadingSlash(
+        parsed.RELAY_FAL_BACKEND_PATH_PREFIX ?? "/api/v1/relays/fal"
+      ),
+    },
     runwayProxy: {
       enabled: parsed.RELAY_RUNWAY_PROXY_ENABLED ?? true,
       port: parsed.RELAY_RUNWAY_PROXY_PORT ?? 18085,
@@ -331,6 +349,12 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
       pathPrefix: "/provider-proxy/elevenlabs",
       backendPathPrefix: "/api/v1/relays/elevenlabs",
     },
+    falProxy: {
+      enabled: true,
+      port: 18087,
+      pathPrefix: "/provider-proxy/fal",
+      backendPathPrefix: "/api/v1/relays/fal",
+    },
     runwayProxy: {
       enabled: true,
       port: 18085,
@@ -369,6 +393,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     jinaProxy: { ...base.jinaProxy, ...(overrides.jinaProxy ?? {}) },
     googleAiProxy: { ...base.googleAiProxy, ...(overrides.googleAiProxy ?? {}) },
     elevenlabsProxy: { ...base.elevenlabsProxy, ...(overrides.elevenlabsProxy ?? {}) },
+    falProxy: { ...base.falProxy, ...(overrides.falProxy ?? {}) },
     runwayProxy: { ...base.runwayProxy, ...(overrides.runwayProxy ?? {}) },
     moonshotProxy: { ...base.moonshotProxy, ...(overrides.moonshotProxy ?? {}) },
     openclaw: { ...base.openclaw, ...(overrides.openclaw ?? {}) },

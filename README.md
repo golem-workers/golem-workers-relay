@@ -199,6 +199,10 @@ Push transport settings:
 - `RELAY_ELEVENLABS_PROXY_PORT=18086` (local plain-HTTP proxy port used by provisioned ElevenLabs helper tools; binds to `127.0.0.1` by default)
 - `RELAY_ELEVENLABS_PROXY_PATH_PREFIX=/provider-proxy/elevenlabs` (primary local client -> relay ElevenLabs path prefix; legacy `/v1` stays supported)
 - `RELAY_ELEVENLABS_BACKEND_PATH_PREFIX=/api/v1/relays/elevenlabs` (backend relay-auth proxy path)
+- `RELAY_FAL_PROXY_ENABLED=1` (enable local fal-compatible proxy listener)
+- `RELAY_FAL_PROXY_PORT=18087` (local plain-HTTP proxy port used by provisioned Fal helper tools; binds to `127.0.0.1` by default)
+- `RELAY_FAL_PROXY_PATH_PREFIX=/provider-proxy/fal` (primary local client -> relay fal path prefix)
+- `RELAY_FAL_BACKEND_PATH_PREFIX=/api/v1/relays/fal` (backend relay-auth proxy path)
 - `RELAY_RUNWAY_PROXY_ENABLED=1` (enable local Runway-compatible proxy listener)
 - `RELAY_RUNWAY_PROXY_PORT=18085` (local plain-HTTP proxy port used by provisioned Runway helper tools; binds to `127.0.0.1` by default)
 - `RELAY_RUNWAY_PROXY_PATH_PREFIX=/provider-proxy/runway` (primary local client -> relay Runway path prefix; legacy `/v1` stays supported)
@@ -222,6 +226,7 @@ Provisioned agents use both local listeners together:
 - Optional Jina relay traffic now goes through `http://127.0.0.1:18082/provider-proxy/jina/v1`, while legacy local `/v1/*` stays supported; backend-side credentials stay on the backend and are proxied through relay.
 - Gemini web-search traffic goes directly to `http://127.0.0.1:18081/provider-proxy/google-ai/v1beta` via `models.providers.google.baseUrl`, while legacy local root-based URLs stay supported; relay forwards it to backend `/api/v1/relays/google-ai/*`.
 - Provisioned ElevenLabs helper tools go directly to `http://127.0.0.1:18086/provider-proxy/elevenlabs/v1`, while legacy local `/v1/*` stays supported; relay forwards it to backend `/api/v1/relays/elevenlabs/*`.
+- Provisioned Fal helper tools go directly to `http://127.0.0.1:18087/provider-proxy/fal`; relay forwards them to backend `/api/v1/relays/fal` and the backend route then calls `queue.fal.run`.
 - Provisioned Runway helper tools go directly to `http://127.0.0.1:18085/provider-proxy/runway/v1`, while legacy local `/v1/*` stays supported; relay forwards it to backend `/api/v1/relays/runway/*`.
 - Moonshot traffic goes directly to `http://127.0.0.1:18083/provider-proxy/moonshot/v1` via `models.providers.moonshot.baseUrl`; relay forwards it to backend `/api/v1/relays/moonshot/*`.
 - All relay proxy listeners are local-only by default and bind to `127.0.0.1`, so they are not exposed on external interfaces unless the code is changed intentionally.
