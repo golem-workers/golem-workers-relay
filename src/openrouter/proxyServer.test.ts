@@ -2,6 +2,7 @@ import http from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   LOCAL_PROXY_LISTEN_HOST,
+  startElevenlabsProxyServer,
   startOpenAiProxyServer,
   startGoogleAiProxyServer,
   startJinaProxyServer,
@@ -353,6 +354,108 @@ describe("startGoogleAiProxyServer", () => {
 
     expect(response.status).toBe(200);
     expect(receivedPath).toBe("/api/v1/relays/google-ai/v1beta/models/test:generateContent");
+  });
+});
+
+describe("startElevenlabsProxyServer", () => {
+  const servers: http.Server[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+          })
+      )
+    );
+    servers.length = 0;
+  });
+
+  it("forwards ElevenLabs-compatible requests to backend proxy without trusting the client secret", async () => {
+    const backendPort = await getFreePort();
+    let receivedPath = "";
+    let backendAuthHeader: string | null = null;
+    let requestBody = "";
+    const backendServer = http.createServer((req, res) => {
+      receivedPath = req.url ?? "";
+      backendAuthHeader = req.headers.authorization ? String(req.headers.authorization) : null;
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        }
+        requestBody = Buffer.concat(chunks).toString("utf8");
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ audio_base64: "ZmFrZS1hdWRpby1ieXRlcw==" }));
+      })();
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startElevenlabsProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/elevenlabs",
+      backendPathPrefix: "/api/v1/relays/elevenlabs",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(
+      `http://127.0.0.1:${relayPort}/provider-proxy/elevenlabs/v1/text-to-speech/voice_123`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "xi-api-key": "stub-elevenlabs-key",
+        },
+        body: JSON.stringify({
+          model_id: "eleven_multilingual_v2",
+          text: "Hello from ElevenLabs",
+        }),
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(backendAuthHeader).toBe("Bearer relay-token");
+    expect(receivedPath).toBe("/api/v1/relays/elevenlabs/v1/text-to-speech/voice_123");
+    expect(requestBody).toContain("eleven_multilingual_v2");
+    await expect(response.json()).resolves.toMatchObject({
+      audio_base64: "ZmFrZS1hdWRpby1ieXRlcw==",
+    });
+  });
+
+  it("keeps the legacy /v1 ElevenLabs local alias working", async () => {
+    const backendPort = await getFreePort();
+    let receivedPath = "";
+    const backendServer = http.createServer((req, res) => {
+      receivedPath = req.url ?? "";
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startElevenlabsProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/elevenlabs",
+      backendPathPrefix: "/api/v1/relays/elevenlabs",
+    });
+    servers.push(relayServer);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/v1/models`, {
+      method: "GET",
+    });
+
+    expect(response.status).toBe(200);
+    expect(receivedPath).toBe("/api/v1/relays/elevenlabs/models");
   });
 });
 

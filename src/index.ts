@@ -14,6 +14,7 @@ import { createDevicePairingAutoApprover } from "./openclaw/devicePairingAutoApp
 import { createExecApprovalAutoApprover } from "./openclaw/execApprovalAutoApprover.js";
 import {
   LOCAL_PROXY_LISTEN_HOST,
+  startElevenlabsProxyServer,
   startOpenAiProxyServer,
   startGoogleAiProxyServer,
   startJinaProxyServer,
@@ -58,6 +59,10 @@ async function main(): Promise<void> {
       googleAiProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
       googleAiProxyPort: cfg.googleAiProxy.port,
       googleAiProxyPathPrefix: cfg.googleAiProxy.pathPrefix,
+      elevenlabsProxyEnabled: cfg.elevenlabsProxy.enabled,
+      elevenlabsProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
+      elevenlabsProxyPort: cfg.elevenlabsProxy.port,
+      elevenlabsProxyPathPrefix: cfg.elevenlabsProxy.pathPrefix,
       runwayProxyEnabled: cfg.runwayProxy.enabled,
       runwayProxyListenHost: LOCAL_PROXY_LISTEN_HOST,
       runwayProxyPort: cfg.runwayProxy.port,
@@ -342,6 +347,15 @@ async function main(): Promise<void> {
         backendPathPrefix: cfg.googleAiProxy.backendPathPrefix,
       })
     : null;
+  const elevenlabsProxyServer = cfg.elevenlabsProxy.enabled
+    ? startElevenlabsProxyServer({
+        port: cfg.elevenlabsProxy.port,
+        backendBaseUrl: cfg.backendBaseUrl,
+        relayToken: cfg.relayToken,
+        pathPrefix: cfg.elevenlabsProxy.pathPrefix,
+        backendPathPrefix: cfg.elevenlabsProxy.backendPathPrefix,
+      })
+    : null;
   const runwayProxyServer = cfg.runwayProxy.enabled
     ? startRunwayProxyServer({
         port: cfg.runwayProxy.port,
@@ -378,6 +392,9 @@ async function main(): Promise<void> {
   }
   if (googleAiProxyServer) {
     await closeServer(googleAiProxyServer);
+  }
+  if (elevenlabsProxyServer) {
+    await closeServer(elevenlabsProxyServer);
   }
   if (runwayProxyServer) {
     await closeServer(runwayProxyServer);
