@@ -22,6 +22,7 @@ type GatewayLike = {
 };
 
 type ModelSetThinkingDefault = Extract<AgentControlAction, { kind: "model.set" }>["thinkingDefault"];
+type ModelSetFallbacks = Extract<AgentControlAction, { kind: "model.set" }>["fallbacks"];
 
 export class AgentControlError extends Error {
   readonly code: string;
@@ -73,6 +74,7 @@ export async function executeAgentControl(input: {
               : await setModel({
                   configPath: input.configPath,
                   model: input.action.model,
+                  fallbacks: input.action.fallbacks,
                   contextTokens: input.action.contextTokens ?? null,
                   thinkingDefault: input.action.thinkingDefault,
                 });
@@ -412,6 +414,7 @@ async function approveChannelPairing(
 async function setModel(input: {
   configPath: string;
   model: string;
+  fallbacks: ModelSetFallbacks;
   contextTokens: number | null;
   thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive" | null;
 }): Promise<AgentControlResult> {
@@ -420,7 +423,19 @@ async function setModel(input: {
   const agentsCfg = ensureRecord(nextConfig, "agents");
   const defaultsCfg = ensureRecord(agentsCfg, "defaults");
   const modelCfg = ensureRecord(defaultsCfg, "model");
+  const fallbacks = input.fallbacks
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
   modelCfg.primary = input.model;
+  modelCfg.fallbacks = fallbacks;
+  const modelsCfg = ensureRecord(defaultsCfg, "models");
+  const existingPrimaryModel = modelsCfg[input.model];
+  modelsCfg[input.model] = isRecord(existingPrimaryModel) ? existingPrimaryModel : {};
+  for (const fallbackModel of fallbacks) {
+    const existingFallbackModel = modelsCfg[fallbackModel];
+    modelsCfg[fallbackModel] = isRecord(existingFallbackModel) ? existingFallbackModel : {};
+  }
   if (typeof input.contextTokens === "number" && Number.isFinite(input.contextTokens) && input.contextTokens > 0) {
     defaultsCfg.contextTokens = Math.floor(input.contextTokens);
   }
@@ -436,6 +451,7 @@ async function setModel(input: {
     applied: true,
     restarted: true,
     model: input.model,
+    fallbacks,
     contextTokens: input.contextTokens,
     thinkingDefault: readThinkingDefault(defaultsCfg.thinkingDefault),
     activeState: restart.activeState,

@@ -229,6 +229,7 @@ describe("executeAgentControl model set", () => {
       action: {
         kind: "model.set",
         model: "openrouter/google/gemini-3.1-pro-preview",
+        fallbacks: ["openrouter/google/gemini-3-flash-preview", "openrouter/meta-llama/llama-4-scout"],
         contextTokens: 300000,
         thinkingDefault: "minimal",
       },
@@ -237,11 +238,19 @@ describe("executeAgentControl model set", () => {
     });
 
     const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
-      agents?: { defaults?: { model?: { primary?: string }; contextTokens?: number; thinkingDefault?: string } };
+      agents?: {
+        defaults?: {
+          model?: { primary?: string; fallbacks?: string[] };
+          models?: Record<string, unknown>;
+          contextTokens?: number;
+          thinkingDefault?: string;
+        };
+      };
     };
     expect(result).toMatchObject({
       kind: "model.set",
       model: "openrouter/google/gemini-3.1-pro-preview",
+      fallbacks: ["openrouter/google/gemini-3-flash-preview", "openrouter/meta-llama/llama-4-scout"],
       contextTokens: 300000,
       thinkingDefault: "minimal",
       activeState: "active",
@@ -249,6 +258,13 @@ describe("executeAgentControl model set", () => {
       result: "success",
     });
     expect(config.agents?.defaults?.model?.primary).toBe("openrouter/google/gemini-3.1-pro-preview");
+    expect(config.agents?.defaults?.model?.fallbacks).toEqual([
+      "openrouter/google/gemini-3-flash-preview",
+      "openrouter/meta-llama/llama-4-scout",
+    ]);
+    expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3.1-pro-preview"]).toEqual({});
+    expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3-flash-preview"]).toEqual({});
+    expect(config.agents?.defaults?.models?.["openrouter/meta-llama/llama-4-scout"]).toEqual({});
     expect(config.agents?.defaults?.contextTokens).toBe(300000);
     expect(config.agents?.defaults?.thinkingDefault).toBe("minimal");
   });
@@ -267,6 +283,7 @@ describe("executeAgentControl model set", () => {
       action: {
         kind: "model.set",
         model: "openrouter/google/gemini-2.5-flash",
+        fallbacks: ["openrouter/google/gemini-3-flash-preview", "openrouter/meta-llama/llama-4-scout"],
         contextTokens: 300000,
         thinkingDefault: null,
       },
@@ -280,6 +297,7 @@ describe("executeAgentControl model set", () => {
     expect(result).toMatchObject({
       kind: "model.set",
       model: "openrouter/google/gemini-2.5-flash",
+      fallbacks: ["openrouter/google/gemini-3-flash-preview", "openrouter/meta-llama/llama-4-scout"],
       thinkingDefault: null,
     });
     expect(config.agents?.defaults?.thinkingDefault).toBeUndefined();

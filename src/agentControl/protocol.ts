@@ -7,6 +7,7 @@ const thinkingDefaultSchema = z
   .enum(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive"])
   .nullable()
   .optional();
+const modelFallbacksSchema = z.array(z.string().min(1));
 
 export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -40,6 +41,7 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("model.set"),
     model: z.string().min(1),
+    fallbacks: modelFallbacksSchema,
     contextTokens: z.number().int().positive().nullable().optional(),
     thinkingDefault: thinkingDefaultSchema,
   }),
@@ -97,6 +99,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     applied: z.literal(true),
     restarted: z.literal(true),
     model: z.string().min(1),
+    fallbacks: modelFallbacksSchema,
     contextTokens: z.number().int().positive().nullable(),
     thinkingDefault: thinkingDefaultSchema,
     activeState: z.string().min(1),
