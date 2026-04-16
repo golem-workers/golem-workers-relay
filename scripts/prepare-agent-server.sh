@@ -246,6 +246,24 @@ main() {
   echo "__GW_PREPARE_STARTED__=1"
   echo "__GW_PREPARE_LOG_FILE__=${LOG_FILE}"
 
+  # Create swap before any apt-heavy work so micro VMs do not crawl or OOM.
+  set_step "swap"
+  if ! swapon --show=NAME | grep -qx "/swapfile"; then
+    if [[ ! -f /swapfile ]]; then
+      fallocate -l 6G /swapfile
+      chmod 600 /swapfile
+      mkswap /swapfile
+    fi
+    swapon /swapfile
+  fi
+  append_line_if_missing /etc/fstab "/swapfile none swap sw 0 0"
+  sysctl vm.swappiness=10
+  if grep -q '^vm\.swappiness=' /etc/sysctl.conf; then
+    sed -i 's/^vm\.swappiness=.*/vm.swappiness=10/' /etc/sysctl.conf
+  else
+    printf '%s\n' 'vm.swappiness=10' >>/etc/sysctl.conf
+  fi
+
   set_step "deps"
   append_line_if_missing /etc/apt/sources.list "deb http://archive.ubuntu.com/ubuntu noble universe multiverse"
   append_line_if_missing /etc/apt/sources.list "deb http://archive.ubuntu.com/ubuntu noble-updates universe multiverse"
@@ -281,23 +299,6 @@ main() {
     ripgrep \
     poppler-utils \
     imagemagick
-
-  set_step "swap"
-  if ! swapon --show=NAME | grep -qx "/swapfile"; then
-    if [[ ! -f /swapfile ]]; then
-      fallocate -l 6G /swapfile
-      chmod 600 /swapfile
-      mkswap /swapfile
-    fi
-    swapon /swapfile
-  fi
-  append_line_if_missing /etc/fstab "/swapfile none swap sw 0 0"
-  sysctl vm.swappiness=10
-  if grep -q '^vm\.swappiness=' /etc/sysctl.conf; then
-    sed -i 's/^vm\.swappiness=.*/vm.swappiness=10/' /etc/sysctl.conf
-  else
-    printf '%s\n' 'vm.swappiness=10' >>/etc/sysctl.conf
-  fi
 
   set_step "chrome"
   wget -q -O "${CHROME_DEB}" "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
