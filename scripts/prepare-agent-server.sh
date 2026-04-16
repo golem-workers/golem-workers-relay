@@ -374,10 +374,15 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     OPENCLAW_SKIP_CANVAS_HOST \
     OPENCLAW_LOG_LEVEL || true
   env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm --config.node-linker=hoisted add -g codex@latest openclaw@latest grammy playwright @grammyjs/runner @grammyjs/transformer-throttler @buape/carbon @larksuiteoapi/node-sdk @slack/bolt
+  CODEX_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/codex"
   OPENCLAW_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/openclaw"
+  test -f "${CODEX_PACKAGE_DIR}/package.json"
   test -f "${OPENCLAW_PACKAGE_DIR}/package.json"
+  test -f "${PNPM_HOME_DIR}/codex"
   test -f "${PNPM_HOME_DIR}/openclaw"
+  ln -sfn "${PNPM_HOME_DIR}/codex" /usr/local/bin/codex
   ln -sfn "${PNPM_HOME_DIR}/openclaw" /usr/local/bin/openclaw
+  command -v codex >/dev/null 2>&1
   command -v openclaw >/dev/null 2>&1
   OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/grammy"
   OPENCLAW_GRAMMY_RUNNER_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/@grammyjs/runner"
