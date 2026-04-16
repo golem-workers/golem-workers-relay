@@ -150,6 +150,63 @@ prepare_root_user_systemd() {
   return 1
 }
 
+wait_for_openclaw_gateway_ready() {
+  local attempts="${1:-45}"
+  local sleep_seconds="${2:-2}"
+  local attempt
+
+  prepare_root_user_systemd
+
+  for attempt in $(seq 1 "${attempts}"); do
+    if ss -ltn | awk '$4 == "127.0.0.1:18789" || $4 == "0.0.0.0:18789" || $4 == "[::1]:18789" || $4 == "[::]:18789" { found=1 } END { exit(found ? 0 : 1) }'; then
+      return 0
+    fi
+
+    local active_state
+    local sub_state
+    active_state="$(systemctl --user show openclaw-gateway.service -p ActiveState --value 2>/dev/null || true)"
+    sub_state="$(systemctl --user show openclaw-gateway.service -p SubState --value 2>/dev/null || true)"
+    if [[ "${active_state}" == "failed" ]]; then
+      echo "OpenClaw gateway failed while waiting for port 18789 (SubState=${sub_state})"
+      systemctl --user status openclaw-gateway.service --no-pager -l || true
+      journalctl --user -u openclaw-gateway.service -n 160 --no-pager || true
+      return 1
+    fi
+
+    sleep "${sleep_seconds}"
+  done
+
+  echo "OpenClaw gateway did not start listening on port 18789 in time"
+  systemctl --user status openclaw-gateway.service --no-pager -l || true
+  journalctl --user -u openclaw-gateway.service -n 160 --no-pager || true
+  return 1
+}
+
+run_openclaw_onboard_and_verify() {
+  local onboard_exit=0
+
+  set +e
+  openclaw onboard --install-daemon --non-interactive --accept-risk
+  onboard_exit=$?
+  set -e
+
+  prepare_root_user_systemd
+  systemctl --user daemon-reload || true
+
+  if [[ ! -f /root/.config/systemd/user/openclaw-gateway.service ]]; then
+    echo "OpenClaw onboard did not install /root/.config/systemd/user/openclaw-gateway.service"
+    return 1
+  fi
+
+  systemctl --user enable openclaw-gateway.service || true
+  systemctl --user restart openclaw-gateway.service
+  wait_for_openclaw_gateway_ready
+
+  if [[ "${onboard_exit}" -ne 0 ]]; then
+    echo "OpenClaw onboard exited with code ${onboard_exit}, but gateway recovered after explicit restart/readiness verification."
+  fi
+}
+
 stop_openclaw_gateway_if_present() {
   prepare_root_user_systemd
   systemctl --user daemon-reload || true
@@ -495,7 +552,8 @@ NODE
 
   test -f "${GLOBAL_PNPM_ROOT}/playwright/package.json"
   if [[ "${RUN_OPENCLAW_ONBOARD}" == "1" ]]; then
-    openclaw onboard --install-daemon --non-interactive --accept-risk
+    set_step "openclaw_onboard"
+    run_openclaw_onboard_and_verify
   else
     echo "Skipping openclaw onboard --install-daemon by request."
   fi
