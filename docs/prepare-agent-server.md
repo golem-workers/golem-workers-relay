@@ -12,9 +12,17 @@ If you want to skip interactive OpenClaw onboarding during base image preparatio
 curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/release/scripts/prepare-agent-server.sh | sudo bash -s -- --skip-openclaw-onboard
 ```
 
+If you want Ubuntu package downloads to use a shared backend-host apt cache during image preparation:
+
+```bash
+export BACKEND_BASE_URL="https://dev-api.golemworkers.com"
+curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/release/scripts/prepare-agent-server.sh | sudo -E bash
+```
+
 What it does:
 
 - installs base Ubuntu packages plus agent media/PDF tooling (`ffmpeg`, `poppler-utils`, `imagemagick`, `python3-pip`);
+- unless `APT_CACHE_ENABLED=0` is exported, derives the shared backend-host apt cache endpoint from `BACKEND_BASE_URL` using fixed port `3142` and writes `/etc/apt/apt.conf.d/90golem-apt-cache-proxy` before the first `apt-get update`;
 - creates swap early so low-memory agents can unpack large packages like Chrome;
 - installs Google Chrome Stable;
 - configures journald, swap, and DNS;
