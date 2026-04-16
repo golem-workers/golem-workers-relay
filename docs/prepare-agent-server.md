@@ -23,6 +23,8 @@ What it does:
 
 - installs base Ubuntu packages plus agent media/PDF tooling (`ffmpeg`, `poppler-utils`, `imagemagick`, `python3-pip`);
 - unless `APT_CACHE_ENABLED=0` is exported, derives the shared backend-host apt cache endpoint from `BACKEND_BASE_URL` using fixed port `3142` and writes `/etc/apt/apt.conf.d/90golem-apt-cache-proxy` before the first `apt-get update`;
+- rewrites `/etc/apt/sources.list` before package installation so the run uses a deterministic Ubuntu mirror set instead of appending duplicate archive entries across repeated prepares;
+- on Hetzner hosts it prefers `mirror.hetzner.com` (including `ubuntu-ports` on `arm64`) to reduce large package download time during snapshot image preparation;
 - creates swap early so low-memory agents can unpack large packages like Chrome;
 - installs Google Chrome Stable;
 - configures journald, swap, and DNS;

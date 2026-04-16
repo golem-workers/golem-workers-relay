@@ -25,6 +25,8 @@ PNPM_HOME_DIR="/root/.local/share/pnpm"
 RUN_OPENCLAW_ONBOARD=1
 APT_CACHE_PROXY_CONF="/etc/apt/apt.conf.d/90golem-apt-cache-proxy"
 APT_CACHE_ENABLED="${APT_CACHE_ENABLED:-1}"
+APT_SOURCES_LIST="/etc/apt/sources.list"
+UBUNTU_SUITE="${UBUNTU_SUITE:-noble}"
 
 usage() {
   cat <<'EOF'
@@ -135,6 +137,88 @@ build_backend_apt_cache_url() {
   printf 'http://%s:3142' "${host}"
 }
 
+is_hetzner_host() {
+  local dmi_file vendor
+  for dmi_file in \
+    /sys/class/dmi/id/sys_vendor \
+    /sys/class/dmi/id/board_vendor \
+    /sys/class/dmi/id/chassis_vendor \
+    /sys/class/dmi/id/product_name; do
+    if [[ -r "${dmi_file}" ]]; then
+      vendor="$(tr '[:upper:]' '[:lower:]' < "${dmi_file}")"
+      if [[ "${vendor}" == *hetzner* ]]; then
+        return 0
+      fi
+    fi
+  done
+  return 1
+}
+
+prepare_architecture() {
+  dpkg --print-architecture 2>/dev/null || uname -m
+}
+
+default_prepare_apt_mirror() {
+  local arch
+  arch="$(prepare_architecture)"
+
+  if is_hetzner_host; then
+    case "${arch}" in
+      arm64|aarch64)
+        printf '%s' "https://mirror.hetzner.com/ubuntu-ports/packages"
+        ;;
+      *)
+        printf '%s' "https://mirror.hetzner.com/ubuntu/packages"
+        ;;
+    esac
+    return 0
+  fi
+
+  case "${arch}" in
+    arm64|aarch64)
+      printf '%s' "http://ports.ubuntu.com/ubuntu-ports"
+      ;;
+    *)
+      printf '%s' "http://archive.ubuntu.com/ubuntu"
+      ;;
+  esac
+}
+
+default_prepare_apt_security_mirror() {
+  local arch
+  arch="$(prepare_architecture)"
+
+  if is_hetzner_host; then
+    case "${arch}" in
+      arm64|aarch64)
+        printf '%s' "https://mirror.hetzner.com/ubuntu-ports/security"
+        ;;
+      *)
+        printf '%s' "https://mirror.hetzner.com/ubuntu/security"
+        ;;
+    esac
+    return 0
+  fi
+
+  case "${arch}" in
+    arm64|aarch64)
+      printf '%s' "http://ports.ubuntu.com/ubuntu-ports"
+      ;;
+    *)
+      printf '%s' "http://security.ubuntu.com/ubuntu"
+      ;;
+  esac
+}
+
+normalize_apt_mirror_url() {
+  local value="$1"
+  if [[ "${APT_CACHE_ENABLED}" == "1" && "${value}" == https://* ]]; then
+    printf 'http://%s' "${value#https://}"
+    return 0
+  fi
+  printf '%s' "${value}"
+}
+
 configure_apt_cache_proxy() {
   local apt_cache_url=""
   if [[ "${APT_CACHE_ENABLED}" != "1" ]]; then
@@ -154,6 +238,23 @@ Acquire::http::Proxy "${apt_cache_url}";
 Acquire::https::Proxy "DIRECT";
 EOF
   echo "Configured apt cache proxy: ${apt_cache_url}"
+}
+
+configure_ubuntu_sources_list() {
+  local mirror security_mirror
+  mirror="$(normalize_apt_mirror_url "${APT_MIRROR:-$(default_prepare_apt_mirror)}")"
+  security_mirror="$(normalize_apt_mirror_url "${APT_SECURITY_MIRROR:-$(default_prepare_apt_security_mirror)}")"
+
+  cat >"${APT_SOURCES_LIST}" <<EOF
+deb ${mirror} ${UBUNTU_SUITE} main restricted universe multiverse
+deb ${mirror} ${UBUNTU_SUITE}-updates main restricted universe multiverse
+deb ${security_mirror} ${UBUNTU_SUITE}-security main restricted universe multiverse
+EOF
+
+  echo "Configured apt sources:"
+  printf '  suite=%s\n' "${UBUNTU_SUITE}"
+  printf '  mirror=%s\n' "${mirror}"
+  printf '  security_mirror=%s\n' "${security_mirror}"
 }
 
 log_git_checkout_state() {
@@ -316,9 +417,7 @@ main() {
   fi
 
   set_step "deps"
-  append_line_if_missing /etc/apt/sources.list "deb http://archive.ubuntu.com/ubuntu noble universe multiverse"
-  append_line_if_missing /etc/apt/sources.list "deb http://archive.ubuntu.com/ubuntu noble-updates universe multiverse"
-  append_line_if_missing /etc/apt/sources.list "deb http://security.ubuntu.com/ubuntu noble-security universe multiverse"
+  configure_ubuntu_sources_list
   apt-get update
   apt-get install -y ubuntu-keyring
   apt-get update

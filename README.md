@@ -76,6 +76,8 @@ The script:
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `PNPM_HOME`, `NODE_PATH`);
 - explicitly brings up root user-systemd (`loginctl enable-linger root`, `user@0.service`, `/run/user/0/bus`) before any OpenClaw daemon install work;
 - unless `APT_CACHE_ENABLED=0` is exported, derives the shared backend-host apt cache endpoint from `BACKEND_BASE_URL` using fixed port `3142` and writes `/etc/apt/apt.conf.d/90golem-apt-cache-proxy` before the first `apt-get update`;
+- rewrites `/etc/apt/sources.list` before package installation so the prepare run uses a deterministic Ubuntu mirror set without duplicated entries;
+- on Hetzner hosts it prefers `mirror.hetzner.com` (including the `ubuntu-ports` variant on `arm64`) to speed up large Ubuntu package installs during snapshot preparation;
 - optionally runs `openclaw onboard --install-daemon`, then explicitly restarts and verifies `openclaw-gateway.service` because current OpenClaw releases can report a premature onboard readiness failure on small snapshot VMs;
 - leaves the image ready for backend provisioning to reuse the prepared `relay-channel` install from the snapshot;
 - finishes image preparation by stopping and disabling `openclaw-gateway.service` so prepared images boot with OpenClaw cold and backend provisioning performs the first controlled start.
