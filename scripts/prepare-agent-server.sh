@@ -27,6 +27,7 @@ APT_CACHE_PROXY_CONF="/etc/apt/apt.conf.d/90golem-apt-cache-proxy"
 APT_CACHE_ENABLED="${APT_CACHE_ENABLED:-1}"
 APT_SOURCES_LIST="/etc/apt/sources.list"
 UBUNTU_SUITE="${UBUNTU_SUITE:-noble}"
+APT_MIRROR_HINT="${APT_MIRROR_HINT:-}"
 
 usage() {
   cat <<'EOF'
@@ -154,6 +155,15 @@ is_hetzner_host() {
   return 1
 }
 
+should_use_hetzner_mirror() {
+  case "${APT_MIRROR_HINT}" in
+    hetzner|Hetzner|HETZNER)
+      return 0
+      ;;
+  esac
+  is_hetzner_host
+}
+
 prepare_architecture() {
   dpkg --print-architecture 2>/dev/null || uname -m
 }
@@ -162,7 +172,7 @@ default_prepare_apt_mirror() {
   local arch
   arch="$(prepare_architecture)"
 
-  if is_hetzner_host; then
+  if should_use_hetzner_mirror; then
     case "${arch}" in
       arm64|aarch64)
         printf '%s' "https://mirror.hetzner.com/ubuntu-ports/packages"
@@ -188,7 +198,7 @@ default_prepare_apt_security_mirror() {
   local arch
   arch="$(prepare_architecture)"
 
-  if is_hetzner_host; then
+  if should_use_hetzner_mirror; then
     case "${arch}" in
       arm64|aarch64)
         printf '%s' "https://mirror.hetzner.com/ubuntu-ports/security"
