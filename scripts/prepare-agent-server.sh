@@ -28,7 +28,6 @@ UBUNTU_SUITE="${UBUNTU_SUITE:-noble}"
 APT_MIRROR_HINT="${APT_MIRROR_HINT:-}"
 OPENAI_PROXY_BASE_URL="http://127.0.0.1:18084/provider-proxy/openai/v1"
 CODEX_WRAPPER_PATH="/usr/local/bin/golem-codex-proxy"
-CODEX_REAL_BINARY="/usr/bin/codex"
 
 usage() {
   cat <<'EOF'
@@ -563,7 +562,7 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   test -f "${PNPM_HOME_DIR}/openclaw"
   ln -sfn "${PNPM_HOME_DIR}/codex" /usr/local/bin/codex
   ln -sfn "${PNPM_HOME_DIR}/openclaw" /usr/local/bin/openclaw
-  test -x "${CODEX_REAL_BINARY}"
+  test -x /usr/local/bin/codex
   command -v codex >/dev/null 2>&1
   command -v openclaw >/dev/null 2>&1
   mkdir -p /root/.codex
@@ -580,7 +579,7 @@ supports_websockets = false
   write_file "${CODEX_WRAPPER_PATH}" "#!/usr/bin/env bash
 set -euo pipefail
 CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\"
-REAL_CODEX=\"${CODEX_REAL_BINARY}\"
+REAL_CODEX=\"/usr/local/bin/codex\"
 if [[ ! -x \"\${REAL_CODEX}\" ]]; then
   echo \"Managed Codex wrapper could not find codex binary at \${REAL_CODEX}\" >&2
   exit 1
