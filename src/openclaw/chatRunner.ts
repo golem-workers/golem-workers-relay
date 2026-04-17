@@ -69,10 +69,19 @@ type TranscriptionOptions = {
 };
 
 type Waiter = {
-  resolve: (evt: ChatEvent) => void;
+  resolve: (evt: ChatCompletionSignal) => void;
   reject: (err: Error) => void;
   timeout: NodeJS.Timeout;
+  transcriptPoll?: NodeJS.Timeout;
+  transcriptPolling?: boolean;
 };
+
+type ChatCompletionSignal =
+  | ChatEvent
+  | {
+      state: "transcript";
+      message: unknown;
+    };
 
 type ParsedInjectedStreamError = {
   code?: number;
@@ -662,10 +671,6 @@ export class ChatRunner {
     }
     const waiter = this.waitersByRunId.get(chatEvt.runId);
     if (!waiter) return;
-    clearTimeout(waiter.timeout);
-    this.waitersByRunId.delete(chatEvt.runId);
-    this.runSessionByRunId.delete(chatEvt.runId);
-    this.runTraceByRunId.delete(chatEvt.runId);
     waiter.resolve(chatEvt);
   }
 
@@ -829,10 +834,36 @@ export class ChatRunner {
         if (!this.runEventsByRunId.has(runId)) {
           this.runEventsByRunId.set(runId, []);
         }
-        const finalEvt = await this.waitForFinal(runId, remainingMs);
+        const finalEvt = await this.waitForFinal(runId, remainingMs, {
+          sessionKey: input.sessionKey,
+          requestMessage: finalAttemptMessage ?? undefined,
+        });
         this.runSessionByRunId.delete(runId);
         this.runTraceByRunId.delete(runId);
         const openclawEvents = this.consumeRunEvents(runId);
+        if (finalEvt.state === "transcript") {
+          logger.info(
+            {
+              event: "artifact_delivery",
+              stage: "transcript_reply_detected",
+              taskId: input.taskId,
+              openclawRunId: runId,
+              sessionKey: input.sessionKey,
+            },
+            "Detected final reply directly from session transcript"
+          );
+          return await buildReplyRunResult({
+            taskId: input.taskId,
+            runId,
+            sessionKey: input.sessionKey,
+            deliverySystem: input.deliverySystem ?? "legacy_push_v1",
+            finalMessage: finalEvt.message,
+            transcriptFinalMessage: finalEvt.message,
+            openclawEvents,
+            startedAtMs,
+            devLogEnabled: this.devLogEnabled,
+          });
+        }
         if (finalEvt.state === "final") {
           const gatewayFinalMessage = finalEvt.message ?? readLatestUserFacingMessage(openclawEvents);
           const transcriptFinalMessage =
@@ -1141,8 +1172,16 @@ export class ChatRunner {
     }
   }
 
-  private waitForFinal(runId: string, timeoutMs: number): Promise<ChatEvent> {
-    return new Promise<ChatEvent>((resolve, reject) => {
+  private waitForFinal(
+    runId: string,
+    timeoutMs: number,
+    opts?: {
+      sessionKey?: string;
+      requestMessage?: GatewayChatMessage;
+      transcriptPollIntervalMs?: number;
+    }
+  ): Promise<ChatCompletionSignal> {
+    return new Promise<ChatCompletionSignal>((resolve, reject) => {
       const pendingTerminalEvent = (this.runEventsByRunId.get(runId) ?? []).find(
         (event) => event.state === "final" || event.state === "error" || event.state === "aborted"
       );
@@ -1150,13 +1189,61 @@ export class ChatRunner {
         resolve(pendingTerminalEvent);
         return;
       }
+      const finalize = (signal: ChatCompletionSignal): void => {
+        const waiter = this.waitersByRunId.get(runId);
+        if (waiter?.transcriptPoll) {
+          clearInterval(waiter.transcriptPoll);
+        }
+        if (waiter) {
+          clearTimeout(waiter.timeout);
+        }
+        this.waitersByRunId.delete(runId);
+        this.runSessionByRunId.delete(runId);
+        this.runTraceByRunId.delete(runId);
+        resolve(signal);
+      };
       const timeout = setTimeout(() => {
+        const waiter = this.waitersByRunId.get(runId);
+        if (waiter?.transcriptPoll) {
+          clearInterval(waiter.transcriptPoll);
+        }
         this.waitersByRunId.delete(runId);
         this.runSessionByRunId.delete(runId);
         this.runTraceByRunId.delete(runId);
         reject(new Error("Timed out waiting for final"));
       }, timeoutMs);
-      this.waitersByRunId.set(runId, { resolve, reject, timeout });
+      const waiter: Waiter = { resolve: finalize, reject, timeout };
+      this.waitersByRunId.set(runId, waiter);
+      if (opts?.sessionKey && opts.requestMessage) {
+        const pollTranscript = async (): Promise<void> => {
+          const activeWaiter = this.waitersByRunId.get(runId);
+          if (!activeWaiter || activeWaiter !== waiter || activeWaiter.transcriptPolling) {
+            return;
+          }
+          activeWaiter.transcriptPolling = true;
+          try {
+            const transcriptMessage = await readLatestAssistantMessageFromSessionTranscript({
+              sessionKey: opts.sessionKey!,
+              requestMessage: opts.requestMessage!,
+            }).catch(() => undefined);
+            if (transcriptMessage === undefined) {
+              return;
+            }
+            if (this.waitersByRunId.get(runId) !== waiter) {
+              return;
+            }
+            finalize({ state: "transcript", message: transcriptMessage });
+          } finally {
+            activeWaiter.transcriptPolling = false;
+          }
+        };
+        const transcriptPollIntervalMs = Math.max(100, Math.trunc(opts.transcriptPollIntervalMs ?? 250));
+        waiter.transcriptPoll = setInterval(() => {
+          void pollTranscript();
+        }, transcriptPollIntervalMs);
+        waiter.transcriptPoll.unref?.();
+        void pollTranscript();
+      }
     });
   }
 

@@ -2068,7 +2068,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("recovers the current session transcript reply when the terminal event never arrives", async () => {
+  it("returns as soon as the current session transcript gets the reply even without a terminal event", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-timeout-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
 
@@ -2118,23 +2118,25 @@ describe("ChatRunner", () => {
           sentMessage = ((frame.params ?? {}) as Record<string, unknown>).message;
           const runId = "run_transcript_timeout";
           ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
-          void fs.writeFile(
-            sessionFile,
-            [
-              JSON.stringify({
-                type: "message",
-                message: typeof sentMessage === "string" ? { role: "user", content: sentMessage } : sentMessage,
-              }),
-              JSON.stringify({
-                type: "message",
-                message: {
-                  role: "assistant",
-                  content: [{ type: "text", text: "Recovered after timeout" }],
-                },
-              }),
-            ].join("\n") + "\n",
-            "utf8"
-          );
+          setTimeout(() => {
+            void fs.writeFile(
+              sessionFile,
+              [
+                JSON.stringify({
+                  type: "message",
+                  message: typeof sentMessage === "string" ? { role: "user", content: sentMessage } : sentMessage,
+                }),
+                JSON.stringify({
+                  type: "message",
+                  message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: "Recovered before timeout" }],
+                  },
+                }),
+              ].join("\n") + "\n",
+              "utf8"
+            );
+          }, 50);
         }
       });
     });
@@ -2148,22 +2150,25 @@ describe("ChatRunner", () => {
     runner = new ChatRunner(client);
 
     await client.start();
+    const startedAtMs = Date.now();
     const { result, openclawMeta } = await runner.runChatTask({
       taskId: "task_transcript_timeout",
       sessionKey,
       messageText: "hi",
-      timeoutMs: 600,
+      timeoutMs: 5_000,
     });
+    const elapsedMs = Date.now() - startedAtMs;
     expect(result.outcome).toBe("reply");
     if (result.outcome !== "reply") throw new Error("expected reply");
     expect(result.reply.message).toEqual({
       role: "assistant",
-      content: [{ type: "text", text: "Recovered after timeout" }],
+      content: [{ type: "text", text: "Recovered before timeout" }],
     });
     expect(openclawMeta).toMatchObject({
       method: "chat.send",
       runId: "run_transcript_timeout",
     });
+    expect(elapsedMs).toBeLessThan(2_000);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
