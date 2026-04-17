@@ -267,6 +267,29 @@ EOF
   printf '  security_mirror=%s\n' "${security_mirror}"
 }
 
+prepare_guest_dns_server() {
+  ip route show default 2>/dev/null | awk 'NR == 1 { print $3; exit }'
+}
+
+pin_guest_dns_to_gateway() {
+  local dns_server
+  dns_server="$(prepare_guest_dns_server)"
+  if [[ -z "${dns_server}" ]]; then
+    echo "Default gateway not found; leaving guest DNS unchanged"
+    return 0
+  fi
+
+  systemctl disable --now systemd-resolved || true
+  systemctl mask systemd-resolved || true
+  rm -f /etc/resolv.conf
+  cat >/etc/resolv.conf <<EOF
+nameserver ${dns_server}
+options timeout:1 attempts:2
+EOF
+  chmod 644 /etc/resolv.conf
+  echo "Pinned guest DNS to ${dns_server}"
+}
+
 log_git_checkout_state() {
   local repo_dir="$1"
   local label="$2"
@@ -427,6 +450,7 @@ main() {
   fi
 
   set_step "deps"
+  pin_guest_dns_to_gateway
   configure_ubuntu_sources_list
   apt-get update
   apt-get install -y ubuntu-keyring
@@ -470,16 +494,6 @@ main() {
   sed -i 's/^SystemMaxUse=.*/SystemMaxUse=100M/' /etc/systemd/journald.conf
   systemctl restart systemd-journald
   journalctl --vacuum-size=100M
-
-  set_step "dns_boot_speed_fix"
-  systemctl disable --now systemd-resolved || true
-  systemctl mask systemd-resolved || true
-  rm -f /etc/resolv.conf
-  cat >/etc/resolv.conf <<'EOF'
-nameserver 10.55.0.1
-options timeout:1 attempts:2
-EOF
-  chmod 644 /etc/resolv.conf
 
   set_step "go"
   wget -q -O "${GO_TARBALL}" "https://go.dev/dl/go1.25.6.linux-amd64.tar.gz"

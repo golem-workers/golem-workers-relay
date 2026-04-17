@@ -76,6 +76,7 @@ The script:
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `PNPM_HOME`, `NODE_PATH`);
 - explicitly brings up root user-systemd (`loginctl enable-linger root`, `user@0.service`, `/run/user/0/bus`) before any OpenClaw daemon install work;
 - unless `APT_CACHE_ENABLED=0` is exported, derives the shared backend-host apt cache endpoint from `BACKEND_BASE_URL` using fixed port `3142` and writes `/etc/apt/apt.conf.d/90golem-apt-cache-proxy` before the first `apt-get update`;
+- pins guest DNS to the current default gateway before `apt-get upgrade`, so Ubuntu package upgrades do not drop resolver state mid-prepare on small microVMs;
 - rewrites `/etc/apt/sources.list` before package installation so the prepare run uses a deterministic Ubuntu mirror set without duplicated entries;
 - on Hetzner hosts it prefers `mirror.hetzner.com` (including the `ubuntu-ports` variant on `arm64`) to speed up large Ubuntu package installs during snapshot preparation;
 - also accepts `APT_MIRROR_HINT=hetzner` so orchestration can force Hetzner mirrors even when the guest itself only sees generic KVM DMI metadata;
