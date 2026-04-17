@@ -80,7 +80,7 @@ The script:
 - rewrites `/etc/apt/sources.list` before package installation so the prepare run uses a deterministic Ubuntu mirror set without duplicated entries;
 - on Hetzner hosts it prefers `mirror.hetzner.com` (including the `ubuntu-ports` variant on `arm64`) to speed up large Ubuntu package installs during snapshot preparation;
 - also accepts `APT_MIRROR_HINT=hetzner` so orchestration can force Hetzner mirrors even when the guest itself only sees generic KVM DMI metadata;
-- optionally runs `openclaw onboard --install-daemon`, then explicitly restarts and verifies `openclaw-gateway.service` because current OpenClaw releases can report a premature onboard readiness failure on small snapshot VMs;
+- optionally runs `openclaw onboard --install-daemon`, then explicitly restarts and verifies `openclaw-gateway.service` with an extended readiness window because current OpenClaw releases can come up slowly on small snapshot VMs;
 - leaves the image ready for backend provisioning to reuse the prepared `relay-channel` install from the snapshot;
 - finishes image preparation by stopping and disabling `openclaw-gateway.service` so prepared images boot with OpenClaw cold and backend provisioning performs the first controlled start.
 

@@ -333,7 +333,7 @@ prepare_root_user_systemd() {
 }
 
 wait_for_openclaw_gateway_ready() {
-  local attempts="${1:-45}"
+  local attempts="${1:-120}"
   local sleep_seconds="${2:-2}"
   local attempt
 
