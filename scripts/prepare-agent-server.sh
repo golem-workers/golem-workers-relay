@@ -314,10 +314,12 @@ wait_for_openclaw_gateway_ready() {
 run_openclaw_onboard_and_verify() {
   local onboard_exit=0
 
-  set +e
-  openclaw onboard --install-daemon --non-interactive --accept-risk
-  onboard_exit=$?
-  set -e
+  if openclaw onboard --install-daemon --non-interactive --accept-risk; then
+    onboard_exit=0
+  else
+    onboard_exit=$?
+    echo "WARNING: OpenClaw onboard exited with code ${onboard_exit}; running manual gateway readiness recovery."
+  fi
 
   prepare_root_user_systemd
   systemctl --user daemon-reload || true
@@ -332,7 +334,7 @@ run_openclaw_onboard_and_verify() {
   wait_for_openclaw_gateway_ready
 
   if [[ "${onboard_exit}" -ne 0 ]]; then
-    echo "OpenClaw onboard exited with code ${onboard_exit}, but gateway recovered after explicit restart/readiness verification."
+    echo "WARNING: OpenClaw onboard exited with code ${onboard_exit}, but manual gateway restart/readiness verification succeeded."
   fi
 }
 
