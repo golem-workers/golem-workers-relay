@@ -566,15 +566,14 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   command -v codex >/dev/null 2>&1
   command -v openclaw >/dev/null 2>&1
   mkdir -p /root/.codex
-  write_file /root/.codex/config.toml "model_provider = \"gwproxy\"
+  write_file /root/.codex/config.toml "openai_base_url = \"${OPENAI_PROXY_BASE_URL}\"
 cli_auth_credentials_store = \"file\"
-
-[model_providers.gwproxy]
-name = \"Golem OpenAI Proxy\"
-base_url = \"${OPENAI_PROXY_BASE_URL}\"
-env_key = \"OPENAI_API_KEY\"
-wire_api = \"responses\"
-supports_websockets = false
+model_provider = \"openai\"
+"
+  write_file /root/.codex/auth.json "{
+  \"auth_mode\": \"apikey\",
+  \"OPENAI_API_KEY\": \"GOLEM_OPENAI_STUB\"
+}
 "
   write_file "${CODEX_WRAPPER_PATH}" "#!/usr/bin/env bash
 set -euo pipefail
@@ -585,8 +584,6 @@ if [[ ! -x \"\${REAL_CODEX}\" ]]; then
   exit 1
 fi
 mkdir -p \"\${CODEX_HOME}\"
-export OPENAI_API_KEY=\"\${OPENAI_API_KEY:-GOLEM_OPENAI_STUB}\"
-export OPENAI_BASE_URL=\"\${OPENAI_BASE_URL:-${OPENAI_PROXY_BASE_URL}}\"
 exec \"\${REAL_CODEX}\" \"\$@\"
 "
   chmod 0755 "${CODEX_WRAPPER_PATH}"
