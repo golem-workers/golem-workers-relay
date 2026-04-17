@@ -60,13 +60,6 @@ To skip interactive OpenClaw onboarding during image preparation:
 curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/release/scripts/prepare-agent-server.sh | sudo bash -s -- --skip-openclaw-onboard
 ```
 
-To run image preparation through a shared backend-host apt cache:
-
-```bash
-export BACKEND_BASE_URL="https://dev-api.golemworkers.com"
-curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/release/scripts/prepare-agent-server.sh | sudo -E bash
-```
-
 The script:
 
 - installs base Ubuntu packages plus agent media/PDF tooling (`ffmpeg`, `poppler-utils`, `imagemagick`, `python3-pip`), Google Chrome Stable, Go, Linuxbrew, and Node 22;
@@ -75,7 +68,6 @@ The script:
 - installs `pnpm`, installs the latest OpenClaw and Codex CLI through a hoisted pnpm global package tree, adds stable `/usr/local/bin/openclaw` and `/usr/local/bin/codex` symlinks, prepares runtime dependencies (`grammy`, `@grammyjs/runner`, `@grammyjs/transformer-throttler`, `@buape/carbon`, `@larksuiteoapi/node-sdk`, `@slack/bolt` for the current OpenClaw bundled-plugin import bugs), preinstalls `relay-channel` through `openclaw plugins install`, leaves `relay-channel` disabled until backend provisioning wires its account config, plus full `playwright`;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `PNPM_HOME`, `NODE_PATH`);
 - explicitly brings up root user-systemd (`loginctl enable-linger root`, `user@0.service`, `/run/user/0/bus`) before any OpenClaw daemon install work;
-- unless `APT_CACHE_ENABLED=0` is exported, derives the shared backend-host apt cache endpoint from `BACKEND_BASE_URL` using fixed port `3142` and writes `/etc/apt/apt.conf.d/90golem-apt-cache-proxy` before the first `apt-get update`;
 - pins guest DNS to the current default gateway before `apt-get upgrade`, so Ubuntu package upgrades do not drop resolver state mid-prepare on small microVMs;
 - rewrites `/etc/apt/sources.list` before package installation so the prepare run uses a deterministic Ubuntu mirror set without duplicated entries;
 - on Hetzner hosts it prefers `mirror.hetzner.com` (including the `ubuntu-ports` variant on `arm64`) to speed up large Ubuntu package installs during snapshot preparation;

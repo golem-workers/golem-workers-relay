@@ -23,8 +23,6 @@ NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 PNPM_HOME_DIR="/root/.local/share/pnpm"
 RUN_OPENCLAW_ONBOARD=1
-APT_CACHE_PROXY_CONF="/etc/apt/apt.conf.d/90golem-apt-cache-proxy"
-APT_CACHE_ENABLED="${APT_CACHE_ENABLED:-1}"
 APT_SOURCES_LIST="/etc/apt/sources.list"
 UBUNTU_SUITE="${UBUNTU_SUITE:-noble}"
 APT_MIRROR_HINT="${APT_MIRROR_HINT:-}"
@@ -113,31 +111,6 @@ write_file() {
   printf '%s' "${content}" >"${path}"
 }
 
-backend_origin_host() {
-  local value="${1:-}"
-  local host_and_port
-
-  value="${value#http://}"
-  value="${value#https://}"
-  host_and_port="${value%%/*}"
-  host_and_port="${host_and_port%%\?*}"
-  host_and_port="${host_and_port%%\#*}"
-
-  if [[ "${host_and_port}" == \[*\] ]]; then
-    printf '%s' "${host_and_port}"
-    return 0
-  fi
-
-  printf '%s' "${host_and_port%%:*}"
-}
-
-build_backend_apt_cache_url() {
-  local host
-  host="$(backend_origin_host "${BACKEND_BASE_URL:-}")"
-  [[ -n "${host}" ]] || return 1
-  printf 'http://%s:3142' "${host}"
-}
-
 is_hetzner_host() {
   local dmi_file vendor
   for dmi_file in \
@@ -221,33 +194,7 @@ default_prepare_apt_security_mirror() {
 }
 
 normalize_apt_mirror_url() {
-  local value="$1"
-  if [[ "${APT_CACHE_ENABLED}" == "1" && "${value}" == https://* ]]; then
-    printf 'http://%s' "${value#https://}"
-    return 0
-  fi
-  printf '%s' "${value}"
-}
-
-configure_apt_cache_proxy() {
-  local apt_cache_url=""
-  if [[ "${APT_CACHE_ENABLED}" != "1" ]]; then
-    rm -f "${APT_CACHE_PROXY_CONF}"
-    return 0
-  fi
-
-  apt_cache_url="$(build_backend_apt_cache_url || true)"
-  if [[ -z "${apt_cache_url}" ]]; then
-    rm -f "${APT_CACHE_PROXY_CONF}"
-    echo "APT cache enabled but BACKEND_BASE_URL is missing or invalid; skipping apt cache proxy"
-    return 0
-  fi
-
-  cat >"${APT_CACHE_PROXY_CONF}" <<EOF
-Acquire::http::Proxy "${apt_cache_url}";
-Acquire::https::Proxy "DIRECT";
-EOF
-  echo "Configured apt cache proxy: ${apt_cache_url}"
+  printf '%s' "$1"
 }
 
 configure_ubuntu_sources_list() {
@@ -427,9 +374,6 @@ main() {
 
   echo "__GW_PREPARE_STARTED__=1"
   echo "__GW_PREPARE_LOG_FILE__=${LOG_FILE}"
-
-  set_step "apt_cache_proxy"
-  configure_apt_cache_proxy
 
   # Create swap before any apt-heavy work so micro VMs do not crawl or OOM.
   set_step "swap"
