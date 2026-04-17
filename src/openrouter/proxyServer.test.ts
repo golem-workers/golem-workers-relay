@@ -1,5 +1,6 @@
 import http from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
+import { WebSocket, WebSocketServer } from "ws";
 import {
   LOCAL_PROXY_LISTEN_HOST,
   startElevenlabsProxyServer,
@@ -729,6 +730,58 @@ describe("startOpenAiProxyServer", () => {
     expect(response.status).toBe(200);
     expect(receivedPath).toBe("/api/v1/relays/openai/responses");
   });
+
+  it("proxies OpenAI websocket responses through the local relay", async () => {
+    const backendPort = await getFreePort();
+    let backendAuthHeader: string | null = null;
+    let backendPath = "";
+    const backendWss = new WebSocketServer({ noServer: true });
+    const backendServer = http.createServer();
+    backendServer.on("upgrade", (req, socket, head) => {
+      backendAuthHeader = typeof req.headers.authorization === "string" ? req.headers.authorization : null;
+      backendPath = req.url ?? "";
+      backendWss.handleUpgrade(req, socket, head, (ws) => {
+        ws.on("message", (data) => {
+          ws.send(
+            JSON.stringify({
+              type: "response.completed",
+              echo: decodeWsData(data),
+            })
+          );
+          ws.close(1000, "ok");
+        });
+      });
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startOpenAiProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/openai",
+      backendPathPrefix: "/api/v1/relays/openai",
+    });
+    servers.push(relayServer);
+
+    const client = new WebSocket(`ws://127.0.0.1:${relayPort}/provider-proxy/openai/v1/responses`);
+    const message = await new Promise<string>((resolve, reject) => {
+      client.once("open", () => {
+        client.send(JSON.stringify({ type: "response.create", response: { model: "gpt-5.4" } }));
+      });
+      client.once("message", (data) => resolve(decodeWsData(data)));
+      client.once("error", reject);
+    });
+
+    expect(backendAuthHeader).toBe("Bearer relay-token");
+    expect(backendPath).toBe("/api/v1/relays/openai/v1/responses");
+    expect(JSON.parse(message)).toMatchObject({
+      type: "response.completed",
+    });
+    client.terminate();
+    backendWss.close();
+  });
 });
 
 describe("startJinaProxyServer", () => {
@@ -919,6 +972,16 @@ async function getFreePort(): Promise<number> {
       srv.close((err) => (err ? reject(err) : resolve(port)));
     });
   });
+}
+
+function decodeWsData(data: WebSocket.RawData): string {
+  if (Buffer.isBuffer(data)) {
+    return data.toString("utf8");
+  }
+  if (Array.isArray(data)) {
+    return Buffer.concat(data).toString("utf8");
+  }
+  return Buffer.from(data).toString("utf8");
 }
 
 async function listen(server: http.Server, port: number): Promise<void> {

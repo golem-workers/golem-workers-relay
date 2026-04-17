@@ -1,6 +1,7 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
-import { Readable } from "node:stream";
+import { Readable, type Duplex } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { WebSocket, WebSocketServer } from "ws";
 import { logger } from "../logger.js";
 
 export const LOCAL_PROXY_LISTEN_HOST = "127.0.0.1";
@@ -28,11 +29,13 @@ type RelayProxyServerInput = {
   pathPrefixes: string[];
   backendPathPrefix: string;
   requestBodyMode: RequestBodyMode;
+  enableWebSocketProxy?: boolean;
 };
 
 function startRelayProxyServer(input: RelayProxyServerInput): http.Server {
   const pathPrefixes = dedupePrefixes(input.pathPrefixes.map((prefix) => normalizePrefix(prefix)));
   const backendPathPrefix = normalizePrefix(input.backendPathPrefix);
+  const wss = input.enableWebSocketProxy ? new WebSocketServer({ noServer: true }) : null;
   const server = http.createServer((req, res) => {
     void handleProxyRequest(
       {
@@ -63,6 +66,35 @@ function startRelayProxyServer(input: RelayProxyServerInput): http.Server {
       }
     });
   });
+  if (wss) {
+    server.on("upgrade", (req, socket, head) => {
+      const url = new URL(req.url ?? "/", "http://relay.local");
+      const matchedPathPrefix = matchPathPrefix(url.pathname, pathPrefixes);
+      if (!matchedPathPrefix) {
+        return;
+      }
+      void handleProxyWebSocketUpgrade({
+        req,
+        socket,
+        head,
+        wss,
+        serviceName: input.serviceName,
+        backendBaseUrl: input.backendBaseUrl,
+        relayToken: input.relayToken,
+        backendPathPrefix,
+        matchedPathPrefix,
+      }).catch((error) => {
+        logger.warn(
+          {
+            err: error instanceof Error ? error.message : String(error),
+            url: req.url ?? "/",
+          },
+          `${input.serviceName} websocket crashed`
+        );
+        rejectUpgrade(socket, 502, `${input.serviceName} websocket failed`);
+      });
+    });
+  }
   server.listen(input.port, LOCAL_PROXY_LISTEN_HOST, () => {
     logger.info(
       {
@@ -104,6 +136,7 @@ export function startOpenAiProxyServer(input: {
     ...input,
     pathPrefixes: [input.pathPrefix, "/v1"],
     requestBodyMode: "passthrough",
+    enableWebSocketProxy: true,
   });
 }
 
@@ -297,6 +330,27 @@ async function handleProxyRequest(
   }
 }
 
+async function handleProxyWebSocketUpgrade(input: {
+  req: IncomingMessage;
+  socket: Duplex;
+  head: Buffer;
+  wss: WebSocketServer;
+  serviceName: string;
+  backendBaseUrl: string;
+  relayToken: string;
+  backendPathPrefix: string;
+  matchedPathPrefix: string;
+}): Promise<void> {
+  const url = new URL(input.req.url ?? "/", "http://relay.local");
+  const upstreamPath = `${input.backendPathPrefix}${stripPathPrefix(url.pathname, input.matchedPathPrefix)}${url.search}`;
+  const upstreamUrl = toWebSocketUrl(input.backendBaseUrl, upstreamPath);
+  const upstreamHeaders = buildWebSocketUpstreamHeaders(input.req, input.relayToken);
+  const upstream = await openWebSocket(upstreamUrl, upstreamHeaders);
+  input.wss.handleUpgrade(input.req, input.socket, input.head, (downstream) => {
+    bridgeWebSockets(downstream, upstream);
+  });
+}
+
 function abortRequest(controller: AbortController, reason: "timeout" | "client_closed"): void {
   if (!controller.signal.aborted) {
     controller.abort(reason);
@@ -372,6 +426,24 @@ function buildUpstreamHeaders(
   return out;
 }
 
+function buildWebSocketUpstreamHeaders(
+  req: IncomingMessage,
+  relayToken: string
+): Record<string, string> {
+  const out = buildUpstreamHeaders(req, relayToken);
+  for (const key of Object.keys(out)) {
+    if (key.startsWith("sec-websocket-")) {
+      delete out[key];
+    }
+  }
+  delete out.connection;
+  delete out.upgrade;
+  delete out.host;
+  delete out["content-length"];
+  delete out["content-type"];
+  return out;
+}
+
 function readAttemptHeader(req: IncomingMessage): number {
   const raw =
     readHeader(req, "x-gw-attempt") ??
@@ -401,6 +473,95 @@ function sendJson(res: ServerResponse, statusCode: number, body: unknown): void 
   res.statusCode = statusCode;
   res.setHeader("content-type", "application/json; charset=utf-8");
   res.end(JSON.stringify(body));
+}
+
+function rejectUpgrade(socket: Duplex, statusCode: number, message: string): void {
+  if (socket.destroyed) {
+    return;
+  }
+  socket.write(
+    `HTTP/1.1 ${statusCode} ${httpStatusText(statusCode)}\r\n` +
+      "Connection: close\r\n" +
+      "Content-Type: text/plain; charset=utf-8\r\n" +
+      `Content-Length: ${Buffer.byteLength(message, "utf8")}\r\n` +
+      "\r\n" +
+      message
+  );
+  socket.destroy();
+}
+
+function toWebSocketUrl(baseUrl: string, pathWithQuery: string): string {
+  const base = new URL(baseUrl);
+  base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
+  return new URL(pathWithQuery, base).toString();
+}
+
+async function openWebSocket(url: string, headers: Record<string, string>): Promise<WebSocket> {
+  return await new Promise<WebSocket>((resolve, reject) => {
+    const ws = new WebSocket(url, { headers });
+    const onOpen = () => {
+      cleanup();
+      resolve(ws);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onUnexpectedResponse = (_request: unknown, response: IncomingMessage) => {
+      cleanup();
+      reject(
+        new Error(
+          `Upstream websocket rejected with ${response.statusCode ?? 502} ${response.statusMessage ?? "Error"}`
+        )
+      );
+      response.resume();
+      ws.close();
+    };
+    const cleanup = () => {
+      ws.off("open", onOpen);
+      ws.off("error", onError);
+      ws.off("unexpected-response", onUnexpectedResponse);
+    };
+    ws.once("open", onOpen);
+    ws.once("error", onError);
+    ws.once("unexpected-response", onUnexpectedResponse);
+  });
+}
+
+function bridgeWebSockets(left: WebSocket, right: WebSocket): void {
+  let closed = false;
+  const closeBoth = (code?: number, reason?: Buffer) => {
+    if (closed) return;
+    closed = true;
+    if (left.readyState === WebSocket.OPEN || left.readyState === WebSocket.CONNECTING) {
+      left.close(code, reason);
+    }
+    if (right.readyState === WebSocket.OPEN || right.readyState === WebSocket.CONNECTING) {
+      right.close(code, reason);
+    }
+  };
+  left.on("message", (data, isBinary) => {
+    if (right.readyState === WebSocket.OPEN) {
+      right.send(data, { binary: isBinary });
+    }
+  });
+  right.on("message", (data, isBinary) => {
+    if (left.readyState === WebSocket.OPEN) {
+      left.send(data, { binary: isBinary });
+    }
+  });
+  left.on("close", (code, reason) => closeBoth(code, reason));
+  right.on("close", (code, reason) => closeBoth(code, reason));
+  left.on("error", () => closeBoth(1011));
+  right.on("error", () => closeBoth(1011));
+}
+
+function httpStatusText(statusCode: number): string {
+  if (statusCode === 401) return "Unauthorized";
+  if (statusCode === 403) return "Forbidden";
+  if (statusCode === 404) return "Not Found";
+  if (statusCode === 502) return "Bad Gateway";
+  return "Error";
 }
 
 function normalizePrefix(input: string): string {
