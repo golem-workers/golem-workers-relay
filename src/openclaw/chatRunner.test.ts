@@ -2562,6 +2562,83 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("releases the queue when a slash-command never emits a terminal event", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+
+    let abortCalls = 0;
+    const sentMessages: string[] = [];
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: {
+                  methods: ["chat.send", "chat.abort", "sessions.usage"],
+                  events: ["chat"],
+                },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          const params = (frame.params ?? {}) as Record<string, unknown>;
+          sentMessages.push(typeof params.message === "string" ? params.message : JSON.stringify(params.message));
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId: "run_slash_timeout" } }));
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.abort") {
+          abortCalls += 1;
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { aborted: true } }));
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client, {
+      retry: { attempts: 3, baseDelayMs: [1, 1], jitterMs: 0 },
+    });
+
+    await client.start();
+    const { result, openclawMeta } = await runner.runChatTask({
+      taskId: "task_slash_timeout",
+      sessionKey: "tg:7278830001:cmo-test-slash",
+      messageText: "/new",
+      deliverySystem: "relay_channel_v2",
+      timeoutMs: 1000,
+    });
+
+    expect(sentMessages).toEqual(["/new"]);
+    expect(abortCalls).toBe(1);
+    expect(result.outcome).toBe("no_reply");
+    if (result.outcome !== "no_reply") throw new Error("expected no_reply");
+    expect(result.noReply).toMatchObject({
+      reason: "slash_command_timeout_without_terminal_event",
+      runId: "run_slash_timeout",
+    });
+    expect(openclawMeta).toEqual({ method: "chat.send", runId: "run_slash_timeout" });
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("startNewSessionForAll sends /new to known sessions and preserves files", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-reset-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);

@@ -115,6 +115,8 @@ const TRANSPORT_RECOVERY_NOTE = [
   "Avoid repeating expensive steps unless they are truly required.",
 ].join("\n");
 
+const OPENCLAW_SLASH_COMMAND_FINAL_WAIT_TIMEOUT_MS = 15_000;
+
 type GatewayChatContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } };
@@ -710,6 +712,7 @@ export class ChatRunner {
       messageText: baseMessageText,
       deliverySystem: input.deliverySystem ?? "legacy_push_v1",
     });
+    const isSlashCommand = isOpenclawSlashCommand(baseMessageText);
     const gatewayMessage = await buildGatewayChatMessage({
       messageText: baseMessageText,
       media: input.media,
@@ -834,7 +837,10 @@ export class ChatRunner {
         if (!this.runEventsByRunId.has(runId)) {
           this.runEventsByRunId.set(runId, []);
         }
-        const finalEvt = await this.waitForFinal(runId, remainingMs, {
+        const finalWaitTimeoutMs = isSlashCommand
+          ? Math.min(remainingMs, OPENCLAW_SLASH_COMMAND_FINAL_WAIT_TIMEOUT_MS)
+          : remainingMs;
+        const finalEvt = await this.waitForFinal(runId, finalWaitTimeoutMs, {
           sessionKey: input.sessionKey,
           requestMessage: finalAttemptMessage ?? undefined,
         });
@@ -1075,6 +1081,31 @@ export class ChatRunner {
 
         this.runSessionByRunId.delete(runId);
         this.runTraceByRunId.delete(runId);
+        if (isSlashCommand) {
+          logger.info(
+            {
+              event: "message_flow",
+              direction: "openclaw_to_relay",
+              stage: "slash_command_released_after_timeout",
+              backendMessageId: input.taskId,
+              relayMessageId: null,
+              openclawRunId: runId,
+              timeoutMessage,
+            },
+            "Slash-command did not emit a terminal event; releasing relay queue without a reply"
+          );
+          return {
+            result: {
+              outcome: "no_reply",
+              noReply: {
+                reason: "slash_command_timeout_without_terminal_event",
+                runId,
+                ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
+              },
+            },
+            openclawMeta: { method: "chat.send", runId },
+          };
+        }
         const msg = timeoutMessage;
         const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
         const elapsedMs = Date.now() - startedAtMs;
