@@ -360,6 +360,171 @@ async function readLatestAssistantMessageFromSessionTranscript(input: {
   return latestAssistantMessage;
 }
 
+async function collectReplyArtifacts(input: {
+  taskId: string;
+  runId: string;
+  sessionKey: string;
+  deliverySystem: DeliverySystem;
+  finalMessage: unknown;
+  transcriptFinalMessage?: unknown;
+  openclawEvents: ChatEvent[];
+}): Promise<{
+  artifacts: TranscriptArtifact[];
+  media: TranscriptMediaFile[];
+  artifactResolution?: TranscriptArtifactCollectionReport;
+}> {
+  let artifactResolution = await collectTranscriptArtifacts({
+    message: input.finalMessage,
+    openclawEvents: input.openclawEvents,
+    opts: {
+      logContext: {
+        taskId: input.taskId,
+        runId: input.runId,
+        sessionKey: input.sessionKey,
+      },
+    },
+  }).catch((err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      { taskId: input.taskId, runId: input.runId, err: message },
+      "Failed to collect transcript artifacts"
+    );
+    return {
+      artifacts: [],
+      unresolved: [
+        {
+          source: "structured_artifact",
+          reason: "collection_failed",
+          fileName: "artifact-resolution",
+          candidatePaths: [message],
+        },
+      ],
+      requestedCount: 1,
+      recoveredCount: 0,
+      usedStructuredArtifacts: false,
+      usedLegacyMediaDirectives: false,
+    } satisfies TranscriptArtifactCollectionReport;
+  });
+  if (
+    input.deliverySystem !== "relay_channel_v2" &&
+    artifactResolution.requestedCount === 0 &&
+    input.transcriptFinalMessage !== undefined &&
+    input.transcriptFinalMessage !== input.finalMessage
+  ) {
+    const transcriptArtifactResolution = await collectTranscriptArtifacts({
+      message: input.transcriptFinalMessage,
+      openclawEvents: input.openclawEvents,
+      opts: {
+        logContext: {
+          taskId: input.taskId,
+          runId: input.runId,
+          sessionKey: input.sessionKey,
+        },
+      },
+    }).catch(() => null);
+    if (transcriptArtifactResolution && transcriptArtifactResolution.requestedCount > 0) {
+      artifactResolution = transcriptArtifactResolution;
+      logger.info(
+        {
+          event: "artifact_delivery",
+          stage: "transcript_artifacts_recovered",
+          taskId: input.taskId,
+          openclawRunId: input.runId,
+          sessionKey: input.sessionKey,
+          requestedCount: transcriptArtifactResolution.requestedCount,
+          resolvedCount: transcriptArtifactResolution.artifacts.length,
+          unresolvedCount: transcriptArtifactResolution.unresolved.length,
+        },
+        "Recovered reply artifacts from session transcript"
+      );
+    }
+  }
+  const media = artifactResolution.artifacts.map((artifact) => ({
+    path: artifact.path,
+    fileName: artifact.fileName,
+    contentType: artifact.contentType,
+    sizeBytes: artifact.sizeBytes,
+  }));
+  logger.info(
+    {
+      event: "artifact_delivery",
+      stage: "artifact_collection_completed",
+      taskId: input.taskId,
+      openclawRunId: input.runId,
+      sessionKey: input.sessionKey,
+      requestedCount: artifactResolution.requestedCount,
+      resolvedCount: artifactResolution.artifacts.length,
+      unresolvedCount: artifactResolution.unresolved.length,
+      recoveredCount: artifactResolution.recoveredCount,
+      usedStructuredArtifacts: artifactResolution.usedStructuredArtifacts,
+      usedLegacyMediaDirectives: artifactResolution.usedLegacyMediaDirectives,
+    },
+    "Transcript artifact collection completed"
+  );
+  return {
+    artifacts: artifactResolution.artifacts,
+    media,
+    ...(artifactResolution.requestedCount > 0 ? { artifactResolution } : {}),
+  };
+}
+
+async function buildReplyRunResult(input: {
+  taskId: string;
+  runId: string;
+  sessionKey: string;
+  deliverySystem: DeliverySystem;
+  finalMessage: unknown;
+  transcriptFinalMessage?: unknown;
+  openclawEvents: ChatEvent[];
+  startedAtMs: number;
+  devLogEnabled: boolean;
+}): Promise<{
+  result: ChatRunResult;
+  openclawMeta: OpenclawChatMeta;
+}> {
+  if (input.devLogEnabled) {
+    logger.info(
+      {
+        event: "message_flow",
+        direction: "openclaw_to_relay",
+        stage: "response_received",
+        backendMessageId: input.taskId,
+        relayMessageId: null,
+        openclawRunId: input.runId,
+        outcome: "reply",
+        durationMs: Date.now() - input.startedAtMs,
+      },
+      "Message flow transition"
+    );
+  }
+  const artifactDelivery = await collectReplyArtifacts({
+    taskId: input.taskId,
+    runId: input.runId,
+    sessionKey: input.sessionKey,
+    deliverySystem: input.deliverySystem,
+    finalMessage: input.finalMessage,
+    transcriptFinalMessage: input.transcriptFinalMessage,
+    openclawEvents: input.openclawEvents,
+  });
+  return {
+    result: {
+      outcome: "reply",
+      reply: {
+        message: input.finalMessage,
+        runId: input.runId,
+        ...(artifactDelivery.artifacts.length > 0 ? { artifacts: artifactDelivery.artifacts } : {}),
+        ...(input.openclawEvents.length > 0 ? { openclawEvents: input.openclawEvents } : {}),
+        ...(artifactDelivery.media.length > 0 ? { media: artifactDelivery.media } : {}),
+        ...(artifactDelivery.artifactResolution ? { artifactResolution: artifactDelivery.artifactResolution } : {}),
+      },
+    },
+    openclawMeta: {
+      method: "chat.send",
+      runId: input.runId,
+    },
+  };
+}
+
 function shouldPreferTranscriptReplyMessage(input: {
   gatewayMessage: unknown;
   transcriptMessage: unknown;
@@ -700,133 +865,17 @@ export class ChatRunner {
             );
           }
           if (finalMessage !== undefined) {
-            if (this.devLogEnabled) {
-              logger.info(
-                {
-                  event: "message_flow",
-                  direction: "openclaw_to_relay",
-                  stage: "response_received",
-                  backendMessageId: input.taskId,
-                  relayMessageId: null,
-                  openclawRunId: runId,
-                  outcome: "reply",
-                  durationMs: Date.now() - startedAtMs,
-                },
-                "Message flow transition"
-              );
-            }
-            let artifactResolution = await collectTranscriptArtifacts({
-              message: finalMessage,
+            return await buildReplyRunResult({
+              taskId: input.taskId,
+              runId,
+              sessionKey: input.sessionKey,
+              deliverySystem: input.deliverySystem ?? "legacy_push_v1",
+              finalMessage,
+              transcriptFinalMessage,
               openclawEvents,
-              opts: {
-                logContext: {
-                  taskId: input.taskId,
-                  runId,
-                  sessionKey: input.sessionKey,
-                },
-              },
-            }).catch((err) => {
-              const message = err instanceof Error ? err.message : String(err);
-              logger.warn(
-                { taskId: input.taskId, runId, err: message },
-                "Failed to collect transcript artifacts"
-              );
-              return {
-                artifacts: [],
-                unresolved: [
-                  {
-                    source: "structured_artifact",
-                    reason: "collection_failed",
-                    fileName: "artifact-resolution",
-                    candidatePaths: [message],
-                  },
-                ],
-                requestedCount: 1,
-                recoveredCount: 0,
-                usedStructuredArtifacts: false,
-                usedLegacyMediaDirectives: false,
-              } satisfies TranscriptArtifactCollectionReport;
+              startedAtMs,
+              devLogEnabled: this.devLogEnabled,
             });
-            if (
-              (input.deliverySystem ?? "legacy_push_v1") !== "relay_channel_v2" &&
-              artifactResolution.requestedCount === 0 &&
-              transcriptFinalMessage !== undefined &&
-              transcriptFinalMessage !== finalMessage
-            ) {
-              const transcriptArtifactResolution = await collectTranscriptArtifacts({
-                message: transcriptFinalMessage,
-                openclawEvents,
-                opts: {
-                  logContext: {
-                    taskId: input.taskId,
-                    runId,
-                    sessionKey: input.sessionKey,
-                  },
-                },
-              }).catch(() => null);
-              if (
-                transcriptArtifactResolution &&
-                transcriptArtifactResolution.requestedCount > 0
-              ) {
-                artifactResolution = transcriptArtifactResolution;
-                logger.info(
-                  {
-                    event: "artifact_delivery",
-                    stage: "transcript_artifacts_recovered",
-                    taskId: input.taskId,
-                    openclawRunId: runId,
-                    sessionKey: input.sessionKey,
-                    requestedCount: transcriptArtifactResolution.requestedCount,
-                    resolvedCount: transcriptArtifactResolution.artifacts.length,
-                    unresolvedCount: transcriptArtifactResolution.unresolved.length,
-                  },
-                  "Recovered reply artifacts from session transcript"
-                );
-              }
-            }
-            const media = artifactResolution.artifacts.map((artifact) => ({
-              path: artifact.path,
-              fileName: artifact.fileName,
-              contentType: artifact.contentType,
-              sizeBytes: artifact.sizeBytes,
-            }));
-            logger.info(
-              {
-                event: "artifact_delivery",
-                stage: "artifact_collection_completed",
-                taskId: input.taskId,
-                openclawRunId: runId,
-                sessionKey: input.sessionKey,
-                requestedCount: artifactResolution.requestedCount,
-                resolvedCount: artifactResolution.artifacts.length,
-                unresolvedCount: artifactResolution.unresolved.length,
-                recoveredCount: artifactResolution.recoveredCount,
-                usedStructuredArtifacts: artifactResolution.usedStructuredArtifacts,
-                usedLegacyMediaDirectives: artifactResolution.usedLegacyMediaDirectives,
-              },
-              "Transcript artifact collection completed"
-            );
-            return {
-              result: {
-                outcome: "reply",
-                reply: {
-                  message: finalMessage,
-                  runId,
-                  ...(artifactResolution.artifacts.length > 0
-                    ? { artifacts: artifactResolution.artifacts }
-                    : {}),
-                  ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
-                  ...(media.length > 0 ? { media } : {}),
-                  ...(artifactResolution.requestedCount > 0
-                    ? { artifactResolution }
-                    : {}),
-                },
-              },
-              openclawMeta: {
-                method: "chat.send",
-                runId,
-              },
-            };
           }
           if (this.devLogEnabled) {
             logger.info(
@@ -943,6 +992,41 @@ export class ChatRunner {
         }
         await sleep(backoffMs);
       } catch (err) {
+        const openclawEvents = this.consumeRunEvents(runId);
+        const timeoutMessage = err instanceof Error ? err.message : "Timed out waiting for final";
+        const transcriptFinalMessage =
+          finalAttemptMessage !== null
+            ? await readLatestAssistantMessageFromSessionTranscript({
+                sessionKey: input.sessionKey,
+                requestMessage: finalAttemptMessage,
+              }).catch(() => undefined)
+            : undefined;
+        if (transcriptFinalMessage !== undefined) {
+          logger.info(
+            {
+              event: "message_flow",
+              direction: "openclaw_to_relay",
+              stage: "response_recovered_after_timeout",
+              backendMessageId: input.taskId,
+              relayMessageId: null,
+              openclawRunId: runId,
+              timeoutMessage,
+            },
+            "Recovered final reply from session transcript after missing terminal event"
+          );
+          return await buildReplyRunResult({
+            taskId: input.taskId,
+            runId,
+            sessionKey: input.sessionKey,
+            deliverySystem: input.deliverySystem ?? "legacy_push_v1",
+            finalMessage: transcriptFinalMessage,
+            transcriptFinalMessage,
+            openclawEvents,
+            startedAtMs,
+            devLogEnabled: this.devLogEnabled,
+          });
+        }
+
         // Best-effort abort, then optionally retry (timeouts can be transient).
         try {
           if (this.devLogEnabled) {
@@ -960,8 +1044,7 @@ export class ChatRunner {
 
         this.runSessionByRunId.delete(runId);
         this.runTraceByRunId.delete(runId);
-        this.runEventsByRunId.delete(runId);
-        const msg = err instanceof Error ? err.message : "Timed out waiting for final";
+        const msg = timeoutMessage;
         const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
         const elapsedMs = Date.now() - startedAtMs;
         const remainingMs = Math.max(0, input.timeoutMs - elapsedMs);
@@ -1071,7 +1154,6 @@ export class ChatRunner {
         this.waitersByRunId.delete(runId);
         this.runSessionByRunId.delete(runId);
         this.runTraceByRunId.delete(runId);
-        this.runEventsByRunId.delete(runId);
         reject(new Error("Timed out waiting for final"));
       }, timeoutMs);
       this.waitersByRunId.set(runId, { resolve, reject, timeout });
