@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   LOCAL_PROXY_LISTEN_HOST,
+  sanitizeWebSocketCloseCode,
   startElevenlabsProxyServer,
   startFalProxyServer,
   startOpenAiProxyServer,
@@ -1001,3 +1002,33 @@ async function waitForListening(server: http.Server): Promise<void> {
 async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
+
+describe("sanitizeWebSocketCloseCode", () => {
+  it("passes through explicitly valid codes", () => {
+    expect(sanitizeWebSocketCloseCode(1000)).toBe(1000);
+    expect(sanitizeWebSocketCloseCode(1011)).toBe(1011);
+    expect(sanitizeWebSocketCloseCode(3000)).toBe(3000);
+    expect(sanitizeWebSocketCloseCode(4000)).toBe(4000);
+    expect(sanitizeWebSocketCloseCode(4999)).toBe(4999);
+  });
+
+  it("drops reserved codes that must never be sent on the wire", () => {
+    expect(sanitizeWebSocketCloseCode(1005)).toBeUndefined();
+    expect(sanitizeWebSocketCloseCode(1006)).toBeUndefined();
+  });
+
+  it("drops codes outside the allowed ranges", () => {
+    expect(sanitizeWebSocketCloseCode(1001)).toBeUndefined();
+    expect(sanitizeWebSocketCloseCode(1015)).toBeUndefined();
+    expect(sanitizeWebSocketCloseCode(2999)).toBeUndefined();
+    expect(sanitizeWebSocketCloseCode(5000)).toBeUndefined();
+    expect(sanitizeWebSocketCloseCode(0)).toBeUndefined();
+    expect(sanitizeWebSocketCloseCode(-1)).toBeUndefined();
+  });
+
+  it("drops undefined and non-finite numbers", () => {
+    expect(sanitizeWebSocketCloseCode(undefined)).toBeUndefined();
+    expect(sanitizeWebSocketCloseCode(Number.NaN)).toBeUndefined();
+    expect(sanitizeWebSocketCloseCode(Number.POSITIVE_INFINITY)).toBeUndefined();
+  });
+});

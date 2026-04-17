@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { GatewayClient } from "./gatewayClient.js";
-import { ChatRunner } from "./chatRunner.js";
+import { ChatRunner, applyTransportDeliveryInstructions, isOpenclawSlashCommand } from "./chatRunner.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -2653,4 +2653,83 @@ function rawDataToString(data: unknown): string {
   }
   return "";
 }
+
+describe("isOpenclawSlashCommand", () => {
+  it("recognises bare slash-commands", () => {
+    expect(isOpenclawSlashCommand("/new")).toBe(true);
+    expect(isOpenclawSlashCommand("/compact")).toBe(true);
+    expect(isOpenclawSlashCommand("/clear")).toBe(true);
+    expect(isOpenclawSlashCommand("  /new  ")).toBe(true);
+  });
+
+  it("recognises slash-commands with arguments", () => {
+    expect(isOpenclawSlashCommand("/new reset full context")).toBe(true);
+    expect(isOpenclawSlashCommand("/compact -v")).toBe(true);
+  });
+
+  it("rejects non-slash text and edge cases", () => {
+    expect(isOpenclawSlashCommand("hello world")).toBe(false);
+    expect(isOpenclawSlashCommand("")).toBe(false);
+    expect(isOpenclawSlashCommand("/")).toBe(false);
+    expect(isOpenclawSlashCommand("/123bad")).toBe(false);
+    expect(isOpenclawSlashCommand("prefix /new")).toBe(false);
+  });
+});
+
+describe("applyTransportDeliveryInstructions", () => {
+  const tgSessionKey = "tg:7278830001:cmo35mexg000693ocdnrknegg";
+  const webSessionKey = "webchat:abc";
+
+  it("does not append Telegram note to bare /new on a Telegram session", () => {
+    const result = applyTransportDeliveryInstructions({
+      sessionKey: tgSessionKey,
+      messageText: "/new",
+      deliverySystem: "relay_channel_v2",
+    });
+    expect(result).toBe("/new");
+    expect(result).not.toContain("[Telegram plugin note]");
+  });
+
+  it("does not append note to other known openclaw slash-commands", () => {
+    for (const cmd of ["/compact", "/clear", "  /new  "]) {
+      const result = applyTransportDeliveryInstructions({
+        sessionKey: tgSessionKey,
+        messageText: cmd,
+        deliverySystem: "relay_channel_v2",
+      });
+      expect(result).toBe(cmd.trim());
+      expect(result).not.toContain("[Telegram plugin note]");
+    }
+  });
+
+  it("does not append note to a slash-command with arguments", () => {
+    const result = applyTransportDeliveryInstructions({
+      sessionKey: tgSessionKey,
+      messageText: "/new reset full context",
+      deliverySystem: "relay_channel_v2",
+    });
+    expect(result).toBe("/new reset full context");
+    expect(result).not.toContain("[Telegram plugin note]");
+  });
+
+  it("still appends Telegram note to ordinary model-bound text", () => {
+    const result = applyTransportDeliveryInstructions({
+      sessionKey: tgSessionKey,
+      messageText: "hello world",
+      deliverySystem: "relay_channel_v2",
+    });
+    expect(result.startsWith("hello world")).toBe(true);
+    expect(result).toContain("[Telegram plugin note]");
+  });
+
+  it("leaves non-transport sessions untouched (no note ever appended)", () => {
+    const result = applyTransportDeliveryInstructions({
+      sessionKey: webSessionKey,
+      messageText: "/new",
+      deliverySystem: "legacy_push_v1",
+    });
+    expect(result).toBe("/new");
+    expect(result).not.toContain("[Telegram plugin note]");
+  });
+});
 

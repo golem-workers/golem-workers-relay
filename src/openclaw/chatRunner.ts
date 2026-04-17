@@ -1332,7 +1332,18 @@ function normalizeVisionPromptText(messageText: string): string {
   return text.length > 0 ? text : "[image]";
 }
 
-function applyTransportDeliveryInstructions(input: {
+/**
+ * Matches openclaw slash-commands such as `/new`, `/compact`, `/clear`
+ * (optionally followed by whitespace-separated arguments). Such messages are
+ * intercepted by openclaw's slash-command handler before reaching the model.
+ */
+const OPENCLAW_SLASH_COMMAND_PATTERN = /^\/[A-Za-z][\w-]*(?:\s[\s\S]*)?$/;
+
+export function isOpenclawSlashCommand(messageText: string): boolean {
+  return OPENCLAW_SLASH_COMMAND_PATTERN.test(messageText.trim());
+}
+
+export function applyTransportDeliveryInstructions(input: {
   sessionKey: string;
   messageText: string;
   deliverySystem: DeliverySystem;
@@ -1341,6 +1352,13 @@ function applyTransportDeliveryInstructions(input: {
   const isWhatsAppPersonalSession = input.sessionKey.startsWith("whatsapp-personal:");
   if (!isTelegramSession && !isWhatsAppPersonalSession) {
     return input.messageText;
+  }
+  // Slash-commands go to openclaw's slash-command handler, not to the model,
+  // so appending a model-facing transport note (a) is meaningless and (b) breaks
+  // openclaw's `/new` / `/compact` / `/clear` semantics by spilling extra content
+  // into the post-reset session. Leave such control-commands untouched.
+  if (isOpenclawSlashCommand(input.messageText)) {
+    return input.messageText.trim();
   }
   const transportLabel = isTelegramSession ? "Telegram" : "WhatsApp Personal";
   const instruction = [

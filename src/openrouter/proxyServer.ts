@@ -528,17 +528,42 @@ async function openWebSocket(url: string, headers: Record<string, string>): Prom
   });
 }
 
+/**
+ * Normalizes a WebSocket close code into something that can be passed to
+ * `ws.close()` without crashing. Per RFC 6455 and the `ws` library, only
+ * `1000` and codes in the ranges `3000–4999` may be sent on the wire; reserved
+ * status codes like `1005` (no status rcvd) and `1006` (abnormal closure) are
+ * synthesized locally by the library and MUST NOT be forwarded. We also allow
+ * `1011` (server error) since we use it explicitly for error handlers below.
+ * Anything else is dropped so the caller invokes `ws.close()` without a code.
+ */
+export function sanitizeWebSocketCloseCode(code?: number): number | undefined {
+  if (typeof code !== "number" || !Number.isFinite(code)) return undefined;
+  if (code === 1000 || code === 1011) return code;
+  if (code >= 3000 && code <= 4999) return code;
+  return undefined;
+}
+
 function bridgeWebSockets(left: WebSocket, right: WebSocket): void {
   let closed = false;
   const closeBoth = (code?: number, reason?: Buffer) => {
     if (closed) return;
     closed = true;
-    if (left.readyState === WebSocket.OPEN || left.readyState === WebSocket.CONNECTING) {
-      left.close(code, reason);
-    }
-    if (right.readyState === WebSocket.OPEN || right.readyState === WebSocket.CONNECTING) {
-      right.close(code, reason);
-    }
+    const safeCode = sanitizeWebSocketCloseCode(code);
+    const closeSocket = (socket: WebSocket) => {
+      if (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING) {
+        return;
+      }
+      if (safeCode === undefined) {
+        socket.close();
+      } else if (reason !== undefined) {
+        socket.close(safeCode, reason);
+      } else {
+        socket.close(safeCode);
+      }
+    };
+    closeSocket(left);
+    closeSocket(right);
   };
   left.on("message", (data, isBinary) => {
     if (right.readyState === WebSocket.OPEN) {
