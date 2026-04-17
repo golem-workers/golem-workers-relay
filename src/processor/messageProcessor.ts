@@ -108,6 +108,20 @@ type ChatBatchState = {
   items: ChatBatchItem[];
 };
 
+function buildInboundMessageLogMeta(
+  msg: InboundPushMessage,
+  input: { textMaxLen: number }
+): Record<string, unknown> {
+  return {
+    kind: msg.input.kind,
+    sessionKey: msg.input.kind === "chat" ? msg.input.sessionKey : null,
+    textLen: msg.input.kind === "chat" ? msg.input.messageText.length : null,
+    textPreview:
+      msg.input.kind === "chat" ? makeTextPreview(msg.input.messageText, input.textMaxLen) : null,
+    mediaCount: msg.input.kind === "chat" ? (msg.input.media?.length ?? 0) : null,
+  };
+}
+
 async function enqueueChatBatch(input: {
   sessionKey: string;
   msg: InboundPushMessage;
@@ -307,262 +321,260 @@ async function processSingleMessage(input: {
   readDiskUsage: (path: string) => Promise<DiskUsageSnapshot>;
 }): Promise<void> {
   const { cfg, gateway, runner, backend, msg } = input;
-    const startedAt = Date.now();
-    const relayMessageId = `relay_${randomUUID()}`;
-    try {
-      if (cfg.devLogEnabled) {
-        logger.info(
-          {
-            event: "message_flow",
-            direction: "backend_to_relay",
-            stage: "received",
-            backendMessageId: msg.messageId,
-            relayMessageId,
-            kind: msg.input.kind,
-            sessionKey: msg.input.kind === "chat" ? msg.input.sessionKey : null,
-            textLen: msg.input.kind === "chat" ? msg.input.messageText.length : null,
-            textPreview: msg.input.kind === "chat" ? makeTextPreview(msg.input.messageText, cfg.devLogTextMaxLen) : null,
-          },
-          "Message flow transition"
-        );
+  const startedAt = Date.now();
+  const relayMessageId = `relay_${randomUUID()}`;
+  const messageMeta = buildInboundMessageLogMeta(msg, { textMaxLen: cfg.devLogTextMaxLen });
+  const watchdogDelayMs = Math.min(cfg.taskTimeoutMs, 30_000);
+  const watchdog = setTimeout(() => {
+    logger.warn(
+      {
+        event: "message_flow",
+        direction: "relay_internal",
+        stage: "processing_stalled",
+        backendMessageId: msg.messageId,
+        relayMessageId,
+        waitedMs: Date.now() - startedAt,
+        ...messageMeta,
+      },
+      "Relay task is still running"
+    );
+  }, watchdogDelayMs);
+  watchdog.unref?.();
+  try {
+    logger.info(
+      {
+        event: "message_flow",
+        direction: "backend_to_relay",
+        stage: "processing_started",
+        backendMessageId: msg.messageId,
+        relayMessageId,
+        ...messageMeta,
+      },
+      "Relay task started"
+    );
+    if (cfg.devLogEnabled) {
+      logger.info(
+        {
+          event: "message_flow",
+          direction: "backend_to_relay",
+          stage: "received",
+          backendMessageId: msg.messageId,
+          relayMessageId,
+          ...messageMeta,
+        },
+        "Message flow transition"
+      );
+    }
+
+    await maybeSubmitLowDiskSpaceAlert({
+      cfg,
+      backend,
+      correlationMessageId: msg.messageId,
+      parentRelayMessageId: relayMessageId,
+      readDiskUsage: input.readDiskUsage,
+    });
+
+    if (msg.input.kind === "handshake") {
+      await withTimeout(gateway.start(), cfg.taskTimeoutMs, "gateway.start");
+      const hello = gateway.getHello();
+      if (!hello) {
+        throw new Error("Gateway is not ready (missing hello-ok)");
       }
-
-      await maybeSubmitLowDiskSpaceAlert({
-        cfg,
-        backend,
-        correlationMessageId: msg.messageId,
-        parentRelayMessageId: relayMessageId,
-        readDiskUsage: input.readDiskUsage,
+      const finishedAtMs = Date.now();
+      await backend.submitInboundMessage({
+        body: {
+          relayInstanceId: cfg.relayInstanceId,
+          relayMessageId,
+          finishedAtMs,
+          outcome: "reply",
+          reply: {
+            nonce: msg.input.nonce,
+            helloType: hello.type,
+            protocol: hello.protocol,
+            policy: hello.policy,
+            features: hello.features
+              ? { methodsCount: hello.features.methods.length, eventsCount: hello.features.events.length }
+              : null,
+            auth: hello.auth ? { role: hello.auth.role, scopes: hello.auth.scopes } : null,
+          },
+          openclawMeta: buildOpenclawMetaWithTrace(
+            { method: "connect" },
+            { backendMessageId: msg.messageId, relayMessageId, relayInstanceId: cfg.relayInstanceId }
+          ),
+        },
       });
-
-      if (msg.input.kind === "handshake") {
-        await withTimeout(gateway.start(), cfg.taskTimeoutMs, "gateway.start");
-        const hello = gateway.getHello();
-        if (!hello) {
-          throw new Error("Gateway is not ready (missing hello-ok)");
-        }
-        const finishedAtMs = Date.now();
-        await backend.submitInboundMessage({
-          body: {
-            relayInstanceId: cfg.relayInstanceId,
-            relayMessageId,
-            finishedAtMs,
-            outcome: "reply",
-            reply: {
-              nonce: msg.input.nonce,
-              helloType: hello.type,
-              protocol: hello.protocol,
-              policy: hello.policy,
-              features: hello.features
-                ? { methodsCount: hello.features.methods.length, eventsCount: hello.features.events.length }
-                : null,
-              auth: hello.auth ? { role: hello.auth.role, scopes: hello.auth.scopes } : null,
-            },
-            openclawMeta: buildOpenclawMetaWithTrace(
-              { method: "connect" },
-              { backendMessageId: msg.messageId, relayMessageId, relayInstanceId: cfg.relayInstanceId }
-            ),
-          },
-        });
-      } else if (msg.input.kind === "session_new") {
-        const reset = await runner.startNewSessionForAll();
-        const finishedAtMs = Date.now();
-        await backend.submitInboundMessage({
-          body: {
-            relayInstanceId: cfg.relayInstanceId,
-            relayMessageId,
-            finishedAtMs,
-            outcome: "reply",
-            reply: reset,
-            openclawMeta: buildOpenclawMetaWithTrace(
-              { method: "session_new" },
-              { backendMessageId: msg.messageId, relayMessageId, relayInstanceId: cfg.relayInstanceId }
-            ),
-          },
-        });
-      } else if (msg.input.kind === "transport_event") {
-        logger.info(
-          {
-            event: "message_flow",
-            direction: "backend_to_relay",
-            stage: "accepted",
-            backendMessageId: msg.messageId,
-            relayMessageId,
-            kind: msg.input.kind,
-            eventType: msg.input.event.eventType,
-          },
-          "Transport event was accepted by relay ingress"
-        );
-      } else if (msg.input.kind === "agent_control") {
-        throw new Error("agent_control tasks must be handled synchronously by relay ingress");
-      } else {
-        const deliverySystem = readDeliverySystemFromTaskContext(msg.input.context);
-        const { result, openclawMeta } = await runner.runChatTask({
-          taskId: msg.messageId,
+    } else if (msg.input.kind === "session_new") {
+      const reset = await runner.startNewSessionForAll();
+      const finishedAtMs = Date.now();
+      await backend.submitInboundMessage({
+        body: {
+          relayInstanceId: cfg.relayInstanceId,
+          relayMessageId,
+          finishedAtMs,
+          outcome: "reply",
+          reply: reset,
+          openclawMeta: buildOpenclawMetaWithTrace(
+            { method: "session_new" },
+            { backendMessageId: msg.messageId, relayMessageId, relayInstanceId: cfg.relayInstanceId }
+          ),
+        },
+      });
+    } else if (msg.input.kind === "transport_event") {
+      logger.info(
+        {
+          event: "message_flow",
+          direction: "backend_to_relay",
+          stage: "accepted",
+          backendMessageId: msg.messageId,
+          relayMessageId,
+          kind: msg.input.kind,
+          eventType: msg.input.event.eventType,
+        },
+        "Transport event was accepted by relay ingress"
+      );
+    } else if (msg.input.kind === "agent_control") {
+      throw new Error("agent_control tasks must be handled synchronously by relay ingress");
+    } else {
+      const deliverySystem = readDeliverySystemFromTaskContext(msg.input.context);
+      logger.info(
+        {
+          event: "message_flow",
+          direction: "relay_to_openclaw",
+          stage: "chat_runner_start",
+          backendMessageId: msg.messageId,
+          relayMessageId,
           sessionKey: msg.input.sessionKey,
-          messageText: msg.input.messageText,
-          media: msg.input.media,
           deliverySystem,
-          timeoutMs: cfg.taskTimeoutMs,
-        });
-        const finishedAtMs = Date.now();
-        if (result.outcome === "reply") {
-          const unresolvedArtifacts = readArtifactResolutionIssues(result.reply);
-          if (deliverySystem !== "relay_channel_v2" && unresolvedArtifacts.length > 0) {
-            const unresolvedArtifactReasons = countArtifactResolutionReasons(unresolvedArtifacts);
-            const unresolvedArtifactDetails = summarizeArtifactResolutionIssues(unresolvedArtifacts);
-            logger.warn(
-              {
-                event: "artifact_delivery",
-                stage: "retry_requested",
-                backendMessageId: msg.messageId,
-                relayMessageId,
+          textLen: msg.input.messageText.length,
+          mediaCount: msg.input.media?.length ?? 0,
+        },
+        "Dispatching chat task to OpenClaw"
+      );
+      const { result, openclawMeta } = await runner.runChatTask({
+        taskId: msg.messageId,
+        sessionKey: msg.input.sessionKey,
+        messageText: msg.input.messageText,
+        media: msg.input.media,
+        deliverySystem,
+        timeoutMs: cfg.taskTimeoutMs,
+      });
+      const openclawRunId =
+        result.outcome === "reply"
+          ? result.reply.runId
+          : result.outcome === "no_reply"
+            ? (result.noReply?.runId ?? null)
+            : result.error.runId;
+      logger.info(
+        {
+          event: "message_flow",
+          direction: "relay_to_openclaw",
+          stage: "chat_runner_finished",
+          backendMessageId: msg.messageId,
+          relayMessageId,
+          outcome: result.outcome,
+          deliverySystem,
+          openclawRunId,
+          durationMs: Date.now() - startedAt,
+        },
+        "OpenClaw chat task finished"
+      );
+      const finishedAtMs = Date.now();
+      if (result.outcome === "reply") {
+        const unresolvedArtifacts = readArtifactResolutionIssues(result.reply);
+        if (deliverySystem !== "relay_channel_v2" && unresolvedArtifacts.length > 0) {
+          const unresolvedArtifactReasons = countArtifactResolutionReasons(unresolvedArtifacts);
+          const unresolvedArtifactDetails = summarizeArtifactResolutionIssues(unresolvedArtifacts);
+          logger.warn(
+            {
+              event: "artifact_delivery",
+              stage: "retry_requested",
+              backendMessageId: msg.messageId,
+              relayMessageId,
+              unresolvedCount: unresolvedArtifacts.length,
+              unresolvedArtifactReasons,
+              unresolvedArtifactDetails,
+              unresolvedArtifacts,
+            },
+            "Reply contains unresolved artifacts; scheduling one internal retry"
+          );
+          await submitReplyCallback({
+            cfg,
+            backend,
+            correlationMessageId: msg.messageId,
+            deliverySystem,
+            reply: {
+              message: buildArtifactRetryNotice(),
+              runId: `${result.reply.runId}:artifact-retry-notice`,
+            },
+            openclawMeta: {
+              method: "artifact.retry_notice",
+              runId: `${result.reply.runId}:artifact-retry-notice`,
+              artifactDelivery: {
+                stage: "retry_notice",
+                originalRunId: result.reply.runId,
                 unresolvedCount: unresolvedArtifacts.length,
-                unresolvedArtifactReasons,
-                unresolvedArtifactDetails,
-                unresolvedArtifacts,
-              },
-              "Reply contains unresolved artifacts; scheduling one internal retry"
-            );
-            await submitReplyCallback({
-              cfg,
-              backend,
-              correlationMessageId: msg.messageId,
-              deliverySystem,
-              reply: {
-                message: buildArtifactRetryNotice(),
-                runId: `${result.reply.runId}:artifact-retry-notice`,
-              },
-              openclawMeta: {
-                method: "artifact.retry_notice",
-                runId: `${result.reply.runId}:artifact-retry-notice`,
-                artifactDelivery: {
-                  stage: "retry_notice",
-                  originalRunId: result.reply.runId,
-                  unresolvedCount: unresolvedArtifacts.length,
-                  unresolvedReasons: unresolvedArtifactReasons,
-                } satisfies ArtifactDeliveryMeta,
-              },
-            });
+                unresolvedReasons: unresolvedArtifactReasons,
+              } satisfies ArtifactDeliveryMeta,
+            },
+          });
 
-            const retryTimeoutMs = Math.max(0, cfg.taskTimeoutMs - (Date.now() - startedAt));
-            if (retryTimeoutMs > 1000) {
-              const retryOutcome = await runner.runChatTask({
-                taskId: `${msg.messageId}:artifact-retry`,
-                sessionKey: msg.input.sessionKey,
-                messageText: buildArtifactRetryPrompt({ unresolved: unresolvedArtifacts }),
-                timeoutMs: retryTimeoutMs,
-              });
-              if (
-                retryOutcome.result.outcome === "reply" &&
-                readArtifactResolutionIssues(retryOutcome.result.reply).length === 0
-              ) {
-                logger.info(
-                  {
-                    event: "artifact_delivery",
+          const retryTimeoutMs = Math.max(0, cfg.taskTimeoutMs - (Date.now() - startedAt));
+          if (retryTimeoutMs > 1000) {
+            const retryOutcome = await runner.runChatTask({
+              taskId: `${msg.messageId}:artifact-retry`,
+              sessionKey: msg.input.sessionKey,
+              messageText: buildArtifactRetryPrompt({ unresolved: unresolvedArtifacts }),
+              timeoutMs: retryTimeoutMs,
+            });
+            if (
+              retryOutcome.result.outcome === "reply" &&
+              readArtifactResolutionIssues(retryOutcome.result.reply).length === 0
+            ) {
+              logger.info(
+                {
+                  event: "artifact_delivery",
+                  stage: "retry_succeeded",
+                  backendMessageId: msg.messageId,
+                  originalRunId: result.reply.runId,
+                  retryRunId: retryOutcome.result.reply.runId,
+                  artifactCount: retryOutcome.result.reply.artifacts?.length ?? 0,
+                },
+                "Artifact retry succeeded"
+              );
+              await submitReplyCallback({
+                cfg,
+                backend,
+                correlationMessageId: msg.messageId,
+                deliverySystem,
+                reply: retryOutcome.result.reply,
+                openclawMeta: {
+                  ...normalizeOpenclawMeta(retryOutcome.openclawMeta),
+                  artifactDelivery: {
                     stage: "retry_succeeded",
-                    backendMessageId: msg.messageId,
                     originalRunId: result.reply.runId,
                     retryRunId: retryOutcome.result.reply.runId,
-                    artifactCount: retryOutcome.result.reply.artifacts?.length ?? 0,
-                  },
-                  "Artifact retry succeeded"
-                );
-                await submitReplyCallback({
-                  cfg,
-                  backend,
-                  correlationMessageId: msg.messageId,
-                  deliverySystem,
-                  reply: retryOutcome.result.reply,
-                  openclawMeta: {
-                    ...normalizeOpenclawMeta(retryOutcome.openclawMeta),
-                    artifactDelivery: {
-                      stage: "retry_succeeded",
-                      originalRunId: result.reply.runId,
-                      retryRunId: retryOutcome.result.reply.runId,
-                      unresolvedCount: unresolvedArtifacts.length,
-                      unresolvedReasons: unresolvedArtifactReasons,
-                    } satisfies ArtifactDeliveryMeta,
-                  },
-                });
-              } else {
-                const retryIssues =
-                  retryOutcome.result.outcome === "reply"
-                    ? readArtifactResolutionIssues(retryOutcome.result.reply)
-                    : [];
-                logger.warn(
-                  {
-                    event: "artifact_delivery",
-                    stage: "retry_failed",
-                    backendMessageId: msg.messageId,
-                    originalRunId: result.reply.runId,
-                    retryOutcome: retryOutcome.result.outcome,
-                    retryIssueReasons: countArtifactResolutionReasons(retryIssues),
-                    retryIssueDetails: summarizeArtifactResolutionIssues(retryIssues),
-                    retryIssues,
-                  },
-                  "Artifact retry did not produce deliverable artifacts"
-                );
-                const originalText = extractReplyText(result.reply.message);
-                if (originalText) {
-                  await submitReplyCallback({
-                    cfg,
-                    backend,
-                    correlationMessageId: msg.messageId,
-                    deliverySystem,
-                    reply: {
-                      message: originalText,
-                      runId: `${result.reply.runId}:artifact-fallback-text`,
-                    },
-                    openclawMeta: {
-                      method: "artifact.fallback_text",
-                      runId: `${result.reply.runId}:artifact-fallback-text`,
-                      artifactDelivery: {
-                        stage: "fallback_text",
-                        originalRunId: result.reply.runId,
-                        retryRunId:
-                          retryOutcome.result.outcome === "reply" ? retryOutcome.result.reply.runId : undefined,
-                        retryOutcome: retryOutcome.result.outcome,
-                        unresolvedCount: unresolvedArtifacts.length,
-                        unresolvedReasons: countArtifactResolutionReasons(retryIssues),
-                      } satisfies ArtifactDeliveryMeta,
-                    },
-                  });
-                }
-                await submitReplyCallback({
-                  cfg,
-                  backend,
-                  correlationMessageId: msg.messageId,
-                  deliverySystem,
-                  reply: {
-                    message: buildArtifactFailureNotice(),
-                    runId: `${result.reply.runId}:artifact-failure-notice`,
-                  },
-                  openclawMeta: {
-                    method: "artifact.failure_notice",
-                    runId: `${result.reply.runId}:artifact-failure-notice`,
-                    artifactDelivery: {
-                      stage: "failure_notice",
-                      originalRunId: result.reply.runId,
-                      retryRunId:
-                        retryOutcome.result.outcome === "reply" ? retryOutcome.result.reply.runId : undefined,
-                      retryOutcome: retryOutcome.result.outcome,
-                      unresolvedCount: unresolvedArtifacts.length,
-                      unresolvedReasons: countArtifactResolutionReasons(retryIssues),
-                    } satisfies ArtifactDeliveryMeta,
-                  },
-                });
-              }
+                    unresolvedCount: unresolvedArtifacts.length,
+                    unresolvedReasons: unresolvedArtifactReasons,
+                  } satisfies ArtifactDeliveryMeta,
+                },
+              });
             } else {
+              const retryIssues =
+                retryOutcome.result.outcome === "reply"
+                  ? readArtifactResolutionIssues(retryOutcome.result.reply)
+                  : [];
               logger.warn(
                 {
                   event: "artifact_delivery",
-                  stage: "retry_skipped",
+                  stage: "retry_failed",
                   backendMessageId: msg.messageId,
-                  relayMessageId,
-                  retryTimeoutMs,
+                  originalRunId: result.reply.runId,
+                  retryOutcome: retryOutcome.result.outcome,
+                  retryIssueReasons: countArtifactResolutionReasons(retryIssues),
+                  retryIssueDetails: summarizeArtifactResolutionIssues(retryIssues),
+                  retryIssues,
                 },
-                "Artifact retry skipped because there was not enough remaining time"
+                "Artifact retry did not produce deliverable artifacts"
               );
               const originalText = extractReplyText(result.reply.message);
               if (originalText) {
@@ -581,9 +593,11 @@ async function processSingleMessage(input: {
                     artifactDelivery: {
                       stage: "fallback_text",
                       originalRunId: result.reply.runId,
-                      retryOutcome: "retry_skipped",
+                      retryRunId:
+                        retryOutcome.result.outcome === "reply" ? retryOutcome.result.reply.runId : undefined,
+                      retryOutcome: retryOutcome.result.outcome,
                       unresolvedCount: unresolvedArtifacts.length,
-                      unresolvedReasons: unresolvedArtifactReasons,
+                      unresolvedReasons: countArtifactResolutionReasons(retryIssues),
                     } satisfies ArtifactDeliveryMeta,
                   },
                 });
@@ -603,6 +617,43 @@ async function processSingleMessage(input: {
                   artifactDelivery: {
                     stage: "failure_notice",
                     originalRunId: result.reply.runId,
+                    retryRunId:
+                      retryOutcome.result.outcome === "reply" ? retryOutcome.result.reply.runId : undefined,
+                    retryOutcome: retryOutcome.result.outcome,
+                    unresolvedCount: unresolvedArtifacts.length,
+                    unresolvedReasons: countArtifactResolutionReasons(retryIssues),
+                  } satisfies ArtifactDeliveryMeta,
+                },
+              });
+            }
+          } else {
+            logger.warn(
+              {
+                event: "artifact_delivery",
+                stage: "retry_skipped",
+                backendMessageId: msg.messageId,
+                relayMessageId,
+                retryTimeoutMs,
+              },
+              "Artifact retry skipped because there was not enough remaining time"
+            );
+            const originalText = extractReplyText(result.reply.message);
+            if (originalText) {
+              await submitReplyCallback({
+                cfg,
+                backend,
+                correlationMessageId: msg.messageId,
+                deliverySystem,
+                reply: {
+                  message: originalText,
+                  runId: `${result.reply.runId}:artifact-fallback-text`,
+                },
+                openclawMeta: {
+                  method: "artifact.fallback_text",
+                  runId: `${result.reply.runId}:artifact-fallback-text`,
+                  artifactDelivery: {
+                    stage: "fallback_text",
+                    originalRunId: result.reply.runId,
                     retryOutcome: "retry_skipped",
                     unresolvedCount: unresolvedArtifacts.length,
                     unresolvedReasons: unresolvedArtifactReasons,
@@ -610,83 +661,148 @@ async function processSingleMessage(input: {
                 },
               });
             }
-          } else {
-            const replyPayload = await buildReplyPayload(result.reply);
-            const directTransportMeta =
-              deliverySystem === "relay_channel_v2"
-                ? await maybeDeliverRelayChannelReplyDirectly({
-                    backend,
-                    context: msg.input.context,
-                    reply: replyPayload,
-                    backendMessageId: msg.messageId,
-                    relayMessageId,
-                  })
-                : null;
-            await backend.submitInboundMessage({
-              body: {
-                relayInstanceId: cfg.relayInstanceId,
-                relayMessageId,
-                finishedAtMs,
-                outcome: "reply",
-                reply: replyPayload,
-                openclawMeta: buildOpenclawMetaWithTrace(normalizeOpenclawMeta(openclawMeta), {
+            await submitReplyCallback({
+              cfg,
+              backend,
+              correlationMessageId: msg.messageId,
+              deliverySystem,
+              reply: {
+                message: buildArtifactFailureNotice(),
+                runId: `${result.reply.runId}:artifact-failure-notice`,
+              },
+              openclawMeta: {
+                method: "artifact.failure_notice",
+                runId: `${result.reply.runId}:artifact-failure-notice`,
+                artifactDelivery: {
+                  stage: "failure_notice",
+                  originalRunId: result.reply.runId,
+                  retryOutcome: "retry_skipped",
+                  unresolvedCount: unresolvedArtifacts.length,
+                  unresolvedReasons: unresolvedArtifactReasons,
+                } satisfies ArtifactDeliveryMeta,
+              },
+            });
+          }
+        } else {
+          const replyPayload = await buildReplyPayload(result.reply);
+          const directTransportMeta =
+            deliverySystem === "relay_channel_v2"
+              ? await maybeDeliverRelayChannelReplyDirectly({
+                  backend,
+                  context: msg.input.context,
+                  reply: replyPayload,
+                  backendMessageId: msg.messageId,
+                  relayMessageId,
+                })
+              : null;
+          await backend.submitInboundMessage({
+            body: {
+              relayInstanceId: cfg.relayInstanceId,
+              relayMessageId,
+              finishedAtMs,
+              outcome: "reply",
+              reply: replyPayload,
+              openclawMeta: buildOpenclawMetaWithTrace(
+                normalizeOpenclawMeta(openclawMeta),
+                {
                   backendMessageId: msg.messageId,
                   relayMessageId,
                   relayInstanceId: cfg.relayInstanceId,
                   openclawRunId: result.reply.runId,
-                }, { deliverySystem, ...directTransportMeta }),
-              },
-            });
-          }
-        } else if (result.outcome === "no_reply") {
-          await backend.submitInboundMessage({
-            body: {
-              relayInstanceId: cfg.relayInstanceId,
-              relayMessageId,
-              finishedAtMs,
-              outcome: "no_reply",
-              noReply: result.noReply ?? { reason: "no_message" },
-              openclawMeta: buildOpenclawMetaWithTrace(normalizeOpenclawMeta(openclawMeta), {
+                },
+                { deliverySystem, ...directTransportMeta }
+              ),
+            },
+          });
+        }
+      } else if (result.outcome === "no_reply") {
+        await backend.submitInboundMessage({
+          body: {
+            relayInstanceId: cfg.relayInstanceId,
+            relayMessageId,
+            finishedAtMs,
+            outcome: "no_reply",
+            noReply: result.noReply ?? { reason: "no_message" },
+            openclawMeta: buildOpenclawMetaWithTrace(
+              normalizeOpenclawMeta(openclawMeta),
+              {
                 backendMessageId: msg.messageId,
                 relayMessageId,
                 relayInstanceId: cfg.relayInstanceId,
                 openclawRunId: result.noReply?.runId,
-              }, { deliverySystem }),
-            },
-          });
-        } else {
-          await backend.submitInboundMessage({
-            body: {
-              relayInstanceId: cfg.relayInstanceId,
-              relayMessageId,
-              finishedAtMs,
-              outcome: "error",
-              error: result.error,
-              openclawMeta: buildOpenclawMetaWithTrace(normalizeOpenclawMeta(openclawMeta), {
+              },
+              { deliverySystem }
+            ),
+          },
+        });
+      } else {
+        await backend.submitInboundMessage({
+          body: {
+            relayInstanceId: cfg.relayInstanceId,
+            relayMessageId,
+            finishedAtMs,
+            outcome: "error",
+            error: result.error,
+            openclawMeta: buildOpenclawMetaWithTrace(
+              normalizeOpenclawMeta(openclawMeta),
+              {
                 backendMessageId: msg.messageId,
                 relayMessageId,
                 relayInstanceId: cfg.relayInstanceId,
                 openclawRunId: result.error.runId,
-              }, { deliverySystem }),
-            },
-          });
-        }
+              },
+              { deliverySystem }
+            ),
+          },
+        });
       }
+    }
 
-      logger.info(
-        {
-          event: "message_flow",
-          direction: "relay_to_backend",
-          stage: "callback_sent",
-          backendMessageId: msg.messageId,
+    logger.info(
+      {
+        event: "message_flow",
+        direction: "relay_to_backend",
+        stage: "callback_sent",
+        backendMessageId: msg.messageId,
+        relayMessageId,
+        durationMs: Date.now() - startedAt,
+      },
+      "Message flow transition"
+    );
+  } catch (err) {
+    const finishedAtMs = Date.now();
+    const normalizedError = normalizeRelayProcessingError(err);
+    logger.warn(
+      {
+        event: "message_flow",
+        direction: "relay_to_backend",
+        stage: "failed",
+        backendMessageId: msg.messageId,
+        relayMessageId,
+        error: normalizedError.message,
+        errorCode: normalizedError.code,
+        durationMs: finishedAtMs - startedAt,
+      },
+      "Message flow transition"
+    );
+    try {
+      await backend.submitInboundMessage({
+        body: {
+          relayInstanceId: cfg.relayInstanceId,
           relayMessageId,
-          durationMs: Date.now() - startedAt,
+          finishedAtMs,
+          outcome: "error",
+          error: {
+            code: normalizedError.code,
+            message: normalizedError.message,
+          },
+          openclawMeta: buildOpenclawMetaWithTrace(
+            { method: "relay" },
+            { backendMessageId: msg.messageId, relayMessageId, relayInstanceId: cfg.relayInstanceId }
+          ),
         },
-        "Message flow transition"
-      );
-    } catch (err) {
-      const finishedAtMs = Date.now();
-      const normalizedError = normalizeRelayProcessingError(err);
+      });
+    } catch (submitErr) {
       logger.warn(
         {
           event: "message_flow",
@@ -694,42 +810,14 @@ async function processSingleMessage(input: {
           stage: "failed",
           backendMessageId: msg.messageId,
           relayMessageId,
-          error: normalizedError.message,
-          errorCode: normalizedError.code,
+          error: submitErr instanceof Error ? submitErr.message : String(submitErr),
         },
         "Message flow transition"
       );
-      try {
-        await backend.submitInboundMessage({
-          body: {
-            relayInstanceId: cfg.relayInstanceId,
-            relayMessageId,
-            finishedAtMs,
-            outcome: "error",
-            error: {
-              code: normalizedError.code,
-              message: normalizedError.message,
-            },
-            openclawMeta: buildOpenclawMetaWithTrace(
-              { method: "relay" },
-              { backendMessageId: msg.messageId, relayMessageId, relayInstanceId: cfg.relayInstanceId }
-            ),
-          },
-        });
-      } catch (submitErr) {
-        logger.warn(
-          {
-            event: "message_flow",
-            direction: "relay_to_backend",
-            stage: "failed",
-            backendMessageId: msg.messageId,
-            relayMessageId,
-            error: submitErr instanceof Error ? submitErr.message : String(submitErr),
-          },
-          "Message flow transition"
-        );
-      }
     }
+  } finally {
+    clearTimeout(watchdog);
+  }
 }
 
 async function maybeSubmitLowDiskSpaceAlert(input: {

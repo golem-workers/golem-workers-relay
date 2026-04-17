@@ -267,6 +267,20 @@ async function main(): Promise<void> {
     onMessage: (message) => {
       try {
         queue.enqueue(message);
+        const queueState = queue.getState();
+        logger.info(
+          {
+            event: "relay_queue",
+            stage: "enqueued",
+            backendMessageId: message.messageId,
+            kind: message.input.kind,
+            sessionKey: message.input.kind === "chat" ? message.input.sessionKey : null,
+            queueLength: queueState.queueLength,
+            inFlight: queueState.inFlight,
+            maxQueue: queueState.maxQueue,
+          },
+          "Relay message enqueued"
+        );
       } catch (error) {
         if (error instanceof QueueClosedError) {
           throw new PushServerHttpError({

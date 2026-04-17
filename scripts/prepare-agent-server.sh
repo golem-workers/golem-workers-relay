@@ -26,6 +26,9 @@ RUN_OPENCLAW_ONBOARD=1
 APT_SOURCES_LIST="/etc/apt/sources.list"
 UBUNTU_SUITE="${UBUNTU_SUITE:-noble}"
 APT_MIRROR_HINT="${APT_MIRROR_HINT:-}"
+OPENAI_PROXY_BASE_URL="http://127.0.0.1:18084/provider-proxy/openai/v1"
+CODEX_WRAPPER_PATH="/usr/local/bin/golem-codex-proxy"
+CODEX_REAL_BINARY="/usr/bin/codex"
 
 usage() {
   cat <<'EOF'
@@ -551,8 +554,8 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     NODE_PATH \
     OPENCLAW_SKIP_CANVAS_HOST \
     OPENCLAW_LOG_LEVEL || true
-  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm --config.node-linker=hoisted add -g codex@latest openclaw@latest grammy playwright @grammyjs/runner @grammyjs/transformer-throttler @buape/carbon @larksuiteoapi/node-sdk @slack/bolt
-  CODEX_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/codex"
+  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm --config.node-linker=hoisted add -g @openai/codex@latest openclaw@latest grammy playwright @grammyjs/runner @grammyjs/transformer-throttler @buape/carbon @larksuiteoapi/node-sdk @slack/bolt
+  CODEX_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/@openai/codex"
   OPENCLAW_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/openclaw"
   test -f "${CODEX_PACKAGE_DIR}/package.json"
   test -f "${OPENCLAW_PACKAGE_DIR}/package.json"
@@ -560,8 +563,34 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   test -f "${PNPM_HOME_DIR}/openclaw"
   ln -sfn "${PNPM_HOME_DIR}/codex" /usr/local/bin/codex
   ln -sfn "${PNPM_HOME_DIR}/openclaw" /usr/local/bin/openclaw
+  test -x "${CODEX_REAL_BINARY}"
   command -v codex >/dev/null 2>&1
   command -v openclaw >/dev/null 2>&1
+  mkdir -p /root/.codex
+  write_file /root/.codex/config.toml "model_provider = \"gwproxy\"
+cli_auth_credentials_store = \"file\"
+
+[model_providers.gwproxy]
+name = \"Golem OpenAI Proxy\"
+base_url = \"${OPENAI_PROXY_BASE_URL}\"
+env_key = \"OPENAI_API_KEY\"
+wire_api = \"responses\"
+supports_websockets = false
+"
+  write_file "${CODEX_WRAPPER_PATH}" "#!/usr/bin/env bash
+set -euo pipefail
+CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\"
+REAL_CODEX=\"${CODEX_REAL_BINARY}\"
+if [[ ! -x \"\${REAL_CODEX}\" ]]; then
+  echo \"Managed Codex wrapper could not find codex binary at \${REAL_CODEX}\" >&2
+  exit 1
+fi
+mkdir -p \"\${CODEX_HOME}\"
+export OPENAI_API_KEY=\"\${OPENAI_API_KEY:-GOLEM_OPENAI_STUB}\"
+export OPENAI_BASE_URL=\"\${OPENAI_BASE_URL:-${OPENAI_PROXY_BASE_URL}}\"
+exec \"\${REAL_CODEX}\" \"\$@\"
+"
+  chmod 0755 "${CODEX_WRAPPER_PATH}"
   OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/grammy"
   OPENCLAW_GRAMMY_RUNNER_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/@grammyjs/runner"
   OPENCLAW_GRAMMY_TRANSFORMER_THROTTLER_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/@grammyjs/transformer-throttler"
