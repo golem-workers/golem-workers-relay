@@ -101,10 +101,14 @@ const TRANSPORT_INTERRUPTION_PATTERNS = [
   /network connection lost/i,
   /socket hang up/i,
   /\beconnreset\b/i,
+  /\beconnrefused\b/i,
   /\beconnaborted\b/i,
   /\betimedout\b/i,
   /stream ended unexpectedly/i,
   /connection closed/i,
+  /gateway closed/i,
+  /gateway connection lost/i,
+  /handshake timed out/i,
   /upstream disconnected/i,
 ] as const;
 
@@ -117,6 +121,7 @@ const TRANSPORT_RECOVERY_NOTE = [
 
 const OPENCLAW_SLASH_COMMAND_FINAL_WAIT_TIMEOUT_MS = 15_000;
 const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_TIMEOUT_MS = 10_000;
+const OPENCLAW_DISCONNECT_TRANSCRIPT_RECOVERY_TIMEOUT_MS = 1_500;
 const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_POLL_INTERVAL_MS = 250;
 
 type GatewayChatContentPart =
@@ -134,6 +139,20 @@ class VoiceTranscriptionError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "VoiceTranscriptionError";
+  }
+}
+
+class GatewayRunDisconnectedError extends Error {
+  constructor(
+    readonly runId: string,
+    reason?: string,
+  ) {
+    super(
+      reason
+        ? `Gateway connection lost while waiting for run ${runId}: ${reason}`
+        : `Gateway connection lost while waiting for run ${runId}`
+    );
+    this.name = "GatewayRunDisconnectedError";
   }
 }
 
@@ -725,6 +744,29 @@ export class ChatRunner {
     this.transcribeAudio = opts?.transcribeAudio ?? transcribeAudioWithOpenAi;
   }
 
+  handleGatewayConnectionStateChange(state: {
+    connected: boolean;
+    reason?: string;
+    observedAtMs: number;
+  }): void {
+    if (state.connected || this.waitersByRunId.size === 0) {
+      return;
+    }
+    if (this.devLogEnabled) {
+      logger.warn(
+        {
+          activeRuns: Array.from(this.waitersByRunId.keys()),
+          reason: state.reason,
+          observedAtMs: state.observedAtMs,
+        },
+        "Rejecting active chat waiters after gateway disconnect"
+      );
+    }
+    for (const runId of Array.from(this.waitersByRunId.keys())) {
+      this.rejectRunWaiter(runId, new GatewayRunDisconnectedError(runId, state.reason));
+    }
+  }
+
   handleEvent(evt: EventFrame): void {
     if (evt.event !== "chat") return;
     const parsed = chatEventSchema.safeParse(evt.payload);
@@ -850,6 +892,10 @@ export class ChatRunner {
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        const classification = classifyRetryableGatewayError(msg);
+        if (classification.reason === "transport_interruption") {
+          transportRecoveryEnabled = true;
+        }
         if (gatewayMessage.fallback && shouldFallbackToUploadedFiles(err)) {
           logger.warn(
             {
@@ -882,9 +928,16 @@ export class ChatRunner {
         );
         if (!retryable) {
           const normalizedMessage =
-            transportRecoveryEnabled && this.retry.attempts > 1
-              ? "The agent lost network connectivity while attempting to recover the interrupted run. Partial files may exist in the workspace."
-              : `Gateway request failed: ${msg}`;
+            classification.reason === "transport_interruption"
+              ? normalizeGatewayFailureMessage({
+                  message: msg,
+                  reason: classification.reason,
+                  attempts: attempt,
+                  transportRecoveryEnabled,
+                })
+              : transportRecoveryEnabled && this.retry.attempts > 1
+                ? "The agent lost network connectivity while attempting to recover the interrupted run. Partial files may exist in the workspace."
+                : `Gateway request failed: ${msg}`;
           return {
             result: { outcome: "error", error: { code: "GATEWAY_ERROR", message: normalizedMessage } },
             openclawMeta: { method: "chat.send" },
@@ -1074,7 +1127,7 @@ export class ChatRunner {
                   sessionKey: input.sessionKey,
                   requestMessage: finalAttemptMessage,
                   timeoutMs: Math.min(
-                    OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_TIMEOUT_MS,
+                    OPENCLAW_DISCONNECT_TRANSCRIPT_RECOVERY_TIMEOUT_MS,
                     Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))
                   ),
                 })
@@ -1132,6 +1185,87 @@ export class ChatRunner {
         await sleep(backoffMs);
       } catch (err) {
         const openclawEvents = this.consumeRunEvents(runId);
+        if (err instanceof GatewayRunDisconnectedError) {
+          const disconnectMessage = err.message;
+          logger.warn(
+            {
+              event: "message_flow",
+              direction: "openclaw_to_relay",
+              stage: "transport_disconnected",
+              backendMessageId: input.taskId,
+              relayMessageId: null,
+              openclawRunId: runId,
+              attempt,
+              error: disconnectMessage,
+            },
+            "Gateway disconnected while waiting for a terminal chat event"
+          );
+          const transcriptFinalMessage =
+            finalAttemptMessage !== null
+              ? await waitForAssistantMessageFromSessionTranscript({
+                  sessionKey: input.sessionKey,
+                  requestMessage: finalAttemptMessage,
+                  timeoutMs: Math.min(
+                    OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_TIMEOUT_MS,
+                    Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))
+                  ),
+                })
+              : undefined;
+          if (transcriptFinalMessage !== undefined) {
+            logger.info(
+              {
+                event: "message_flow",
+                direction: "openclaw_to_relay",
+                stage: "response_recovered_after_disconnect",
+                backendMessageId: input.taskId,
+                relayMessageId: null,
+                openclawRunId: runId,
+                disconnectMessage,
+              },
+              "Recovered final reply from session transcript after gateway disconnect"
+            );
+            return await buildReplyRunResult({
+              taskId: input.taskId,
+              runId,
+              sessionKey: input.sessionKey,
+              deliverySystem: input.deliverySystem ?? "legacy_push_v1",
+              finalMessage: transcriptFinalMessage,
+              transcriptFinalMessage,
+              openclawEvents,
+              startedAtMs,
+              devLogEnabled: this.devLogEnabled,
+            });
+          }
+          const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
+          const elapsedMs = Date.now() - startedAtMs;
+          const remainingMs = Math.max(0, input.timeoutMs - elapsedMs);
+          const retryable = attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
+          if (!retryable) {
+            return {
+              result: {
+                outcome: "error",
+                error: {
+                  code: "GATEWAY_ERROR",
+                  message: normalizeGatewayFailureMessage({
+                    message: disconnectMessage,
+                    reason: "transport_interruption",
+                    attempts: attempt,
+                    transportRecoveryEnabled,
+                  }),
+                  runId,
+                  ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
+                },
+              },
+              openclawMeta: {
+                method: "chat.send",
+                runId,
+              },
+            };
+          }
+          transportRecoveryEnabled = true;
+          await sleep(backoffMs);
+          continue;
+        }
         const timeoutMessage = err instanceof Error ? err.message : "Timed out waiting for final";
         const transcriptFinalMessage =
           finalAttemptMessage !== null
@@ -1323,26 +1457,13 @@ export class ChatRunner {
         return;
       }
       const finalize = (signal: ChatCompletionSignal): void => {
-        const waiter = this.waitersByRunId.get(runId);
-        if (waiter?.transcriptPoll) {
-          clearInterval(waiter.transcriptPoll);
-        }
-        if (waiter) {
-          clearTimeout(waiter.timeout);
-        }
-        this.waitersByRunId.delete(runId);
-        this.runSessionByRunId.delete(runId);
-        this.runTraceByRunId.delete(runId);
+        const waiter = this.takeWaiter(runId);
+        if (!waiter) return;
         resolve(signal);
       };
       const timeout = setTimeout(() => {
-        const waiter = this.waitersByRunId.get(runId);
-        if (waiter?.transcriptPoll) {
-          clearInterval(waiter.transcriptPoll);
-        }
-        this.waitersByRunId.delete(runId);
-        this.runSessionByRunId.delete(runId);
-        this.runTraceByRunId.delete(runId);
+        const waiter = this.takeWaiter(runId);
+        if (!waiter) return;
         reject(new Error("Timed out waiting for final"));
       }, timeoutMs);
       const waiter: Waiter = { resolve: finalize, reject, timeout };
@@ -1384,6 +1505,27 @@ export class ChatRunner {
     const events = this.runEventsByRunId.get(runId) ?? [];
     this.runEventsByRunId.delete(runId);
     return events;
+  }
+
+  private rejectRunWaiter(runId: string, error: Error): void {
+    const waiter = this.takeWaiter(runId);
+    if (!waiter) return;
+    waiter.reject(error);
+  }
+
+  private takeWaiter(runId: string): Waiter | null {
+    const waiter = this.waitersByRunId.get(runId);
+    if (!waiter) {
+      return null;
+    }
+    if (waiter.transcriptPoll) {
+      clearInterval(waiter.transcriptPoll);
+    }
+    clearTimeout(waiter.timeout);
+    this.waitersByRunId.delete(runId);
+    this.runSessionByRunId.delete(runId);
+    this.runTraceByRunId.delete(runId);
+    return waiter;
   }
 
   private async waitForSessionMaintenance(): Promise<void> {

@@ -2761,6 +2761,24 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("fails active waiters immediately when the gateway disconnects mid-flight", async () => {
+    const runner = new ChatRunner({ request: vi.fn() } as unknown as GatewayClient);
+    const waitForFinal = (runner as unknown as { waitForFinal: (runId: string, timeoutMs: number) => Promise<unknown> })
+      .waitForFinal.bind(runner);
+
+    const pending = waitForFinal("run_disconnect_1", 10_000);
+    runner.handleGatewayConnectionStateChange({
+      connected: false,
+      reason: "Gateway websocket closed (4001): gateway restart",
+      observedAtMs: Date.now(),
+    });
+
+    await expect(pending).rejects.toThrow(
+      "Gateway connection lost while waiting for run run_disconnect_1: Gateway websocket closed (4001): gateway restart"
+    );
+    expect((runner as unknown as { waitersByRunId: Map<string, unknown> }).waitersByRunId.size).toBe(0);
+  });
+
   it("returns a normalized error after repeated transport interruptions", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);

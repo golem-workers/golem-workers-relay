@@ -190,6 +190,7 @@ async function main(): Promise<void> {
       execApprovalAutoApprover?.handleHello(hello);
     },
     onConnectionStateChange: (state) => {
+      chatRunner?.handleGatewayConnectionStateChange(state);
       void reportOpenclawConnectionStatus(state);
     },
     devLogEnabled: cfg.devLogEnabled,

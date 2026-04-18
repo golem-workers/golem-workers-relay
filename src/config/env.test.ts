@@ -46,6 +46,21 @@ describe("loadRelayConfig", () => {
     expect(custom.chatBatchDebounceMs).toBe(7500);
   });
 
+  it("uses a bounded task timeout by default and allows override", () => {
+    const def = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+    });
+    expect(def.taskTimeoutMs).toBe(300_000);
+
+    const custom = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+      RELAY_TASK_TIMEOUT_MS: "45000",
+    });
+    expect(custom.taskTimeoutMs).toBe(45_000);
+  });
+
   it("enables low disk alerts by default and allows threshold override", () => {
     const def = loadRelayConfig({
       RELAY_TOKEN: "t",
