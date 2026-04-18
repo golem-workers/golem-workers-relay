@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { logger } from "./logger.js";
 import { loadRelayConfig, type RelayConfig } from "./config/env.js";
-import { resolveOpenclawConfig } from "./openclaw/openclawConfig.js";
+import { isCodexModelRef, readOpenclawPrimaryModelRef, resolveOpenclawConfig } from "./openclaw/openclawConfig.js";
 import { BackendClient } from "./backend/backendClient.js";
 import { type InboundPushMessage } from "./backend/types.js";
 import { GatewayClient } from "./openclaw/gatewayClient.js";
@@ -346,6 +346,24 @@ async function main(): Promise<void> {
         relayToken: cfg.relayToken,
         pathPrefix: cfg.openaiProxy.pathPrefix,
         backendPathPrefix: cfg.openaiProxy.backendPathPrefix,
+        shouldProxyWebSocketUpgrade: () => {
+          const activeModelRef = readOpenclawPrimaryModelRef(openclaw.configPath);
+          if (isCodexModelRef(activeModelRef)) {
+            return Promise.resolve({ allowed: true as const });
+          }
+          logger.info(
+            {
+              activeModelRef,
+              openclawConfigPath: openclaw.configPath,
+            },
+            "Rejecting OpenAI websocket proxy upgrade because the active model is not codex/*"
+          );
+          return Promise.resolve({
+            allowed: false as const,
+            statusCode: 403,
+            message: "OpenAI websocket proxy is only available for active codex/* models",
+          });
+        },
       })
     : null;
   const jinaProxyServer = cfg.jinaProxy.enabled

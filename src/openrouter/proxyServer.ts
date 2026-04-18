@@ -30,6 +30,18 @@ type RelayProxyServerInput = {
   backendPathPrefix: string;
   requestBodyMode: RequestBodyMode;
   enableWebSocketProxy?: boolean;
+  shouldProxyWebSocketUpgrade?: (
+    req: IncomingMessage
+  ) => Promise<
+    | {
+        allowed: true;
+      }
+    | {
+        allowed: false;
+        statusCode?: number;
+        message?: string;
+      }
+  >;
 };
 
 function startRelayProxyServer(input: RelayProxyServerInput): http.Server {
@@ -83,6 +95,7 @@ function startRelayProxyServer(input: RelayProxyServerInput): http.Server {
         relayToken: input.relayToken,
         backendPathPrefix,
         matchedPathPrefix,
+        shouldProxyWebSocketUpgrade: input.shouldProxyWebSocketUpgrade,
       }).catch((error) => {
         logger.warn(
           {
@@ -130,6 +143,7 @@ export function startOpenAiProxyServer(input: {
   relayToken: string;
   pathPrefix: string;
   backendPathPrefix: string;
+  shouldProxyWebSocketUpgrade?: RelayProxyServerInput["shouldProxyWebSocketUpgrade"];
 }): http.Server {
   return startRelayProxyServer({
     serviceName: "relay-openai-proxy",
@@ -340,7 +354,19 @@ async function handleProxyWebSocketUpgrade(input: {
   relayToken: string;
   backendPathPrefix: string;
   matchedPathPrefix: string;
+  shouldProxyWebSocketUpgrade?: RelayProxyServerInput["shouldProxyWebSocketUpgrade"];
 }): Promise<void> {
+  if (input.shouldProxyWebSocketUpgrade) {
+    const verdict = await input.shouldProxyWebSocketUpgrade(input.req);
+    if (!verdict.allowed) {
+      rejectUpgrade(
+        input.socket,
+        verdict.statusCode ?? 403,
+        verdict.message ?? "WebSocket proxy is disabled for the current model"
+      );
+      return;
+    }
+  }
   const url = new URL(input.req.url ?? "/", "http://relay.local");
   const upstreamPath = `${input.backendPathPrefix}${stripPathPrefix(url.pathname, input.matchedPathPrefix)}${url.search}`;
   const upstreamUrl = toWebSocketUrl(input.backendBaseUrl, upstreamPath);

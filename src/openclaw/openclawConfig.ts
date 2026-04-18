@@ -41,6 +41,16 @@ function getNested(obj: Record<string, unknown> | null, keys: string[]): unknown
   return cur;
 }
 
+export function readOpenclawPrimaryModelRef(configPath: string): string | null {
+  const parsed = safeReadJson5(configPath);
+  const model = getNested(parsed, ["agents", "defaults", "model", "primary"]);
+  return typeof model === "string" && model.trim() ? model.trim() : null;
+}
+
+export function isCodexModelRef(modelRef: string | null | undefined): boolean {
+  return typeof modelRef === "string" && modelRef.trim().toLowerCase().startsWith("codex/");
+}
+
 export function resolveOpenclawConfig(env: NodeJS.ProcessEnv, input?: { gatewayWsUrl?: string }) {
   const configPath = resolveDefaultConfigPath(env);
   const parsed = safeReadJson5(configPath);
