@@ -840,6 +840,74 @@ describe("startOpenAiProxyServer", () => {
     expect(handshake.statusCode).toBe(403);
     expect(backendUpgrades).toBe(0);
   });
+
+  it("survives upstream websocket handshake rejection without crashing relay", async () => {
+    const backendPort = await getFreePort();
+    let backendUpgrades = 0;
+    const backendServer = http.createServer((req, res) => {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true, path: req.url ?? "/" }));
+    });
+    backendServer.on("upgrade", (_req, socket) => {
+      backendUpgrades += 1;
+      socket.write(
+        "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: 12\r\n\r\nunauthorized"
+      );
+      socket.end();
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startOpenAiProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/openai",
+      backendPathPrefix: "/api/v1/relays/openai",
+      shouldProxyWebSocketUpgrade: () => Promise.resolve({ allowed: true }),
+    });
+    servers.push(relayServer);
+
+    const handshake = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+      const client = new WebSocket(`ws://127.0.0.1:${relayPort}/provider-proxy/openai/v1/responses`);
+      client.once("unexpected-response", (request, response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        });
+        response.once("end", () => {
+          resolve({
+            statusCode: response.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+          client.terminate();
+        });
+        response.once("error", reject);
+        request.destroy();
+      });
+      client.once("open", () => reject(new Error("websocket should have been rejected")));
+      client.once("error", () => {
+        // `ws` emits `error` after `unexpected-response`; the handshake payload above is authoritative.
+      });
+    });
+
+    expect(handshake.statusCode).toBe(502);
+    expect(backendUpgrades).toBe(1);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/provider-proxy/openai/v1/models`, {
+      headers: {
+        authorization: "Bearer stub-key",
+      },
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      path: "/api/v1/relays/openai/v1/models",
+    });
+  });
 });
 
 describe("startJinaProxyServer", () => {

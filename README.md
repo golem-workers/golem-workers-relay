@@ -27,6 +27,9 @@ Relay control-plane transport is now localhost HTTP:
 
 - plugin -> relay: `POST /hello` and synchronous `POST /actions`
 - relay -> plugin: local HTTP push into plugin-owned ingress endpoints
+- backend->relay inbound delivery only requires the relay control plane to be
+  listening; `relayChannelConnected` remains a plugin-link diagnostic and may
+  lag briefly while the plugin is re-running `/hello` after a relay restart
 - plain text inbound retries are coalesced before delivery with explicit merged boundaries
 - typing/account-status/capability updates are latest-wins
 

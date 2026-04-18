@@ -533,7 +533,10 @@ async function openWebSocket(url: string, headers: Record<string, string>): Prom
       cleanup();
       reject(error);
     };
-    const onUnexpectedResponse = (_request: unknown, response: IncomingMessage) => {
+    const onUnexpectedResponse = (request: unknown, response: IncomingMessage) => {
+      // `ws` emits `error` after `unexpected-response`; keep a no-op
+      // listener so rejected upstream handshakes don't crash the relay.
+      ws.once("error", () => {});
       cleanup();
       reject(
         new Error(
@@ -541,7 +544,7 @@ async function openWebSocket(url: string, headers: Record<string, string>): Prom
         )
       );
       response.resume();
-      ws.close();
+      getDestroyableRequest(request)?.destroy();
     };
     const cleanup = () => {
       ws.off("open", onOpen);
@@ -552,6 +555,10 @@ async function openWebSocket(url: string, headers: Record<string, string>): Prom
     ws.once("error", onError);
     ws.once("unexpected-response", onUnexpectedResponse);
   });
+}
+
+function getDestroyableRequest(value: unknown): http.ClientRequest | null {
+  return value instanceof http.ClientRequest ? value : null;
 }
 
 /**
