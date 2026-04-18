@@ -2174,6 +2174,171 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("matches late transcript replies for multipart telegram group prompts without a terminal event", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-multipart-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+
+    const sessionKey = "tg:-5218477136:server";
+    const sessionId = "sess-transcript-multipart";
+    const sessionFile = path.join(sessionsDir, `${sessionId}.jsonl`);
+    await fs.writeFile(
+      path.join(sessionsDir, "sessions.json"),
+      JSON.stringify({
+        [`agent:main:${sessionKey}`]: {
+          sessionId,
+          updatedAt: Date.now(),
+          sessionFile,
+        },
+      }),
+      "utf8"
+    );
+    await fs.writeFile(sessionFile, "", "utf8");
+
+    let sentMessage: unknown = null;
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          sentMessage = ((frame.params ?? {}) as Record<string, unknown>).message;
+          const runId = "run_transcript_multipart";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            const sentText = (() => {
+              if (typeof sentMessage === "string") {
+                return sentMessage;
+              }
+              if (!sentMessage || typeof sentMessage !== "object") {
+                return "";
+              }
+              const content = (sentMessage as { content?: unknown }).content;
+              if (typeof content === "string") {
+                return content;
+              }
+              if (!Array.isArray(content)) {
+                return "";
+              }
+              return content
+                .map((part) =>
+                  part && typeof part === "object" && (part as { type?: unknown }).type === "text"
+                    ? (part as { text?: unknown }).text
+                    : null
+                )
+                .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+                .join("\n");
+            })();
+            const noteMarker = "\n\n[Telegram plugin note]\n";
+            const noteIndex = sentText.indexOf(noteMarker);
+            const promptText = noteIndex >= 0 ? sentText.slice(0, noteIndex).trim() : sentText.trim();
+            const transportNote = noteIndex >= 0 ? sentText.slice(noteIndex + noteMarker.length).trim() : "";
+            const splitMarker = "\n\nProduction requirements:\n";
+            const splitIndex = promptText.indexOf(splitMarker);
+            const partOne =
+              splitIndex > 0 ? promptText.slice(0, splitIndex).trim() : promptText.slice(0, Math.ceil(promptText.length / 2)).trim();
+            const partTwo =
+              splitIndex > 0 ? `Production requirements:\n${promptText.slice(splitIndex + splitMarker.length).trim()}` : promptText.slice(Math.ceil(promptText.length / 2)).trim();
+            const transcriptUserText = [
+              "Sender (untrusted metadata):",
+              "```json",
+              JSON.stringify({ label: "gateway-client", id: "gateway-client" }, null, 2),
+              "```",
+              "",
+              "[2026-04-18 05:06 UTC] 0xbbx: [part 1/2]",
+              partOne,
+              "[2026-04-18 05:06 UTC] 0xbbx: [part 2/2]",
+              partTwo,
+              "",
+              "[Telegram plugin note]",
+              transportNote,
+            ].join("\n");
+            void fs.writeFile(
+              sessionFile,
+              [
+                JSON.stringify({
+                  type: "message",
+                  message: { role: "user", content: transcriptUserText },
+                }),
+                JSON.stringify({
+                  type: "message",
+                  message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: "Late group-task blocker delivered" }],
+                  },
+                }),
+              ].join("\n") + "\n",
+              "utf8"
+            );
+          }, 50);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const startedAtMs = Date.now();
+    const { result, openclawMeta } = await runner.runChatTask({
+      taskId: "task_transcript_multipart",
+      sessionKey,
+      messageText: [
+        "Title: Golem Workers marketing video hook",
+        "",
+        "Instructions:",
+        "Create one English 20-30s marketing video for golemworkers.com.",
+        "",
+        "Production requirements:",
+        "- capture real browser footage of creating an agent in the product UI",
+        "- keep the final render vertical 9:16",
+        "- use fal.ai Kling 2.5 Turbo Pro and fal.ai MiniMax Speech-02 HD",
+      ].join("\n"),
+      deliverySystem: "relay_channel_v2",
+      timeoutMs: 5_000,
+    });
+    const elapsedMs = Date.now() - startedAtMs;
+
+    expect(result.outcome).toBe("reply");
+    if (result.outcome !== "reply") throw new Error("expected reply");
+    expect(result.reply.message).toEqual({
+      role: "assistant",
+      content: [{ type: "text", text: "Late group-task blocker delivered" }],
+    });
+    expect(openclawMeta).toMatchObject({
+      method: "chat.send",
+      runId: "run_transcript_multipart",
+    });
+    expect(elapsedMs).toBeLessThan(2_000);
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("recovers the current session transcript reply after a terminal error event", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-error-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);

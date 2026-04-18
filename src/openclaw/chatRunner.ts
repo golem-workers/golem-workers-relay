@@ -272,13 +272,56 @@ function normalizeComparableText(text: string | null | undefined): string {
   return (text ?? "").replace(/\r\n/g, "\n").trim();
 }
 
+function stripTranscriptDeliveryDecorations(text: string): string {
+  return text
+    .replace(/^Sender \(untrusted metadata\):\s*```json[\s\S]*?```\s*/i, "")
+    .replace(/^\[[^\]\n]+UTC\]\s+[^:\n]{1,120}:\s*/gim, "")
+    .replace(/^\[part\s+\d+\/\d+\]\s*/gim, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function collapseComparableWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 function matchesTranscriptUserMessage(candidateText: string, requestText: string): boolean {
   const normalizedCandidate = normalizeComparableText(candidateText);
   const normalizedRequest = normalizeComparableText(requestText);
   if (!normalizedCandidate || !normalizedRequest) return false;
+  if (normalizedCandidate === normalizedRequest || normalizedCandidate.endsWith(normalizedRequest)) {
+    return true;
+  }
+
+  const canonicalCandidate = stripTranscriptDeliveryDecorations(normalizedCandidate);
+  const canonicalRequest = stripTranscriptDeliveryDecorations(normalizedRequest);
+  if (!canonicalCandidate || !canonicalRequest) return false;
+  if (canonicalCandidate === canonicalRequest || canonicalCandidate.endsWith(canonicalRequest)) {
+    return true;
+  }
+
+  const compactCandidate = collapseComparableWhitespace(canonicalCandidate);
+  const compactRequest = collapseComparableWhitespace(canonicalRequest);
+  if (!compactCandidate || !compactRequest) return false;
+  if (compactCandidate === compactRequest || compactCandidate.endsWith(compactRequest)) {
+    return true;
+  }
+
+  const allowContainedMatch = Math.max(compactCandidate.length, compactRequest.length) >= 200;
+  if (!allowContainedMatch) {
+    return false;
+  }
+  const anchorLength = Math.min(160, compactRequest.length, compactCandidate.length);
+  const requestPrefix = compactRequest.slice(0, anchorLength);
+  const requestSuffix = compactRequest.slice(-anchorLength);
   return (
-    normalizedCandidate === normalizedRequest ||
-    normalizedCandidate.endsWith(normalizedRequest)
+    compactCandidate.includes(compactRequest) ||
+    compactRequest.includes(compactCandidate) ||
+    (requestPrefix.length >= 80 &&
+      requestSuffix.length >= 80 &&
+      compactCandidate.includes(requestPrefix) &&
+      compactCandidate.includes(requestSuffix))
   );
 }
 
