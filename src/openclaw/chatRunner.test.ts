@@ -2174,6 +2174,128 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("recovers the current session transcript reply after a terminal error event", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-error-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+
+    const sessionKey = "s-transcript-error";
+    const sessionId = "sess-transcript-error";
+    const sessionFile = path.join(sessionsDir, `${sessionId}.jsonl`);
+    await fs.writeFile(
+      path.join(sessionsDir, "sessions.json"),
+      JSON.stringify({
+        [`agent:main:${sessionKey}`]: {
+          sessionId,
+          updatedAt: Date.now(),
+          sessionFile,
+        },
+      }),
+      "utf8"
+    );
+    await fs.writeFile(sessionFile, "", "utf8");
+
+    let sentMessage: unknown = null;
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          sentMessage = ((frame.params ?? {}) as Record<string, unknown>).message;
+          const runId = "run_transcript_error";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: {
+                  runId,
+                  sessionKey,
+                  seq: 1,
+                  state: "error",
+                  errorMessage: "Chat error",
+                },
+              })
+            );
+          }, 10);
+          setTimeout(() => {
+            void fs.writeFile(
+              sessionFile,
+              [
+                JSON.stringify({
+                  type: "message",
+                  message: typeof sentMessage === "string" ? { role: "user", content: sentMessage } : sentMessage,
+                }),
+                JSON.stringify({
+                  type: "message",
+                  message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: "Recovered after error" }],
+                  },
+                }),
+              ].join("\n") + "\n",
+              "utf8"
+            );
+          }, 60);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const startedAtMs = Date.now();
+    const { result, openclawMeta } = await runner.runChatTask({
+      taskId: "task_transcript_error",
+      sessionKey,
+      messageText: "hi",
+      timeoutMs: 5_000,
+    });
+    const elapsedMs = Date.now() - startedAtMs;
+
+    expect(result.outcome).toBe("reply");
+    if (result.outcome !== "reply") throw new Error("expected reply");
+    expect(result.reply.message).toEqual({
+      role: "assistant",
+      content: [{ type: "text", text: "Recovered after error" }],
+    });
+    expect(openclawMeta).toMatchObject({
+      method: "chat.send",
+      runId: "run_transcript_error",
+    });
+    expect(elapsedMs).toBeLessThan(2_000);
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("does not resend stale MEDIA from earlier transcript history", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-stale-media-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);

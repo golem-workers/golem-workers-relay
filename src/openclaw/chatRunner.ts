@@ -116,6 +116,8 @@ const TRANSPORT_RECOVERY_NOTE = [
 ].join("\n");
 
 const OPENCLAW_SLASH_COMMAND_FINAL_WAIT_TIMEOUT_MS = 15_000;
+const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_TIMEOUT_MS = 10_000;
+const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_POLL_INTERVAL_MS = 250;
 
 type GatewayChatContentPart =
   | { type: "text"; text: string }
@@ -369,6 +371,27 @@ async function readLatestAssistantMessageFromSessionTranscript(input: {
   }
 
   return latestAssistantMessage;
+}
+
+async function waitForAssistantMessageFromSessionTranscript(input: {
+  sessionKey: string;
+  requestMessage: GatewayChatMessage;
+  timeoutMs: number;
+  pollIntervalMs?: number;
+}): Promise<unknown> {
+  const deadline = Date.now() + input.timeoutMs;
+  const pollIntervalMs = Math.max(50, Math.trunc(input.pollIntervalMs ?? OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_POLL_INTERVAL_MS));
+  while (Date.now() < deadline) {
+    const transcriptMessage = await readLatestAssistantMessageFromSessionTranscript({
+      sessionKey: input.sessionKey,
+      requestMessage: input.requestMessage,
+    }).catch(() => undefined);
+    if (transcriptMessage !== undefined) {
+      return transcriptMessage;
+    }
+    await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
+  }
+  return undefined;
 }
 
 async function collectReplyArtifacts(input: {
@@ -1002,6 +1025,42 @@ export class ChatRunner {
         const retryable =
           classification.retryable && attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
         if (!retryable) {
+          const transcriptFinalMessage =
+            finalAttemptMessage !== null
+              ? await waitForAssistantMessageFromSessionTranscript({
+                  sessionKey: input.sessionKey,
+                  requestMessage: finalAttemptMessage,
+                  timeoutMs: Math.min(
+                    OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_TIMEOUT_MS,
+                    Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))
+                  ),
+                })
+              : undefined;
+          if (transcriptFinalMessage !== undefined) {
+            logger.info(
+              {
+                event: "artifact_delivery",
+                stage: "transcript_reply_recovered_after_error",
+                taskId: input.taskId,
+                openclawRunId: runId,
+                sessionKey: input.sessionKey,
+                errorMessageLen: gatewayErrorMessage.length,
+                errorMessagePreview: makeTextPreview(gatewayErrorMessage, 500),
+              },
+              "Recovered final reply from session transcript after a terminal error event"
+            );
+            return await buildReplyRunResult({
+              taskId: input.taskId,
+              runId,
+              sessionKey: input.sessionKey,
+              deliverySystem: input.deliverySystem ?? "legacy_push_v1",
+              finalMessage: transcriptFinalMessage,
+              transcriptFinalMessage,
+              openclawEvents,
+              startedAtMs,
+              devLogEnabled: this.devLogEnabled,
+            });
+          }
           const normalizedMessage = normalizeGatewayFailureMessage({
             message: gatewayErrorMessage,
             reason: classification.reason,
