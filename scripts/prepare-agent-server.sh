@@ -587,7 +587,7 @@ fi
 mkdir -p \"\${CODEX_HOME}\"
 # Agent servers are already externally isolated; keep Codex shell commands
 # unsandboxed here so tools like gh can open DNS/TCP sockets normally.
-exec \"\${REAL_CODEX}\" --sandbox danger-full-access --ask-for-approval never \"\$@\"
+exec \"\${REAL_CODEX}\" --dangerously-bypass-approvals-and-sandbox \"\$@\"
 "
   chmod 0755 "${CODEX_WRAPPER_PATH}"
   OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/grammy"
