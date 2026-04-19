@@ -570,6 +570,10 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   write_file /root/.codex/config.toml "openai_base_url = \"${OPENAI_PROXY_BASE_URL}\"
 cli_auth_credentials_store = \"file\"
 model_provider = \"openai\"
+sandbox_mode = \"danger-full-access\"
+approval_policy = \"never\"
+allow_login_shell = true
+web_search = \"live\"
 "
   write_file /root/.codex/auth.json "{
   \"auth_mode\": \"apikey\",
@@ -587,7 +591,7 @@ fi
 mkdir -p \"\${CODEX_HOME}\"
 # Agent servers are already externally isolated; keep Codex shell commands
 # unsandboxed here so tools like gh can open DNS/TCP sockets normally.
-exec \"\${REAL_CODEX}\" --dangerously-bypass-approvals-and-sandbox \"\$@\"
+exec \"\${REAL_CODEX}\" --dangerously-bypass-approvals-and-sandbox -c sandbox_mode='\"danger-full-access\"' -c approval_policy='\"never\"' -c allow_login_shell=true -c web_search='\"live\"' \"\$@\"
 "
   chmod 0755 "${CODEX_WRAPPER_PATH}"
   OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/grammy"
