@@ -97,6 +97,10 @@ type OpenclawChatMeta = {
 
 type DeliverySystem = "legacy_push_v1" | "relay_channel_v2";
 
+type ResolvedSessionTranscriptState = {
+  sessionFile: string;
+};
+
 const TRANSPORT_INTERRUPTION_PATTERNS = [
   /network connection lost/i,
   /socket hang up/i,
@@ -367,6 +371,58 @@ async function readSessionsMapFromState(): Promise<Record<string, unknown> | nul
   return isPlainObject(parsed) ? parsed : null;
 }
 
+function resolveSessionTranscriptStateFromMap(input: {
+  sessionsMap: Record<string, unknown>;
+  sessionKey: string;
+}): ResolvedSessionTranscriptState | null {
+  const sessionEntry = input.sessionsMap[`agent:main:${input.sessionKey}`];
+  if (!isPlainObject(sessionEntry)) return null;
+
+  const rawSessionFile =
+    typeof sessionEntry.sessionFile === "string" && sessionEntry.sessionFile.trim().length > 0
+      ? sessionEntry.sessionFile.trim()
+      : "";
+  if (!rawSessionFile) return null;
+
+  return {
+    sessionFile: path.isAbsolute(rawSessionFile)
+      ? rawSessionFile
+      : path.join(resolveDefaultStateDir(), "agents", "main", "sessions", rawSessionFile),
+  };
+}
+
+async function waitForSessionTranscriptState(input: {
+  sessionKey: string;
+  timeoutMs: number;
+  pollIntervalMs?: number;
+}): Promise<ResolvedSessionTranscriptState | null> {
+  if (input.timeoutMs <= 0) {
+    return null;
+  }
+  const deadline = Date.now() + input.timeoutMs;
+  const pollIntervalMs = Math.max(50, Math.trunc(input.pollIntervalMs ?? 100));
+  while (Date.now() < deadline) {
+    const sessionsMap = await readSessionsMapFromState();
+    if (sessionsMap) {
+      const resolved = resolveSessionTranscriptStateFromMap({
+        sessionsMap,
+        sessionKey: input.sessionKey,
+      });
+      if (resolved) {
+        const hasSessionFile = await fs
+          .access(resolved.sessionFile)
+          .then(() => true)
+          .catch(() => false);
+        if (hasSessionFile) {
+          return resolved;
+        }
+      }
+    }
+    await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
+  }
+  return null;
+}
+
 function readMessageRole(message: unknown): string | null {
   if (!isPlainObject(message)) return null;
   return typeof message.role === "string" && message.role.trim().length > 0 ? message.role.trim() : null;
@@ -375,26 +431,23 @@ function readMessageRole(message: unknown): string | null {
 async function readLatestAssistantMessageFromSessionTranscript(input: {
   sessionKey: string;
   requestMessage: GatewayChatMessage;
+  sessionState?: ResolvedSessionTranscriptState | null;
 }): Promise<unknown> {
   const requestText = normalizeComparableText(extractTextFromMessage(input.requestMessage));
   if (!requestText) return undefined;
 
-  const sessionsMap = await readSessionsMapFromState();
-  if (!sessionsMap) return undefined;
+  const sessionsMap = input.sessionState ? null : await readSessionsMapFromState();
+  const sessionState =
+    input.sessionState ??
+    (sessionsMap
+      ? resolveSessionTranscriptStateFromMap({
+          sessionsMap,
+          sessionKey: input.sessionKey,
+        })
+      : null);
+  if (!sessionState) return undefined;
 
-  const sessionEntry = sessionsMap[`agent:main:${input.sessionKey}`];
-  if (!isPlainObject(sessionEntry)) return undefined;
-
-  const rawSessionFile =
-    typeof sessionEntry.sessionFile === "string" && sessionEntry.sessionFile.trim().length > 0
-      ? sessionEntry.sessionFile.trim()
-      : "";
-  if (!rawSessionFile) return undefined;
-
-  const sessionFile = path.isAbsolute(rawSessionFile)
-    ? rawSessionFile
-    : path.join(resolveDefaultStateDir(), "agents", "main", "sessions", rawSessionFile);
-  const rawTranscript = await fs.readFile(sessionFile, "utf8").catch(() => "");
+  const rawTranscript = await fs.readFile(sessionState.sessionFile, "utf8").catch(() => "");
   if (!rawTranscript.trim()) return undefined;
 
   const transcriptMessages = rawTranscript
@@ -440,6 +493,7 @@ async function waitForAssistantMessageFromSessionTranscript(input: {
   requestMessage: GatewayChatMessage;
   timeoutMs: number;
   pollIntervalMs?: number;
+  sessionState?: ResolvedSessionTranscriptState | null;
 }): Promise<unknown> {
   const deadline = Date.now() + input.timeoutMs;
   const pollIntervalMs = Math.max(50, Math.trunc(input.pollIntervalMs ?? OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_POLL_INTERVAL_MS));
@@ -447,6 +501,7 @@ async function waitForAssistantMessageFromSessionTranscript(input: {
     const transcriptMessage = await readLatestAssistantMessageFromSessionTranscript({
       sessionKey: input.sessionKey,
       requestMessage: input.requestMessage,
+      sessionState: input.sessionState,
     }).catch(() => undefined);
     if (transcriptMessage !== undefined) {
       return transcriptMessage;
@@ -947,6 +1002,13 @@ export class ChatRunner {
         continue;
       }
 
+      const transcriptSessionState =
+        (input.deliverySystem ?? "legacy_push_v1") === "relay_channel_v2"
+          ? await waitForSessionTranscriptState({
+              sessionKey: input.sessionKey,
+              timeoutMs: Math.min(1_200, remainingMs),
+            }).catch(() => null)
+          : null;
       try {
         if (this.devLogEnabled) {
           logger.debug({ taskId: input.taskId, runId, attempt }, "Relay waiting for chat final event");
@@ -962,6 +1024,7 @@ export class ChatRunner {
         const finalEvt = await this.waitForFinal(runId, finalWaitTimeoutMs, {
           sessionKey: input.sessionKey,
           requestMessage: finalAttemptMessage ?? undefined,
+          sessionState: transcriptSessionState,
         });
         this.runSessionByRunId.delete(runId);
         this.runTraceByRunId.delete(runId);
@@ -991,13 +1054,27 @@ export class ChatRunner {
         }
         if (finalEvt.state === "final") {
           const gatewayFinalMessage = finalEvt.message ?? readLatestUserFacingMessage(openclawEvents);
-          const transcriptFinalMessage =
+          let transcriptFinalMessage =
             finalAttemptMessage !== null
               ? await readLatestAssistantMessageFromSessionTranscript({
                   sessionKey: input.sessionKey,
                   requestMessage: finalAttemptMessage,
+                  sessionState: transcriptSessionState,
                 }).catch(() => undefined)
               : undefined;
+          if (
+            transcriptFinalMessage === undefined &&
+            gatewayFinalMessage === undefined &&
+            finalAttemptMessage !== null &&
+            (input.deliverySystem ?? "legacy_push_v1") === "relay_channel_v2"
+          ) {
+            transcriptFinalMessage = await waitForAssistantMessageFromSessionTranscript({
+              sessionKey: input.sessionKey,
+              requestMessage: finalAttemptMessage,
+              timeoutMs: Math.min(1_000, Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))),
+              sessionState: transcriptSessionState,
+            }).catch(() => undefined);
+          }
           const useTranscriptFinalMessage =
             transcriptFinalMessage !== undefined &&
             shouldPreferTranscriptReplyMessage({
@@ -1130,6 +1207,7 @@ export class ChatRunner {
                     OPENCLAW_DISCONNECT_TRANSCRIPT_RECOVERY_TIMEOUT_MS,
                     Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))
                   ),
+                  sessionState: transcriptSessionState,
                 })
               : undefined;
           if (transcriptFinalMessage !== undefined) {
@@ -1209,6 +1287,7 @@ export class ChatRunner {
                     OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_TIMEOUT_MS,
                     Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))
                   ),
+                  sessionState: transcriptSessionState,
                 })
               : undefined;
           if (transcriptFinalMessage !== undefined) {
@@ -1272,6 +1351,7 @@ export class ChatRunner {
             ? await readLatestAssistantMessageFromSessionTranscript({
                 sessionKey: input.sessionKey,
                 requestMessage: finalAttemptMessage,
+                sessionState: transcriptSessionState,
               }).catch(() => undefined)
             : undefined;
         if (transcriptFinalMessage !== undefined) {
@@ -1446,6 +1526,7 @@ export class ChatRunner {
       sessionKey?: string;
       requestMessage?: GatewayChatMessage;
       transcriptPollIntervalMs?: number;
+      sessionState?: ResolvedSessionTranscriptState | null;
     }
   ): Promise<ChatCompletionSignal> {
     return new Promise<ChatCompletionSignal>((resolve, reject) => {
@@ -1479,6 +1560,7 @@ export class ChatRunner {
             const transcriptMessage = await readLatestAssistantMessageFromSessionTranscript({
               sessionKey: opts.sessionKey!,
               requestMessage: opts.requestMessage!,
+              sessionState: opts.sessionState,
             }).catch(() => undefined);
             if (transcriptMessage === undefined) {
               return;
