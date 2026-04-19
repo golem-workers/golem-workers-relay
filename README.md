@@ -180,6 +180,7 @@ Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 - `OPENCLAW_GATEWAY_WS_URL=ws://127.0.0.1:18789`
 - `OPENCLAW_GATEWAY_TOKEN=<secret>` (or `OPENCLAW_GATEWAY_PASSWORD=<secret>`)
 - `OPENCLAW_SCOPES=operator.admin` (default)
+- `RELAY_OPENCLAW_TICK_TIMEOUT_MULTIPLIER=10` (default: relay closes the gateway socket only after missing ticks for `hello.policy.tickIntervalMs * multiplier`)
 - `OPENAI_STT_BASE_URL=http://backend.example.com/api/v1/relays/openai` (optional; defaults to the backend relay-auth proxy)
 - `OPENAI_STT_MODEL=gpt-4o-transcribe` (optional; OpenAI transcription model used for voice transcription)
 - `STT_TIMEOUT_MS=15000` (optional, transcription timeout)

@@ -245,6 +245,53 @@ describe("GatewayClient", () => {
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
   });
+
+  it("uses the configured tick timeout multiplier before closing the socket", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+
+    const observed: Array<{ connected: boolean; reason?: string }> = [];
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string };
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 1000, maxPayload: 1, maxBufferedBytes: 1 },
+                server: { version: "x", connId: "c" },
+                snapshot: {},
+                features: { methods: [], events: [] },
+              },
+            })
+          );
+        }
+      });
+    });
+
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      tickTimeoutMultiplier: 3,
+      onConnectionStateChange: (state) => observed.push({ connected: state.connected, reason: state.reason }),
+    });
+    await client.start();
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    expect(observed.some((entry) => entry.connected === false)).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+    expect(observed.some((entry) => entry.connected === false && entry.reason?.includes("tick timeout"))).toBe(true);
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
 });
 
 function rawDataToString(data: unknown): string {

@@ -43,6 +43,7 @@ export type GatewayClientOptions = {
   websocketHandshakeTimeoutMs?: number;
   startupMaxAttempts?: number;
   startupRetryDelayMs?: number;
+  tickTimeoutMultiplier?: number;
   onConnectionStateChange?: (state: {
     connected: boolean;
     reason?: string;
@@ -193,6 +194,7 @@ export class GatewayClient {
 
   private lastTickMs: number | null = null;
   private tickIntervalMs = 30_000;
+  private tickTimeoutMultiplier = 10;
   private tickTimer: NodeJS.Timeout | null = null;
   private connectReadyTimeout: NodeJS.Timeout | null = null;
 
@@ -205,6 +207,7 @@ export class GatewayClient {
 
   constructor(opts: GatewayClientOptions) {
     this.opts = opts;
+    this.tickTimeoutMultiplier = Math.max(1, opts.tickTimeoutMultiplier ?? 10);
   }
 
   async start(): Promise<void> {
@@ -543,8 +546,17 @@ export class GatewayClient {
       if (!this.ws) return;
       if (!this.lastTickMs) return;
       const elapsed = Date.now() - this.lastTickMs;
-      if (elapsed > this.tickIntervalMs * 2) {
-        logger.warn({ elapsed, tickIntervalMs: this.tickIntervalMs }, "Tick timeout, closing gateway socket");
+      const timeoutMs = this.tickIntervalMs * this.tickTimeoutMultiplier;
+      if (elapsed > timeoutMs) {
+        logger.warn(
+          {
+            elapsed,
+            tickIntervalMs: this.tickIntervalMs,
+            tickTimeoutMultiplier: this.tickTimeoutMultiplier,
+            tickTimeoutMs: timeoutMs,
+          },
+          "Tick timeout, closing gateway socket"
+        );
         try {
           this.ws.close(4000, "tick timeout");
         } catch {

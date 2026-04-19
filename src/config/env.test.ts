@@ -94,6 +94,21 @@ describe("loadRelayConfig", () => {
     expect(custom.openclawForwardFinalOnly).toBe(false);
   });
 
+  it("uses a 10x gateway tick timeout multiplier by default and allows override", () => {
+    const def = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+    });
+    expect(def.openclaw.tickTimeoutMultiplier).toBe(10);
+
+    const custom = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+      RELAY_OPENCLAW_TICK_TIMEOUT_MULTIPLIER: "25",
+    });
+    expect(custom.openclaw.tickTimeoutMultiplier).toBe(25);
+  });
+
   it("uses explicit provider-proxy backend prefixes by default", () => {
     const cfg = loadRelayConfig({
       RELAY_TOKEN: "t",

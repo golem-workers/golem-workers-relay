@@ -196,6 +196,7 @@ async function main(): Promise<void> {
     devLogEnabled: cfg.devLogEnabled,
     devLogTextMaxLen: cfg.devLogTextMaxLen,
     devLogGatewayFrames: cfg.devLogGatewayFrames,
+    tickTimeoutMultiplier: cfg.openclaw.tickTimeoutMultiplier,
   });
   devicePairingAutoApprover = createDevicePairingAutoApprover({ gateway });
   devicePairingAutoApprover.start();

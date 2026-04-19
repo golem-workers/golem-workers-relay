@@ -81,6 +81,7 @@ const envSchema = z.object({
   OPENCLAW_GATEWAY_TOKEN: z.string().min(1).optional(),
   OPENCLAW_GATEWAY_PASSWORD: z.string().min(1).optional(),
   OPENCLAW_SCOPES: z.string().optional(),
+  RELAY_OPENCLAW_TICK_TIMEOUT_MULTIPLIER: z.coerce.number().min(1).max(1000).optional(),
 
   OPENAI_STT_BASE_URL: z.string().url().optional(),
   OPENAI_STT_MODEL: z.string().min(1).optional(),
@@ -162,6 +163,7 @@ export type RelayConfig = {
     token?: string;
     password?: string;
     scopes: string[];
+    tickTimeoutMultiplier: number;
   };
   stt: {
     baseUrl: string;
@@ -284,6 +286,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
       token: parsed.OPENCLAW_GATEWAY_TOKEN,
       password: parsed.OPENCLAW_GATEWAY_PASSWORD,
       scopes: parseCsv(parsed.OPENCLAW_SCOPES) ?? ["operator.admin"],
+      tickTimeoutMultiplier: parsed.RELAY_OPENCLAW_TICK_TIMEOUT_MULTIPLIER ?? 10,
     },
     stt: {
       baseUrl: (
@@ -371,7 +374,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     devLogEnabled: false,
     devLogTextMaxLen: 200,
     devLogGatewayFrames: false,
-    openclaw: { token: "test", scopes: ["operator.admin"] },
+    openclaw: { token: "test", scopes: ["operator.admin"], tickTimeoutMultiplier: 10 },
     stt: {
       baseUrl: "http://localhost:3000/api/v1/relays/openai",
       model: "gpt-4o-transcribe",
