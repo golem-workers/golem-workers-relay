@@ -206,7 +206,7 @@ async function syncPluginRepoAndReadVersion(
 }
 
 async function buildPluginBundle(plugin: { id: string; repoDir: string }, deps: Deps): Promise<string> {
-  await deps.exec("npm", ["ci"], { cwd: plugin.repoDir });
+  await deps.exec("npm", ["ci", "--include=dev"], { cwd: plugin.repoDir });
   await deps.exec("npm", ["run", "bundle:agent"], { cwd: plugin.repoDir });
   const bundlePath = path.join(plugin.repoDir, ".artifacts", plugin.id, `${plugin.id}-bundle.tgz`);
   if (!(await pathExists(bundlePath))) {

@@ -170,7 +170,7 @@ describe("ensureRelayChannelPluginUpToDate", () => {
             return { stdout: "", stderr: "" };
           }
 
-          if (command === "npm" && args.join(" ") === "ci") {
+          if (command === "npm" && args.join(" ") === "ci --include=dev") {
             return { stdout: "", stderr: "" };
           }
 
@@ -267,6 +267,7 @@ describe("ensureRelayChannelPluginUpToDate", () => {
     expect(updatedConfig.channels["relay-channel"]).toEqual({
       accounts: [{ id: "srv_1", port: 43129 }],
     });
+    expect(commands).toContain("npm ci --include=dev");
     expect(commands).toContain("openclaw plugins uninstall relay-channel --force");
     expect(commands).toContain("openclaw plugins install " + path.join(repoDir, ".artifacts", "relay-channel", "relay-channel-bundle.tgz"));
     expect(commands).toContain("systemctl --user restart openclaw-gateway.service");
