@@ -439,6 +439,14 @@ export class GatewayClient {
     this.pending.clear();
   }
 
+  private clearPendingConnectRequests(): void {
+    for (const [id, pending] of this.pending.entries()) {
+      if (pending.method !== "connect") continue;
+      clearTimeout(pending.timeout);
+      this.pending.delete(id);
+    }
+  }
+
   private handleMessage(text: string): void {
     const textMaxLen = this.opts.devLogTextMaxLen ?? 200;
     if (this.opts.devLogGatewayFrames) {
@@ -524,6 +532,13 @@ export class GatewayClient {
     if (evt.event === "connect.challenge") {
       const challenge = connectChallengeEventSchema.safeParse(evt.payload);
       if (challenge.success) {
+        // Some gateways reject the optimistic first `connect` and then issue a
+        // challenge. Allow a second `connect` carrying the nonce instead of
+        // getting stuck behind the original in-flight attempt.
+        if (this.connectSent && !this.hello) {
+          this.clearPendingConnectRequests();
+          this.connectSent = false;
+        }
         this.connectNonce = challenge.data.nonce;
         if (this.opts.devLogEnabled) {
           logger.debug({ event: "connect.challenge", hasNonce: true }, "Gateway connect challenge received");
