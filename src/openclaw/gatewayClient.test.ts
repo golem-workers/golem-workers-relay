@@ -49,6 +49,59 @@ describe("GatewayClient", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("accepts hello-ok auth without deviceToken", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+
+    let observedHello: { auth?: { role?: string; scopes?: string[]; deviceToken?: string } } | null = null;
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000, maxPayload: 1, maxBufferedBytes: 1 },
+                server: { version: "x", connId: "c" },
+                snapshot: {},
+                features: { methods: [], events: [] },
+                auth: {
+                  role: "operator",
+                  scopes: ["operator.admin"],
+                },
+              },
+            })
+          );
+        }
+      });
+    });
+
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onHelloOk: (hello) => {
+        observedHello = hello;
+      },
+    });
+    await client.start();
+
+    expect(client.isReady()).toBe(true);
+    expect(observedHello?.auth).toEqual({
+      role: "operator",
+      scopes: ["operator.admin"],
+    });
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("re-sends connect with nonce when challenge arrives after the first connect", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);

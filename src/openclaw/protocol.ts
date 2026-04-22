@@ -56,7 +56,9 @@ export const helloOkSchema = z.object({
     .optional(),
   auth: z
     .object({
-      deviceToken: z.string().min(1),
+      // Shared-auth loopback clients can receive negotiated role/scopes
+      // without an issued device token in newer OpenClaw releases.
+      deviceToken: z.string().min(1).optional(),
       role: z.string().min(1),
       scopes: z.array(z.string()),
       issuedAtMs: z.number().int().min(0).optional(),
