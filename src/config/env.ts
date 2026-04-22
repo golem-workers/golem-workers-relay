@@ -22,6 +22,7 @@ const envSchema = z.object({
   RELAY_TOKEN: z.string().min(1),
   BACKEND_BASE_URL: z.string().url(),
 
+  APP_GIT_REF: z.string().min(1).optional(),
   RELAY_INSTANCE_ID: z.string().min(1).optional(),
   RELAY_TASK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(2_147_483_647).optional(),
   RELAY_CHAT_BATCH_DEBOUNCE_MS: z.coerce.number().int().min(0).max(120_000).optional(),
@@ -72,6 +73,10 @@ const envSchema = z.object({
   RELAY_CHANNEL_CONTROL_PLANE_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_CHANNEL_DATA_PLANE_HOST: z.string().min(1).optional(),
   RELAY_CHANNEL_DATA_PLANE_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+  RELAY_CHANNEL_PLUGIN_AUTO_UPDATE_ENABLED: envBooleanSchema.optional(),
+  RELAY_CHANNEL_PLUGIN_REPO_DIR: z.string().min(1).optional(),
+  RELAY_CHANNEL_PLUGIN_REPO_URL: z.string().min(1).optional(),
+  RELAY_CHANNEL_PLUGIN_GIT_REF: z.string().min(1).optional(),
 
   MESSAGE_FLOW_LOG: z.coerce.boolean().optional(),
 
@@ -176,6 +181,12 @@ export type RelayConfig = {
     controlPlanePort: number;
     dataPlaneHost: string;
     dataPlanePort: number;
+    plugin: {
+      autoUpdateEnabled: boolean;
+      repoDir: string;
+      repoUrl: string;
+      gitRef: string;
+    };
   };
 };
 
@@ -302,6 +313,14 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
       controlPlanePort: parsed.RELAY_CHANNEL_CONTROL_PLANE_PORT ?? 43_129,
       dataPlaneHost: parsed.RELAY_CHANNEL_DATA_PLANE_HOST ?? "127.0.0.1",
       dataPlanePort: parsed.RELAY_CHANNEL_DATA_PLANE_PORT ?? 43_130,
+      plugin: {
+        autoUpdateEnabled: parsed.RELAY_CHANNEL_PLUGIN_AUTO_UPDATE_ENABLED ?? true,
+        repoDir: parsed.RELAY_CHANNEL_PLUGIN_REPO_DIR ?? "/root/golem-workers-openclaw-channel-plugin",
+        repoUrl:
+          parsed.RELAY_CHANNEL_PLUGIN_REPO_URL ??
+          "https://github.com/golem-workers/golem-workers-openclaw-channel-plugin.git",
+        gitRef: resolveDefaultRelayChannelPluginGitRef(parsed, env),
+      },
     },
   };
 }
@@ -386,6 +405,12 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
       controlPlanePort: 43_129,
       dataPlaneHost: "127.0.0.1",
       dataPlanePort: 43_130,
+      plugin: {
+        autoUpdateEnabled: true,
+        repoDir: "/root/golem-workers-openclaw-channel-plugin",
+        repoUrl: "https://github.com/golem-workers/golem-workers-openclaw-channel-plugin.git",
+        gitRef: "release",
+      },
     },
   };
   return {
@@ -409,5 +434,19 @@ function withLeadingSlash(value: string): string {
   const normalized = value.trim();
   if (!normalized) return "/";
   return normalized.startsWith("/") ? normalized : `/${normalized}`;
+}
+
+function resolveDefaultRelayChannelPluginGitRef(parsed: RelayEnv, env: NodeJS.ProcessEnv): string {
+  if (parsed.RELAY_CHANNEL_PLUGIN_GIT_REF) {
+    return parsed.RELAY_CHANNEL_PLUGIN_GIT_REF.trim();
+  }
+  if (parsed.APP_GIT_REF) {
+    return parsed.APP_GIT_REF.trim();
+  }
+  const runtimeEnv = `${env.NODE_ENV ?? ""}`.trim().toLowerCase();
+  if (runtimeEnv === "development" || runtimeEnv === "dev") {
+    return "main";
+  }
+  return "release";
 }
 

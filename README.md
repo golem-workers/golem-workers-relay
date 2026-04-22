@@ -11,6 +11,10 @@ The relay also reports the current OpenClaw connectivity state back to backend:
 - throttles repeated disconnect reports to at most once per minute
 - sends `CONNECTED` immediately after the gateway connection is restored
 
+For `relay_channel_v2`, relay startup also checks the installed `relay-channel`
+plugin version against the current plugin repo ref and automatically rebuilds /
+reinstalls the plugin when the installed version is behind.
+
 For `relay_channel_v2` agents, the relay now advertises provider-aware control
 plane capability profiles on the local control plane. The top-level hello frame
 keeps legacy aggregate capability maps for migration compatibility, while
@@ -68,6 +72,7 @@ The script:
 - installs base Ubuntu packages plus agent media/PDF tooling (`ffmpeg`, `poppler-utils`, `imagemagick`, `python3-pip`), Google Chrome Stable, Go, Linuxbrew, and Node 22;
 - pre-pulls and builds `golem-workers-relay` from `release` by default, or from explicit `RELAY_GIT_REF` when exported before running the script;
 - installs the relay-channel plugin from explicit `RELAY_CHANNEL_PLUGIN_GIT_REF` when exported, otherwise keeps the existing default coupling to the relay ref (`main` -> `main`, everything else -> `release`);
+- at runtime, relay also re-checks the installed `relay-channel` package version against the selected plugin repo ref and auto-updates the plugin before opening the relay control plane when the installed version is older;
 - installs `pnpm`, installs the latest OpenClaw and official `@openai/codex` CLI through a hoisted pnpm global package tree, adds stable `/usr/local/bin/openclaw` and `/usr/local/bin/codex` symlinks, writes managed `~/.codex/config.toml`, `~/.codex/auth.json`, and `/usr/local/bin/golem-codex-proxy` files so Codex uses explicit API-key login state, explicit `danger-full-access` / `never` defaults, and wrapper-level CLI overrides together with the local OpenAI proxy, prepares runtime dependencies (`grammy`, `@grammyjs/runner`, `@grammyjs/transformer-throttler`, `@buape/carbon`, `@larksuiteoapi/node-sdk`, `@slack/bolt` for the current OpenClaw bundled-plugin import bugs), preinstalls `relay-channel` through `openclaw plugins install`, leaves `relay-channel` disabled until backend provisioning wires its account config, plus full `playwright`; the relay only allows OpenAI `/v1/responses` websocket upgrades while the active OpenClaw model is `codex/*`
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `PNPM_HOME`, `NODE_PATH`);
 - explicitly brings up root user-systemd (`loginctl enable-linger root`, `user@0.service`, `/run/user/0/bus`) before any OpenClaw daemon install work;

@@ -27,6 +27,7 @@ import { createGatewayEventForwarder } from "./openclaw/gatewayEventForwarder.js
 import { createOpenclawConnectionStatusReporter } from "./openclaw/connectionStatusReporter.js";
 import { closeHttpServer, startRelayChannelDataPlaneServer } from "./relayChannel/startDataPlaneServer.js";
 import { startRelayChannelControlPlane } from "./relayChannel/startControlPlaneServer.js";
+import { ensureRelayChannelPluginUpToDate } from "./relayChannel/ensurePluginUpToDate.js";
 import { executeAgentControl } from "./agentControl/executeAgentControl.js";
 
 async function main(): Promise<void> {
@@ -82,9 +83,19 @@ async function main(): Promise<void> {
       relayChannelDataPlane: cfg.relayChannel.enabled
         ? `${cfg.relayChannel.dataPlaneHost}:${cfg.relayChannel.dataPlanePort}`
         : null,
+      relayChannelPluginAutoUpdateEnabled: cfg.relayChannel.plugin.autoUpdateEnabled,
+      relayChannelPluginGitRef: cfg.relayChannel.plugin.gitRef,
+      relayChannelPluginRepoDir: cfg.relayChannel.plugin.repoDir,
     },
     "Relay starting"
   );
+
+  if (cfg.relayChannel.enabled) {
+    await ensureRelayChannelPluginUpToDate({
+      openclawConfigPath: openclaw.configPath,
+      plugin: cfg.relayChannel.plugin,
+    });
+  }
 
   const backend = new BackendClient({
     baseUrl: cfg.backendBaseUrl,

@@ -156,5 +156,38 @@ describe("loadRelayConfig", () => {
     expect(cfg.stt.model).toBe("gpt-4o-transcribe");
     expect(cfg.stt.timeoutMs).toBe(20_000);
   });
+
+  it("uses release-coupled relay-channel plugin auto-update defaults", () => {
+    const cfg = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+    });
+
+    expect(cfg.relayChannel.plugin.autoUpdateEnabled).toBe(true);
+    expect(cfg.relayChannel.plugin.repoDir).toBe("/root/golem-workers-openclaw-channel-plugin");
+    expect(cfg.relayChannel.plugin.repoUrl).toBe(
+      "https://github.com/golem-workers/golem-workers-openclaw-channel-plugin.git"
+    );
+    expect(cfg.relayChannel.plugin.gitRef).toBe("release");
+  });
+
+  it("allows explicit relay-channel plugin runtime update overrides", () => {
+    const cfg = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+      APP_GIT_REF: "main",
+      RELAY_CHANNEL_PLUGIN_AUTO_UPDATE_ENABLED: "0",
+      RELAY_CHANNEL_PLUGIN_REPO_DIR: "/srv/plugin",
+      RELAY_CHANNEL_PLUGIN_REPO_URL: "git@github.com:golem-workers/golem-workers-openclaw-channel-plugin.git",
+      RELAY_CHANNEL_PLUGIN_GIT_REF: "feature/channel-plugin",
+    });
+
+    expect(cfg.relayChannel.plugin.autoUpdateEnabled).toBe(false);
+    expect(cfg.relayChannel.plugin.repoDir).toBe("/srv/plugin");
+    expect(cfg.relayChannel.plugin.repoUrl).toBe(
+      "git@github.com:golem-workers/golem-workers-openclaw-channel-plugin.git"
+    );
+    expect(cfg.relayChannel.plugin.gitRef).toBe("feature/channel-plugin");
+  });
 });
 
