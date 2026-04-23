@@ -360,6 +360,102 @@ stop_openclaw_gateway_if_present() {
   fi
 }
 
+run_openclaw_runtime_postbuild() {
+  if [[ -z "${OPENCLAW_PACKAGE_DIR:-}" || ! -d "${OPENCLAW_PACKAGE_DIR}" ]]; then
+    echo "OpenClaw package directory is missing before runtime-postbuild: ${OPENCLAW_PACKAGE_DIR:-<unset>}" >&2
+    return 1
+  fi
+  if [[ ! -f "${OPENCLAW_PACKAGE_DIR}/scripts/runtime-postbuild.mjs" ]]; then
+    echo "Missing OpenClaw runtime-postbuild script at ${OPENCLAW_PACKAGE_DIR}/scripts/runtime-postbuild.mjs" >&2
+    return 1
+  fi
+  (
+    cd "${OPENCLAW_PACKAGE_DIR}"
+    node ./scripts/runtime-postbuild.mjs
+  )
+}
+
+write_openclaw_snapshot_warmup_config() {
+  node --input-type=module - <<'NODE'
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+
+const configDir = path.join(os.homedir(), ".openclaw")
+const configPath = path.join(configDir, "openclaw.json")
+const warmupTelegramToken = "123456789:GW_SNAPSHOT_WARMUP_TOKEN"
+
+function ensureRecord(parent, key) {
+  const current = parent?.[key]
+  if (current && typeof current === "object" && !Array.isArray(current)) return current
+  const next = {}
+  parent[key] = next
+  return next
+}
+
+function normalizeStringArray(value) {
+  return Array.isArray(value)
+    ? value
+        .filter((item) => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : []
+}
+
+if (!fs.existsSync(configPath)) {
+  throw new Error(`Missing canonical OpenClaw config at ${configPath}`)
+}
+
+const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"))
+if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+  throw new Error(`Unexpected OpenClaw config shape in ${configPath}`)
+}
+
+const channelsCfg = ensureRecord(parsed, "channels")
+channelsCfg.telegram = {
+  enabled: true,
+  botToken: warmupTelegramToken,
+  dmPolicy: "open",
+  allowFrom: ["*"],
+}
+channelsCfg.whatsapp = {
+  enabled: true,
+  selfChatMode: true,
+  dmPolicy: "open",
+  allowFrom: ["*"],
+}
+
+const pluginsCfg = ensureRecord(parsed, "plugins")
+pluginsCfg.enabled = true
+pluginsCfg.allow = Array.from(
+  new Set([...normalizeStringArray(pluginsCfg.allow), "telegram", "whatsapp"])
+)
+const nextDeny = normalizeStringArray(pluginsCfg.deny).filter(
+  (item) => item !== "telegram" && item !== "whatsapp"
+)
+if (nextDeny.length > 0) {
+  pluginsCfg.deny = nextDeny
+} else {
+  delete pluginsCfg.deny
+}
+
+fs.mkdirSync(configDir, { recursive: true })
+fs.writeFileSync(configPath, `${JSON.stringify(parsed, null, 2)}\n`)
+console.log(`wrote snapshot warmup config at ${configPath}`)
+NODE
+}
+
+warm_openclaw_snapshot_channels() {
+  prepare_root_user_systemd
+  systemctl --user daemon-reload || true
+  systemctl --user enable openclaw-gateway.service || true
+  systemctl --user restart openclaw-gateway.service
+  wait_for_openclaw_gateway_ready
+  echo "OpenClaw gateway passed snapshot warmup readiness."
+  sleep 5
+  echo "Snapshot warmup settle complete."
+}
+
 main() {
   parse_args "$@"
   require_root
@@ -600,6 +696,8 @@ exec \"\${REAL_CODEX}\" --dangerously-bypass-approvals-and-sandbox -c sandbox_mo
   test -f "${OPENCLAW_GRAMMY_PACKAGE_DIR}/package.json"
   test -f "${OPENCLAW_GRAMMY_RUNNER_PACKAGE_DIR}/package.json"
   test -f "${OPENCLAW_GRAMMY_TRANSFORMER_THROTTLER_PACKAGE_DIR}/package.json"
+  set_step "openclaw_runtime_postbuild"
+  run_openclaw_runtime_postbuild
   set_step "openclaw_mutation_guard"
   stop_openclaw_gateway_if_present
   set_step "relay_channel_prepull"
@@ -711,6 +809,15 @@ NODE
     echo "Skipping openclaw onboard --install-daemon by request."
   fi
 
+  set_step "openclaw_snapshot_channels_warmup_config"
+  write_openclaw_snapshot_warmup_config
+
+  set_step "openclaw_snapshot_channels_warmup_start"
+  warm_openclaw_snapshot_channels
+
+  set_step "openclaw_snapshot_channels_warmup_status"
+  openclaw channels status --json || true
+
   set_step "openclaw_snapshot_shutdown"
   prepare_root_user_systemd
   systemctl --user daemon-reload || true
@@ -727,7 +834,7 @@ import path from "node:path"
 const configDir = path.join(os.homedir(), ".openclaw")
 const configPath = path.join(configDir, "openclaw.json")
 const requiredPluginIds = ["relay-channel"]
-const installedButDisabledPluginIds = ["relay-channel"]
+const installedButDisabledPluginIds = ["relay-channel", "telegram", "whatsapp"]
 const stalePluginIds = ["memory-lancedb-pro", "memory-lancedb"]
 
 if (!fs.existsSync(configPath)) {
