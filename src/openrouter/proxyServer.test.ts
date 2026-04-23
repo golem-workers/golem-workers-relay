@@ -1,6 +1,7 @@
 import http from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
+import { logger } from "../logger.js";
 import {
   LOCAL_PROXY_LISTEN_HOST,
   sanitizeWebSocketCloseCode,
@@ -632,6 +633,7 @@ describe("startOpenAiProxyServer", () => {
   const servers: http.Server[] = [];
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await Promise.all(
       servers.map(
         (server) =>
@@ -732,7 +734,54 @@ describe("startOpenAiProxyServer", () => {
     expect(receivedPath).toBe("/api/v1/relays/openai/responses");
   });
 
+  it("logs proxied request body previews with truncation", async () => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    const backendPort = await getFreePort();
+    const backendServer = http.createServer((_, res) => {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ id: "resp_456", model: "gpt-5.4", output: [] }));
+    });
+    await listen(backendServer, backendPort);
+    servers.push(backendServer);
+
+    const relayPort = await getFreePort();
+    const relayServer = startOpenAiProxyServer({
+      port: relayPort,
+      backendBaseUrl: `http://127.0.0.1:${backendPort}`,
+      relayToken: "relay-token",
+      pathPrefix: "/provider-proxy/openai",
+      backendPathPrefix: "/api/v1/relays/openai",
+    });
+    servers.push(relayServer);
+
+    const longInput = "hello ".repeat(500);
+    const response = await fetch(`http://127.0.0.1:${relayPort}/provider-proxy/openai/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.4", input: longInput }),
+    });
+
+    expect(response.status).toBe(200);
+    const proxyLogCall = infoSpy.mock.calls.find(
+      (call) => call[1] === "relay-openai-proxy proxied request"
+    );
+    expect(proxyLogCall).toBeTruthy();
+    expect(proxyLogCall?.[0]).toMatchObject({
+      method: "POST",
+      url: "/provider-proxy/openai/v1/responses",
+      statusCode: 200,
+      contentType: "application/json",
+      requestBodyPreviewTruncated: true,
+    });
+    expect(proxyLogCall?.[0]).toHaveProperty("requestBodyPreview");
+    expect(String(proxyLogCall?.[0]?.requestBodyPreview)).toContain('"model":"gpt-5.4"');
+    expect(String(proxyLogCall?.[0]?.requestBodyPreview)).toContain('"input":"hello hello');
+    expect(String(proxyLogCall?.[0]?.requestBodyPreview)).toMatch(/\.\.\.$/);
+  });
+
   it("proxies OpenAI websocket responses through the local relay", async () => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
     const backendPort = await getFreePort();
     let backendAuthHeader: string | null = null;
     let backendPath = "";
@@ -784,6 +833,25 @@ describe("startOpenAiProxyServer", () => {
     expect(JSON.parse(message)).toMatchObject({
       type: "response.completed",
     });
+    const upgradeLogCall = infoSpy.mock.calls.find(
+      (call) => call[1] === "relay-openai-proxy proxied websocket upgrade"
+    );
+    expect(upgradeLogCall?.[0]).toMatchObject({
+      url: "/provider-proxy/openai/v1/responses",
+      upstreamUrl: `ws://127.0.0.1:${backendPort}/api/v1/relays/openai/v1/responses`,
+    });
+    const downstreamFrameLogCall = infoSpy.mock.calls.find(
+      (call) =>
+        call[1] === "relay-openai-proxy proxied websocket frame" &&
+        call[0]?.direction === "downstream_to_upstream"
+    );
+    expect(downstreamFrameLogCall?.[0]).toMatchObject({
+      url: "/provider-proxy/openai/v1/responses",
+      direction: "downstream_to_upstream",
+      isBinary: false,
+      payloadPreviewTruncated: false,
+    });
+    expect(String(downstreamFrameLogCall?.[0]?.payloadPreview)).toContain('"type":"response.create"');
     client.terminate();
     backendWss.close();
   });

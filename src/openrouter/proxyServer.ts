@@ -2,6 +2,7 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable, type Duplex } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { WebSocket, WebSocketServer } from "ws";
+import { makeTextPreview } from "../common/utils/text.js";
 import { logger } from "../logger.js";
 
 export const LOCAL_PROXY_LISTEN_HOST = "127.0.0.1";
@@ -20,6 +21,22 @@ const hopByHopHeaders = new Set([
 ]);
 
 type RequestBodyMode = "passthrough" | "openrouter-model-rewrite";
+
+const PROXY_REQUEST_BODY_PREVIEW_MAX_LEN = 2_000;
+
+type PreparedUpstreamBody = {
+  body: Uint8Array | undefined;
+  requiresDuplex: boolean;
+  bodyPreview: string | null;
+  bodyPreviewTruncated: boolean;
+  bodySizeBytes: number;
+};
+
+type WebSocketProxyLogContext = {
+  serviceName: string;
+  url: string;
+  upstreamUrl: string;
+};
 
 type RelayProxyServerInput = {
   serviceName: string;
@@ -272,6 +289,12 @@ async function handleProxyRequest(
   const upstreamPath = `${input.backendPathPrefix}${stripPathPrefix(url.pathname, matchedPathPrefix)}${url.search}`;
   const upstreamUrl = `${input.backendBaseUrl}${upstreamPath}`;
   const requestHeaders = buildUpstreamHeaders(req, input.relayToken);
+  const requestLogContext = {
+    method,
+    url: req.url ?? "/",
+    upstreamUrl,
+    contentType: readHeader(req, "content-type"),
+  };
   const timeout = setTimeout(() => abortRequest(controller, "timeout"), 120_000);
   req.on("aborted", () => abortRequest(controller, "client_closed"));
   res.on("close", () => {
@@ -279,8 +302,9 @@ async function handleProxyRequest(
       abortRequest(controller, "client_closed");
     }
   });
+  let preparedBody: PreparedUpstreamBody | null = null;
   try {
-    const preparedBody = await prepareUpstreamBody(
+    preparedBody = await prepareUpstreamBody(
       req,
       method,
       url.pathname,
@@ -293,6 +317,16 @@ async function handleProxyRequest(
       duplex: preparedBody.requiresDuplex ? "half" : undefined,
       signal: controller.signal,
     });
+    logger.info(
+      {
+        ...requestLogContext,
+        statusCode: upstream.status,
+        requestBodySizeBytes: preparedBody.bodySizeBytes,
+        requestBodyPreview: preparedBody.bodyPreview,
+        requestBodyPreviewTruncated: preparedBody.bodyPreviewTruncated,
+      },
+      `${input.serviceName} proxied request`
+    );
     res.statusCode = upstream.status;
     copyResponseHeaders(upstream, res);
     if (!upstream.body) {
@@ -329,7 +363,10 @@ async function handleProxyRequest(
     logger.warn(
       {
         err: error instanceof Error ? error.message : String(error),
-        upstreamUrl,
+        ...requestLogContext,
+        requestBodySizeBytes: preparedBody?.bodySizeBytes,
+        requestBodyPreview: preparedBody?.bodyPreview,
+        requestBodyPreviewTruncated: preparedBody?.bodyPreviewTruncated,
       },
       `${input.serviceName} request failed`
     );
@@ -372,8 +409,19 @@ async function handleProxyWebSocketUpgrade(input: {
   const upstreamUrl = toWebSocketUrl(input.backendBaseUrl, upstreamPath);
   const upstreamHeaders = buildWebSocketUpstreamHeaders(input.req, input.relayToken);
   const upstream = await openWebSocket(upstreamUrl, upstreamHeaders);
+  logger.info(
+    {
+      url: input.req.url ?? "/",
+      upstreamUrl,
+    },
+    `${input.serviceName} proxied websocket upgrade`
+  );
   input.wss.handleUpgrade(input.req, input.socket, input.head, (downstream) => {
-    bridgeWebSockets(downstream, upstream);
+    bridgeWebSockets(downstream, upstream, {
+      serviceName: input.serviceName,
+      url: input.req.url ?? "/",
+      upstreamUrl,
+    });
   });
 }
 
@@ -411,19 +459,29 @@ async function prepareUpstreamBody(
   method: string,
   pathname: string,
   requestBodyMode: RequestBodyMode
-): Promise<{ body: unknown; requiresDuplex: boolean }> {
+): Promise<PreparedUpstreamBody> {
   if (method === "GET" || method === "HEAD") {
-    return { body: undefined, requiresDuplex: false };
-  }
-  if (
-    requestBodyMode !== "openrouter-model-rewrite" ||
-    !shouldRewriteModel(pathname, req.headers["content-type"])
-  ) {
-    return { body: req as unknown as never, requiresDuplex: true };
+    return {
+      body: undefined,
+      requiresDuplex: false,
+      bodyPreview: null,
+      bodyPreviewTruncated: false,
+      bodySizeBytes: 0,
+    };
   }
   const rawBody = await readRequestBody(req);
-  const rewritten = rewriteOpenrouterModelField(rawBody);
-  return { body: rewritten, requiresDuplex: false };
+  const body =
+    requestBodyMode === "openrouter-model-rewrite" && shouldRewriteModel(pathname, req.headers["content-type"])
+      ? rewriteOpenrouterModelField(rawBody)
+      : rawBody;
+  const bodySummary = summarizeBodyForLog(body);
+  return {
+    body,
+    requiresDuplex: false,
+    bodyPreview: bodySummary.preview,
+    bodyPreviewTruncated: bodySummary.truncated,
+    bodySizeBytes: body.byteLength,
+  };
 }
 
 function buildUpstreamHeaders(
@@ -485,6 +543,87 @@ function readHeader(req: IncomingMessage, key: string): string | null {
   if (typeof raw === "string" && raw.trim()) return raw.trim();
   if (Array.isArray(raw) && typeof raw[0] === "string" && raw[0].trim()) return raw[0].trim();
   return null;
+}
+
+function summarizeBodyForLog(body: Uint8Array): {
+  preview: string | null;
+  truncated: boolean;
+} {
+  if (body.byteLength === 0) {
+    return { preview: null, truncated: false };
+  }
+  const text = Buffer.from(body).toString("utf8");
+  const normalized = normalizePreviewText(text);
+  if (!normalized) {
+    return { preview: "", truncated: false };
+  }
+  return {
+    preview: makeTextPreview(normalized, PROXY_REQUEST_BODY_PREVIEW_MAX_LEN),
+    truncated: normalized.length > clampPreviewLen(PROXY_REQUEST_BODY_PREVIEW_MAX_LEN),
+  };
+}
+
+function normalizePreviewText(text: string): string {
+  return String(text).replace(/\s+/g, " ").trim();
+}
+
+function clampPreviewLen(maxLen: number): number {
+  return Math.max(0, Math.min(5000, Math.trunc(maxLen)));
+}
+
+function logWebSocketFrame(
+  logContext: WebSocketProxyLogContext,
+  direction: "downstream_to_upstream" | "upstream_to_downstream",
+  data: WebSocket.RawData,
+  isBinary: boolean
+): void {
+  const summary = summarizeWebSocketFrame(data, isBinary);
+  logger.info(
+    {
+      url: logContext.url,
+      upstreamUrl: logContext.upstreamUrl,
+      direction,
+      isBinary,
+      payloadSizeBytes: summary.sizeBytes,
+      payloadPreview: summary.preview,
+      payloadPreviewTruncated: summary.truncated,
+    },
+    `${logContext.serviceName} proxied websocket frame`
+  );
+}
+
+function summarizeWebSocketFrame(
+  data: WebSocket.RawData,
+  isBinary: boolean
+): {
+  sizeBytes: number;
+  preview: string | null;
+  truncated: boolean;
+} {
+  const buffer = rawDataToBuffer(data);
+  if (isBinary) {
+    return {
+      sizeBytes: buffer.byteLength,
+      preview: null,
+      truncated: false,
+    };
+  }
+  const summary = summarizeBodyForLog(buffer);
+  return {
+    sizeBytes: buffer.byteLength,
+    preview: summary.preview,
+    truncated: summary.truncated,
+  };
+}
+
+function rawDataToBuffer(data: WebSocket.RawData): Buffer {
+  if (Buffer.isBuffer(data)) {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return Buffer.concat(data);
+  }
+  return Buffer.from(data);
 }
 
 function copyResponseHeaders(resp: Response, res: ServerResponse): void {
@@ -577,12 +716,26 @@ export function sanitizeWebSocketCloseCode(code?: number): number | undefined {
   return undefined;
 }
 
-function bridgeWebSockets(left: WebSocket, right: WebSocket): void {
+function bridgeWebSockets(
+  left: WebSocket,
+  right: WebSocket,
+  logContext: WebSocketProxyLogContext
+): void {
   let closed = false;
-  const closeBoth = (code?: number, reason?: Buffer) => {
+  const closeBoth = (source: "downstream" | "upstream", code?: number, reason?: Buffer) => {
     if (closed) return;
     closed = true;
     const safeCode = sanitizeWebSocketCloseCode(code);
+    logger.info(
+      {
+        url: logContext.url,
+        upstreamUrl: logContext.upstreamUrl,
+        source,
+        closeCode: code,
+        closeReasonPreview: reason ? summarizeBodyForLog(reason).preview : null,
+      },
+      `${logContext.serviceName} proxied websocket closed`
+    );
     const closeSocket = (socket: WebSocket) => {
       if (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING) {
         return;
@@ -599,19 +752,21 @@ function bridgeWebSockets(left: WebSocket, right: WebSocket): void {
     closeSocket(right);
   };
   left.on("message", (data, isBinary) => {
+    logWebSocketFrame(logContext, "downstream_to_upstream", data, isBinary);
     if (right.readyState === WebSocket.OPEN) {
       right.send(data, { binary: isBinary });
     }
   });
   right.on("message", (data, isBinary) => {
+    logWebSocketFrame(logContext, "upstream_to_downstream", data, isBinary);
     if (left.readyState === WebSocket.OPEN) {
       left.send(data, { binary: isBinary });
     }
   });
-  left.on("close", (code, reason) => closeBoth(code, reason));
-  right.on("close", (code, reason) => closeBoth(code, reason));
-  left.on("error", () => closeBoth(1011));
-  right.on("error", () => closeBoth(1011));
+  left.on("close", (code, reason) => closeBoth("downstream", code, reason));
+  right.on("close", (code, reason) => closeBoth("upstream", code, reason));
+  left.on("error", () => closeBoth("downstream", 1011));
+  right.on("error", () => closeBoth("upstream", 1011));
 }
 
 function httpStatusText(statusCode: number): string {

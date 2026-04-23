@@ -244,6 +244,8 @@ Provisioned agents use both local listeners together:
 - Provisioned Runway helper tools go directly to `http://127.0.0.1:18085/provider-proxy/runway/v1`, while legacy local `/v1/*` stays supported; relay forwards it to backend `/api/v1/relays/runway/*`.
 - Moonshot traffic goes directly to `http://127.0.0.1:18083/provider-proxy/moonshot/v1` via `models.providers.moonshot.baseUrl`; relay forwards it to backend `/api/v1/relays/moonshot/*`.
 - All relay proxy listeners are local-only by default and bind to `127.0.0.1`, so they are not exposed on external interfaces unless the code is changed intentionally.
+- Every proxied HTTP provider request is logged at info level with method, local URL, upstream URL, status, body size, and a whitespace-normalized truncated body preview.
+- OpenAI websocket proxy traffic is also logged at info level for successful upgrades, proxied frames, and closes; text frames include the same truncated preview while binary frames log size only.
 
 ## Unified Message Flow Logging
 
