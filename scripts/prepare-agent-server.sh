@@ -360,21 +360,6 @@ stop_openclaw_gateway_if_present() {
   fi
 }
 
-run_openclaw_runtime_postbuild() {
-  if [[ -z "${OPENCLAW_PACKAGE_DIR:-}" || ! -d "${OPENCLAW_PACKAGE_DIR}" ]]; then
-    echo "OpenClaw package directory is missing before runtime-postbuild: ${OPENCLAW_PACKAGE_DIR:-<unset>}" >&2
-    return 1
-  fi
-  if [[ ! -f "${OPENCLAW_PACKAGE_DIR}/scripts/runtime-postbuild.mjs" ]]; then
-    echo "Missing OpenClaw runtime-postbuild script at ${OPENCLAW_PACKAGE_DIR}/scripts/runtime-postbuild.mjs" >&2
-    return 1
-  fi
-  (
-    cd "${OPENCLAW_PACKAGE_DIR}"
-    node ./scripts/runtime-postbuild.mjs
-  )
-}
-
 write_openclaw_snapshot_warmup_config() {
   node --input-type=module - <<'NODE'
 import fs from "node:fs"
@@ -696,8 +681,6 @@ exec \"\${REAL_CODEX}\" --dangerously-bypass-approvals-and-sandbox -c sandbox_mo
   test -f "${OPENCLAW_GRAMMY_PACKAGE_DIR}/package.json"
   test -f "${OPENCLAW_GRAMMY_RUNNER_PACKAGE_DIR}/package.json"
   test -f "${OPENCLAW_GRAMMY_TRANSFORMER_THROTTLER_PACKAGE_DIR}/package.json"
-  set_step "openclaw_runtime_postbuild"
-  run_openclaw_runtime_postbuild
   set_step "openclaw_mutation_guard"
   stop_openclaw_gateway_if_present
   set_step "relay_channel_prepull"

@@ -31,7 +31,6 @@ What it does:
 - fails the install immediately if `relay-channel` is missing or the OpenClaw install record is malformed, so broken snapshot images are caught during image prep instead of surfacing later at runtime;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `PNPM_HOME`, `NODE_PATH`) for current shell, future login shells, and systemd managers;
 - explicitly enables and starts the root user-systemd manager before OpenClaw daemon install (`loginctl enable-linger root`, `systemctl start user@0.service`, `XDG_RUNTIME_DIR=/run/user/0`, `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus`);
-- runs OpenClaw `scripts/runtime-postbuild.mjs` inside the installed package during image prep, so bundled runtime dependencies are materialized into the snapshot before any real agent bootstrap;
 - optionally runs `OPENCLAW_SKIP_CANVAS_HOST=1 OPENCLAW_LOG_LEVEL=debug systemctl --user import-environment OPENCLAW_SKIP_CANVAS_HOST OPENCLAW_LOG_LEVEL && openclaw onboard --install-daemon --non-interactive --accept-risk`; on current OpenClaw releases this step may return before its own gateway probe stabilizes on small snapshot VMs, so the script explicitly restarts `openclaw-gateway.service` and waits longer for port `18789` after onboarding instead of trusting the raw `onboard` exit code alone; the script exports `NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps` before this so one-shot OpenClaw/Node commands also inherit the larger heap;
 - writes a temporary snapshot-only OpenClaw warmup config that activates `telegram` and `whatsapp` surfaces just enough for plugin auto-enable / first-run initialization, then performs a mandatory `gateway start -> readiness wait -> channels status -> stop` cycle during snapshot preparation;
 - seals the final snapshot config back to a cold baseline by removing temporary `channels.telegram` / `channels.whatsapp` config and leaving those plugins disabled for the later backend-owned bootstrap path;
@@ -64,7 +63,7 @@ openclaw devices list --json
 
 Warmup checkpoints during snapshot preparation:
 
-- In `/var/log/golem-workers/prepare-agent-server.log`, confirm these step markers appear in order: `openclaw_runtime_postbuild`, `openclaw_onboard`, `openclaw_snapshot_channels_warmup_config`, `openclaw_snapshot_channels_warmup_start`, `openclaw_snapshot_channels_warmup_status`, `openclaw_snapshot_shutdown`, `openclaw_snapshot_config_seal`.
+- In `/var/log/golem-workers/prepare-agent-server.log`, confirm these step markers appear in order: `openclaw_onboard`, `openclaw_snapshot_channels_warmup_config`, `openclaw_snapshot_channels_warmup_start`, `openclaw_snapshot_channels_warmup_status`, `openclaw_snapshot_shutdown`, `openclaw_snapshot_config_seal`.
 - The timestamp gap from `openclaw_snapshot_channels_warmup_start` to `openclaw_snapshot_shutdown` is the one-time warmup cost that should move out of future live server creation.
 - The `openclaw channels status --json` output in that log should show both `telegram` and `whatsapp` surfaces present during warmup, even if they are not fully linked to real external credentials yet.
 
