@@ -14,6 +14,9 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("config.read"),
   }),
   z.object({
+    kind: z.literal("channels.status"),
+  }),
+  z.object({
     kind: z.literal("config.apply"),
     configText: z.string().min(1),
   }),
@@ -63,6 +66,10 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     kind: z.literal("config.read"),
     configText: z.string().min(1),
     config: jsonRecordSchema,
+  }),
+  z.object({
+    kind: z.literal("channels.status"),
+    snapshot: jsonRecordSchema,
   }),
   z.object({
     kind: z.literal("config.apply"),

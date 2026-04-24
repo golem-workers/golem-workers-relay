@@ -52,6 +52,8 @@ export async function executeAgentControl(input: {
   const result =
     input.action.kind === "config.read"
       ? await readConfig(input.configPath)
+      : input.action.kind === "channels.status"
+        ? await readChannelsStatus()
       : input.action.kind === "config.apply"
         ? await applyConfig({
             configPath: input.configPath,
@@ -87,6 +89,44 @@ async function readConfig(configPath: string): Promise<AgentControlResult> {
     kind: "config.read",
     configText,
     config,
+  };
+}
+
+async function readChannelsStatus(): Promise<AgentControlResult> {
+  let stdout = "";
+  let stderr = "";
+  try {
+    const result = await execFile("openclaw", ["channels", "status", "--json"], {
+      timeout: 15_000,
+      maxBuffer: 1024 * 1024,
+    });
+    stdout = result.stdout;
+    stderr = result.stderr;
+  } catch (error) {
+    const details =
+      error && typeof error === "object"
+        ? {
+            stdout: typeof (error as { stdout?: unknown }).stdout === "string"
+              ? (error as { stdout?: string }).stdout
+              : "",
+            stderr: typeof (error as { stderr?: unknown }).stderr === "string"
+              ? (error as { stderr?: string }).stderr
+              : "",
+            code: typeof (error as { code?: unknown }).code === "string"
+              ? (error as { code?: string }).code
+              : null,
+          }
+        : { stdout: "", stderr: "", code: null };
+    throw new AgentControlError(
+      "CHANNELS_STATUS_FAILED",
+      "Failed to read OpenClaw channel runtime status.",
+      details,
+      { cause: error }
+    );
+  }
+  return {
+    kind: "channels.status",
+    snapshot: parseJsonObjectFromCommandOutput(`${stdout}${stderr ? `\n${stderr}` : ""}`, "channels.status"),
   };
 }
 
@@ -179,6 +219,30 @@ function normalizeOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseJsonObjectFromCommandOutput(raw: string, context: string): Record<string, unknown> {
+  const lines = raw.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const candidate = lines[index]?.trimStart() ?? "";
+    if (!candidate.startsWith("{")) continue;
+    try {
+      const parsed: unknown = JSON.parse(lines.slice(index).join("\n"));
+      if (isRecord(parsed)) {
+        return parsed;
+      }
+      break;
+    } catch {
+      // Keep scanning until we hit the actual JSON payload.
+    }
+  }
+  throw new AgentControlError("CHANNELS_STATUS_BAD_RESPONSE", `OpenClaw ${context} output was not valid JSON.`, {
+    output: raw,
+  });
 }
 
 function normalizeLowercaseString(value: unknown): string {
@@ -572,10 +636,6 @@ function ensureRecord(parent: Record<string, unknown>, key: string): Record<stri
   const next: Record<string, unknown> = {};
   parent[key] = next;
   return next;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readUnknownArray(value: unknown): unknown[] {

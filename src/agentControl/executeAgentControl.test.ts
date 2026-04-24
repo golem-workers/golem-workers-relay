@@ -63,6 +63,27 @@ exit 1
   process.env.PATH = `${binDir}:${originalPath ?? ""}`;
 }
 
+async function installFakeOpenclaw(output: string) {
+  const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-openclaw-"));
+  const scriptPath = path.join(binDir, "openclaw");
+  await fs.writeFile(
+    scriptPath,
+    `#!/usr/bin/env bash
+set -eu
+if [ "$#" -ge 3 ] && [ "$1" = "channels" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  cat <<'EOF'
+${output}
+EOF
+  exit 0
+fi
+exit 1
+`,
+    "utf8"
+  );
+  fsSync.chmodSync(scriptPath, 0o755);
+  process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+}
+
 describe("executeAgentControl channel pairing", () => {
   it("lists pending telegram pairing requests from the OpenClaw pairing store", async () => {
     const { credentialsDir } = await createTempStateDir();
@@ -214,6 +235,38 @@ describe("executeAgentControl WhatsApp login", () => {
       kind: "whatsapp.login.wait",
       connected: true,
       message: "Linked!",
+    });
+  });
+});
+
+describe("executeAgentControl channels status", () => {
+  it("reads OpenClaw channel runtime snapshot from CLI JSON output", async () => {
+    await installFakeOpenclaw(`noise before json
+{"channels":{"telegram":{"configured":true}},"channelAccounts":{"telegram":[{"accountId":"mybot","connected":true}]}}`);
+
+    const result = await executeAgentControl({
+      action: { kind: "channels.status" },
+      configPath: "/tmp/openclaw.json",
+      gateway: noopGateway,
+    });
+
+    expect(result).toEqual({
+      kind: "channels.status",
+      snapshot: {
+        channels: {
+          telegram: {
+            configured: true,
+          },
+        },
+        channelAccounts: {
+          telegram: [
+            {
+              accountId: "mybot",
+              connected: true,
+            },
+          ],
+        },
+      },
     });
   });
 });
