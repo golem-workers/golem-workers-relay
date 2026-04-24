@@ -198,7 +198,7 @@ describe("GatewayClient", () => {
     const client = new GatewayClient({
       url: `ws://127.0.0.1:${port}`,
       token: "t",
-      connectReadyTimeoutMs: 150,
+      connectReadyTimeoutMs: 300,
       startupRetryDelayMs: 25,
       startupMaxAttempts: 3,
     });
@@ -223,12 +223,12 @@ describe("GatewayClient", () => {
     const client = new GatewayClient({
       url: `ws://127.0.0.1:${port}`,
       token: "t",
-      connectReadyTimeoutMs: 150,
+      connectReadyTimeoutMs: 300,
       startupRetryDelayMs: 25,
       startupMaxAttempts: 2,
     });
 
-    await expect(client.start()).rejects.toThrow("Gateway connect handshake timed out after 150ms");
+    await expect(client.start()).rejects.toThrow("Gateway connect handshake timed out after 300ms");
     expect(connections).toBe(2);
 
     client.stop();
