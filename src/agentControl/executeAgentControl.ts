@@ -13,6 +13,7 @@ import {
 const execFile = promisify(execFileCallback);
 const GATEWAY_RESTART_CHECK_ATTEMPTS = 20;
 const GATEWAY_RESTART_CHECK_DELAY_MS = 500;
+const CHANNELS_STATUS_TIMEOUT_MS = 15_000;
 const FILE_LOCK_RETRY_ATTEMPTS = 50;
 const FILE_LOCK_RETRY_DELAY_MS = 100;
 const VALID_THINKING_DEFAULTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive"]);
@@ -53,7 +54,7 @@ export async function executeAgentControl(input: {
     input.action.kind === "config.read"
       ? await readConfig(input.configPath)
       : input.action.kind === "channels.status"
-        ? await readChannelsStatus()
+        ? await readChannelsStatus(input.gateway)
       : input.action.kind === "config.apply"
         ? await applyConfig({
             configPath: input.configPath,
@@ -92,31 +93,36 @@ async function readConfig(configPath: string): Promise<AgentControlResult> {
   };
 }
 
-async function readChannelsStatus(): Promise<AgentControlResult> {
-  let stdout = "";
-  let stderr = "";
+async function readChannelsStatus(gateway: GatewayLike): Promise<AgentControlResult> {
   try {
-    const result = await execFile("openclaw", ["channels", "status", "--json"], {
-      timeout: 15_000,
-      maxBuffer: 1024 * 1024,
+    const snapshot = await gateway.request("channels.status", {
+      probe: false,
+      timeoutMs: 10_000,
+    }, {
+      timeoutMs: CHANNELS_STATUS_TIMEOUT_MS,
     });
-    stdout = result.stdout;
-    stderr = result.stderr;
+    if (!isRecord(snapshot)) {
+      throw new AgentControlError("CHANNELS_STATUS_BAD_RESPONSE", "OpenClaw channels.status response was not an object.", {
+        response: snapshot,
+      });
+    }
+    return {
+      kind: "channels.status",
+      snapshot,
+    };
   } catch (error) {
+    if (error instanceof AgentControlError) {
+      throw error;
+    }
     const details =
       error && typeof error === "object"
         ? {
-            stdout: typeof (error as { stdout?: unknown }).stdout === "string"
-              ? (error as { stdout?: string }).stdout
-              : "",
-            stderr: typeof (error as { stderr?: unknown }).stderr === "string"
-              ? (error as { stderr?: string }).stderr
-              : "",
             code: typeof (error as { code?: unknown }).code === "string"
               ? (error as { code?: string }).code
               : null,
+            message: error instanceof Error ? error.message : "Non-Error object thrown",
           }
-        : { stdout: "", stderr: "", code: null };
+        : { code: null, message: String(error) };
     throw new AgentControlError(
       "CHANNELS_STATUS_FAILED",
       "Failed to read OpenClaw channel runtime status.",
@@ -124,10 +130,6 @@ async function readChannelsStatus(): Promise<AgentControlResult> {
       { cause: error }
     );
   }
-  return {
-    kind: "channels.status",
-    snapshot: parseJsonObjectFromCommandOutput(`${stdout}${stderr ? `\n${stderr}` : ""}`, "channels.status"),
-  };
 }
 
 async function applyConfig(input: {
@@ -223,26 +225,6 @@ function normalizeOptionalString(value: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parseJsonObjectFromCommandOutput(raw: string, context: string): Record<string, unknown> {
-  const lines = raw.split(/\r?\n/);
-  for (let index = 0; index < lines.length; index += 1) {
-    const candidate = lines[index]?.trimStart() ?? "";
-    if (!candidate.startsWith("{")) continue;
-    try {
-      const parsed: unknown = JSON.parse(lines.slice(index).join("\n"));
-      if (isRecord(parsed)) {
-        return parsed;
-      }
-      break;
-    } catch {
-      // Keep scanning until we hit the actual JSON payload.
-    }
-  }
-  throw new AgentControlError("CHANNELS_STATUS_BAD_RESPONSE", `OpenClaw ${context} output was not valid JSON.`, {
-    output: raw,
-  });
 }
 
 function normalizeLowercaseString(value: unknown): string {

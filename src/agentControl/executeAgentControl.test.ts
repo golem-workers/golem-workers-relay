@@ -63,27 +63,6 @@ exit 1
   process.env.PATH = `${binDir}:${originalPath ?? ""}`;
 }
 
-async function installFakeOpenclaw(output: string) {
-  const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-openclaw-"));
-  const scriptPath = path.join(binDir, "openclaw");
-  await fs.writeFile(
-    scriptPath,
-    `#!/usr/bin/env bash
-set -eu
-if [ "$#" -ge 3 ] && [ "$1" = "channels" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
-  cat <<'EOF'
-${output}
-EOF
-  exit 0
-fi
-exit 1
-`,
-    "utf8"
-  );
-  fsSync.chmodSync(scriptPath, 0o755);
-  process.env.PATH = `${binDir}:${originalPath ?? ""}`;
-}
-
 describe("executeAgentControl channel pairing", () => {
   it("lists pending telegram pairing requests from the OpenClaw pairing store", async () => {
     const { credentialsDir } = await createTempStateDir();
@@ -240,14 +219,34 @@ describe("executeAgentControl WhatsApp login", () => {
 });
 
 describe("executeAgentControl channels status", () => {
-  it("reads OpenClaw channel runtime snapshot from CLI JSON output", async () => {
-    await installFakeOpenclaw(`noise before json
-{"channels":{"telegram":{"configured":true}},"channelAccounts":{"telegram":[{"accountId":"mybot","connected":true}]}}`);
+  it("reads OpenClaw channel runtime snapshot through the active gateway client", async () => {
+    const gateway = {
+      request: (method: string, params?: unknown, options?: { timeoutMs?: number }) => {
+        expect(method).toBe("channels.status");
+        expect(params).toEqual({ probe: false, timeoutMs: 10_000 });
+        expect(options).toEqual({ timeoutMs: 15_000 });
+        return Promise.resolve({
+          channels: {
+            telegram: {
+              configured: true,
+            },
+          },
+          channelAccounts: {
+            telegram: [
+              {
+                accountId: "mybot",
+                connected: true,
+              },
+            ],
+          },
+        });
+      },
+    };
 
     const result = await executeAgentControl({
       action: { kind: "channels.status" },
       configPath: "/tmp/openclaw.json",
-      gateway: noopGateway,
+      gateway,
     });
 
     expect(result).toEqual({
