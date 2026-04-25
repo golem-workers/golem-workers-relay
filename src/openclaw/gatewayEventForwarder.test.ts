@@ -179,6 +179,169 @@ describe("createGatewayEventForwarder", () => {
     });
   });
 
+  it("buffers uncorrelated deltas and flushes them when trace becomes available", async () => {
+    vi.useFakeTimers();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    let traceAvailable = false;
+    const forward = createGatewayEventForwarder({
+      relayInstanceId: "relay_1",
+      backend: { submitInboundMessage } as never,
+      forwardFinalOnly: true,
+      getChatRunTrace: (runId) => (traceAvailable && runId === "run_delayed" ? { backendMessageId: "msg_1" } : null),
+    });
+
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_delayed",
+        sessionKey: "session_1",
+        seq: 1,
+        state: "delta",
+        message: { text: "hello later" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(submitInboundMessage).not.toHaveBeenCalled();
+
+    traceAvailable = true;
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "technical",
+        technical: {
+          event: "chat.delta_signal",
+          payload: {
+            runId: "run_delayed",
+            sessionKey: "session_1",
+            seq: 1,
+            state: "delta",
+          },
+        },
+        openclawMeta: {
+          trace: {
+            backendMessageId: "msg_1",
+          },
+        },
+      },
+    });
+    expect(submitInboundMessage.mock.calls[1]?.[0]).toMatchObject({
+      body: {
+        outcome: "reply_chunk",
+        replyChunk: {
+          text: "hello later",
+          runId: "run_delayed",
+          seq: 1,
+        },
+      },
+    });
+  });
+
+  it("dead-letters uncorrelated deltas instead of dropping them", async () => {
+    vi.useFakeTimers();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const forward = createGatewayEventForwarder({
+      relayInstanceId: "relay_1",
+      backend: { submitInboundMessage } as never,
+      forwardFinalOnly: true,
+      getChatRunTrace: () => null,
+    });
+
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_orphan",
+        sessionKey: "session_1",
+        seq: 1,
+        state: "delta",
+        message: { text: "do not lose me" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "technical",
+        technical: {
+          event: "chat.uncorrelated_delta_dead_letter",
+          payload: {
+            reason: "ttl_expired",
+            runId: "run_orphan",
+            sessionKey: "session_1",
+            bufferedCount: 1,
+            firstSeq: 1,
+            lastSeq: 1,
+            textPreview: "do not lose me",
+          },
+        },
+        openclawMeta: {
+          method: "gateway.event.chat.uncorrelated_delta_dead_letter",
+          runId: "run_orphan",
+        },
+      },
+    });
+  });
+
+  it("dead-letters buffered deltas with terminal context when correlation never appears", async () => {
+    vi.useFakeTimers();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const forward = createGatewayEventForwarder({
+      relayInstanceId: "relay_1",
+      backend: { submitInboundMessage } as never,
+      forwardFinalOnly: true,
+      getChatRunTrace: () => null,
+    });
+
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_terminal_orphan",
+        sessionKey: "session_1",
+        seq: 1,
+        state: "delta",
+        message: { text: "partial" },
+      },
+    });
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_terminal_orphan",
+        sessionKey: "session_1",
+        seq: 2,
+        state: "final",
+        message: { text: "final" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "technical",
+        technical: {
+          event: "chat.uncorrelated_delta_dead_letter",
+          payload: {
+            reason: "ttl_expired",
+            runId: "run_terminal_orphan",
+            sessionKey: "session_1",
+            terminalSeen: true,
+            terminalState: "final",
+            terminalSeq: 2,
+            terminalTextPreview: "final",
+            bufferedCount: 1,
+            textPreview: "partial",
+          },
+        },
+      },
+    });
+  });
+
   it("drops buffered deltas when a terminal chat event arrives during debounce", async () => {
     vi.useFakeTimers();
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });

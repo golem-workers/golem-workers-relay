@@ -74,6 +74,8 @@ type Waiter = {
   timeout: NodeJS.Timeout;
   transcriptPoll?: NodeJS.Timeout;
   transcriptPolling?: boolean;
+  transcriptCandidateKey?: string;
+  transcriptCandidateFirstSeenAtMs?: number;
 };
 
 type ChatCompletionSignal =
@@ -127,6 +129,8 @@ const OPENCLAW_SLASH_COMMAND_FINAL_WAIT_TIMEOUT_MS = 15_000;
 const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_TIMEOUT_MS = 10_000;
 const OPENCLAW_DISCONNECT_TRANSCRIPT_RECOVERY_TIMEOUT_MS = 1_500;
 const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_POLL_INTERVAL_MS = 250;
+const OPENCLAW_TRANSCRIPT_FINAL_STABILITY_MS = 1_000;
+const OPENCLAW_RUN_TRACE_RETENTION_MS = 60_000;
 
 type GatewayChatContentPart =
   | { type: "text"; text: string }
@@ -289,6 +293,37 @@ function extractTextFromMessage(message: unknown): string | null {
     })
     .filter((part): part is string => typeof part === "string");
   return parts.length > 0 ? parts.join("\n") : null;
+}
+
+function messageContainsToolActivity(message: unknown): boolean {
+  if (!isPlainObject(message)) return false;
+  if (typeof message.toolCallId === "string" || typeof message.tool_call_id === "string") return true;
+  if (typeof message.toolName === "string" || typeof message.tool_name === "string") return true;
+  if (Array.isArray(message.toolCalls) || Array.isArray(message.tool_calls)) return true;
+  if (!Array.isArray(message.content)) return false;
+  return message.content.some((part) => {
+    if (!isPlainObject(part)) return false;
+    const type = typeof part.type === "string" ? part.type.toLowerCase() : "";
+    if (
+      type === "toolcall" ||
+      type === "tool_call" ||
+      type === "tool_use" ||
+      type === "function_call" ||
+      type === "toolresult" ||
+      type === "tool_result"
+    ) {
+      return true;
+    }
+    return (
+      typeof part.toolCallId === "string" ||
+      typeof part.tool_call_id === "string" ||
+      typeof part.name === "string" && (typeof part.arguments === "object" || typeof part.arguments === "string")
+    );
+  });
+}
+
+function buildTranscriptCandidateKey(message: unknown): string {
+  return JSON.stringify(message);
 }
 
 function normalizeComparableText(text: string | null | undefined): string {
@@ -481,6 +516,7 @@ async function readLatestAssistantMessageFromSessionTranscript(input: {
     const role = readMessageRole(candidate);
     if (role === "user") break;
     if (role !== "assistant") continue;
+    if (messageContainsToolActivity(candidate)) continue;
     if (!extractTextFromMessage(candidate)) continue;
     latestAssistantMessage = candidate;
   }
@@ -752,6 +788,7 @@ export class ChatRunner {
   private runSessionByRunId = new Map<string, string>();
   private runEventsByRunId = new Map<string, ChatEvent[]>();
   private runTraceByRunId = new Map<string, { backendMessageId: string }>();
+  private runTraceCleanupTimersByRunId = new Map<string, NodeJS.Timeout>();
   private sessionMaintenanceLock: Promise<void> | null = null;
   private readonly devLogEnabled: boolean;
   private readonly devLogTextMaxLen: number;
@@ -841,6 +878,36 @@ export class ChatRunner {
 
   getRunTrace(runId: string): { backendMessageId: string } | null {
     return this.runTraceByRunId.get(runId) ?? null;
+  }
+
+  private registerRunTrace(runId: string, input: { sessionKey: string; backendMessageId: string }): void {
+    this.clearRunTraceCleanupTimer(runId);
+    this.runSessionByRunId.set(runId, input.sessionKey);
+    this.runTraceByRunId.set(runId, { backendMessageId: input.backendMessageId });
+    if (!this.runEventsByRunId.has(runId)) {
+      this.runEventsByRunId.set(runId, []);
+    }
+  }
+
+  private clearRunTraceCleanupTimer(runId: string): void {
+    const timer = this.runTraceCleanupTimersByRunId.get(runId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.runTraceCleanupTimersByRunId.delete(runId);
+  }
+
+  private scheduleRunTraceCleanup(runId: string, reason: string): void {
+    this.runSessionByRunId.delete(runId);
+    this.clearRunTraceCleanupTimer(runId);
+    const timer = setTimeout(() => {
+      this.runTraceByRunId.delete(runId);
+      this.runTraceCleanupTimersByRunId.delete(runId);
+      if (this.devLogEnabled) {
+        logger.debug({ runId, reason }, "Released retained OpenClaw run trace");
+      }
+    }, OPENCLAW_RUN_TRACE_RETENTION_MS);
+    timer.unref?.();
+    this.runTraceCleanupTimersByRunId.set(runId, timer);
   }
 
   async runChatTask(input: {
@@ -945,6 +1012,7 @@ export class ChatRunner {
             openclawMeta: { method: "chat.send" },
           };
         }
+        this.registerRunTrace(runId, { sessionKey: input.sessionKey, backendMessageId: input.taskId });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         const classification = classifyRetryableGatewayError(msg);
@@ -1002,22 +1070,18 @@ export class ChatRunner {
         continue;
       }
 
-      const transcriptSessionState =
-        (input.deliverySystem ?? "legacy_push_v1") === "relay_channel_v2"
-          ? await waitForSessionTranscriptState({
-              sessionKey: input.sessionKey,
-              timeoutMs: Math.min(1_200, remainingMs),
-            }).catch(() => null)
-          : null;
+      let transcriptSessionState: ResolvedSessionTranscriptState | null = null;
       try {
         if (this.devLogEnabled) {
           logger.debug({ taskId: input.taskId, runId, attempt }, "Relay waiting for chat final event");
         }
-        this.runSessionByRunId.set(runId, input.sessionKey);
-        this.runTraceByRunId.set(runId, { backendMessageId: input.taskId });
-        if (!this.runEventsByRunId.has(runId)) {
-          this.runEventsByRunId.set(runId, []);
-        }
+        transcriptSessionState =
+          (input.deliverySystem ?? "legacy_push_v1") === "relay_channel_v2"
+            ? await waitForSessionTranscriptState({
+                sessionKey: input.sessionKey,
+                timeoutMs: Math.min(1_200, Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))),
+              }).catch(() => null)
+            : null;
         const finalWaitTimeoutMs = isSlashCommand
           ? Math.min(remainingMs, OPENCLAW_SLASH_COMMAND_FINAL_WAIT_TIMEOUT_MS)
           : remainingMs;
@@ -1026,8 +1090,7 @@ export class ChatRunner {
           requestMessage: finalAttemptMessage ?? undefined,
           sessionState: transcriptSessionState,
         });
-        this.runSessionByRunId.delete(runId);
-        this.runTraceByRunId.delete(runId);
+        this.scheduleRunTraceCleanup(runId, `completed:${finalEvt.state}`);
         const openclawEvents = this.consumeRunEvents(runId);
         if (finalEvt.state === "transcript") {
           logger.info(
@@ -1262,6 +1325,7 @@ export class ChatRunner {
         }
         await sleep(backoffMs);
       } catch (err) {
+        this.scheduleRunTraceCleanup(runId, "wait_failed");
         const openclawEvents = this.consumeRunEvents(runId);
         if (err instanceof GatewayRunDisconnectedError) {
           const disconnectMessage = err.message;
@@ -1395,8 +1459,7 @@ export class ChatRunner {
           }
         }
 
-        this.runSessionByRunId.delete(runId);
-        this.runTraceByRunId.delete(runId);
+        this.scheduleRunTraceCleanup(runId, "timeout_abort");
         if (isSlashCommand) {
           logger.info(
             {
@@ -1470,8 +1533,7 @@ export class ChatRunner {
           if (!runId) {
             throw new Error("Gateway did not return runId for /new");
           }
-          this.runSessionByRunId.set(runId, sessionKey);
-          this.runTraceByRunId.set(runId, { backendMessageId: `session_new:${sessionKey}` });
+          this.registerRunTrace(runId, { sessionKey, backendMessageId: `session_new:${sessionKey}` });
           try {
             const finalEvt = await this.waitForFinal(runId, 15_000);
             if (finalEvt.state === "error") {
@@ -1482,8 +1544,7 @@ export class ChatRunner {
             }
             sessionsRotated += 1;
           } finally {
-            this.runSessionByRunId.delete(runId);
-            this.runTraceByRunId.delete(runId);
+            this.scheduleRunTraceCleanup(runId, "session_rotation_completed");
           }
         } catch {
           sessionsFailed += 1;
@@ -1563,9 +1624,24 @@ export class ChatRunner {
               sessionState: opts.sessionState,
             }).catch(() => undefined);
             if (transcriptMessage === undefined) {
+              activeWaiter.transcriptCandidateKey = undefined;
+              activeWaiter.transcriptCandidateFirstSeenAtMs = undefined;
               return;
             }
             if (this.waitersByRunId.get(runId) !== waiter) {
+              return;
+            }
+            const candidateKey = buildTranscriptCandidateKey(transcriptMessage);
+            const now = Date.now();
+            if (activeWaiter.transcriptCandidateKey !== candidateKey) {
+              activeWaiter.transcriptCandidateKey = candidateKey;
+              activeWaiter.transcriptCandidateFirstSeenAtMs = now;
+              return;
+            }
+            if (
+              activeWaiter.transcriptCandidateFirstSeenAtMs === undefined ||
+              now - activeWaiter.transcriptCandidateFirstSeenAtMs < OPENCLAW_TRANSCRIPT_FINAL_STABILITY_MS
+            ) {
               return;
             }
             finalize({ state: "transcript", message: transcriptMessage });
@@ -1605,8 +1681,6 @@ export class ChatRunner {
     }
     clearTimeout(waiter.timeout);
     this.waitersByRunId.delete(runId);
-    this.runSessionByRunId.delete(runId);
-    this.runTraceByRunId.delete(runId);
     return waiter;
   }
 

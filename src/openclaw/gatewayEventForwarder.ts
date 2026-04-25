@@ -21,31 +21,45 @@ type BufferedDeltaSignal = {
 type RunForwardState = {
   runId: string;
   backendMessageId: string | null;
+  sessionKey: string | null;
+  firstSeenAtMs: number;
   highestSeqSeen: number;
   lastForwardedSeq: number;
   terminalSeen: boolean;
   terminalState: "final" | "error" | "aborted" | null;
+  terminalSeq: number | null;
+  terminalTextPreview: string | null;
   bufferedDeltas: BufferedDeltaSignal[];
   debounceTimer: NodeJS.Timeout | null;
   cleanupTimer: NodeJS.Timeout | null;
+  deadLetterTimer: NodeJS.Timeout | null;
   sendChain: Promise<void>;
   nextReceivedOrder: number;
 };
 
 const CHAT_EVENT_BACKEND_DEBOUNCE_MS = 100;
 const TERMINAL_RUN_STATE_RETENTION_MS = 60_000;
+const UNCORRELATED_DELTA_RETRY_MS = 250;
+const UNCORRELATED_DELTA_TTL_MS = 10_000;
+const UNCORRELATED_DELTA_MAX_BUFFERED = 100;
+const UNCORRELATED_DELTA_PREVIEW_CHARS = 500;
 
-function createRunForwardState(runId: string, backendMessageId: string | null): RunForwardState {
+function createRunForwardState(runId: string, backendMessageId: string | null, sessionKey: string | null): RunForwardState {
   return {
     runId,
     backendMessageId,
+    sessionKey,
+    firstSeenAtMs: Date.now(),
     highestSeqSeen: -1,
     lastForwardedSeq: -1,
     terminalSeen: false,
     terminalState: null,
+    terminalSeq: null,
+    terminalTextPreview: null,
     bufferedDeltas: [],
     debounceTimer: null,
     cleanupTimer: null,
+    deadLetterTimer: null,
     sendChain: Promise.resolve(),
     nextReceivedOrder: 0,
   };
@@ -78,6 +92,13 @@ export function createGatewayEventForwarder(input: {
     }
   };
 
+  const clearDeadLetterTimer = (state: RunForwardState): void => {
+    if (state.deadLetterTimer) {
+      clearTimeout(state.deadLetterTimer);
+      state.deadLetterTimer = null;
+    }
+  };
+
   const deleteRunState = (runId: string): void => {
     const state = runStatesByRunId.get(runId);
     if (!state) {
@@ -85,6 +106,7 @@ export function createGatewayEventForwarder(input: {
     }
     clearDebounceTimer(state);
     clearCleanupTimer(state);
+    clearDeadLetterTimer(state);
     runStatesByRunId.delete(runId);
   };
 
@@ -93,6 +115,109 @@ export function createGatewayEventForwarder(input: {
     state.cleanupTimer = setTimeout(() => {
       deleteRunState(state.runId);
     }, TERMINAL_RUN_STATE_RETENTION_MS);
+    state.cleanupTimer.unref?.();
+  };
+
+  const attachTraceIfAvailable = (state: RunForwardState): boolean => {
+    if (state.backendMessageId) return true;
+    const trace = getChatRunTrace(state.runId);
+    if (!trace?.backendMessageId) return false;
+    state.backendMessageId = trace.backendMessageId;
+    clearDeadLetterTimer(state);
+    logger.info(
+      {
+        relayInstanceId,
+        runId: state.runId,
+        backendMessageId: trace.backendMessageId,
+        bufferedCount: state.bufferedDeltas.length,
+      },
+      "Recovered OpenClaw chat event correlation"
+    );
+    return true;
+  };
+
+  const buildDeadLetterPayload = (state: RunForwardState, reason: string): unknown => {
+    const deltas = [...state.bufferedDeltas].sort((left, right) => {
+      if (left.seq !== right.seq) return left.seq - right.seq;
+      return left.receivedOrder - right.receivedOrder;
+    });
+    return {
+      reason,
+      runId: state.runId,
+      sessionKey: state.sessionKey,
+      terminalSeen: state.terminalSeen,
+      terminalState: state.terminalState,
+      terminalSeq: state.terminalSeq,
+      terminalTextPreview: state.terminalTextPreview,
+      bufferedCount: deltas.length,
+      firstSeq: deltas.at(0)?.seq ?? null,
+      lastSeq: deltas.at(-1)?.seq ?? null,
+      highestSeqSeen: state.highestSeqSeen,
+      ageMs: Date.now() - state.firstSeenAtMs,
+      textPreview: deltas
+        .map((delta) => delta.userFacingText)
+        .filter((text): text is string => Boolean(text))
+        .join("\n")
+        .slice(0, UNCORRELATED_DELTA_PREVIEW_CHARS),
+    };
+  };
+
+  const deadLetterUncorrelatedState = (state: RunForwardState, reason: string): void => {
+    clearDebounceTimer(state);
+    clearDeadLetterTimer(state);
+    const payload = buildDeadLetterPayload(state, reason);
+    logger.error(
+      { relayInstanceId, runId: state.runId, reason, payload },
+      "OpenClaw chat events could not be correlated before dead-letter"
+    );
+    state.sendChain = state.sendChain
+      .then(() =>
+        submitTechnicalEvent({
+          relayInstanceId,
+          backend,
+          technicalEvent: "chat.uncorrelated_delta_dead_letter",
+          technicalPayload: payload,
+          seq: null,
+          stateVersion: null,
+          openclawMeta: {
+            method: "gateway.event.chat.uncorrelated_delta_dead_letter",
+            runId: state.runId,
+            trace: {
+              relayInstanceId,
+              openclawRunId: state.runId,
+            },
+          },
+        })
+      )
+      .finally(() => {
+        deleteRunState(state.runId);
+      });
+  };
+
+  const scheduleUncorrelatedRetry = (state: RunForwardState): void => {
+    clearDebounceTimer(state);
+    if (Date.now() - state.firstSeenAtMs >= UNCORRELATED_DELTA_TTL_MS) {
+      deadLetterUncorrelatedState(state, "ttl_expired");
+      return;
+    }
+    state.debounceTimer = setTimeout(() => {
+      if (attachTraceIfAvailable(state)) {
+        queueFlush(state.runId);
+        return;
+      }
+      scheduleUncorrelatedRetry(state);
+    }, UNCORRELATED_DELTA_RETRY_MS);
+    state.debounceTimer.unref?.();
+    if (!state.deadLetterTimer) {
+      state.deadLetterTimer = setTimeout(() => {
+        if (!attachTraceIfAvailable(state)) {
+          deadLetterUncorrelatedState(state, "ttl_expired");
+        } else {
+          queueFlush(state.runId);
+        }
+      }, UNCORRELATED_DELTA_TTL_MS);
+      state.deadLetterTimer.unref?.();
+    }
   };
 
   const flushBufferedSignals = async (runId: string): Promise<void> => {
@@ -101,6 +226,11 @@ export function createGatewayEventForwarder(input: {
       return;
     }
     state.debounceTimer = null;
+    attachTraceIfAvailable(state);
+    if (!state.backendMessageId) {
+      scheduleUncorrelatedRetry(state);
+      return;
+    }
     if (state.terminalSeen) {
       state.bufferedDeltas = [];
       scheduleTerminalCleanup(state);
@@ -220,30 +350,35 @@ export function createGatewayEventForwarder(input: {
     const chatEvent = parsed.data;
     const runTrace = getChatRunTrace(chatEvent.runId);
     let runState = runStatesByRunId.get(chatEvent.runId) ?? null;
-    if (!runState && !runTrace) {
-      if (chatEvent.state === "delta") {
-        logger.warn(
-          { relayInstanceId, runId: chatEvent.runId, sessionKey: chatEvent.sessionKey, seq: chatEvent.seq },
-          "Skipping OpenClaw delta signal without correlated backend message"
-        );
-      }
-      return;
-    }
     if (!runState) {
-      runState = createRunForwardState(chatEvent.runId, runTrace?.backendMessageId ?? null);
+      runState = createRunForwardState(chatEvent.runId, runTrace?.backendMessageId ?? null, chatEvent.sessionKey);
       runStatesByRunId.set(chatEvent.runId, runState);
+    } else if (!runState.sessionKey) {
+      runState.sessionKey = chatEvent.sessionKey;
     }
     if (!runState.backendMessageId && runTrace?.backendMessageId) {
       runState.backendMessageId = runTrace.backendMessageId;
+      clearDeadLetterTimer(runState);
     }
     runState.highestSeqSeen = Math.max(runState.highestSeqSeen, chatEvent.seq);
 
     if (isTerminalChatState(chatEvent.state)) {
       runState.terminalSeen = true;
       runState.terminalState = chatEvent.state;
-      runState.bufferedDeltas = [];
+      runState.terminalSeq = chatEvent.seq;
+      runState.terminalTextPreview = extractPlainAssistantText(chatEvent.message)?.slice(
+        0,
+        UNCORRELATED_DELTA_PREVIEW_CHARS
+      ) ?? null;
+      if (runState.backendMessageId) {
+        runState.bufferedDeltas = [];
+      }
       clearCleanupTimer(runState);
-      scheduleDebouncedFlush(runState);
+      if (runState.backendMessageId) {
+        scheduleDebouncedFlush(runState);
+      } else {
+        scheduleUncorrelatedRetry(runState);
+      }
       return;
     }
 
@@ -251,18 +386,15 @@ export function createGatewayEventForwarder(input: {
       scheduleTerminalCleanup(runState);
       return;
     }
-    if (!runState.backendMessageId) {
-      logger.warn(
-        { relayInstanceId, runId: chatEvent.runId, sessionKey: chatEvent.sessionKey, seq: chatEvent.seq },
-        "Skipping OpenClaw delta signal without correlated backend message"
-      );
-      return;
-    }
     if (
       chatEvent.seq <= runState.lastForwardedSeq ||
       runState.bufferedDeltas.some((buffered) => buffered.seq === chatEvent.seq)
     ) {
-      scheduleDebouncedFlush(runState);
+      if (runState.backendMessageId) {
+        scheduleDebouncedFlush(runState);
+      } else {
+        scheduleUncorrelatedRetry(runState);
+      }
       return;
     }
     runState.bufferedDeltas.push({
@@ -275,7 +407,25 @@ export function createGatewayEventForwarder(input: {
       stateVersion: evt.stateVersion ?? null,
       receivedOrder: runState.nextReceivedOrder++,
     });
-    scheduleDebouncedFlush(runState);
+    if (runState.bufferedDeltas.length > UNCORRELATED_DELTA_MAX_BUFFERED && !runState.backendMessageId) {
+      deadLetterUncorrelatedState(runState, "buffer_limit_exceeded");
+      return;
+    }
+    if (runState.backendMessageId) {
+      scheduleDebouncedFlush(runState);
+    } else {
+      logger.warn(
+        {
+          relayInstanceId,
+          runId: chatEvent.runId,
+          sessionKey: chatEvent.sessionKey,
+          seq: chatEvent.seq,
+          bufferedCount: runState.bufferedDeltas.length,
+        },
+        "Buffering OpenClaw delta signal until backend message correlation is available"
+      );
+      scheduleUncorrelatedRetry(runState);
+    }
   };
 }
 
