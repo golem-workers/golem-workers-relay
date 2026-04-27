@@ -368,12 +368,14 @@ export class GatewayClient {
     const url = this.opts.url;
     const handshakeTimeoutMs = Math.max(1, Math.trunc(this.opts.websocketHandshakeTimeoutMs ?? 4000));
     logger.info({ url }, "Connecting to OpenClaw gateway");
-    this.ws = new WebSocket(url, {
+    const ws = new WebSocket(url, {
       maxPayload: 25 * 1024 * 1024,
       handshakeTimeout: handshakeTimeoutMs,
     });
+    this.ws = ws;
 
-    this.ws.on("open", () => {
+    ws.on("open", () => {
+      if (this.ws !== ws) return;
       this.armConnectReadyTimeout();
       // Some gateways emit `connect.challenge` asynchronously; sending `connect`
       // too early (without a nonce) can be rejected for non-local connects.
@@ -383,8 +385,12 @@ export class GatewayClient {
       // will trigger `sendConnectIfNeeded()` with a nonce.
       setTimeout(() => this.sendConnectIfNeeded(), 50);
     });
-    this.ws.on("message", (data) => this.handleMessage(rawDataToString(data)));
-    this.ws.on("close", (code, reason) => {
+    ws.on("message", (data) => {
+      if (this.ws !== ws) return;
+      this.handleMessage(rawDataToString(data));
+    });
+    ws.on("close", (code, reason) => {
+      if (this.ws !== ws) return;
       this.clearConnectReadyTimeout();
       const reasonText = typeof reason === "string" ? reason : reason.toString("utf8");
       logger.warn({ code, reason: reasonText }, "Gateway websocket closed");
@@ -412,7 +418,8 @@ export class GatewayClient {
         this.scheduleReconnect();
       }
     });
-    this.ws.on("error", (err) => {
+    ws.on("error", (err) => {
+      if (this.ws !== ws) return;
       logger.warn({ err: err instanceof Error ? err.message : String(err) }, "Gateway websocket error");
     });
   }

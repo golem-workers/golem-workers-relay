@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { describe, expect, it, vi } from "vitest";
-import { WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import { GatewayClient } from "./gatewayClient.js";
 
 function startServer(handler: (ws: import("ws").WebSocket) => void) {
@@ -203,7 +203,7 @@ describe("GatewayClient", () => {
       startupMaxAttempts: 3,
     });
 
-    await client.start();
+    await Promise.all([client.start(), delayTerminateOnNextSockets(client, 2, 80)]);
     expect(client.isReady()).toBe(true);
     expect(connections).toBe(3);
 
@@ -412,5 +412,31 @@ function rawDataToString(data: unknown): string {
     return Buffer.concat(data).toString("utf8");
   }
   return "";
+}
+
+async function delayTerminateOnNextSockets(client: GatewayClient, count: number, delayMs: number): Promise<void> {
+  const seen = new Set<WebSocket>();
+  const deadline = Date.now() + 2_000;
+
+  while (seen.size < count) {
+    const ws = getClientSocket(client);
+    if (ws && !seen.has(ws)) {
+      seen.add(ws);
+      const originalTerminate = ws.terminate.bind(ws);
+      ws.terminate = (() => {
+        setTimeout(() => originalTerminate(), delayMs);
+      }) as typeof ws.terminate;
+    }
+
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out waiting to patch ${count} sockets`);
+    }
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  }
+}
+
+function getClientSocket(client: GatewayClient): WebSocket | null {
+  return (client as unknown as { ws?: WebSocket | null }).ws ?? null;
 }
 
