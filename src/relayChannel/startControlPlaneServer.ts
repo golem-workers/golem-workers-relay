@@ -40,6 +40,7 @@ export function startRelayChannelControlPlane(input: {
   host: string;
   port: number;
   relayInstanceId: string;
+  pluginEventBaseUrl?: string;
   getDataPlane: () => {
     uploadBaseUrl: string;
     downloadBaseUrl: string;
@@ -208,6 +209,7 @@ export function startRelayChannelControlPlane(input: {
           await postEventToPlugin({
             host: input.host,
             relayPort: resolveListeningPort(server, input.port),
+            pluginEventBaseUrl: input.pluginEventBaseUrl,
             event: next.event,
           });
           pendingEvents.shift();
@@ -384,6 +386,7 @@ async function executeTransportAction(input: {
 async function postEventToPlugin(input: {
   host: string;
   relayPort: number;
+  pluginEventBaseUrl?: string;
   event: Record<string, unknown>;
 }) {
   const response = await fetch(resolvePluginEventEndpoint(input), {
@@ -401,6 +404,7 @@ async function postEventToPlugin(input: {
 function resolvePluginEventEndpoint(input: {
   host: string;
   relayPort: number;
+  pluginEventBaseUrl?: string;
   event: Record<string, unknown>;
 }): string {
   const eventType = readEventType(input.event);
@@ -412,7 +416,11 @@ function resolvePluginEventEndpoint(input: {
         : eventType.startsWith("transport.account.")
           ? "/events/account-status"
           : "/events/transport-event";
-  return `http://${input.host}:${input.relayPort + PLUGIN_EVENT_PORT_OFFSET}${eventPath}`;
+  const baseUrl =
+    typeof input.pluginEventBaseUrl === "string" && input.pluginEventBaseUrl.trim().length > 0
+      ? input.pluginEventBaseUrl.replace(/\/+$/, "")
+      : `http://${input.host}:${input.relayPort + PLUGIN_EVENT_PORT_OFFSET}`;
+  return `${baseUrl}${eventPath}`;
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

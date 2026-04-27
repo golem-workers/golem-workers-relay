@@ -213,33 +213,6 @@ describe("relay-channel control plane", () => {
   it("publishes events to plugin ingress over local HTTP", async () => {
     const dp = startRelayChannelDataPlaneServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve) => dp.server.once("listening", resolve));
-
-    const cp = startRelayChannelControlPlane({
-      host: "127.0.0.1",
-      port: 0,
-      relayInstanceId: "relay-test",
-      backend: {
-        sendTelegramTransportAction: vi.fn(),
-        registerTelegramMessageCorrelation: vi.fn(),
-        sendWhatsAppPersonalTransportMessage: vi.fn(),
-      } as never,
-      getDataPlane: () => {
-        const s = dp.getState();
-        return {
-          uploadBaseUrl: s.uploadBaseUrl,
-          downloadBaseUrl: s.downloadBaseUrl,
-          registerDownload: dp.registerDownload,
-        };
-      },
-      executeAgentControl: vi.fn().mockResolvedValue({
-        kind: "config.read",
-        configText: "{\n  \"ok\": true\n}\n",
-        config: { ok: true },
-      }),
-    });
-    await new Promise<void>((resolve) => cp.server.once("listening", resolve));
-    const address = cp.server.address();
-    const port = typeof address === "object" && address ? address.port : 0;
     const seenEvents: Array<Record<string, unknown>> = [];
 
     const pluginIngress = createServer((req, res) => {
@@ -268,7 +241,35 @@ describe("relay-channel control plane", () => {
       })();
     });
     pluginIngressServers.push(pluginIngress);
-    await new Promise<void>((resolve) => pluginIngress.listen(port + 2, "127.0.0.1", () => resolve()));
+    await new Promise<void>((resolve) => pluginIngress.listen(0, "127.0.0.1", () => resolve()));
+    const pluginAddress = pluginIngress.address();
+    const pluginPort = typeof pluginAddress === "object" && pluginAddress ? pluginAddress.port : 0;
+
+    const cp = startRelayChannelControlPlane({
+      host: "127.0.0.1",
+      port: 0,
+      relayInstanceId: "relay-test",
+      pluginEventBaseUrl: `http://127.0.0.1:${pluginPort}`,
+      backend: {
+        sendTelegramTransportAction: vi.fn(),
+        registerTelegramMessageCorrelation: vi.fn(),
+        sendWhatsAppPersonalTransportMessage: vi.fn(),
+      } as never,
+      getDataPlane: () => {
+        const s = dp.getState();
+        return {
+          uploadBaseUrl: s.uploadBaseUrl,
+          downloadBaseUrl: s.downloadBaseUrl,
+          registerDownload: dp.registerDownload,
+        };
+      },
+      executeAgentControl: vi.fn().mockResolvedValue({
+        kind: "config.read",
+        configText: "{\n  \"ok\": true\n}\n",
+        config: { ok: true },
+      }),
+    });
+    await new Promise<void>((resolve) => cp.server.once("listening", resolve));
 
     cp.publishEvent({
       type: "event",
