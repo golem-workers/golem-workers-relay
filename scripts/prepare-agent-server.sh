@@ -754,24 +754,45 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
+const pluginId = "relay-channel"
+const defaultInstallDir = path.join(os.homedir(), ".openclaw", "extensions", pluginId)
 const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json")
-const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
-const installRecord =
-  cfg?.plugins &&
-  typeof cfg.plugins === "object" &&
-  !Array.isArray(cfg.plugins) &&
-  cfg.plugins.installs &&
-  typeof cfg.plugins.installs === "object" &&
-  !Array.isArray(cfg.plugins.installs)
-    ? cfg.plugins.installs["relay-channel"]
-    : null
-if (!installRecord || typeof installRecord !== "object" || Array.isArray(installRecord)) {
-  throw new Error("Missing relay-channel install record in openclaw.json after install")
+
+function resolveInstallDir(candidate) {
+  if (typeof candidate !== "string" || candidate.trim().length === 0) return null
+  const resolved = fs.realpathSync(candidate)
+  const manifestPath = path.join(resolved, "openclaw.plugin.json")
+  if (!fs.existsSync(manifestPath)) return null
+  return resolved
 }
-if (typeof installRecord.installPath !== "string" || installRecord.installPath.trim().length === 0) {
-  throw new Error("relay-channel install record is missing installPath after install")
+
+let installDir = null
+if (fs.existsSync(configPath)) {
+  const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
+  const installRecord =
+    cfg?.plugins &&
+    typeof cfg.plugins === "object" &&
+    !Array.isArray(cfg.plugins) &&
+    cfg.plugins.installs &&
+    typeof cfg.plugins.installs === "object" &&
+    !Array.isArray(cfg.plugins.installs)
+      ? cfg.plugins.installs[pluginId]
+      : null
+  installDir =
+    installRecord && typeof installRecord === "object" && !Array.isArray(installRecord)
+      ? resolveInstallDir(installRecord.installPath)
+      : null
 }
-process.stdout.write(fs.realpathSync(installRecord.installPath))
+
+if (!installDir) {
+  installDir = resolveInstallDir(defaultInstallDir)
+}
+
+if (!installDir) {
+  throw new Error(`Unable to resolve relay-channel install dir after install; checked config and ${defaultInstallDir}`)
+}
+
+process.stdout.write(installDir)
 NODE
 )"
   test -n "${RELAY_CHANNEL_INSTALL_DIR}"
@@ -884,6 +905,7 @@ const configPath = path.join(configDir, "openclaw.json")
 const requiredPluginIds = ["relay-channel"]
 const installedButDisabledPluginIds = ["relay-channel", "telegram", "whatsapp"]
 const stalePluginIds = ["memory-lancedb-pro", "memory-lancedb"]
+const defaultExtensionsDir = path.join(configDir, "extensions")
 
 if (!fs.existsSync(configPath)) {
   throw new Error(`Missing canonical OpenClaw config at ${configPath}`)
@@ -911,6 +933,33 @@ function normalizeStringArray(value) {
     : []
 }
 
+function resolvePluginInstallDir(pluginId, installRecord) {
+  const directCandidate =
+    installRecord &&
+    typeof installRecord === "object" &&
+    !Array.isArray(installRecord) &&
+    typeof installRecord.installPath === "string" &&
+    installRecord.installPath.trim().length > 0
+      ? installRecord.installPath
+      : path.join(defaultExtensionsDir, pluginId)
+  if (!fs.existsSync(directCandidate)) {
+    return null
+  }
+  const resolved = fs.realpathSync(directCandidate)
+  const manifestPath = path.join(resolved, "openclaw.plugin.json")
+  if (!fs.existsSync(manifestPath)) {
+    return null
+  }
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+  if (manifest?.id !== pluginId) {
+    throw new Error(`Unexpected plugin id in ${manifestPath}`)
+  }
+  if (!fs.existsSync(path.join(resolved, "dist", "index.js"))) {
+    throw new Error(`Missing plugin dist/index.js in ${resolved}`)
+  }
+  return resolved
+}
+
 const installs =
   parsed.plugins &&
   typeof parsed.plugins === "object" &&
@@ -919,22 +968,23 @@ const installs =
   typeof parsed.plugins.installs === "object" &&
   !Array.isArray(parsed.plugins.installs)
     ? parsed.plugins.installs
-    : null
-if (!installs) {
-  throw new Error(`OpenClaw config is missing plugins.installs in ${configPath}`)
-}
+    : {}
 
 for (const pluginId of requiredPluginIds) {
-  const installRecord = installs[pluginId]
-  if (!installRecord || typeof installRecord !== "object" || Array.isArray(installRecord)) {
-    throw new Error(`OpenClaw config is missing install record for ${pluginId} in ${configPath}`)
+  const installDir = resolvePluginInstallDir(pluginId, installs[pluginId])
+  if (!installDir) {
+    throw new Error(`Unable to resolve installed plugin directory for ${pluginId} in ${configPath}`)
   }
-  if (typeof installRecord.installPath !== "string" || installRecord.installPath.trim().length === 0) {
-    throw new Error(`OpenClaw install record for ${pluginId} is missing installPath in ${configPath}`)
+  installs[pluginId] = {
+    ...(installs[pluginId] && typeof installs[pluginId] === "object" && !Array.isArray(installs[pluginId])
+      ? installs[pluginId]
+      : {}),
+    installPath: installDir,
   }
 }
 
 const pluginsCfg = ensureRecord(parsed, "plugins")
+pluginsCfg.installs = installs
 const entriesCfg = ensureRecord(pluginsCfg, "entries")
 for (const pluginId of stalePluginIds) {
   delete entriesCfg[pluginId]
