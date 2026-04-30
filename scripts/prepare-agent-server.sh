@@ -749,8 +749,7 @@ fs.mkdirSync(configDir, { recursive: true })
 fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`)
 NODE
   openclaw plugins install "${RELAY_CHANNEL_BUNDLE_TGZ}"
-  openclaw plugins disable relay-channel
-  node --input-type=module - <<'NODE'
+  RELAY_CHANNEL_INSTALL_DIR="$(node --input-type=module - <<'NODE'
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -767,12 +766,78 @@ const installRecord =
     ? cfg.plugins.installs["relay-channel"]
     : null
 if (!installRecord || typeof installRecord !== "object" || Array.isArray(installRecord)) {
-  throw new Error("Missing relay-channel install record in openclaw.json")
+  throw new Error("Missing relay-channel install record in openclaw.json after install")
 }
 if (typeof installRecord.installPath !== "string" || installRecord.installPath.trim().length === 0) {
+  throw new Error("relay-channel install record is missing installPath after install")
+}
+process.stdout.write(fs.realpathSync(installRecord.installPath))
+NODE
+)"
+  test -n "${RELAY_CHANNEL_INSTALL_DIR}"
+  openclaw plugins disable relay-channel
+  node --input-type=module - "${RELAY_CHANNEL_INSTALL_DIR}" <<'NODE'
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+
+const expectedInstallDir = fs.realpathSync(process.argv[2])
+const pluginId = "relay-channel"
+const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json")
+const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
+
+function ensureRecord(parent, key) {
+  const current = parent?.[key]
+  if (current && typeof current === "object" && !Array.isArray(current)) return current
+  const next = {}
+  parent[key] = next
+  return next
+}
+
+if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+  throw new Error(`Unexpected OpenClaw config shape in ${configPath}`)
+}
+
+const pluginsCfg = ensureRecord(cfg, "plugins")
+const installsCfg = ensureRecord(pluginsCfg, "installs")
+const installRecord =
+  installsCfg[pluginId] && typeof installsCfg[pluginId] === "object" && !Array.isArray(installsCfg[pluginId])
+    ? installsCfg[pluginId]
+    : {}
+installRecord.installPath = expectedInstallDir
+installsCfg[pluginId] = installRecord
+
+const entriesCfg = ensureRecord(pluginsCfg, "entries")
+const existingEntry = entriesCfg[pluginId]
+if (existingEntry && typeof existingEntry === "object" && !Array.isArray(existingEntry)) {
+  existingEntry.enabled = false
+}
+
+fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`)
+
+const persisted = JSON.parse(fs.readFileSync(configPath, "utf8"))
+const persistedInstallRecord =
+  persisted?.plugins &&
+  typeof persisted.plugins === "object" &&
+  !Array.isArray(persisted.plugins) &&
+  persisted.plugins.installs &&
+  typeof persisted.plugins.installs === "object" &&
+  !Array.isArray(persisted.plugins.installs)
+    ? persisted.plugins.installs[pluginId]
+    : null
+if (!persistedInstallRecord || typeof persistedInstallRecord !== "object" || Array.isArray(persistedInstallRecord)) {
+  throw new Error("Missing relay-channel install record in openclaw.json")
+}
+if (
+  typeof persistedInstallRecord.installPath !== "string" ||
+  persistedInstallRecord.installPath.trim().length === 0
+) {
   throw new Error("relay-channel install record is missing installPath")
 }
-const installDir = fs.realpathSync(installRecord.installPath)
+const installDir = fs.realpathSync(persistedInstallRecord.installPath)
+if (installDir !== expectedInstallDir) {
+  throw new Error(`relay-channel installPath mismatch: expected ${expectedInstallDir}, got ${installDir}`)
+}
 const manifestPath = path.join(installDir, "openclaw.plugin.json")
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
 if (manifest?.id !== "relay-channel") {
