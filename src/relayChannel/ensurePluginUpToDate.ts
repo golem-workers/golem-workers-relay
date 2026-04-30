@@ -224,9 +224,12 @@ async function readInstalledPluginState(configPath: string, pluginId: string): P
   const entryRecord = asRecord(entries[pluginId]);
   const channels = ensureRecord(root, "channels");
   const channelRecord = asRecord(channels[pluginId]);
-  const installPath = typeof installRecord?.installPath === "string" && installRecord.installPath.trim()
-    ? installRecord.installPath.trim()
-    : null;
+  const installPath = await resolveInstalledPluginPath(
+    typeof installRecord?.installPath === "string" && installRecord.installPath.trim()
+      ? installRecord.installPath.trim()
+      : null,
+    pluginId
+  );
 
   let version: string | null = null;
   if (installPath) {
@@ -246,6 +249,47 @@ async function readInstalledPluginState(configPath: string, pluginId: string): P
     entryConfig: asRecord(entryRecord?.config) ?? null,
     channelConfig: channelRecord,
   };
+}
+
+async function resolveInstalledPluginPath(
+  installPathFromConfig: string | null,
+  pluginId: string
+): Promise<string | null> {
+  const candidates = [
+    installPathFromConfig,
+    path.join(os.homedir(), ".openclaw", "extensions", pluginId),
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    const resolved = await resolvePluginInstallDir(candidate);
+    if (resolved) {
+      return resolved;
+    }
+  }
+
+  return null;
+}
+
+async function resolvePluginInstallDir(candidate: string): Promise<string | null> {
+  if (!candidate.trim()) {
+    return null;
+  }
+
+  try {
+    const resolved = await fs.realpath(candidate);
+    const manifestPath = path.join(resolved, "openclaw.plugin.json");
+    const packagePath = path.join(resolved, "package.json");
+    if ((await pathExists(manifestPath)) || (await pathExists(packagePath))) {
+      return resolved;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 async function uninstallExistingPlugin(pluginId: string, installPath: string | null, deps: Deps): Promise<void> {
