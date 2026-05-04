@@ -659,3 +659,8 @@ export async function getCodexLoginStatus(configPath: string): Promise<CodexLogi
   }
   return await readPersistedCodexStatus("codex.login.status", configPath);
 }
+
+export async function hasConnectedCodexLogin(configPath: string): Promise<boolean> {
+  const status = await getCodexLoginStatus(configPath);
+  return status.state === "connected";
+}

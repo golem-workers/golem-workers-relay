@@ -9,7 +9,7 @@ import {
   agentControlResultSchema,
   type AgentControlResult,
 } from "./protocol.js";
-import { getCodexLoginStatus, startCodexLogin } from "./codexLogin.js";
+import { getCodexLoginStatus, hasConnectedCodexLogin, startCodexLogin } from "./codexLogin.js";
 
 const execFile = promisify(execFileCallback);
 const GATEWAY_RESTART_CHECK_ATTEMPTS = 20;
@@ -478,12 +478,15 @@ async function setModel(input: {
     .filter((item): item is string => typeof item === "string")
     .map((item) => item.trim())
     .filter(Boolean);
-  modelCfg.primary = input.model;
-  modelCfg.fallbacks = fallbacks;
+  const prefersDirectCodex = await hasConnectedCodexLogin(input.configPath);
+  const storedPrimaryModel = prefersDirectCodex ? mapCodexModelRefForDirectAuth(input.model) : input.model;
+  const storedFallbacks = prefersDirectCodex ? fallbacks.map(mapCodexModelRefForDirectAuth) : fallbacks;
+  modelCfg.primary = storedPrimaryModel;
+  modelCfg.fallbacks = storedFallbacks;
   const modelsCfg = ensureRecord(defaultsCfg, "models");
-  const existingPrimaryModel = modelsCfg[input.model];
-  modelsCfg[input.model] = isRecord(existingPrimaryModel) ? existingPrimaryModel : {};
-  for (const fallbackModel of fallbacks) {
+  const existingPrimaryModel = modelsCfg[storedPrimaryModel];
+  modelsCfg[storedPrimaryModel] = isRecord(existingPrimaryModel) ? existingPrimaryModel : {};
+  for (const fallbackModel of storedFallbacks) {
     const existingFallbackModel = modelsCfg[fallbackModel];
     modelsCfg[fallbackModel] = isRecord(existingFallbackModel) ? existingFallbackModel : {};
   }
@@ -509,6 +512,14 @@ async function setModel(input: {
     subState: restart.subState,
     result: restart.result,
   };
+}
+
+function mapCodexModelRefForDirectAuth(modelRef: string): string {
+  const trimmed = modelRef.trim();
+  if (!trimmed.toLowerCase().startsWith("codex/")) {
+    return trimmed;
+  }
+  return `openai-codex/${trimmed.slice("codex/".length)}`;
 }
 
 async function restartGatewayService(): Promise<Extract<AgentControlResult, { kind: "gateway.restart" }>> {
