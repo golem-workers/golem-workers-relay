@@ -367,6 +367,21 @@ describe("executeAgentControl Codex login", () => {
       accountId: "acct-123",
       chatgptPlanType: "plus",
     });
+    const agentAuthProfiles = JSON.parse(
+      await fs.readFile(path.join(tempDir, "agents", "main", "agent", "auth-profiles.json"), "utf8"),
+    ) as {
+      version: number;
+      profiles: Record<string, Record<string, unknown>>;
+    };
+    expect(agentAuthProfiles.version).toBe(1);
+    expect(agentAuthProfiles.profiles["openai-codex:user@example.com"]).toMatchObject({
+      type: "oauth",
+      provider: "openai-codex",
+      refresh: "refresh-token-123",
+      email: "user@example.com",
+      accountId: "acct-123",
+      chatgptPlanType: "plus",
+    });
 
     const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
       auth?: {
@@ -386,6 +401,55 @@ describe("executeAgentControl Codex login", () => {
     });
     expect(config.auth?.order?.["openai-codex"]).toEqual(["openai-codex:user@example.com"]);
     expect(config.agents?.defaults?.models?.["openai-codex/gpt-5.5"]).toEqual({});
+  });
+
+  it("reports connected Codex status when the OAuth profile only exists in the agent auth store", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-login-agent-store-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    await fs.mkdir(path.join(tempDir, "agents", "main", "agent"), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, "agents", "main", "agent", "auth-profiles.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          profiles: {
+            "openai-codex:user@example.com": {
+              type: "oauth",
+              provider: "openai-codex",
+              access: "access-token",
+              refresh: "refresh-token",
+              expires: Date.now() + 60_000,
+              email: "user@example.com",
+              accountId: "acct-123",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const statusResult = await executeAgentControl({
+      action: { kind: "codex.login.status" },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    expect(statusResult).toEqual({
+      kind: "codex.login.status",
+      state: "connected",
+      message: "Connected as user@example.com.",
+      verificationUrl: null,
+      userCode: null,
+      expiresAtMs: expect.any(Number) as number,
+      pollAfterMs: null,
+      profileId: "openai-codex:user@example.com",
+      email: "user@example.com",
+      accountId: "acct-123",
+      lastError: null,
+    });
   });
 });
 

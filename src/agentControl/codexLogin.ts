@@ -10,6 +10,7 @@ const OPENAI_CODEX_DEVICE_CODE_TIMEOUT_MS = 15 * 60_000;
 const OPENAI_CODEX_DEVICE_CODE_DEFAULT_INTERVAL_MS = 5_000;
 const OPENAI_CODEX_DEVICE_CODE_MIN_INTERVAL_MS = 1_000;
 const AUTH_PROFILES_FILE = "auth-profiles.json";
+const MAIN_AGENT_ID = "main";
 
 type CodexLoginState = "not_logged_in" | "pending" | "connected" | "failed" | "unavailable";
 
@@ -286,6 +287,14 @@ async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+function resolveCodexAuthStorePaths(configPath: string): string[] {
+  const stateDir = path.dirname(configPath);
+  return [
+    path.join(stateDir, AUTH_PROFILES_FILE),
+    path.join(stateDir, "agents", MAIN_AGENT_ID, "agent", AUTH_PROFILES_FILE),
+  ];
+}
+
 function mergeProviderOrder(existing: unknown, profileId: string): string[] {
   const normalized = Array.isArray(existing)
     ? existing.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
@@ -299,19 +308,20 @@ async function persistCodexCredentials(input: {
 }): Promise<{ profileId: string; email: string | null; accountId: string | null }> {
   const identity = resolveCodexAuthIdentity(input.creds.access);
   const profileId = buildAuthProfileId("openai-codex", identity.profileName);
-  const authStorePath = path.join(path.dirname(input.configPath), AUTH_PROFILES_FILE);
-  const authStore = await readAuthProfilesStore(authStorePath);
-  authStore.profiles[profileId] = {
-    type: "oauth",
-    provider: "openai-codex",
-    access: input.creds.access,
-    refresh: input.creds.refresh,
-    expires: input.creds.expires,
-    ...(identity.email ? { email: identity.email } : {}),
-    ...(identity.accountId ? { accountId: identity.accountId } : {}),
-    ...(identity.chatgptPlanType ? { chatgptPlanType: identity.chatgptPlanType } : {}),
-  } satisfies OAuthCredential;
-  await writeJsonFile(authStorePath, authStore);
+  for (const authStorePath of resolveCodexAuthStorePaths(input.configPath)) {
+    const authStore = await readAuthProfilesStore(authStorePath);
+    authStore.profiles[profileId] = {
+      type: "oauth",
+      provider: "openai-codex",
+      access: input.creds.access,
+      refresh: input.creds.refresh,
+      expires: input.creds.expires,
+      ...(identity.email ? { email: identity.email } : {}),
+      ...(identity.accountId ? { accountId: identity.accountId } : {}),
+      ...(identity.chatgptPlanType ? { chatgptPlanType: identity.chatgptPlanType } : {}),
+    } satisfies OAuthCredential;
+    await writeJsonFile(authStorePath, authStore);
+  }
 
   const currentConfig = await readConfigObject(input.configPath);
   const currentAuth = isRecord(currentConfig.auth) ? currentConfig.auth : {};
@@ -503,14 +513,20 @@ async function readPersistedCodexStatus(
   kind: "codex.login.start" | "codex.login.status",
   configPath: string,
 ): Promise<CodexLoginActionResult> {
-  const authStorePath = path.join(path.dirname(configPath), AUTH_PROFILES_FILE);
-  const store = await readAuthProfilesStore(authStorePath);
-  const entries = Object.entries(store.profiles).filter(([, credential]) => {
-    if (!isRecord(credential)) {
-      return false;
+  const entriesByProfileId = new Map<string, Record<string, unknown>>();
+  for (const authStorePath of resolveCodexAuthStorePaths(configPath)) {
+    const store = await readAuthProfilesStore(authStorePath);
+    for (const [profileId, credential] of Object.entries(store.profiles)) {
+      if (!isRecord(credential)) {
+        continue;
+      }
+      if (credential.type !== "oauth" || credential.provider !== "openai-codex") {
+        continue;
+      }
+      entriesByProfileId.set(profileId, credential);
     }
-    return credential.type === "oauth" && credential.provider === "openai-codex";
-  });
+  }
+  const entries = Array.from(entriesByProfileId.entries());
   if (entries.length === 0) {
     return buildResult(kind, "not_logged_in", {
       message: "Codex is not connected on this agent yet.",
@@ -521,7 +537,7 @@ async function readPersistedCodexStatus(
     const expires = typeof credential.expires === "number" ? credential.expires : null;
     return expires == null || expires > now;
   });
-  const pickEntry = (liveEntries[0] ?? entries[0]) as [string, Record<string, unknown>];
+  const pickEntry = liveEntries[0] ?? entries[0];
   const [profileId, credential] = pickEntry;
   const email = normalizeString(credential.email);
   const accountId = normalizeString(credential.accountId);
