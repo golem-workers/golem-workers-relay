@@ -57,6 +57,12 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("whatsapp.login.wait"),
     timeoutMs: z.number().int().min(1_000).max(120_000).optional(),
   }),
+  z.object({
+    kind: z.literal("codex.login.start"),
+  }),
+  z.object({
+    kind: z.literal("codex.login.status"),
+  }),
 ]);
 
 export type AgentControlAction = z.infer<typeof agentControlActionSchema>;
@@ -122,6 +128,32 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     kind: z.literal("whatsapp.login.wait"),
     connected: z.boolean(),
     message: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal("codex.login.start"),
+    state: z.enum(["not_logged_in", "pending", "connected", "failed", "unavailable"]),
+    message: z.string().min(1),
+    verificationUrl: z.string().min(1).nullable(),
+    userCode: z.string().min(1).nullable(),
+    expiresAtMs: z.number().int().positive().nullable(),
+    pollAfterMs: z.number().int().min(0).nullable(),
+    profileId: z.string().min(1).nullable(),
+    email: z.string().min(1).nullable(),
+    accountId: z.string().min(1).nullable(),
+    lastError: z.string().min(1).nullable(),
+  }),
+  z.object({
+    kind: z.literal("codex.login.status"),
+    state: z.enum(["not_logged_in", "pending", "connected", "failed", "unavailable"]),
+    message: z.string().min(1),
+    verificationUrl: z.string().min(1).nullable(),
+    userCode: z.string().min(1).nullable(),
+    expiresAtMs: z.number().int().positive().nullable(),
+    pollAfterMs: z.number().int().min(0).nullable(),
+    profileId: z.string().min(1).nullable(),
+    email: z.string().min(1).nullable(),
+    accountId: z.string().min(1).nullable(),
+    lastError: z.string().min(1).nullable(),
   }),
 ]);
 

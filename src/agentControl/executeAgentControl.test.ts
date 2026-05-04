@@ -2,7 +2,8 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { __testing as codexLoginTesting } from "./codexLogin.js";
 import { executeAgentControl } from "./executeAgentControl.js";
 
 const noopGateway = {
@@ -13,6 +14,7 @@ const noopGateway = {
 
 const originalStateDir = process.env.OPENCLAW_STATE_DIR;
 const originalPath = process.env.PATH;
+const originalFetch = global.fetch;
 
 afterEach(() => {
   if (originalStateDir === undefined) {
@@ -25,6 +27,12 @@ afterEach(() => {
   } else {
     process.env.PATH = originalPath;
   }
+  global.fetch = originalFetch;
+});
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+  codexLoginTesting.resetCodexLoginState();
 });
 
 async function createTempStateDir() {
@@ -215,6 +223,169 @@ describe("executeAgentControl WhatsApp login", () => {
       connected: true,
       message: "Linked!",
     });
+  });
+});
+
+describe("executeAgentControl Codex login", () => {
+  it("starts device-code login and reports the verification details", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-login-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+
+    let tokenPollResolve!: (value: Response) => void;
+    global.fetch = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/accounts/deviceauth/usercode")) {
+        return new Response(
+          JSON.stringify({
+            device_auth_id: "device-auth-123",
+            user_code: "CODE-1234",
+            interval: 5,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/api/accounts/deviceauth/token")) {
+        return await new Promise<Response>((resolve) => {
+          tokenPollResolve = resolve;
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const startResult = await executeAgentControl({
+      action: { kind: "codex.login.start" },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    expect(startResult).toEqual({
+      kind: "codex.login.start",
+      state: "pending",
+      message: "Open the verification page and enter the device code.",
+      verificationUrl: "https://auth.openai.com/codex/device",
+      userCode: "CODE-1234",
+      expiresAtMs: expect.any(Number) as number,
+      pollAfterMs: 5000,
+      profileId: null,
+      email: null,
+      accountId: null,
+      lastError: null,
+    });
+
+    tokenPollResolve(
+      new Response(
+        JSON.stringify({
+          error: "authorization_pending",
+        }),
+        { status: 403, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+  });
+
+  it("persists a successful Codex login into auth-profiles and config bindings", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-login-success-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+
+    global.fetch = vi.fn((input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/accounts/deviceauth/usercode")) {
+        return new Response(
+          JSON.stringify({
+            device_auth_id: "device-auth-123",
+            user_code: "CODE-1234",
+            interval: 1,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/api/accounts/deviceauth/token")) {
+        return new Response(
+          JSON.stringify({
+            authorization_code: "auth-code-123",
+            code_verifier: "verifier-123",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/oauth/token")) {
+        return new Response(
+          JSON.stringify({
+            access_token:
+              "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQ3MDAwMDAwMDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3QtMTIzIiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwbHVzIn19.signature",
+            refresh_token: "refresh-token-123",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const startResult = await executeAgentControl({
+      action: { kind: "codex.login.start" },
+      configPath,
+      gateway: noopGateway,
+    });
+    expect(startResult.kind).toBe("codex.login.start");
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const statusResult = await executeAgentControl({
+      action: { kind: "codex.login.status" },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    expect(statusResult).toEqual({
+      kind: "codex.login.status",
+      state: "connected",
+      message: "Connected as user@example.com.",
+      verificationUrl: null,
+      userCode: null,
+      expiresAtMs: null,
+      pollAfterMs: null,
+      profileId: "openai-codex:user@example.com",
+      email: "user@example.com",
+      accountId: "acct-123",
+      lastError: null,
+    });
+
+    const authProfiles = JSON.parse(
+      await fs.readFile(path.join(tempDir, "auth-profiles.json"), "utf8"),
+    ) as {
+      version: number;
+      profiles: Record<string, Record<string, unknown>>;
+    };
+    expect(authProfiles.version).toBe(1);
+    expect(authProfiles.profiles["openai-codex:user@example.com"]).toMatchObject({
+      type: "oauth",
+      provider: "openai-codex",
+      refresh: "refresh-token-123",
+      email: "user@example.com",
+      accountId: "acct-123",
+      chatgptPlanType: "plus",
+    });
+
+    const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+      auth?: {
+        profiles?: Record<string, unknown>;
+        order?: Record<string, string[]>;
+      };
+      agents?: {
+        defaults?: {
+          models?: Record<string, unknown>;
+        };
+      };
+    };
+    expect(config.auth?.profiles?.["openai-codex:user@example.com"]).toEqual({
+      provider: "openai-codex",
+      mode: "oauth",
+      email: "user@example.com",
+    });
+    expect(config.auth?.order?.["openai-codex"]).toEqual(["openai-codex:user@example.com"]);
+    expect(config.agents?.defaults?.models?.["openai-codex/gpt-5.5"]).toEqual({});
   });
 });
 

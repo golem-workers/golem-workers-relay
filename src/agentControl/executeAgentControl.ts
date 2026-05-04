@@ -9,6 +9,7 @@ import {
   agentControlResultSchema,
   type AgentControlResult,
 } from "./protocol.js";
+import { getCodexLoginStatus, startCodexLogin } from "./codexLogin.js";
 
 const execFile = promisify(execFileCallback);
 const GATEWAY_RESTART_CHECK_ATTEMPTS = 20;
@@ -74,6 +75,10 @@ export async function executeAgentControl(input: {
                 ? await startWhatsAppLogin(input.gateway, input.action)
               : input.action.kind === "whatsapp.login.wait"
                 ? await waitForWhatsAppLogin(input.gateway, input.action)
+              : input.action.kind === "codex.login.start"
+                ? await startCodexLogin(input.configPath)
+              : input.action.kind === "codex.login.status"
+                ? await getCodexLoginStatus(input.configPath)
               : await setModel({
                   configPath: input.configPath,
                   model: input.action.model,
