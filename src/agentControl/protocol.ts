@@ -3,11 +3,20 @@ import { z } from "zod";
 const jsonRecordSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
   z.record(z.string(), z.unknown())
 );
+const modelAssignmentPurposeSchema = z.enum([
+  "main",
+  "image",
+  "imageGeneration",
+  "videoGeneration",
+  "musicGeneration",
+  "pdf",
+]);
 const thinkingDefaultSchema = z
   .enum(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive"])
   .nullable()
   .optional();
 const modelFallbacksSchema = z.array(z.string().min(1));
+const modelRefStringSchema = z.string().min(1).nullable();
 
 export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -45,6 +54,17 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("model.set"),
     model: z.string().min(1),
     fallbacks: modelFallbacksSchema,
+    contextTokens: z.number().int().positive().nullable().optional(),
+    thinkingDefault: thinkingDefaultSchema,
+  }),
+  z.object({
+    kind: z.literal("modelAssignments.read"),
+  }),
+  z.object({
+    kind: z.literal("modelAssignment.set"),
+    purpose: modelAssignmentPurposeSchema,
+    primary: z.string().min(1),
+    fallback: modelRefStringSchema,
     contextTokens: z.number().int().positive().nullable().optional(),
     thinkingDefault: thinkingDefaultSchema,
   }),
@@ -113,6 +133,29 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     restarted: z.literal(true),
     model: z.string().min(1),
     fallbacks: modelFallbacksSchema,
+    contextTokens: z.number().int().positive().nullable(),
+    thinkingDefault: thinkingDefaultSchema,
+    activeState: z.string().min(1),
+    subState: z.string().min(1),
+    result: z.string().nullable(),
+  }),
+  z.object({
+    kind: z.literal("modelAssignments.read"),
+    assignments: z.array(
+      z.object({
+        purpose: modelAssignmentPurposeSchema,
+        primary: modelRefStringSchema,
+        fallback: modelRefStringSchema,
+      })
+    ),
+  }),
+  z.object({
+    kind: z.literal("modelAssignment.set"),
+    applied: z.literal(true),
+    restarted: z.literal(true),
+    purpose: modelAssignmentPurposeSchema,
+    primary: z.string().min(1),
+    fallback: modelRefStringSchema,
     contextTokens: z.number().int().positive().nullable(),
     thinkingDefault: thinkingDefaultSchema,
     activeState: z.string().min(1),

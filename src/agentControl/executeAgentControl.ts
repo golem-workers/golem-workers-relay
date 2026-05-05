@@ -23,6 +23,7 @@ type GatewayLike = {
   request(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
 };
 
+type ModelAssignmentPurpose = Extract<AgentControlAction, { kind: "modelAssignment.set" }>["purpose"];
 type ModelSetThinkingDefault = Extract<AgentControlAction, { kind: "model.set" }>["thinkingDefault"];
 type ModelSetFallbacks = Extract<AgentControlAction, { kind: "model.set" }>["fallbacks"];
 
@@ -79,13 +80,24 @@ export async function executeAgentControl(input: {
                 ? await startCodexLogin(input.configPath)
               : input.action.kind === "codex.login.status"
                 ? await getCodexLoginStatus(input.configPath)
-              : await setModel({
-                  configPath: input.configPath,
-                  model: input.action.model,
-                  fallbacks: input.action.fallbacks,
-                  contextTokens: input.action.contextTokens ?? null,
-                  thinkingDefault: input.action.thinkingDefault,
-                });
+              : input.action.kind === "modelAssignments.read"
+                ? await readModelAssignments(input.configPath)
+              : input.action.kind === "modelAssignment.set"
+                ? await setModelAssignment({
+                    configPath: input.configPath,
+                    purpose: input.action.purpose,
+                    primary: input.action.primary,
+                    fallback: input.action.fallback,
+                    contextTokens: input.action.contextTokens ?? null,
+                    thinkingDefault: input.action.thinkingDefault,
+                  })
+                : await setModel({
+                    configPath: input.configPath,
+                    model: input.action.model,
+                    fallbacks: input.action.fallbacks,
+                    contextTokens: input.action.contextTokens ?? null,
+                    thinkingDefault: input.action.thinkingDefault,
+                  });
   return agentControlResultSchema.parse(result);
 }
 
@@ -469,26 +481,23 @@ async function setModel(input: {
   contextTokens: number | null;
   thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive" | null;
 }): Promise<AgentControlResult> {
+  const fallbacks = input.fallbacks
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
   const { config } = await readConfigFile(input.configPath);
   const nextConfig = structuredClone(config);
   const agentsCfg = ensureRecord(nextConfig, "agents");
   const defaultsCfg = ensureRecord(agentsCfg, "defaults");
   const modelCfg = ensureRecord(defaultsCfg, "model");
-  const fallbacks = input.fallbacks
-    .filter((item): item is string => typeof item === "string")
-    .map((item) => item.trim())
-    .filter(Boolean);
   const prefersDirectCodex = await hasConnectedCodexLogin(input.configPath);
   const storedPrimaryModel = prefersDirectCodex ? mapCodexModelRefForDirectAuth(input.model) : input.model;
   const storedFallbacks = prefersDirectCodex ? fallbacks.map(mapCodexModelRefForDirectAuth) : fallbacks;
   modelCfg.primary = storedPrimaryModel;
   modelCfg.fallbacks = storedFallbacks;
-  const modelsCfg = ensureRecord(defaultsCfg, "models");
-  const existingPrimaryModel = modelsCfg[storedPrimaryModel];
-  modelsCfg[storedPrimaryModel] = isRecord(existingPrimaryModel) ? existingPrimaryModel : {};
+  ensureModelRegistryEntry(defaultsCfg, storedPrimaryModel);
   for (const fallbackModel of storedFallbacks) {
-    const existingFallbackModel = modelsCfg[fallbackModel];
-    modelsCfg[fallbackModel] = isRecord(existingFallbackModel) ? existingFallbackModel : {};
+    ensureModelRegistryEntry(defaultsCfg, fallbackModel);
   }
   if (typeof input.contextTokens === "number" && Number.isFinite(input.contextTokens) && input.contextTokens > 0) {
     defaultsCfg.contextTokens = Math.floor(input.contextTokens);
@@ -508,6 +517,125 @@ async function setModel(input: {
     fallbacks,
     contextTokens: input.contextTokens,
     thinkingDefault: readThinkingDefault(defaultsCfg.thinkingDefault),
+    activeState: restart.activeState,
+    subState: restart.subState,
+    result: restart.result,
+  };
+}
+
+function getPurposeConfigKey(purpose: ModelAssignmentPurpose): string {
+  switch (purpose) {
+    case "main":
+      return "model";
+    case "image":
+      return "imageModel";
+    case "imageGeneration":
+      return "imageGenerationModel";
+    case "videoGeneration":
+      return "videoGenerationModel";
+    case "musicGeneration":
+      return "musicGenerationModel";
+    case "pdf":
+      return "pdfModel";
+  }
+}
+
+function mapStoredModelRef(modelRef: string, prefersDirectCodex: boolean): string {
+  return prefersDirectCodex ? mapCodexModelRefForDirectAuth(modelRef) : modelRef.trim();
+}
+
+function mapPublicModelRef(modelRef: string | null | undefined): string | null {
+  const trimmed = String(modelRef ?? "").trim();
+  if (!trimmed) return null;
+  if (trimmed.toLowerCase().startsWith("openai-codex/")) {
+    return `codex/${trimmed.slice("openai-codex/".length)}`;
+  }
+  return trimmed;
+}
+
+function ensureModelRegistryEntry(defaultsCfg: Record<string, unknown>, modelRef: string | null): void {
+  const trimmed = String(modelRef ?? "").trim();
+  if (!trimmed) return;
+  const modelsCfg = ensureRecord(defaultsCfg, "models");
+  const existingModel = modelsCfg[trimmed];
+  modelsCfg[trimmed] = isRecord(existingModel) ? existingModel : {};
+}
+
+async function readModelAssignments(configPath: string): Promise<AgentControlResult> {
+  const { config } = await readConfigFile(configPath);
+  const agentsCfg = ensureOptionalRecord(config.agents);
+  const defaultsCfg = ensureOptionalRecord(agentsCfg?.defaults);
+  const assignments = ([
+    "main",
+    "image",
+    "imageGeneration",
+    "videoGeneration",
+    "musicGeneration",
+    "pdf",
+  ] as const).map((purpose) => {
+    const entry = ensureOptionalRecord(defaultsCfg?.[getPurposeConfigKey(purpose)]);
+    const fallbackValues = readUnknownArray(entry?.fallbacks)
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return {
+      kind: "assignment" as const,
+      purpose,
+      primary: mapPublicModelRef(typeof entry?.primary === "string" ? entry.primary : null),
+      fallback: mapPublicModelRef(fallbackValues[0] ?? null),
+    };
+  });
+  return {
+    kind: "modelAssignments.read",
+    assignments: assignments.map(({ purpose, primary, fallback }) => ({
+      purpose,
+      primary,
+      fallback,
+    })),
+  };
+}
+
+async function setModelAssignment(input: {
+  configPath: string;
+  purpose: ModelAssignmentPurpose;
+  primary: string;
+  fallback: string | null;
+  contextTokens: number | null;
+  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive" | null;
+}): Promise<AgentControlResult> {
+  const { config } = await readConfigFile(input.configPath);
+  const nextConfig = structuredClone(config);
+  const agentsCfg = ensureRecord(nextConfig, "agents");
+  const defaultsCfg = ensureRecord(agentsCfg, "defaults");
+  const modelCfg = ensureRecord(defaultsCfg, getPurposeConfigKey(input.purpose));
+  const prefersDirectCodex = await hasConnectedCodexLogin(input.configPath);
+  const storedPrimaryModel = mapStoredModelRef(input.primary, prefersDirectCodex);
+  const storedFallback = input.fallback ? mapStoredModelRef(input.fallback, prefersDirectCodex) : null;
+  modelCfg.primary = storedPrimaryModel;
+  modelCfg.fallbacks = storedFallback ? [storedFallback] : [];
+  ensureModelRegistryEntry(defaultsCfg, storedPrimaryModel);
+  if (storedFallback) {
+    ensureModelRegistryEntry(defaultsCfg, storedFallback);
+  }
+  if (input.purpose === "main" && typeof input.contextTokens === "number" && Number.isFinite(input.contextTokens) && input.contextTokens > 0) {
+    defaultsCfg.contextTokens = Math.floor(input.contextTokens);
+  }
+  if (input.purpose === "main" && typeof input.thinkingDefault === "string" && input.thinkingDefault.trim()) {
+    defaultsCfg.thinkingDefault = input.thinkingDefault;
+  } else if (input.purpose === "main" && input.thinkingDefault === null) {
+    delete defaultsCfg.thinkingDefault;
+  }
+  await atomicWriteUtf8(input.configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
+  const restart = await restartGatewayService();
+  return {
+    kind: "modelAssignment.set",
+    applied: true,
+    restarted: true,
+    purpose: input.purpose,
+    primary: input.primary,
+    fallback: input.fallback,
+    contextTokens: input.contextTokens,
+    thinkingDefault: input.purpose === "main" ? readThinkingDefault(defaultsCfg.thinkingDefault) : null,
     activeState: restart.activeState,
     subState: restart.subState,
     result: restart.result,
@@ -634,6 +762,10 @@ function ensureRecord(parent: Record<string, unknown>, key: string): Record<stri
   const next: Record<string, unknown> = {};
   parent[key] = next;
   return next;
+}
+
+function ensureOptionalRecord(value: unknown): Record<string, unknown> | null {
+  return isRecord(value) ? value : null;
 }
 
 function readUnknownArray(value: unknown): unknown[] {

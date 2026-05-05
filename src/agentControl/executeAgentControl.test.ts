@@ -654,4 +654,114 @@ describe("executeAgentControl model set", () => {
     expect(config.agents?.defaults?.models?.["openai-codex/gpt-5.4"]).toEqual({});
     expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3-flash-preview"]).toEqual({});
   });
+
+  it("reads all model assignments from config", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-assignments-read-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await fs.writeFile(configPath, JSON.stringify({
+      agents: {
+        defaults: {
+          model: {
+            primary: "openrouter/google/gemini-2.5-flash",
+            fallbacks: ["openrouter/openai/gpt-oss-120b"],
+          },
+          imageGenerationModel: {
+            primary: "openai/gpt-image-2",
+            fallbacks: ["openrouter/google/gemini-3.1-flash-image-preview"],
+          },
+          videoGenerationModel: {
+            primary: "fal/fal-ai/minimax/video-01-live",
+            fallbacks: ["openai/sora-2"],
+          },
+        },
+      },
+    }, null, 2), "utf8");
+
+    const result = await executeAgentControl({
+      action: {
+        kind: "modelAssignments.read",
+      },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    expect(result).toEqual({
+      kind: "modelAssignments.read",
+      assignments: [
+        {
+          purpose: "main",
+          primary: "openrouter/google/gemini-2.5-flash",
+          fallback: "openrouter/openai/gpt-oss-120b",
+        },
+        {
+          purpose: "image",
+          primary: null,
+          fallback: null,
+        },
+        {
+          purpose: "imageGeneration",
+          primary: "openai/gpt-image-2",
+          fallback: "openrouter/google/gemini-3.1-flash-image-preview",
+        },
+        {
+          purpose: "videoGeneration",
+          primary: "fal/fal-ai/minimax/video-01-live",
+          fallback: "openai/sora-2",
+        },
+        {
+          purpose: "musicGeneration",
+          primary: null,
+          fallback: null,
+        },
+        {
+          purpose: "pdf",
+          primary: null,
+          fallback: null,
+        },
+      ],
+    });
+  });
+
+  it("writes a non-main model assignment and registers both refs", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-assignment-set-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await installFakeSystemctl();
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+
+    const result = await executeAgentControl({
+      action: {
+        kind: "modelAssignment.set",
+        purpose: "videoGeneration",
+        primary: "fal/fal-ai/minimax/video-01-live",
+        fallback: "openai/sora-2",
+        contextTokens: null,
+        thinkingDefault: null,
+      },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+      agents?: {
+        defaults?: {
+          videoGenerationModel?: { primary?: string; fallbacks?: string[] };
+          models?: Record<string, unknown>;
+          thinkingDefault?: string;
+        };
+      };
+    };
+
+    expect(result).toMatchObject({
+      kind: "modelAssignment.set",
+      purpose: "videoGeneration",
+      primary: "fal/fal-ai/minimax/video-01-live",
+      fallback: "openai/sora-2",
+      thinkingDefault: null,
+    });
+    expect(config.agents?.defaults?.videoGenerationModel?.primary).toBe("fal/fal-ai/minimax/video-01-live");
+    expect(config.agents?.defaults?.videoGenerationModel?.fallbacks).toEqual(["openai/sora-2"]);
+    expect(config.agents?.defaults?.models?.["fal/fal-ai/minimax/video-01-live"]).toEqual({});
+    expect(config.agents?.defaults?.models?.["openai/sora-2"]).toEqual({});
+    expect(config.agents?.defaults?.thinkingDefault).toBeUndefined();
+  });
 });
