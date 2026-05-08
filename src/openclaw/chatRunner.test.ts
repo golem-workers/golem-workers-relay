@@ -3303,6 +3303,63 @@ describe("isOpenclawSlashCommand", () => {
     expect(isOpenclawSlashCommand("/123bad")).toBe(false);
     expect(isOpenclawSlashCommand("prefix /new")).toBe(false);
   });
+
+  it("does not recover relay_channel_v2 replies from a transcript text match without a gateway final", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-v2-transcript-stale-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+
+    const sessionKey = "tg:449:server";
+    const sessionFile = path.join(sessionsDir, "short-repeated.jsonl");
+    await fs.writeFile(
+      path.join(sessionsDir, "sessions.json"),
+      JSON.stringify({
+        [`agent:main:${sessionKey}`]: {
+          sessionId: "short-repeated",
+          updatedAt: Date.now(),
+          sessionFile,
+        },
+      }),
+      "utf8"
+    );
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({ type: "message", message: { role: "user", content: "ау" } }),
+        JSON.stringify({ type: "message", message: { role: "assistant", content: "stale answer" } }),
+      ].join("\n") + "\n",
+      "utf8"
+    );
+
+    const request = vi.fn().mockImplementation((method: string) => {
+      if (method === "chat.send") {
+        return Promise.resolve({ runId: "run_short_repeated" });
+      }
+      if (method === "chat.abort") {
+        return Promise.resolve({ aborted: true });
+      }
+      return Promise.reject(new Error(`unexpected method ${method}`));
+    });
+    const runner = new ChatRunner({ request } as never, {
+      retry: { attempts: 1, baseDelayMs: [1], jitterMs: 0 },
+    });
+
+    const { result } = await runner.runChatTask({
+      taskId: "task_short_repeated",
+      sessionKey,
+      messageText: "ау",
+      deliverySystem: "relay_channel_v2",
+      timeoutMs: 350,
+    });
+
+    expect(result.outcome).toBe("error");
+    if (result.outcome !== "error") throw new Error("expected error");
+    expect(result.error.code).toBe("GATEWAY_TIMEOUT");
+    expect(JSON.stringify(result)).not.toContain("stale answer");
+    await fs.rm(stateDir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+  });
 });
 
 describe("applyTransportDeliveryInstructions", () => {

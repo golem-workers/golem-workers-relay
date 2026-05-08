@@ -288,7 +288,8 @@ async function submitBatchedNoReply(input: {
           backendMessageId: input.sourceMessage.messageId,
           relayMessageId,
           relayInstanceId: input.cfg.relayInstanceId,
-        }
+        },
+        input.sourceMessage.input.kind === "chat" ? { sessionKey: input.sourceMessage.input.sessionKey } : undefined
       ),
     },
   });
@@ -501,6 +502,7 @@ async function processSingleMessage(input: {
             cfg,
             backend,
             correlationMessageId: msg.messageId,
+            sessionKey: msg.input.sessionKey,
             deliverySystem,
             reply: {
               message: buildArtifactRetryNotice(),
@@ -545,6 +547,7 @@ async function processSingleMessage(input: {
                 cfg,
                 backend,
                 correlationMessageId: msg.messageId,
+                sessionKey: msg.input.sessionKey,
                 deliverySystem,
                 reply: retryOutcome.result.reply,
                 openclawMeta: {
@@ -582,6 +585,7 @@ async function processSingleMessage(input: {
                   cfg,
                   backend,
                   correlationMessageId: msg.messageId,
+                  sessionKey: msg.input.sessionKey,
                   deliverySystem,
                   reply: {
                     message: originalText,
@@ -606,6 +610,7 @@ async function processSingleMessage(input: {
                 cfg,
                 backend,
                 correlationMessageId: msg.messageId,
+                sessionKey: msg.input.sessionKey,
                 deliverySystem,
                 reply: {
                   message: buildArtifactFailureNotice(),
@@ -643,6 +648,7 @@ async function processSingleMessage(input: {
                 cfg,
                 backend,
                 correlationMessageId: msg.messageId,
+                sessionKey: msg.input.sessionKey,
                 deliverySystem,
                 reply: {
                   message: originalText,
@@ -665,6 +671,7 @@ async function processSingleMessage(input: {
               cfg,
               backend,
               correlationMessageId: msg.messageId,
+              sessionKey: msg.input.sessionKey,
               deliverySystem,
               reply: {
                 message: buildArtifactFailureNotice(),
@@ -710,7 +717,7 @@ async function processSingleMessage(input: {
                   relayInstanceId: cfg.relayInstanceId,
                   openclawRunId: result.reply.runId,
                 },
-                { deliverySystem, ...directTransportMeta }
+                { deliverySystem, sessionKey: msg.input.sessionKey, ...directTransportMeta }
               ),
             },
           });
@@ -731,7 +738,7 @@ async function processSingleMessage(input: {
                 relayInstanceId: cfg.relayInstanceId,
                 openclawRunId: result.noReply?.runId,
               },
-              { deliverySystem }
+              { deliverySystem, sessionKey: msg.input.sessionKey }
             ),
           },
         });
@@ -751,7 +758,7 @@ async function processSingleMessage(input: {
                 relayInstanceId: cfg.relayInstanceId,
                 openclawRunId: result.error.runId,
               },
-              { deliverySystem }
+              { deliverySystem, sessionKey: msg.input.sessionKey }
             ),
           },
         });
@@ -908,6 +915,7 @@ function normalizeOpenclawMeta(meta: unknown): Record<string, unknown> | undefin
     meta.deliverySystem === "relay_channel_v2" || meta.deliverySystem === "legacy_push_v1"
       ? meta.deliverySystem
       : undefined;
+  const sessionKey = readNonEmptyString(meta.sessionKey);
   const transportChannelId = readNonEmptyString(meta.transportChannelId);
   const transportAccountId = readNonEmptyString(meta.transportAccountId);
   const transportMessageId = readNonEmptyString(meta.transportMessageId);
@@ -918,6 +926,7 @@ function normalizeOpenclawMeta(meta: unknown): Record<string, unknown> | undefin
     ...(artifactDelivery ? { artifactDelivery } : {}),
     ...(trace ? { trace } : {}),
     ...(deliverySystem ? { deliverySystem } : {}),
+    ...(sessionKey ? { sessionKey } : {}),
     ...(transportChannelId ? { transportChannelId } : {}),
     ...(transportAccountId ? { transportAccountId } : {}),
     ...(transportMessageId ? { transportMessageId } : {}),
@@ -935,6 +944,7 @@ function buildOpenclawMetaWithTrace(
   },
   deliveryOpts?: {
     deliverySystem?: "legacy_push_v1" | "relay_channel_v2";
+    sessionKey?: string;
     transportChannelId?: string;
     transportAccountId?: string;
     transportMessageId?: string;
@@ -947,6 +957,7 @@ function buildOpenclawMetaWithTrace(
     (fromBase === "legacy_push_v1" || fromBase === "relay_channel_v2" ? fromBase : "legacy_push_v1");
   const transportChannelId =
     readNonEmptyString(deliveryOpts?.transportChannelId) ?? readNonEmptyString(base.transportChannelId);
+  const sessionKey = readNonEmptyString(deliveryOpts?.sessionKey) ?? readNonEmptyString(base.sessionKey);
   const transportAccountId =
     readNonEmptyString(deliveryOpts?.transportAccountId) ?? readNonEmptyString(base.transportAccountId);
   const transportMessageId =
@@ -960,6 +971,7 @@ function buildOpenclawMetaWithTrace(
       ...(trace.openclawRunId ? { openclawRunId: trace.openclawRunId } : {}),
     },
     deliverySystem,
+    ...(sessionKey ? { sessionKey } : {}),
     ...(transportChannelId ? { transportChannelId } : {}),
     ...(transportAccountId ? { transportAccountId } : {}),
     ...(transportMessageId ? { transportMessageId } : {}),
@@ -1410,6 +1422,7 @@ async function submitReplyCallback(input: {
   };
   backend: BackendClient;
   correlationMessageId: string;
+  sessionKey: string;
   reply: {
     message: unknown;
     runId: string;
@@ -1444,7 +1457,7 @@ async function submitReplyCallback(input: {
         relayMessageId,
         relayInstanceId: input.cfg.relayInstanceId,
         openclawRunId: input.reply.runId,
-      }, { deliverySystem: input.deliverySystem }),
+      }, { deliverySystem: input.deliverySystem, sessionKey: input.sessionKey }),
     },
   });
   logger.info(

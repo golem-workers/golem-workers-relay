@@ -101,6 +101,7 @@ type DeliverySystem = "legacy_push_v1" | "relay_channel_v2";
 
 type ResolvedSessionTranscriptState = {
   sessionFile: string;
+  baselineLineCount?: number;
 };
 
 const TRANSPORT_INTERRUPTION_PATTERNS = [
@@ -458,6 +459,33 @@ async function waitForSessionTranscriptState(input: {
   return null;
 }
 
+async function readSessionTranscriptLineCount(sessionFile: string): Promise<number> {
+  const rawTranscript = await fs.readFile(sessionFile, "utf8").catch(() => "");
+  if (!rawTranscript.trim()) return 0;
+  return rawTranscript.split(/\r?\n/).filter((line) => line.trim().length > 0).length;
+}
+
+async function readExistingSessionTranscriptState(input: {
+  sessionKey: string;
+}): Promise<ResolvedSessionTranscriptState | null> {
+  const sessionsMap = await readSessionsMapFromState();
+  if (!sessionsMap) return null;
+  const sessionState = resolveSessionTranscriptStateFromMap({
+    sessionsMap,
+    sessionKey: input.sessionKey,
+  });
+  if (!sessionState) return null;
+  const hasSessionFile = await fs
+    .access(sessionState.sessionFile)
+    .then(() => true)
+    .catch(() => false);
+  if (!hasSessionFile) return null;
+  return {
+    ...sessionState,
+    baselineLineCount: await readSessionTranscriptLineCount(sessionState.sessionFile),
+  };
+}
+
 function readMessageRole(message: unknown): string | null {
   if (!isPlainObject(message)) return null;
   return typeof message.role === "string" && message.role.trim().length > 0 ? message.role.trim() : null;
@@ -485,9 +513,11 @@ async function readLatestAssistantMessageFromSessionTranscript(input: {
   const rawTranscript = await fs.readFile(sessionState.sessionFile, "utf8").catch(() => "");
   if (!rawTranscript.trim()) return undefined;
 
-  const transcriptMessages = rawTranscript
+  const transcriptLines = rawTranscript
     .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
+    .filter((line) => line.trim().length > 0);
+  const transcriptMessages = transcriptLines
+    .slice(Math.max(0, Math.trunc(input.sessionState?.baselineLineCount ?? 0)))
     .map((line) => {
       try {
         return JSON.parse(line) as unknown;
@@ -816,6 +846,7 @@ export class ChatRunner {
         model: string;
         timeoutMs: number;
       }) => Promise<string>;
+      onRunCompleted?: (runId: string, reason: string) => void;
     }
   ) {
     this.devLogEnabled = opts?.devLogEnabled ?? false;
@@ -834,7 +865,10 @@ export class ChatRunner {
       timeoutMs: Math.max(1000, Math.trunc(opts?.transcription?.timeoutMs ?? 15_000)),
     };
     this.transcribeAudio = opts?.transcribeAudio ?? transcribeAudioWithOpenAi;
+    this.onRunCompleted = opts?.onRunCompleted;
   }
+
+  private readonly onRunCompleted?: (runId: string, reason: string) => void;
 
   handleGatewayConnectionStateChange(state: {
     connected: boolean;
@@ -898,6 +932,7 @@ export class ChatRunner {
 
   private scheduleRunTraceCleanup(runId: string, reason: string): void {
     this.runSessionByRunId.delete(runId);
+    this.onRunCompleted?.(runId, reason);
     this.clearRunTraceCleanupTimer(runId);
     const timer = setTimeout(() => {
       this.runTraceByRunId.delete(runId);
@@ -942,6 +977,11 @@ export class ChatRunner {
       messageText: baseMessageText,
       deliverySystem: input.deliverySystem ?? "legacy_push_v1",
     });
+    const deliverySystem = input.deliverySystem ?? "legacy_push_v1";
+    const preRunTranscriptSessionState =
+      deliverySystem === "relay_channel_v2"
+        ? await readExistingSessionTranscriptState({ sessionKey: input.sessionKey }).catch(() => null)
+        : null;
     const isSlashCommand = isOpenclawSlashCommand(baseMessageText);
     const gatewayMessage = await buildGatewayChatMessage({
       messageText: baseMessageText,
@@ -1070,18 +1110,18 @@ export class ChatRunner {
         continue;
       }
 
-      let transcriptSessionState: ResolvedSessionTranscriptState | null = null;
+      let transcriptSessionState: ResolvedSessionTranscriptState | null = preRunTranscriptSessionState;
       try {
         if (this.devLogEnabled) {
           logger.debug({ taskId: input.taskId, runId, attempt }, "Relay waiting for chat final event");
         }
         transcriptSessionState =
-          (input.deliverySystem ?? "legacy_push_v1") === "relay_channel_v2"
+          deliverySystem === "relay_channel_v2" && !transcriptSessionState
             ? await waitForSessionTranscriptState({
                 sessionKey: input.sessionKey,
                 timeoutMs: Math.min(1_200, Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))),
               }).catch(() => null)
-            : null;
+            : transcriptSessionState;
         const finalWaitTimeoutMs = isSlashCommand
           ? Math.min(remainingMs, OPENCLAW_SLASH_COMMAND_FINAL_WAIT_TIMEOUT_MS)
           : remainingMs;
@@ -1089,6 +1129,7 @@ export class ChatRunner {
           sessionKey: input.sessionKey,
           requestMessage: finalAttemptMessage ?? undefined,
           sessionState: transcriptSessionState,
+          allowTranscriptCompletion: true,
         });
         this.scheduleRunTraceCleanup(runId, `completed:${finalEvt.state}`);
         const openclawEvents = this.consumeRunEvents(runId);
@@ -1107,7 +1148,7 @@ export class ChatRunner {
             taskId: input.taskId,
             runId,
             sessionKey: input.sessionKey,
-            deliverySystem: input.deliverySystem ?? "legacy_push_v1",
+            deliverySystem,
             finalMessage: finalEvt.message,
             transcriptFinalMessage: finalEvt.message,
             openclawEvents,
@@ -1128,8 +1169,7 @@ export class ChatRunner {
           if (
             transcriptFinalMessage === undefined &&
             gatewayFinalMessage === undefined &&
-            finalAttemptMessage !== null &&
-            (input.deliverySystem ?? "legacy_push_v1") === "relay_channel_v2"
+            finalAttemptMessage !== null
           ) {
             transcriptFinalMessage = await waitForAssistantMessageFromSessionTranscript({
               sessionKey: input.sessionKey,
@@ -1165,7 +1205,7 @@ export class ChatRunner {
               taskId: input.taskId,
               runId,
               sessionKey: input.sessionKey,
-              deliverySystem: input.deliverySystem ?? "legacy_push_v1",
+              deliverySystem,
               finalMessage,
               transcriptFinalMessage,
               openclawEvents,
@@ -1290,7 +1330,7 @@ export class ChatRunner {
               taskId: input.taskId,
               runId,
               sessionKey: input.sessionKey,
-              deliverySystem: input.deliverySystem ?? "legacy_push_v1",
+              deliverySystem,
               finalMessage: transcriptFinalMessage,
               transcriptFinalMessage,
               openclawEvents,
@@ -1371,7 +1411,7 @@ export class ChatRunner {
               taskId: input.taskId,
               runId,
               sessionKey: input.sessionKey,
-              deliverySystem: input.deliverySystem ?? "legacy_push_v1",
+              deliverySystem,
               finalMessage: transcriptFinalMessage,
               transcriptFinalMessage,
               openclawEvents,
@@ -1435,7 +1475,7 @@ export class ChatRunner {
             taskId: input.taskId,
             runId,
             sessionKey: input.sessionKey,
-            deliverySystem: input.deliverySystem ?? "legacy_push_v1",
+            deliverySystem,
             finalMessage: transcriptFinalMessage,
             transcriptFinalMessage,
             openclawEvents,
@@ -1588,6 +1628,7 @@ export class ChatRunner {
       requestMessage?: GatewayChatMessage;
       transcriptPollIntervalMs?: number;
       sessionState?: ResolvedSessionTranscriptState | null;
+      allowTranscriptCompletion?: boolean;
     }
   ): Promise<ChatCompletionSignal> {
     return new Promise<ChatCompletionSignal>((resolve, reject) => {
@@ -1610,7 +1651,7 @@ export class ChatRunner {
       }, timeoutMs);
       const waiter: Waiter = { resolve: finalize, reject, timeout };
       this.waitersByRunId.set(runId, waiter);
-      if (opts?.sessionKey && opts.requestMessage) {
+      if (opts?.sessionKey && opts.requestMessage && opts.allowTranscriptCompletion !== false) {
         const pollTranscript = async (): Promise<void> => {
           const activeWaiter = this.waitersByRunId.get(runId);
           if (!activeWaiter || activeWaiter !== waiter || activeWaiter.transcriptPolling) {

@@ -439,6 +439,33 @@ describe("createGatewayEventForwarder", () => {
     expect(submitInboundMessage).not.toHaveBeenCalled();
   });
 
+  it("ignores late delta signals after the runner explicitly closes a run", async () => {
+    vi.useFakeTimers();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const forward = createGatewayEventForwarder({
+      relayInstanceId: "relay_1",
+      backend: { submitInboundMessage } as never,
+      forwardFinalOnly: true,
+      getChatRunTrace: (runId) => (runId === "run_1" ? { backendMessageId: "msg_1" } : null),
+    });
+
+    forward.closeRun("run_1", "completed:reply_delivered");
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "session_1",
+        seq: 4,
+        state: "delta",
+        message: { text: "late stale chunk" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(submitInboundMessage).not.toHaveBeenCalled();
+  });
+
   it("forwards reply chunks even when raw gateway event forwarding is enabled", async () => {
     vi.useFakeTimers();
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });

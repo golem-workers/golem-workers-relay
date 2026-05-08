@@ -216,6 +216,9 @@ async function main(): Promise<void> {
   chatRunner = new ChatRunner(gateway, {
     devLogEnabled: cfg.devLogEnabled,
     devLogTextMaxLen: cfg.devLogTextMaxLen,
+    onRunCompleted: (runId, reason) => {
+      forwardGatewayEvent.closeRun(runId, reason);
+    },
     transcription: {
       baseUrl: cfg.stt.baseUrl,
       relayToken: cfg.relayToken,

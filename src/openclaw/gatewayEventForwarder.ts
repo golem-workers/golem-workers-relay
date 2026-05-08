@@ -37,6 +37,10 @@ type RunForwardState = {
   nextReceivedOrder: number;
 };
 
+export type GatewayEventForwarder = ((evt: EventFrame) => Promise<void>) & {
+  closeRun: (runId: string, reason: string) => void;
+};
+
 const CHAT_EVENT_BACKEND_DEBOUNCE_MS = 100;
 const TERMINAL_RUN_STATE_RETENTION_MS = 60_000;
 const UNCORRELATED_DELTA_RETRY_MS = 250;
@@ -74,9 +78,10 @@ export function createGatewayEventForwarder(input: {
   backend: BackendClient;
   forwardFinalOnly: boolean;
   getChatRunTrace: (runId: string) => ChatRunTrace | null;
-}): (evt: EventFrame) => Promise<void> {
+}): GatewayEventForwarder {
   const { relayInstanceId, backend, forwardFinalOnly, getChatRunTrace } = input;
   const runStatesByRunId = new Map<string, RunForwardState>();
+  const closedRunsByRunId = new Map<string, number>();
 
   const clearDebounceTimer = (state: RunForwardState): void => {
     if (state.debounceTimer) {
@@ -108,6 +113,21 @@ export function createGatewayEventForwarder(input: {
     clearCleanupTimer(state);
     clearDeadLetterTimer(state);
     runStatesByRunId.delete(runId);
+  };
+
+  const pruneClosedRuns = (nowMs = Date.now()): void => {
+    for (const [runId, closedAtMs] of closedRunsByRunId.entries()) {
+      if (nowMs - closedAtMs > TERMINAL_RUN_STATE_RETENTION_MS) {
+        closedRunsByRunId.delete(runId);
+      }
+    }
+  };
+
+  const closeRun = (runId: string, reason: string): void => {
+    pruneClosedRuns();
+    deleteRunState(runId);
+    closedRunsByRunId.set(runId, Date.now());
+    logger.info({ relayInstanceId, runId, reason }, "Closed OpenClaw chat event forwarding for run");
   };
 
   const scheduleTerminalCleanup = (state: RunForwardState): void => {
@@ -182,6 +202,7 @@ export function createGatewayEventForwarder(input: {
           openclawMeta: {
             method: "gateway.event.chat.uncorrelated_delta_dead_letter",
             runId: state.runId,
+          ...(state.sessionKey ? { sessionKey: state.sessionKey } : {}),
             trace: {
               relayInstanceId,
               openclawRunId: state.runId,
@@ -266,6 +287,7 @@ export function createGatewayEventForwarder(input: {
           openclawMeta: {
             method: "gateway.event.chat.delta_signal",
             runId: delta.runId,
+            sessionKey: delta.sessionKey,
             trace: {
               backendMessageId: state.backendMessageId,
               relayInstanceId,
@@ -286,6 +308,7 @@ export function createGatewayEventForwarder(input: {
           openclawMeta: {
             method: "gateway.event.chat.reply_chunk",
             runId: delta.runId,
+            sessionKey: delta.sessionKey,
             trace: {
               backendMessageId: state.backendMessageId,
               relayInstanceId,
@@ -323,7 +346,7 @@ export function createGatewayEventForwarder(input: {
     }, CHAT_EVENT_BACKEND_DEBOUNCE_MS);
   };
 
-  return async (evt: EventFrame): Promise<void> => {
+  const forward = (async (evt: EventFrame): Promise<void> => {
     if (!forwardFinalOnly) {
       await submitTechnicalEvent({
         relayInstanceId,
@@ -348,6 +371,10 @@ export function createGatewayEventForwarder(input: {
     const parsed = chatEventSchema.safeParse(evt.payload);
     if (!parsed.success) return;
     const chatEvent = parsed.data;
+    pruneClosedRuns();
+    if (closedRunsByRunId.has(chatEvent.runId)) {
+      return;
+    }
     const runTrace = getChatRunTrace(chatEvent.runId);
     let runState = runStatesByRunId.get(chatEvent.runId) ?? null;
     if (!runState) {
@@ -426,7 +453,9 @@ export function createGatewayEventForwarder(input: {
       );
       scheduleUncorrelatedRetry(runState);
     }
-  };
+  }) as GatewayEventForwarder;
+  forward.closeRun = closeRun;
+  return forward;
 }
 
 async function submitTechnicalEvent(input: {
@@ -439,6 +468,7 @@ async function submitTechnicalEvent(input: {
   openclawMeta: {
     method: string;
     runId?: string;
+    sessionKey?: string;
     trace: {
       backendMessageId?: string;
       relayInstanceId: string;
@@ -465,6 +495,7 @@ async function submitTechnicalEvent(input: {
         openclawMeta: {
           method: input.openclawMeta.method,
           ...(input.openclawMeta.runId ? { runId: input.openclawMeta.runId } : {}),
+          ...(input.openclawMeta.sessionKey ? { sessionKey: input.openclawMeta.sessionKey } : {}),
           trace: {
             ...(input.openclawMeta.trace.backendMessageId
               ? { backendMessageId: input.openclawMeta.trace.backendMessageId }
@@ -505,6 +536,7 @@ async function submitReplyChunk(input: {
   openclawMeta: {
     method: string;
     runId?: string;
+    sessionKey?: string;
     trace: {
       backendMessageId?: string;
       relayInstanceId: string;
@@ -527,6 +559,7 @@ async function submitReplyChunk(input: {
         openclawMeta: {
           method: input.openclawMeta.method,
           ...(input.openclawMeta.runId ? { runId: input.openclawMeta.runId } : {}),
+          ...(input.openclawMeta.sessionKey ? { sessionKey: input.openclawMeta.sessionKey } : {}),
           trace: {
             ...(input.openclawMeta.trace.backendMessageId
               ? { backendMessageId: input.openclawMeta.trace.backendMessageId }
