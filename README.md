@@ -286,5 +286,11 @@ intermediate `delta` events so backend/messenger integrations can surface "agent
 also extracts plain assistant text from `chat.delta` payloads and forwards that text as `outcome=reply_chunk`
 callbacks so backend can batch and deliver those chunks to the messenger after a short inactivity window.
 
+An OpenClaw `chat.final` event without a `message` is treated as a provisional empty final, not as immediate user
+delivery completion. Relay keeps the run correlation open for a short grace window so context-overflow
+auto-compaction/retry continuations on the same run/session can still produce a final reply. During that window,
+late `delta` events after the empty final are still forwarded and de-duplicated by `runId`/`seq`; `NO_MESSAGE` is
+reported only if no user-facing continuation appears before the grace window or the task timeout expires.
+
 When `RELAY_OPENCLAW_FORWARD_FINAL_ONLY=0`, relay keeps the legacy behavior and forwards all raw gateway events as
 `outcome=technical`, while still sending `outcome=reply_chunk` for plain assistant text chunks.

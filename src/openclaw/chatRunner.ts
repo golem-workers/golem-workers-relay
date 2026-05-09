@@ -72,6 +72,9 @@ type Waiter = {
   resolve: (evt: ChatCompletionSignal) => void;
   reject: (err: Error) => void;
   timeout: NodeJS.Timeout;
+  minEventSeq?: number;
+  ignoreFinalWithoutUserFacingMessage?: boolean;
+  allowUserFacingDeltaCompletion?: boolean;
   transcriptPoll?: NodeJS.Timeout;
   transcriptPolling?: boolean;
   transcriptCandidateKey?: string;
@@ -130,6 +133,7 @@ const OPENCLAW_SLASH_COMMAND_FINAL_WAIT_TIMEOUT_MS = 15_000;
 const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_TIMEOUT_MS = 10_000;
 const OPENCLAW_DISCONNECT_TRANSCRIPT_RECOVERY_TIMEOUT_MS = 1_500;
 const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_POLL_INTERVAL_MS = 250;
+const OPENCLAW_EMPTY_FINAL_CONTINUATION_TIMEOUT_MS = 15_000;
 const OPENCLAW_TRANSCRIPT_FINAL_STABILITY_MS = 1_000;
 const OPENCLAW_RUN_TRACE_RETENTION_MS = 60_000;
 
@@ -901,12 +905,28 @@ export class ChatRunner {
     const events = this.runEventsByRunId.get(chatEvt.runId) ?? [];
     events.push(chatEvt);
     this.runEventsByRunId.set(chatEvt.runId, events);
+    const waiter = this.waitersByRunId.get(chatEvt.runId);
+    if (!waiter) return;
+    if (waiter.minEventSeq !== undefined && chatEvt.seq <= waiter.minEventSeq) {
+      return;
+    }
+    if (chatEvt.state === "delta") {
+      if (waiter.allowUserFacingDeltaCompletion && extractTextFromMessage(chatEvt.message)) {
+        waiter.resolve(chatEvt);
+      }
+      return;
+    }
     if (chatEvt.state !== "final" && chatEvt.state !== "error" && chatEvt.state !== "aborted") return;
+    if (
+      waiter.ignoreFinalWithoutUserFacingMessage &&
+      chatEvt.state === "final" &&
+      !extractTextFromMessage(chatEvt.message)
+    ) {
+      return;
+    }
     if (this.devLogEnabled) {
       logger.debug({ runId: chatEvt.runId, state: chatEvt.state }, "Gateway chat event terminal");
     }
-    const waiter = this.waitersByRunId.get(chatEvt.runId);
-    if (!waiter) return;
     waiter.resolve(chatEvt);
   }
 
@@ -1131,9 +1151,9 @@ export class ChatRunner {
           sessionState: transcriptSessionState,
           allowTranscriptCompletion: true,
         });
-        this.scheduleRunTraceCleanup(runId, `completed:${finalEvt.state}`);
-        const openclawEvents = this.consumeRunEvents(runId);
+        let openclawEvents = this.consumeRunEvents(runId);
         if (finalEvt.state === "transcript") {
+          this.scheduleRunTraceCleanup(runId, `completed:${finalEvt.state}`);
           logger.info(
             {
               event: "artifact_delivery",
@@ -1201,6 +1221,7 @@ export class ChatRunner {
             );
           }
           if (finalMessage !== undefined) {
+            this.scheduleRunTraceCleanup(runId, `completed:${finalEvt.state}`);
             return await buildReplyRunResult({
               taskId: input.taskId,
               runId,
@@ -1212,6 +1233,113 @@ export class ChatRunner {
               startedAtMs,
               devLogEnabled: this.devLogEnabled,
             });
+          }
+          const continuationTimeoutMs = Math.min(
+            OPENCLAW_EMPTY_FINAL_CONTINUATION_TIMEOUT_MS,
+            Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))
+          );
+          const continuationEvt =
+            continuationTimeoutMs > 0
+              ? await this.waitForFinal(runId, continuationTimeoutMs, {
+                  sessionKey: input.sessionKey,
+                  requestMessage: finalAttemptMessage ?? undefined,
+                  sessionState: transcriptSessionState,
+                  allowTranscriptCompletion: true,
+                  minEventSeq: finalEvt.seq,
+                  ignoreFinalWithoutUserFacingMessage: true,
+                  allowUserFacingDeltaCompletion: true,
+                }).catch(() => null)
+              : null;
+          const continuationEvents = this.consumeRunEvents(runId);
+          openclawEvents = [...openclawEvents, ...continuationEvents];
+          if (continuationEvt?.state === "transcript") {
+            this.scheduleRunTraceCleanup(runId, "completed:empty_final_transcript_continuation");
+            logger.info(
+              {
+                event: "artifact_delivery",
+                stage: "transcript_reply_recovered_after_empty_final",
+                taskId: input.taskId,
+                openclawRunId: runId,
+                sessionKey: input.sessionKey,
+              },
+              "Recovered final reply from session transcript after empty final event"
+            );
+            return await buildReplyRunResult({
+              taskId: input.taskId,
+              runId,
+              sessionKey: input.sessionKey,
+              deliverySystem,
+              finalMessage: continuationEvt.message,
+              transcriptFinalMessage: continuationEvt.message,
+              openclawEvents,
+              startedAtMs,
+              devLogEnabled: this.devLogEnabled,
+            });
+          }
+          if (continuationEvt?.state === "delta" || continuationEvt?.state === "final") {
+            const continuationMessage =
+              continuationEvt.message ?? readLatestUserFacingMessage(openclawEvents);
+            if (continuationMessage !== undefined) {
+              this.scheduleRunTraceCleanup(runId, `completed:empty_final_${continuationEvt.state}_continuation`);
+              logger.info(
+                {
+                  event: "artifact_delivery",
+                  stage: "reply_recovered_after_empty_final",
+                  taskId: input.taskId,
+                  openclawRunId: runId,
+                  sessionKey: input.sessionKey,
+                  continuationState: continuationEvt.state,
+                },
+                "Recovered final reply after empty final event"
+              );
+              return await buildReplyRunResult({
+                taskId: input.taskId,
+                runId,
+                sessionKey: input.sessionKey,
+                deliverySystem,
+                finalMessage: continuationMessage,
+                transcriptFinalMessage,
+                openclawEvents,
+                startedAtMs,
+                devLogEnabled: this.devLogEnabled,
+              });
+            }
+          }
+          if (continuationEvt?.state === "aborted") {
+            this.scheduleRunTraceCleanup(runId, "completed:empty_final_aborted_continuation");
+            return {
+              result: {
+                outcome: "error",
+                error: {
+                  code: "ABORTED",
+                  message: "Chat aborted after an empty final event",
+                  runId,
+                  ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
+                },
+              },
+              openclawMeta: {
+                method: "chat.send",
+                runId,
+              },
+            };
+          }
+          if (continuationEvt?.state === "error") {
+            this.scheduleRunTraceCleanup(runId, "completed:empty_final_error_continuation");
+            return {
+              result: {
+                outcome: "error",
+                error: {
+                  code: "GATEWAY_ERROR",
+                  message: continuationEvt.errorMessage ?? "Chat error after an empty final event",
+                  runId,
+                  ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
+                },
+              },
+              openclawMeta: {
+                method: "chat.send",
+                runId,
+              },
+            };
           }
           if (this.devLogEnabled) {
             logger.info(
@@ -1228,6 +1356,7 @@ export class ChatRunner {
               "Message flow transition"
             );
           }
+          this.scheduleRunTraceCleanup(runId, `completed:${finalEvt.state}`);
           return {
             result: {
               outcome: "error",
@@ -1244,6 +1373,7 @@ export class ChatRunner {
           };
         }
         if (finalEvt.state === "aborted") {
+          this.scheduleRunTraceCleanup(runId, `completed:${finalEvt.state}`);
           logger.warn(
             {
               event: "message_flow",
@@ -1314,6 +1444,7 @@ export class ChatRunner {
                 })
               : undefined;
           if (transcriptFinalMessage !== undefined) {
+            this.scheduleRunTraceCleanup(runId, `completed:${finalEvt.state}`);
             logger.info(
               {
                 event: "artifact_delivery",
@@ -1344,6 +1475,7 @@ export class ChatRunner {
             attempts: attempt,
             transportRecoveryEnabled,
           });
+          this.scheduleRunTraceCleanup(runId, `completed:${finalEvt.state}`);
           return {
             result: {
               outcome: "error",
@@ -1629,11 +1761,33 @@ export class ChatRunner {
       transcriptPollIntervalMs?: number;
       sessionState?: ResolvedSessionTranscriptState | null;
       allowTranscriptCompletion?: boolean;
+      minEventSeq?: number;
+      ignoreFinalWithoutUserFacingMessage?: boolean;
+      allowUserFacingDeltaCompletion?: boolean;
     }
   ): Promise<ChatCompletionSignal> {
     return new Promise<ChatCompletionSignal>((resolve, reject) => {
       const pendingTerminalEvent = (this.runEventsByRunId.get(runId) ?? []).find(
-        (event) => event.state === "final" || event.state === "error" || event.state === "aborted"
+        (event) => {
+          if (opts?.minEventSeq !== undefined && event.seq <= opts.minEventSeq) {
+            return false;
+          }
+          if (
+            opts?.allowUserFacingDeltaCompletion &&
+            event.state === "delta" &&
+            extractTextFromMessage(event.message)
+          ) {
+            return true;
+          }
+          if (event.state !== "final" && event.state !== "error" && event.state !== "aborted") {
+            return false;
+          }
+          return !(
+            opts?.ignoreFinalWithoutUserFacingMessage &&
+            event.state === "final" &&
+            !extractTextFromMessage(event.message)
+          );
+        }
       );
       if (pendingTerminalEvent) {
         resolve(pendingTerminalEvent);
@@ -1649,7 +1803,14 @@ export class ChatRunner {
         if (!waiter) return;
         reject(new Error("Timed out waiting for final"));
       }, timeoutMs);
-      const waiter: Waiter = { resolve: finalize, reject, timeout };
+      const waiter: Waiter = {
+        resolve: finalize,
+        reject,
+        timeout,
+        minEventSeq: opts?.minEventSeq,
+        ignoreFinalWithoutUserFacingMessage: opts?.ignoreFinalWithoutUserFacingMessage,
+        allowUserFacingDeltaCompletion: opts?.allowUserFacingDeltaCompletion,
+      };
       this.waitersByRunId.set(runId, waiter);
       if (opts?.sessionKey && opts.requestMessage && opts.allowTranscriptCompletion !== false) {
         const pollTranscript = async (): Promise<void> => {

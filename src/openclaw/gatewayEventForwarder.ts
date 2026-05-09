@@ -28,6 +28,7 @@ type RunForwardState = {
   terminalSeen: boolean;
   terminalState: "final" | "error" | "aborted" | null;
   terminalSeq: number | null;
+  terminalHadMessage: boolean;
   terminalTextPreview: string | null;
   bufferedDeltas: BufferedDeltaSignal[];
   debounceTimer: NodeJS.Timeout | null;
@@ -59,6 +60,7 @@ function createRunForwardState(runId: string, backendMessageId: string | null, s
     terminalSeen: false,
     terminalState: null,
     terminalSeq: null,
+    terminalHadMessage: false,
     terminalTextPreview: null,
     bufferedDeltas: [],
     debounceTimer: null,
@@ -71,6 +73,10 @@ function createRunForwardState(runId: string, backendMessageId: string | null, s
 
 function isTerminalChatState(state: string): state is "final" | "error" | "aborted" {
   return state === "final" || state === "error" || state === "aborted";
+}
+
+function isProvisionalEmptyFinal(state: RunForwardState): boolean {
+  return state.terminalSeen && state.terminalState === "final" && !state.terminalHadMessage;
 }
 
 export function createGatewayEventForwarder(input: {
@@ -168,6 +174,7 @@ export function createGatewayEventForwarder(input: {
       terminalSeen: state.terminalSeen,
       terminalState: state.terminalState,
       terminalSeq: state.terminalSeq,
+      terminalHadMessage: state.terminalHadMessage,
       terminalTextPreview: state.terminalTextPreview,
       bufferedCount: deltas.length,
       firstSeq: deltas.at(0)?.seq ?? null,
@@ -252,7 +259,7 @@ export function createGatewayEventForwarder(input: {
       scheduleUncorrelatedRetry(state);
       return;
     }
-    if (state.terminalSeen) {
+    if (state.terminalSeen && !isProvisionalEmptyFinal(state)) {
       state.bufferedDeltas = [];
       scheduleTerminalCleanup(state);
       return;
@@ -265,7 +272,7 @@ export function createGatewayEventForwarder(input: {
     });
     state.bufferedDeltas = [];
     for (const delta of deltas) {
-      if (state.terminalSeen) {
+      if (state.terminalSeen && !isProvisionalEmptyFinal(state)) {
         break;
       }
       if (!state.backendMessageId || delta.seq <= state.lastForwardedSeq) {
@@ -390,14 +397,16 @@ export function createGatewayEventForwarder(input: {
     runState.highestSeqSeen = Math.max(runState.highestSeqSeen, chatEvent.seq);
 
     if (isTerminalChatState(chatEvent.state)) {
-      runState.terminalSeen = true;
-      runState.terminalState = chatEvent.state;
-      runState.terminalSeq = chatEvent.seq;
-      runState.terminalTextPreview = extractPlainAssistantText(chatEvent.message)?.slice(
+      const terminalTextPreview = extractPlainAssistantText(chatEvent.message)?.slice(
         0,
         UNCORRELATED_DELTA_PREVIEW_CHARS
       ) ?? null;
-      if (runState.backendMessageId) {
+      runState.terminalSeen = true;
+      runState.terminalState = chatEvent.state;
+      runState.terminalSeq = chatEvent.seq;
+      runState.terminalHadMessage = chatEvent.message !== undefined;
+      runState.terminalTextPreview = terminalTextPreview;
+      if (runState.backendMessageId && !isProvisionalEmptyFinal(runState)) {
         runState.bufferedDeltas = [];
       }
       clearCleanupTimer(runState);
@@ -409,7 +418,7 @@ export function createGatewayEventForwarder(input: {
       return;
     }
 
-    if (runState.terminalSeen) {
+    if (runState.terminalSeen && !isProvisionalEmptyFinal(runState)) {
       scheduleTerminalCleanup(runState);
       return;
     }

@@ -385,6 +385,74 @@ describe("createGatewayEventForwarder", () => {
     expect(submitInboundMessage).not.toHaveBeenCalled();
   });
 
+  it("continues forwarding deltas after an empty final chat event", async () => {
+    vi.useFakeTimers();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const forward = createGatewayEventForwarder({
+      relayInstanceId: "relay_1",
+      backend: { submitInboundMessage } as never,
+      forwardFinalOnly: true,
+      getChatRunTrace: (runId) => (runId === "run_empty_final" ? { backendMessageId: "msg_1" } : null),
+    });
+
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_empty_final",
+        sessionKey: "session_1",
+        seq: 1,
+        state: "final",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(submitInboundMessage).not.toHaveBeenCalled();
+
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_empty_final",
+        sessionKey: "session_1",
+        seq: 2,
+        state: "delta",
+        message: { text: "continued" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "technical",
+        technical: {
+          event: "chat.delta_signal",
+          payload: {
+            runId: "run_empty_final",
+            sessionKey: "session_1",
+            seq: 2,
+            state: "delta",
+          },
+        },
+        openclawMeta: {
+          trace: {
+            backendMessageId: "msg_1",
+          },
+        },
+      },
+    });
+    expect(submitInboundMessage.mock.calls[1]?.[0]).toMatchObject({
+      body: {
+        outcome: "reply_chunk",
+        replyChunk: {
+          text: "continued",
+          runId: "run_empty_final",
+          seq: 2,
+        },
+      },
+    });
+  });
+
   it("ignores any later delta signals after terminal state was seen", async () => {
     vi.useFakeTimers();
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });

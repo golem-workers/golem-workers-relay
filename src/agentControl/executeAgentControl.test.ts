@@ -71,6 +71,94 @@ exit 1
   process.env.PATH = `${binDir}:${originalPath ?? ""}`;
 }
 
+describe("executeAgentControl status nudge", () => {
+  it("runs a status nudge through the chat runner and submits a reply callback", async () => {
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const runChatTask = vi.fn().mockResolvedValue({
+      result: {
+        outcome: "reply",
+        reply: { runId: "run_status_1", message: { role: "assistant", content: "Still working." } },
+      },
+      openclawMeta: { method: "chat.send", runId: "run_status_1" },
+    });
+
+    const result = await executeAgentControl({
+      action: {
+        kind: "chat.statusNudge",
+        sessionKey: "tg:123:srv_1",
+        messageText: "report status",
+        sourceBackendMessageId: "source_1",
+        timeoutMs: 10_000,
+      },
+      configPath: "/tmp/openclaw.json",
+      gateway: noopGateway,
+      backend: { submitInboundMessage },
+      relayInstanceId: "relay_1",
+      backendMessageId: "nudge_1",
+      statusNudgeRunner: { runChatTask },
+    });
+
+    expect(result).toEqual({ kind: "chat.statusNudge", accepted: true, runId: "run_status_1" });
+    expect(runChatTask).toHaveBeenCalledWith({
+      taskId: "nudge_1",
+      sessionKey: "tg:123:srv_1",
+      messageText: "report status",
+      deliverySystem: "legacy_push_v1",
+      timeoutMs: 10_000,
+    });
+    const submitArg = submitInboundMessage.mock.calls[0]?.[0] as {
+      body?: {
+        relayInstanceId?: string;
+        outcome?: string;
+        reply?: unknown;
+        openclawMeta?: {
+          sessionKey?: string;
+          deliverySystem?: string;
+          statusNudge?: { sourceBackendMessageId?: string };
+          trace?: {
+            backendMessageId?: string;
+            relayInstanceId?: string;
+            openclawRunId?: string;
+          };
+        };
+      };
+    };
+    expect(submitArg.body?.relayInstanceId).toBe("relay_1");
+    expect(submitArg.body?.outcome).toBe("reply");
+    expect(submitArg.body?.reply).toEqual({
+      runId: "run_status_1",
+      message: { role: "assistant", content: "Still working." },
+    });
+    expect(submitArg.body?.openclawMeta).toMatchObject({
+      sessionKey: "tg:123:srv_1",
+      deliverySystem: "legacy_push_v1",
+      statusNudge: { sourceBackendMessageId: "source_1" },
+      trace: {
+        backendMessageId: "nudge_1",
+        relayInstanceId: "relay_1",
+        openclawRunId: "run_status_1",
+      },
+    });
+  });
+
+  it("rejects status nudges when runtime dependencies are unavailable", async () => {
+    await expect(
+      executeAgentControl({
+        action: {
+          kind: "chat.statusNudge",
+          sessionKey: "tg:123:srv_1",
+          messageText: "report status",
+          sourceBackendMessageId: "source_1",
+        },
+        configPath: "/tmp/openclaw.json",
+        gateway: noopGateway,
+      })
+    ).rejects.toMatchObject({
+      code: "STATUS_NUDGE_UNAVAILABLE",
+    });
+  });
+});
+
 describe("executeAgentControl channel pairing", () => {
   it("lists pending telegram pairing requests from the OpenClaw pairing store", async () => {
     const { credentialsDir } = await createTempStateDir();

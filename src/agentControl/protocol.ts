@@ -83,6 +83,13 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("codex.login.status"),
   }),
+  z.object({
+    kind: z.literal("chat.statusNudge"),
+    sessionKey: z.string().min(1),
+    messageText: z.string().min(1),
+    sourceBackendMessageId: z.string().min(1),
+    timeoutMs: z.number().int().min(1_000).max(120_000).optional(),
+  }),
 ]);
 
 export type AgentControlAction = z.infer<typeof agentControlActionSchema>;
@@ -197,6 +204,11 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     email: z.string().min(1).nullable(),
     accountId: z.string().min(1).nullable(),
     lastError: z.string().min(1).nullable(),
+  }),
+  z.object({
+    kind: z.literal("chat.statusNudge"),
+    accepted: z.literal(true),
+    runId: z.string().min(1).nullable(),
   }),
 ]);
 

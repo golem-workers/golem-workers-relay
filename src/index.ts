@@ -129,6 +129,9 @@ async function main(): Promise<void> {
               throw new Error("Gateway is not initialized");
             },
           },
+          backend,
+          relayInstanceId: cfg.relayInstanceId,
+          statusNudgeRunner: chatRunner ?? undefined,
         }),
       getDataPlane: () => {
         const s = dp.getState();
@@ -343,6 +346,10 @@ async function main(): Promise<void> {
         action: message.input.action,
         configPath: openclaw.configPath,
         gateway,
+        backend,
+        relayInstanceId: cfg.relayInstanceId,
+        backendMessageId: message.messageId,
+        statusNudgeRunner: runner,
       });
     },
   });

@@ -3,6 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import os from "node:os";
+import { randomUUID } from "node:crypto";
 import JSON5 from "json5";
 import {
   type AgentControlAction,
@@ -10,6 +11,8 @@ import {
   type AgentControlResult,
 } from "./protocol.js";
 import { getCodexLoginStatus, hasConnectedCodexLogin, startCodexLogin } from "./codexLogin.js";
+import type { ChatRunResult } from "../openclaw/chatRunner.js";
+import type { RelayInboundMessageRequest } from "../backend/types.js";
 
 const execFile = promisify(execFileCallback);
 const GATEWAY_RESTART_CHECK_ATTEMPTS = 20;
@@ -21,6 +24,20 @@ const VALID_THINKING_DEFAULTS = new Set(["off", "minimal", "low", "medium", "hig
 
 type GatewayLike = {
   request(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
+};
+
+type BackendLike = {
+  submitInboundMessage(input: { body: RelayInboundMessageRequest }): Promise<unknown>;
+};
+
+type StatusNudgeRunner = {
+  runChatTask(input: {
+    taskId: string;
+    sessionKey: string;
+    messageText: string;
+    deliverySystem?: "legacy_push_v1" | "relay_channel_v2";
+    timeoutMs: number;
+  }): Promise<{ result: ChatRunResult; openclawMeta: Record<string, unknown> }>;
 };
 
 type ModelAssignmentPurpose = Extract<AgentControlAction, { kind: "modelAssignment.set" }>["purpose"];
@@ -51,6 +68,10 @@ export async function executeAgentControl(input: {
   action: AgentControlAction;
   configPath: string;
   gateway: GatewayLike;
+  backend?: BackendLike;
+  relayInstanceId?: string;
+  backendMessageId?: string;
+  statusNudgeRunner?: StatusNudgeRunner;
 }): Promise<AgentControlResult> {
   const result =
     input.action.kind === "config.read"
@@ -80,6 +101,14 @@ export async function executeAgentControl(input: {
                 ? await startCodexLogin(input.configPath)
               : input.action.kind === "codex.login.status"
                 ? await getCodexLoginStatus(input.configPath)
+              : input.action.kind === "chat.statusNudge"
+                ? await sendStatusNudge({
+                    action: input.action,
+                    backend: input.backend,
+                    relayInstanceId: input.relayInstanceId,
+                    backendMessageId: input.backendMessageId,
+                    runner: input.statusNudgeRunner,
+                  })
               : input.action.kind === "modelAssignments.read"
                 ? await readModelAssignments(input.configPath)
               : input.action.kind === "modelAssignment.set"
@@ -99,6 +128,83 @@ export async function executeAgentControl(input: {
                     thinkingDefault: input.action.thinkingDefault,
                   });
   return agentControlResultSchema.parse(result);
+}
+
+function getChatRunResultRunId(result: ChatRunResult): string | null {
+  if (result.outcome === "reply") return result.reply.runId;
+  if (result.outcome === "no_reply") return result.noReply?.runId ?? null;
+  return result.error.runId ?? null;
+}
+
+function buildStatusNudgeOpenclawMeta(input: {
+  openclawMeta: Record<string, unknown>;
+  backendMessageId: string;
+  relayMessageId: string;
+  relayInstanceId: string;
+  runId: string | null;
+  sessionKey: string;
+  sourceBackendMessageId: string;
+}): Record<string, unknown> {
+  const base = isRecord(input.openclawMeta) ? input.openclawMeta : {};
+  return {
+    ...base,
+    method: normalizeOptionalString(base.method) ?? "chat.status_nudge",
+    runId: input.runId ?? normalizeOptionalString(base.runId) ?? undefined,
+    sessionKey: input.sessionKey,
+    deliverySystem: "legacy_push_v1",
+    statusNudge: {
+      sourceBackendMessageId: input.sourceBackendMessageId,
+    },
+    trace: {
+      backendMessageId: input.backendMessageId,
+      relayMessageId: input.relayMessageId,
+      relayInstanceId: input.relayInstanceId,
+      ...(input.runId ? { openclawRunId: input.runId } : {}),
+    },
+  };
+}
+
+async function sendStatusNudge(input: {
+  action: Extract<AgentControlAction, { kind: "chat.statusNudge" }>;
+  backend?: BackendLike;
+  relayInstanceId?: string;
+  backendMessageId?: string;
+  runner?: StatusNudgeRunner;
+}): Promise<Extract<AgentControlResult, { kind: "chat.statusNudge" }>> {
+  if (!input.runner || !input.backend || !input.relayInstanceId || !input.backendMessageId) {
+    throw new AgentControlError("STATUS_NUDGE_UNAVAILABLE", "Status nudge runtime is not available.");
+  }
+  const timeoutMs = input.action.timeoutMs ?? 30_000;
+  const { result, openclawMeta } = await input.runner.runChatTask({
+    taskId: input.backendMessageId,
+    sessionKey: input.action.sessionKey,
+    messageText: input.action.messageText,
+    deliverySystem: "legacy_push_v1",
+    timeoutMs,
+  });
+  const runId = getChatRunResultRunId(result);
+  if (result.outcome === "reply") {
+    const relayMessageId = `relay_status_nudge_${randomUUID()}`;
+    await input.backend.submitInboundMessage({
+      body: {
+        relayInstanceId: input.relayInstanceId,
+        relayMessageId,
+        finishedAtMs: Date.now(),
+        outcome: "reply",
+        reply: result.reply,
+        openclawMeta: buildStatusNudgeOpenclawMeta({
+          openclawMeta,
+          backendMessageId: input.backendMessageId,
+          relayMessageId,
+          relayInstanceId: input.relayInstanceId,
+          runId,
+          sessionKey: input.action.sessionKey,
+          sourceBackendMessageId: input.action.sourceBackendMessageId,
+        }),
+      },
+    });
+  }
+  return { kind: "chat.statusNudge", accepted: true, runId };
 }
 
 async function readConfig(configPath: string): Promise<AgentControlResult> {
