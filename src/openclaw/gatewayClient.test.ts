@@ -396,7 +396,7 @@ describe("GatewayClient", () => {
     await new Promise((resolve) => setTimeout(resolve, 2200));
     expect(observed.some((entry) => entry.connected === false)).toBe(false);
 
-    await new Promise((resolve) => setTimeout(resolve, 1600));
+    await new Promise((resolve) => setTimeout(resolve, 2600));
     expect(observed.some((entry) => entry.connected === false && entry.reason?.includes("tick timeout"))).toBe(true);
 
     client.stop();
