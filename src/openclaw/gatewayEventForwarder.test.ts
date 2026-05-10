@@ -342,7 +342,7 @@ describe("createGatewayEventForwarder", () => {
     });
   });
 
-  it("drops buffered deltas when a terminal chat event arrives during debounce", async () => {
+  it("keeps buffered deltas when a terminal chat event arrives during debounce", async () => {
     vi.useFakeTimers();
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const forward = createGatewayEventForwarder({
@@ -382,7 +382,31 @@ describe("createGatewayEventForwarder", () => {
     });
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(submitInboundMessage).not.toHaveBeenCalled();
+    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "technical",
+        technical: {
+          event: "chat.delta_signal",
+          payload: {
+            runId: "run_1",
+            sessionKey: "session_1",
+            seq: 2,
+            state: "delta",
+          },
+        },
+      },
+    });
+    expect(submitInboundMessage.mock.calls[1]?.[0]).toMatchObject({
+      body: {
+        outcome: "reply_chunk",
+        replyChunk: {
+          text: "hel",
+          runId: "run_1",
+          seq: 2,
+        },
+      },
+    });
   });
 
   it("continues forwarding deltas after an empty final chat event", async () => {
@@ -453,7 +477,7 @@ describe("createGatewayEventForwarder", () => {
     });
   });
 
-  it("ignores any later delta signals after terminal state was seen", async () => {
+  it("continues forwarding later delta signals after terminal state until the run is closed", async () => {
     vi.useFakeTimers();
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const forward = createGatewayEventForwarder({
@@ -504,7 +528,31 @@ describe("createGatewayEventForwarder", () => {
     });
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(submitInboundMessage).not.toHaveBeenCalled();
+    expect(submitInboundMessage).toHaveBeenCalledTimes(4);
+    expect(submitInboundMessage.mock.calls[2]?.[0]).toMatchObject({
+      body: {
+        outcome: "technical",
+        technical: {
+          event: "chat.delta_signal",
+          payload: {
+            runId: "run_1",
+            sessionKey: "session_1",
+            seq: 4,
+            state: "delta",
+          },
+        },
+      },
+    });
+    expect(submitInboundMessage.mock.calls[3]?.[0]).toMatchObject({
+      body: {
+        outcome: "reply_chunk",
+        replyChunk: {
+          text: "ignored",
+          runId: "run_1",
+          seq: 4,
+        },
+      },
+    });
   });
 
   it("ignores late delta signals after the runner explicitly closes a run", async () => {

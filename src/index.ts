@@ -502,8 +502,7 @@ function buildRelayDeliveryReportForBackend(
 ): Record<string, unknown> {
   if (!cfg.relayChannel.enabled) {
     return {
-      modeEffective: "legacy_push_v1",
-      legacyPushReady: true,
+      modeEffective: "relay_channel_v2",
       relayChannelReady: false,
       relayChannelConnected: false,
     };
@@ -517,8 +516,7 @@ function buildRelayDeliveryReportForBackend(
   };
   if (!h.enabled) {
     return {
-      modeEffective: "legacy_push_v1",
-      legacyPushReady: true,
+      modeEffective: "relay_channel_v2",
       relayChannelReady: false,
       relayChannelConnected: false,
     };
@@ -526,7 +524,6 @@ function buildRelayDeliveryReportForBackend(
   const cp = h.controlPlane;
   return {
     modeEffective: "relay_channel_v2",
-    legacyPushReady: true,
     relayChannelReady: Boolean(cp?.listening),
     relayChannelConnected: Boolean(cp?.clientConnected),
     relayChannelLastError: null,

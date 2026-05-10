@@ -106,6 +106,7 @@ describe("createMessageProcessor", () => {
               transportChannelId?: string;
               transportAccountId?: string;
               transportMessageId?: string;
+              transportDelivered?: boolean;
             };
           };
         }
@@ -113,6 +114,7 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.openclawMeta?.transportChannelId).toBe("telegram");
     expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
     expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("tg-msg-1");
+    expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
   });
 
   it("delivers relay_channel_v2 WhatsApp Personal replies directly through the transport executor", async () => {
@@ -199,6 +201,7 @@ describe("createMessageProcessor", () => {
               transportChannelId?: string;
               transportAccountId?: string;
               transportMessageId?: string;
+              transportDelivered?: boolean;
             };
           };
         }
@@ -206,6 +209,7 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.openclawMeta?.transportChannelId).toBe("whatsapp_personal");
     expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
     expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("wa-msg-1");
+    expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
   });
 
   it("preserves direct transport delivery failures for relay_channel_v2 replies", async () => {
@@ -279,6 +283,57 @@ describe("createMessageProcessor", () => {
       code: "RELAY_DIRECT_TRANSPORT_DELIVERY_FAILED",
       message:
         "Relay direct telegram delivery failed: Telegram API error 400: Bad Request: replied message not found",
+    });
+  });
+
+  it("rejects user-facing replies without messenger transport context as undelivered", async () => {
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockResolvedValue({
+          result: {
+            outcome: "reply",
+            reply: {
+              runId: "run_no_context_1",
+              message: { role: "assistant", content: "hello user" },
+            },
+          },
+          openclawMeta: { method: "chat.send", runId: "run_no_context_1" },
+        }),
+      } as never,
+      backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
+    });
+
+    await processor({
+      messageId: "msg_no_context_1",
+      input: {
+        kind: "chat",
+        sessionKey: "tg:123:srv_1",
+        messageText: "ping",
+      },
+    });
+
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "error",
+        error: {
+          code: "RELAY_DIRECT_TRANSPORT_DELIVERY_FAILED",
+          message: "Relay direct delivery failed: user-facing reply has no messenger transport context",
+        },
+        openclawMeta: {
+          deliverySystem: "relay_channel_v2",
+          sessionKey: "tg:123:srv_1",
+        },
+      },
     });
   });
 
@@ -478,7 +533,7 @@ describe("createMessageProcessor", () => {
     expect(meta?.trace?.openclawRunId).toBe("run_1");
     expect(meta?.trace?.extra).toBeUndefined();
     expect(typeof meta?.trace?.relayMessageId).toBe("string");
-    expect(meta?.deliverySystem).toBe("legacy_push_v1");
+    expect(meta?.deliverySystem).toBe("relay_channel_v2");
   });
 
   it("preserves extra reply fields from ChatRunner", async () => {
@@ -603,7 +658,7 @@ describe("createMessageProcessor", () => {
     ]);
   });
 
-  it("sends retry notice and then retry result when the first reply has unresolved artifacts", async () => {
+  it("submits unresolved artifact replies without legacy retry notices", async () => {
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const runChatTask = vi
       .fn()
@@ -689,41 +744,16 @@ describe("createMessageProcessor", () => {
       },
     });
 
-    expect(runChatTask).toHaveBeenCalledTimes(2);
-    expect(runChatTask.mock.calls[1]?.[0]).toEqual(
-      expect.objectContaining({
-        taskId: "msg_retry_1:artifact-retry",
-        sessionKey: "s1",
-      })
-    );
-    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
-    const notice = submitInboundMessage.mock.calls[0]?.[0] as
-      | { body?: { reply?: { message?: { content?: string } }; openclawMeta?: { artifactDelivery?: { stage?: string; originalRunId?: string } } } }
+    expect(runChatTask).toHaveBeenCalledTimes(1);
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    const submitted = submitInboundMessage.mock.calls[0]?.[0] as
+      | { body?: { reply?: { message?: { content?: string }; artifactResolution?: unknown } } }
       | undefined;
-    const retried = submitInboundMessage.mock.calls[1]?.[0] as
-      | {
-          body?: {
-            reply?: { artifacts?: Array<{ path?: string }> };
-            openclawMeta?: { artifactDelivery?: { stage?: string; originalRunId?: string; retryRunId?: string } };
-          };
-        }
-      | undefined;
-    expect(notice?.body?.reply?.message?.content).toBe(
-      "We hit a temporary issue while preparing the file attachment. We are trying one more time now."
-    );
-    expect(notice?.body?.openclawMeta?.artifactDelivery).toMatchObject({
-      stage: "retry_notice",
-      originalRunId: "run_first",
-    });
-    expect(retried?.body?.reply?.artifacts?.[0]?.path).toBe("files/final_ytp.mp4");
-    expect(retried?.body?.openclawMeta?.artifactDelivery).toMatchObject({
-      stage: "retry_succeeded",
-      originalRunId: "run_first",
-      retryRunId: "run_retry",
-    });
+    expect(submitted?.body?.reply?.message?.content).toBe("Here is your file");
+    expect(submitted?.body?.reply?.artifactResolution).toBeDefined();
   });
 
-  it("falls back to original text and a technical notice after one failed artifact retry", async () => {
+  it("does not synthesize legacy technical notices after unresolved artifact replies", async () => {
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const unresolvedArtifact = {
       source: "media_directive",
@@ -791,43 +821,13 @@ describe("createMessageProcessor", () => {
       },
     });
 
-    expect(submitInboundMessage).toHaveBeenCalledTimes(3);
-    const originalReply = submitInboundMessage.mock.calls[1]?.[0] as
-      | {
-          body?: {
-            reply?: { message?: { content?: string } };
-            openclawMeta?: {
-              artifactDelivery?: { stage?: string; originalRunId?: string; retryRunId?: string; retryOutcome?: string };
-            };
-          };
-        }
+    expect(runChatTask).toHaveBeenCalledTimes(1);
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    const submitted = submitInboundMessage.mock.calls[0]?.[0] as
+      | { body?: { reply?: { message?: { content?: string }; artifactResolution?: unknown } } }
       | undefined;
-    const technicalNotice = submitInboundMessage.mock.calls[2]?.[0] as
-      | {
-          body?: {
-            reply?: { message?: { content?: string } };
-            openclawMeta?: {
-              artifactDelivery?: { stage?: string; originalRunId?: string; retryRunId?: string; retryOutcome?: string };
-            };
-          };
-        }
-      | undefined;
-    expect(originalReply?.body?.reply?.message?.content).toBe("Original agent text");
-    expect(originalReply?.body?.openclawMeta?.artifactDelivery).toMatchObject({
-      stage: "fallback_text",
-      originalRunId: "run_first_fail",
-      retryRunId: "run_retry_fail",
-      retryOutcome: "reply",
-    });
-    expect(technicalNotice?.body?.reply?.message?.content).toBe(
-      "Technical note: the agent message was delivered, but the file attachment could not be sent."
-    );
-    expect(technicalNotice?.body?.openclawMeta?.artifactDelivery).toMatchObject({
-      stage: "failure_notice",
-      originalRunId: "run_first_fail",
-      retryRunId: "run_retry_fail",
-      retryOutcome: "reply",
-    });
+    expect(submitted?.body?.reply?.message?.content).toBe("Original agent text");
+    expect(submitted?.body?.reply?.artifactResolution).toBeDefined();
   });
 
   it("debounces chat messages per session and sends batch", async () => {

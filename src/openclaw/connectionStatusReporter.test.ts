@@ -88,7 +88,6 @@ describe("createOpenclawConnectionStatusReporter", () => {
       relayInstanceId: "relay-1",
       buildDeliveryReport: () => ({
         modeEffective: "relay_channel_v2",
-        legacyPushReady: true,
         relayChannelReady: true,
         relayChannelConnected,
       }),
@@ -113,7 +112,6 @@ describe("createOpenclawConnectionStatusReporter", () => {
         reason: undefined,
         delivery: {
           modeEffective: "relay_channel_v2",
-          legacyPushReady: true,
           relayChannelReady: true,
           relayChannelConnected: false,
         },
@@ -127,7 +125,6 @@ describe("createOpenclawConnectionStatusReporter", () => {
         reason: undefined,
         delivery: {
           modeEffective: "relay_channel_v2",
-          legacyPushReady: true,
           relayChannelReady: true,
           relayChannelConnected: true,
         },

@@ -35,7 +35,7 @@ type StatusNudgeRunner = {
     taskId: string;
     sessionKey: string;
     messageText: string;
-    deliverySystem?: "legacy_push_v1" | "relay_channel_v2";
+    deliverySystem?: "relay_channel_v2";
     timeoutMs: number;
   }): Promise<{ result: ChatRunResult; openclawMeta: Record<string, unknown> }>;
 };
@@ -151,7 +151,7 @@ function buildStatusNudgeOpenclawMeta(input: {
     method: normalizeOptionalString(base.method) ?? "chat.status_nudge",
     runId: input.runId ?? normalizeOptionalString(base.runId) ?? undefined,
     sessionKey: input.sessionKey,
-    deliverySystem: "legacy_push_v1",
+    deliverySystem: "relay_channel_v2",
     statusNudge: {
       sourceBackendMessageId: input.sourceBackendMessageId,
     },
@@ -179,7 +179,7 @@ async function sendStatusNudge(input: {
     taskId: input.backendMessageId,
     sessionKey: input.action.sessionKey,
     messageText: input.action.messageText,
-    deliverySystem: "legacy_push_v1",
+    deliverySystem: "relay_channel_v2",
     timeoutMs,
   });
   const runId = getChatRunResultRunId(result);

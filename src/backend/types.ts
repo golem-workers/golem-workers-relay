@@ -193,8 +193,7 @@ export type RelayInboundMessageRequest = z.infer<typeof relayInboundMessageReque
 
 const relayDeliveryReportSchema = z
   .object({
-    modeEffective: z.enum(["legacy_push_v1", "relay_channel_v2"]).optional(),
-    legacyPushReady: z.boolean().nullable().optional(),
+    modeEffective: z.literal("relay_channel_v2").optional(),
     relayChannelReady: z.boolean().nullable().optional(),
     relayChannelConnected: z.boolean().nullable().optional(),
     relayChannelLastError: z.string().nullable().optional(),

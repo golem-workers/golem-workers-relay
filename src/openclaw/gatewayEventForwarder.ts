@@ -75,10 +75,6 @@ function isTerminalChatState(state: string): state is "final" | "error" | "abort
   return state === "final" || state === "error" || state === "aborted";
 }
 
-function isProvisionalEmptyFinal(state: RunForwardState): boolean {
-  return state.terminalSeen && state.terminalState === "final" && !state.terminalHadMessage;
-}
-
 export function createGatewayEventForwarder(input: {
   relayInstanceId: string;
   backend: BackendClient;
@@ -259,11 +255,6 @@ export function createGatewayEventForwarder(input: {
       scheduleUncorrelatedRetry(state);
       return;
     }
-    if (state.terminalSeen && !isProvisionalEmptyFinal(state)) {
-      state.bufferedDeltas = [];
-      scheduleTerminalCleanup(state);
-      return;
-    }
     const deltas = [...state.bufferedDeltas].sort((left, right) => {
       if (left.seq !== right.seq) {
         return left.seq - right.seq;
@@ -272,9 +263,6 @@ export function createGatewayEventForwarder(input: {
     });
     state.bufferedDeltas = [];
     for (const delta of deltas) {
-      if (state.terminalSeen && !isProvisionalEmptyFinal(state)) {
-        break;
-      }
       if (!state.backendMessageId || delta.seq <= state.lastForwardedSeq) {
         continue;
       }
@@ -404,11 +392,8 @@ export function createGatewayEventForwarder(input: {
       runState.terminalSeen = true;
       runState.terminalState = chatEvent.state;
       runState.terminalSeq = chatEvent.seq;
-      runState.terminalHadMessage = chatEvent.message !== undefined;
+      runState.terminalHadMessage = terminalTextPreview !== null;
       runState.terminalTextPreview = terminalTextPreview;
-      if (runState.backendMessageId && !isProvisionalEmptyFinal(runState)) {
-        runState.bufferedDeltas = [];
-      }
       clearCleanupTimer(runState);
       if (runState.backendMessageId) {
         scheduleDebouncedFlush(runState);
@@ -418,10 +403,6 @@ export function createGatewayEventForwarder(input: {
       return;
     }
 
-    if (runState.terminalSeen && !isProvisionalEmptyFinal(runState)) {
-      scheduleTerminalCleanup(runState);
-      return;
-    }
     if (
       chatEvent.seq <= runState.lastForwardedSeq ||
       runState.bufferedDeltas.some((buffered) => buffered.seq === chatEvent.seq)

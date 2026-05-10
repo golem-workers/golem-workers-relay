@@ -103,7 +103,7 @@ describe("executeAgentControl status nudge", () => {
       taskId: "nudge_1",
       sessionKey: "tg:123:srv_1",
       messageText: "report status",
-      deliverySystem: "legacy_push_v1",
+      deliverySystem: "relay_channel_v2",
       timeoutMs: 10_000,
     });
     const submitArg = submitInboundMessage.mock.calls[0]?.[0] as {
@@ -131,7 +131,7 @@ describe("executeAgentControl status nudge", () => {
     });
     expect(submitArg.body?.openclawMeta).toMatchObject({
       sessionKey: "tg:123:srv_1",
-      deliverySystem: "legacy_push_v1",
+      deliverySystem: "relay_channel_v2",
       statusNudge: { sourceBackendMessageId: "source_1" },
       trace: {
         backendMessageId: "nudge_1",

@@ -195,7 +195,7 @@ describe("ChatRunner", () => {
     });
     expect(result.outcome).toBe("reply");
     expect(sentMessage).toContain("Please prepare a report");
-    expect(sentMessage).toContain("[Telegram bridge note]");
+    expect(sentMessage).toContain("[Telegram plugin note]");
     expect(sentMessage).toContain("[[media:relative/path.ext]]");
 
     client.stop();
@@ -1914,7 +1914,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("recovers transcript artifacts even when gateway and transcript reply texts diverge", async () => {
+  it("does not use divergent transcript text as a legacy artifact fallback", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-artifacts-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
 
@@ -2036,7 +2036,7 @@ describe("ChatRunner", () => {
     });
     expect(result.outcome).toBe("reply");
     if (result.outcome !== "reply") throw new Error("expected reply");
-    expect(result.reply.artifacts?.[0]?.path).toBe("proofs/identity.md");
+    expect(result.reply.artifacts).toBeUndefined();
     expect(JSON.stringify(result.reply.message)).not.toContain("[[media:proofs/identity.md]]");
 
     client.stop();
@@ -3500,7 +3500,7 @@ describe("applyTransportDeliveryInstructions", () => {
     const result = applyTransportDeliveryInstructions({
       sessionKey: webSessionKey,
       messageText: "/new",
-      deliverySystem: "legacy_push_v1",
+      deliverySystem: "relay_channel_v2",
     });
     expect(result).toBe("/new");
     expect(result).not.toContain("[Telegram plugin note]");

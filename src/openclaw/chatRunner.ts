@@ -100,7 +100,7 @@ type OpenclawChatMeta = {
   model?: string;
 };
 
-type DeliverySystem = "legacy_push_v1" | "relay_channel_v2";
+type DeliverySystem = "relay_channel_v2";
 
 type ResolvedSessionTranscriptState = {
   sessionFile: string;
@@ -133,7 +133,7 @@ const OPENCLAW_SLASH_COMMAND_FINAL_WAIT_TIMEOUT_MS = 15_000;
 const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_TIMEOUT_MS = 10_000;
 const OPENCLAW_DISCONNECT_TRANSCRIPT_RECOVERY_TIMEOUT_MS = 1_500;
 const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_POLL_INTERVAL_MS = 250;
-const OPENCLAW_EMPTY_FINAL_CONTINUATION_TIMEOUT_MS = 15_000;
+const OPENCLAW_EMPTY_FINAL_CONTINUATION_TIMEOUT_MS = 10 * 60_000;
 const OPENCLAW_TRANSCRIPT_FINAL_STABILITY_MS = 1_000;
 const OPENCLAW_RUN_TRACE_RETENTION_MS = 60_000;
 
@@ -262,7 +262,7 @@ function maybeApplyTransportRecoveryNote(message: GatewayChatMessage, enabled: b
 function readLatestUserFacingMessage(events: ChatEvent[]): unknown {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const message = events[i]?.message;
-    if (message !== undefined) {
+    if (message !== undefined && extractTextFromMessage(message)) {
       return message;
     }
   }
@@ -594,7 +594,7 @@ async function collectReplyArtifacts(input: {
   media: TranscriptMediaFile[];
   artifactResolution?: TranscriptArtifactCollectionReport;
 }> {
-  let artifactResolution = await collectTranscriptArtifacts({
+  const artifactResolution = await collectTranscriptArtifacts({
     message: input.finalMessage,
     openclawEvents: input.openclawEvents,
     opts: {
@@ -626,40 +626,6 @@ async function collectReplyArtifacts(input: {
       usedLegacyMediaDirectives: false,
     } satisfies TranscriptArtifactCollectionReport;
   });
-  if (
-    input.deliverySystem !== "relay_channel_v2" &&
-    artifactResolution.requestedCount === 0 &&
-    input.transcriptFinalMessage !== undefined &&
-    input.transcriptFinalMessage !== input.finalMessage
-  ) {
-    const transcriptArtifactResolution = await collectTranscriptArtifacts({
-      message: input.transcriptFinalMessage,
-      openclawEvents: input.openclawEvents,
-      opts: {
-        logContext: {
-          taskId: input.taskId,
-          runId: input.runId,
-          sessionKey: input.sessionKey,
-        },
-      },
-    }).catch(() => null);
-    if (transcriptArtifactResolution && transcriptArtifactResolution.requestedCount > 0) {
-      artifactResolution = transcriptArtifactResolution;
-      logger.info(
-        {
-          event: "artifact_delivery",
-          stage: "transcript_artifacts_recovered",
-          taskId: input.taskId,
-          openclawRunId: input.runId,
-          sessionKey: input.sessionKey,
-          requestedCount: transcriptArtifactResolution.requestedCount,
-          resolvedCount: transcriptArtifactResolution.artifacts.length,
-          unresolvedCount: transcriptArtifactResolution.unresolved.length,
-        },
-        "Recovered reply artifacts from session transcript"
-      );
-    }
-  }
   const media = artifactResolution.artifacts.map((artifact) => ({
     path: artifact.path,
     fileName: artifact.fileName,
@@ -920,7 +886,8 @@ export class ChatRunner {
     if (
       waiter.ignoreFinalWithoutUserFacingMessage &&
       chatEvt.state === "final" &&
-      !extractTextFromMessage(chatEvt.message)
+      !extractTextFromMessage(chatEvt.message) &&
+      !readLatestUserFacingMessage(events)
     ) {
       return;
     }
@@ -932,6 +899,10 @@ export class ChatRunner {
 
   getRunTrace(runId: string): { backendMessageId: string } | null {
     return this.runTraceByRunId.get(runId) ?? null;
+  }
+
+  closeRunForwarding(runId: string, reason: string): void {
+    this.onRunCompleted?.(runId, reason);
   }
 
   private registerRunTrace(runId: string, input: { sessionKey: string; backendMessageId: string }): void {
@@ -952,7 +923,6 @@ export class ChatRunner {
 
   private scheduleRunTraceCleanup(runId: string, reason: string): void {
     this.runSessionByRunId.delete(runId);
-    this.onRunCompleted?.(runId, reason);
     this.clearRunTraceCleanupTimer(runId);
     const timer = setTimeout(() => {
       this.runTraceByRunId.delete(runId);
@@ -995,13 +965,15 @@ export class ChatRunner {
     baseMessageText = applyTransportDeliveryInstructions({
       sessionKey: input.sessionKey,
       messageText: baseMessageText,
-      deliverySystem: input.deliverySystem ?? "legacy_push_v1",
+      deliverySystem: input.deliverySystem ?? "relay_channel_v2",
     });
-    const deliverySystem = input.deliverySystem ?? "legacy_push_v1";
-    const preRunTranscriptSessionState =
-      deliverySystem === "relay_channel_v2"
-        ? await readExistingSessionTranscriptState({ sessionKey: input.sessionKey }).catch(() => null)
-        : null;
+    const deliverySystem = input.deliverySystem ?? "relay_channel_v2";
+    const shouldUseSessionTranscript = isTransportBackedSession(input.sessionKey);
+    const preRunTranscriptSessionState = shouldUseSessionTranscript
+      ? await readExistingSessionTranscriptState({
+          sessionKey: input.sessionKey,
+        }).catch(() => null)
+      : null;
     const isSlashCommand = isOpenclawSlashCommand(baseMessageText);
     const gatewayMessage = await buildGatewayChatMessage({
       messageText: baseMessageText,
@@ -1136,7 +1108,7 @@ export class ChatRunner {
           logger.debug({ taskId: input.taskId, runId, attempt }, "Relay waiting for chat final event");
         }
         transcriptSessionState =
-          deliverySystem === "relay_channel_v2" && !transcriptSessionState
+          shouldUseSessionTranscript && !transcriptSessionState
             ? await waitForSessionTranscriptState({
                 sessionKey: input.sessionKey,
                 timeoutMs: Math.min(1_200, Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))),
@@ -1150,6 +1122,7 @@ export class ChatRunner {
           requestMessage: finalAttemptMessage ?? undefined,
           sessionState: transcriptSessionState,
           allowTranscriptCompletion: true,
+          ignoreFinalWithoutUserFacingMessage: true,
         });
         let openclawEvents = this.consumeRunEvents(runId);
         if (finalEvt.state === "transcript") {
@@ -1497,7 +1470,6 @@ export class ChatRunner {
         }
         await sleep(backoffMs);
       } catch (err) {
-        this.scheduleRunTraceCleanup(runId, "wait_failed");
         const openclawEvents = this.consumeRunEvents(runId);
         if (err instanceof GatewayRunDisconnectedError) {
           const disconnectMessage = err.message;
@@ -1527,6 +1499,7 @@ export class ChatRunner {
                 })
               : undefined;
           if (transcriptFinalMessage !== undefined) {
+            this.scheduleRunTraceCleanup(runId, "completed:transcript_recovered_after_disconnect");
             logger.info(
               {
                 event: "message_flow",
@@ -1556,6 +1529,7 @@ export class ChatRunner {
           const remainingMs = Math.max(0, input.timeoutMs - elapsedMs);
           const retryable = attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
           if (!retryable) {
+            this.scheduleRunTraceCleanup(runId, "wait_failed_disconnect");
             return {
               result: {
                 outcome: "error",
@@ -1591,6 +1565,7 @@ export class ChatRunner {
               }).catch(() => undefined)
             : undefined;
         if (transcriptFinalMessage !== undefined) {
+          this.scheduleRunTraceCleanup(runId, "completed:transcript_recovered_after_timeout");
           logger.info(
             {
               event: "message_flow",
@@ -1624,14 +1599,16 @@ export class ChatRunner {
               "Relay timed out waiting for chat final; aborting"
             );
           }
-          await this.gateway.request("chat.abort", { sessionKey: input.sessionKey, runId });
+          await Promise.race([
+            this.gateway.request("chat.abort", { sessionKey: input.sessionKey, runId }),
+            sleep(250),
+          ]);
         } catch {
           if (this.devLogEnabled) {
             logger.warn({ taskId: input.taskId, runId, attempt }, "Relay failed to abort chat after timeout");
           }
         }
 
-        this.scheduleRunTraceCleanup(runId, "timeout_abort");
         if (isSlashCommand) {
           logger.info(
             {
@@ -1645,6 +1622,7 @@ export class ChatRunner {
             },
             "Slash-command did not emit a terminal event; releasing relay queue without a reply"
           );
+          this.scheduleRunTraceCleanup(runId, "timeout_abort_slash_command");
           return {
             result: {
               outcome: "no_reply",
@@ -1663,6 +1641,27 @@ export class ChatRunner {
         const remainingMs = Math.max(0, input.timeoutMs - elapsedMs);
         const retryable = attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
         if (!retryable) {
+          const sawOnlyEmptyFinals =
+            openclawEvents.some((event) => event.state === "final" && !extractTextFromMessage(event.message)) &&
+            !readLatestUserFacingMessage(openclawEvents);
+          this.scheduleRunTraceCleanup(
+            runId,
+            sawOnlyEmptyFinals ? "timeout_empty_final_no_message" : "wait_failed_timeout"
+          );
+          if (sawOnlyEmptyFinals) {
+            return {
+              result: {
+                outcome: "error",
+                error: {
+                  code: "NO_MESSAGE",
+                  message: "OpenClaw completed without a user-facing message before the relay task timeout",
+                  runId,
+                  ...(openclawEvents.length > 0 ? { openclawEvents } : {}),
+                },
+              },
+              openclawMeta: { method: "chat.send", runId },
+            };
+          }
           return {
             result: { outcome: "error", error: { code: "GATEWAY_TIMEOUT", message: msg, runId } },
             openclawMeta: { method: "chat.send", runId },
@@ -1965,6 +1964,10 @@ function normalizeVisionPromptText(messageText: string): string {
   return text.length > 0 ? text : "[image]";
 }
 
+function isTransportBackedSession(sessionKey: string): boolean {
+  return sessionKey.startsWith("tg:") || sessionKey.startsWith("whatsapp-personal:");
+}
+
 /**
  * Matches openclaw slash-commands such as `/new`, `/compact`, `/clear`
  * (optionally followed by whitespace-separated arguments). Such messages are
@@ -1995,13 +1998,9 @@ export function applyTransportDeliveryInstructions(input: {
   }
   const transportLabel = isTelegramSession ? "Telegram" : "WhatsApp Personal";
   const instruction = [
-    `[${transportLabel} ${input.deliverySystem === "relay_channel_v2" ? "plugin" : "bridge"} note]`,
-    `If you need to send the user a file, first save or locate the exact file inside the ${
-      input.deliverySystem === "relay_channel_v2" ? "current workspace" : "OpenClaw workspace"
-    }.`,
-    `Before replying, verify that the file really exists at that exact ${
-      input.deliverySystem === "relay_channel_v2" ? "local" : "workspace-relative"
-    } path.`,
+    `[${transportLabel} plugin note]`,
+    "If you need to send the user a file, first save or locate the exact file inside the current workspace.",
+    "Before replying, verify that the file really exists at that exact local path.",
     "In your final answer, add a separate final token exactly as `[[media:relative/path.ext]]`.",
     "Use the real path only. Do not invent directories, rename the file inside the directive, or point to an approximate match.",
     "If you need to send multiple files, add one separate `[[media:...]]` directive per file.",
