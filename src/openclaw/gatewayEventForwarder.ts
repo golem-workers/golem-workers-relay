@@ -29,6 +29,7 @@ type RunForwardState = {
   terminalState: "final" | "error" | "aborted" | null;
   terminalSeq: number | null;
   terminalHadMessage: boolean;
+  terminalText: string | null;
   terminalTextPreview: string | null;
   bufferedDeltas: BufferedDeltaSignal[];
   debounceTimer: NodeJS.Timeout | null;
@@ -61,6 +62,7 @@ function createRunForwardState(runId: string, backendMessageId: string | null, s
     terminalState: null,
     terminalSeq: null,
     terminalHadMessage: false,
+    terminalText: null,
     terminalTextPreview: null,
     bufferedDeltas: [],
     debounceTimer: null,
@@ -163,6 +165,12 @@ export function createGatewayEventForwarder(input: {
       if (left.seq !== right.seq) return left.seq - right.seq;
       return left.receivedOrder - right.receivedOrder;
     });
+    const latestDeltaText =
+      [...deltas]
+        .reverse()
+        .map((delta) => delta.userFacingText)
+        .find((text): text is string => Boolean(text?.trim())) ?? null;
+    const userFacingText = state.terminalText ?? latestDeltaText;
     return {
       reason,
       runId: state.runId,
@@ -171,17 +179,15 @@ export function createGatewayEventForwarder(input: {
       terminalState: state.terminalState,
       terminalSeq: state.terminalSeq,
       terminalHadMessage: state.terminalHadMessage,
+      terminalText: state.terminalText,
       terminalTextPreview: state.terminalTextPreview,
+      userFacingText,
       bufferedCount: deltas.length,
       firstSeq: deltas.at(0)?.seq ?? null,
       lastSeq: deltas.at(-1)?.seq ?? null,
       highestSeqSeen: state.highestSeqSeen,
       ageMs: Date.now() - state.firstSeenAtMs,
-      textPreview: deltas
-        .map((delta) => delta.userFacingText)
-        .filter((text): text is string => Boolean(text))
-        .join("\n")
-        .slice(0, UNCORRELATED_DELTA_PREVIEW_CHARS),
+      textPreview: (latestDeltaText ?? "").slice(0, UNCORRELATED_DELTA_PREVIEW_CHARS),
     };
   };
 
@@ -385,14 +391,13 @@ export function createGatewayEventForwarder(input: {
     runState.highestSeqSeen = Math.max(runState.highestSeqSeen, chatEvent.seq);
 
     if (isTerminalChatState(chatEvent.state)) {
-      const terminalTextPreview = extractPlainAssistantText(chatEvent.message)?.slice(
-        0,
-        UNCORRELATED_DELTA_PREVIEW_CHARS
-      ) ?? null;
+      const terminalText = extractPlainAssistantText(chatEvent.message);
+      const terminalTextPreview = terminalText?.slice(0, UNCORRELATED_DELTA_PREVIEW_CHARS) ?? null;
       runState.terminalSeen = true;
       runState.terminalState = chatEvent.state;
       runState.terminalSeq = chatEvent.seq;
       runState.terminalHadMessage = terminalTextPreview !== null;
+      runState.terminalText = terminalText;
       runState.terminalTextPreview = terminalTextPreview;
       clearCleanupTimer(runState);
       if (runState.backendMessageId) {
