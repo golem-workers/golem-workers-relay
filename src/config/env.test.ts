@@ -46,12 +46,12 @@ describe("loadRelayConfig", () => {
     expect(custom.chatBatchDebounceMs).toBe(7500);
   });
 
-  it("uses a bounded task timeout by default and allows override", () => {
+  it("uses a one-hour task timeout by default and allows override", () => {
     const def = loadRelayConfig({
       RELAY_TOKEN: "t",
       BACKEND_BASE_URL: "https://example.com",
     });
-    expect(def.taskTimeoutMs).toBe(300_000);
+    expect(def.taskTimeoutMs).toBe(3_600_000);
 
     const custom = loadRelayConfig({
       RELAY_TOKEN: "t",

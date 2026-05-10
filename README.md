@@ -194,6 +194,7 @@ Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 Push transport settings:
 - `RELAY_PUSH_PORT=18790` (HTTP port where backend sends push messages)
 - `RELAY_PUSH_PATH=/relay/messages` (HTTP path for backend push endpoint)
+- `RELAY_TASK_TIMEOUT_MS=3600000` (default one-hour budget for a chat task to produce a terminal callback before relay reports `GATEWAY_TIMEOUT`)
 - `RELAY_CHAT_BATCH_DEBOUNCE_MS=500` (default 500ms debounce for chat batching; lower it to send chats closer to immediately, or raise it to batch more aggressively)
 - `RELAY_LOW_DISK_ALERT_ENABLED=1` (when enabled, relay checks disk usage on every processed inbound message and reports low-space technical alerts to backend)
 - `RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT=80` (send low-space alert when used disk percent is at or above this threshold)
