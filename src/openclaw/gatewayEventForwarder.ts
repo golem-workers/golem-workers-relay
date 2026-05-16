@@ -25,9 +25,13 @@ type RunForwardState = {
   firstSeenAtMs: number;
   highestSeqSeen: number;
   lastForwardedSeq: number;
+  lastRecoverySeq: number;
+  primaryCompleted: boolean;
+  lastDeliveredUserFacingText: string | null;
   terminalSeen: boolean;
   terminalState: "final" | "error" | "aborted" | null;
   terminalSeq: number | null;
+  lastForwardedTerminalSeq: number;
   terminalHadMessage: boolean;
   terminalText: string | null;
   terminalTextPreview: string | null;
@@ -44,7 +48,8 @@ export type GatewayEventForwarder = ((evt: EventFrame) => Promise<void>) & {
 };
 
 const CHAT_EVENT_BACKEND_DEBOUNCE_MS = 100;
-const TERMINAL_RUN_STATE_RETENTION_MS = 60_000;
+const LATE_USER_FACING_QUIET_MS = 10_000;
+const TERMINAL_RUN_STATE_RETENTION_MS = 10 * 60_000;
 const UNCORRELATED_DELTA_RETRY_MS = 250;
 const UNCORRELATED_DELTA_TTL_MS = 10_000;
 const UNCORRELATED_DELTA_MAX_BUFFERED = 100;
@@ -58,9 +63,13 @@ function createRunForwardState(runId: string, backendMessageId: string | null, s
     firstSeenAtMs: Date.now(),
     highestSeqSeen: -1,
     lastForwardedSeq: -1,
+    lastRecoverySeq: -1,
+    primaryCompleted: false,
+    lastDeliveredUserFacingText: null,
     terminalSeen: false,
     terminalState: null,
     terminalSeq: null,
+    lastForwardedTerminalSeq: -1,
     terminalHadMessage: false,
     terminalText: null,
     terminalTextPreview: null,
@@ -85,7 +94,6 @@ export function createGatewayEventForwarder(input: {
 }): GatewayEventForwarder {
   const { relayInstanceId, backend, forwardFinalOnly, getChatRunTrace } = input;
   const runStatesByRunId = new Map<string, RunForwardState>();
-  const closedRunsByRunId = new Map<string, number>();
 
   const clearDebounceTimer = (state: RunForwardState): void => {
     if (state.debounceTimer) {
@@ -119,19 +127,17 @@ export function createGatewayEventForwarder(input: {
     runStatesByRunId.delete(runId);
   };
 
-  const pruneClosedRuns = (nowMs = Date.now()): void => {
-    for (const [runId, closedAtMs] of closedRunsByRunId.entries()) {
-      if (nowMs - closedAtMs > TERMINAL_RUN_STATE_RETENTION_MS) {
-        closedRunsByRunId.delete(runId);
-      }
-    }
-  };
-
   const closeRun = (runId: string, reason: string): void => {
-    pruneClosedRuns();
-    deleteRunState(runId);
-    closedRunsByRunId.set(runId, Date.now());
-    logger.info({ relayInstanceId, runId, reason }, "Closed OpenClaw chat event forwarding for run");
+    const state = runStatesByRunId.get(runId);
+    if (state) {
+      state.primaryCompleted = true;
+      if (state.terminalText && !state.lastDeliveredUserFacingText) {
+        state.lastDeliveredUserFacingText = state.terminalText;
+      }
+      clearDebounceTimer(state);
+      scheduleTerminalCleanup(state);
+    }
+    logger.info({ relayInstanceId, runId, reason }, "Marked OpenClaw chat run as primary-completed");
   };
 
   const scheduleTerminalCleanup = (state: RunForwardState): void => {
@@ -140,6 +146,25 @@ export function createGatewayEventForwarder(input: {
       deleteRunState(state.runId);
     }, TERMINAL_RUN_STATE_RETENTION_MS);
     state.cleanupTimer.unref?.();
+  };
+
+  const computePendingUserFacingText = (state: RunForwardState, text: string | null): string | null => {
+    const normalizedText = typeof text === "string" ? text.trim() : "";
+    if (!normalizedText) {
+      return null;
+    }
+    const delivered = state.lastDeliveredUserFacingText?.trim() ?? "";
+    if (!delivered) {
+      return normalizedText;
+    }
+    if (normalizedText === delivered) {
+      return null;
+    }
+    if (normalizedText.startsWith(delivered)) {
+      const suffix = normalizedText.slice(delivered.length).trim();
+      return suffix || null;
+    }
+    return normalizedText;
   };
 
   const attachTraceIfAvailable = (state: RunForwardState): boolean => {
@@ -268,6 +293,7 @@ export function createGatewayEventForwarder(input: {
       return left.receivedOrder - right.receivedOrder;
     });
     state.bufferedDeltas = [];
+    let latestUserFacingDelta: BufferedDeltaSignal | null = null;
     for (const delta of deltas) {
       if (!state.backendMessageId || delta.seq <= state.lastForwardedSeq) {
         continue;
@@ -298,27 +324,76 @@ export function createGatewayEventForwarder(input: {
         });
       }
       if (delta.userFacingText) {
-        await submitReplyChunk({
+        latestUserFacingDelta = delta;
+      }
+      state.lastForwardedSeq = Math.max(state.lastForwardedSeq, delta.seq);
+    }
+    if (state.primaryCompleted && latestUserFacingDelta?.userFacingText) {
+      const pendingText = computePendingUserFacingText(state, latestUserFacingDelta.userFacingText);
+      if (pendingText && latestUserFacingDelta.seq > state.lastRecoverySeq) {
+        await submitUserFacingRecovery({
           relayInstanceId,
           backend,
-          text: delta.userFacingText,
-          runId: delta.runId,
-          seq: delta.seq,
-          relayMessageId: `relay_oc_reply_chunk_${randomUUID()}`,
+          text: pendingText,
+          runId: latestUserFacingDelta.runId,
+          sessionKey: latestUserFacingDelta.sessionKey,
+          seq: latestUserFacingDelta.seq,
+          state: "delta",
+          reason: "delta_quiet_timeout",
+          relayMessageId: `relay_oc_recovery_${randomUUID()}`,
           finishedAtMs: Date.now(),
+          correlationStrength: "trace",
           openclawMeta: {
-            method: "gateway.event.chat.reply_chunk",
-            runId: delta.runId,
-            sessionKey: delta.sessionKey,
+            method: "gateway.event.chat.user_facing_recovery",
+            runId: latestUserFacingDelta.runId,
+            sessionKey: latestUserFacingDelta.sessionKey,
             trace: {
               backendMessageId: state.backendMessageId,
               relayInstanceId,
-              openclawRunId: delta.runId,
+              openclawRunId: latestUserFacingDelta.runId,
             },
           },
         });
+        state.lastDeliveredUserFacingText = latestUserFacingDelta.userFacingText;
+        state.lastRecoverySeq = latestUserFacingDelta.seq;
       }
-      state.lastForwardedSeq = Math.max(state.lastForwardedSeq, delta.seq);
+    }
+    if (
+      state.primaryCompleted &&
+      state.terminalSeen &&
+      state.terminalSeq !== null &&
+      state.terminalSeq > state.lastForwardedTerminalSeq &&
+      state.terminalSeq > state.lastRecoverySeq &&
+      state.terminalText
+    ) {
+      const pendingText = computePendingUserFacingText(state, state.terminalText);
+      if (pendingText) {
+        await submitUserFacingRecovery({
+          relayInstanceId,
+          backend,
+          text: pendingText,
+          runId: state.runId,
+          sessionKey: state.sessionKey,
+          seq: state.terminalSeq,
+          state: state.terminalState ?? "final",
+          reason: `terminal_${state.terminalState ?? "final"}`,
+          relayMessageId: `relay_oc_recovery_${randomUUID()}`,
+          finishedAtMs: Date.now(),
+          correlationStrength: "trace",
+          openclawMeta: {
+            method: "gateway.event.chat.user_facing_recovery",
+            runId: state.runId,
+            ...(state.sessionKey ? { sessionKey: state.sessionKey } : {}),
+            trace: {
+              backendMessageId: state.backendMessageId,
+              relayInstanceId,
+              openclawRunId: state.runId,
+            },
+          },
+        });
+        state.lastDeliveredUserFacingText = state.terminalText;
+      }
+      state.lastForwardedTerminalSeq = Math.max(state.lastForwardedTerminalSeq, state.terminalSeq);
     }
     if (state.terminalSeen && !state.debounceTimer) {
       scheduleTerminalCleanup(state);
@@ -342,9 +417,11 @@ export function createGatewayEventForwarder(input: {
 
   const scheduleDebouncedFlush = (state: RunForwardState): void => {
     clearDebounceTimer(state);
+    const delayMs = state.primaryCompleted ? LATE_USER_FACING_QUIET_MS : CHAT_EVENT_BACKEND_DEBOUNCE_MS;
     state.debounceTimer = setTimeout(() => {
       queueFlush(state.runId);
-    }, CHAT_EVENT_BACKEND_DEBOUNCE_MS);
+    }, delayMs);
+    state.debounceTimer.unref?.();
   };
 
   const forward = (async (evt: EventFrame): Promise<void> => {
@@ -372,10 +449,6 @@ export function createGatewayEventForwarder(input: {
     const parsed = chatEventSchema.safeParse(evt.payload);
     if (!parsed.success) return;
     const chatEvent = parsed.data;
-    pruneClosedRuns();
-    if (closedRunsByRunId.has(chatEvent.runId)) {
-      return;
-    }
     const runTrace = getChatRunTrace(chatEvent.runId);
     let runState = runStatesByRunId.get(chatEvent.runId) ?? null;
     if (!runState) {
@@ -401,6 +474,10 @@ export function createGatewayEventForwarder(input: {
       runState.terminalTextPreview = terminalTextPreview;
       clearCleanupTimer(runState);
       if (runState.backendMessageId) {
+        if (runState.primaryCompleted && terminalText) {
+          queueFlush(runState.runId);
+          return;
+        }
         scheduleDebouncedFlush(runState);
       } else {
         scheduleUncorrelatedRetry(runState);
@@ -520,14 +597,18 @@ async function submitTechnicalEvent(input: {
   }
 }
 
-async function submitReplyChunk(input: {
+async function submitUserFacingRecovery(input: {
   relayInstanceId: string;
   backend: BackendClient;
   text: string;
   runId: string;
+  sessionKey: string | null;
   seq: number;
+  state: "delta" | "final" | "error" | "aborted";
+  reason: string;
   relayMessageId: string;
   finishedAtMs: number;
+  correlationStrength: "trace" | "session" | "weak";
   openclawMeta: {
     method: string;
     runId?: string;
@@ -545,11 +626,19 @@ async function submitReplyChunk(input: {
         relayInstanceId: input.relayInstanceId,
         relayMessageId: input.relayMessageId,
         finishedAtMs: input.finishedAtMs,
-        outcome: "reply_chunk",
-        replyChunk: {
-          text: input.text,
-          runId: input.runId,
-          seq: input.seq,
+        outcome: "technical",
+        technical: {
+          source: "openclaw_gateway",
+          event: "chat.user_facing_recovery",
+          payload: {
+            runId: input.runId,
+            sessionKey: input.sessionKey,
+            seq: input.seq,
+            state: input.state,
+            reason: input.reason,
+            userFacingText: input.text,
+            correlationStrength: input.correlationStrength,
+          },
         },
         openclawMeta: {
           method: input.openclawMeta.method,
@@ -576,10 +665,11 @@ async function submitReplyChunk(input: {
         stage: "failed",
         relayMessageId: input.relayMessageId,
         relayInstanceId: input.relayInstanceId,
-        outcome: "reply_chunk",
+        outcome: "technical",
+        technicalEvent: "chat.user_facing_recovery",
         error: err instanceof Error ? err.message : String(err),
       },
-      "Failed to forward OpenClaw reply chunk to backend"
+      "Failed to forward OpenClaw user-facing recovery text to backend"
     );
   }
 }

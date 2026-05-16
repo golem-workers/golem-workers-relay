@@ -489,9 +489,6 @@ async function processSingleMessage(input: {
             ),
           },
         });
-        if (result.reply.runId) {
-          runner.closeRunForwarding?.(result.reply.runId, "transport_delivered");
-        }
       } else if (result.outcome === "no_reply") {
         await backend.submitInboundMessage({
           body: {
@@ -512,9 +509,6 @@ async function processSingleMessage(input: {
             ),
           },
         });
-        if (result.noReply?.runId) {
-          runner.closeRunForwarding?.(result.noReply.runId, "completed:no_reply");
-        }
       } else {
         await backend.submitInboundMessage({
           body: {
@@ -535,9 +529,6 @@ async function processSingleMessage(input: {
             ),
           },
         });
-        if (result.error.runId) {
-          runner.closeRunForwarding?.(result.error.runId, `completed:error:${result.error.code}`);
-        }
       }
     }
 

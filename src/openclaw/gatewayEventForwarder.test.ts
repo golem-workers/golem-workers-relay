@@ -92,7 +92,7 @@ describe("createGatewayEventForwarder", () => {
     });
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(submitInboundMessage).toHaveBeenCalledTimes(4);
+    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
     const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
       | {
           body?: {
@@ -129,53 +129,17 @@ describe("createGatewayEventForwarder", () => {
     const secondCall = submitInboundMessage.mock.calls[1]?.[0] as
       | {
           body?: {
-            outcome?: string;
-            replyChunk?: {
-              text?: string;
-              runId?: string;
-              seq?: number;
-            };
-          };
-        }
-      | undefined;
-    expect(secondCall?.body?.outcome).toBe("reply_chunk");
-    expect(secondCall?.body?.replyChunk).toEqual({
-      text: "hel",
-      runId: "run_1",
-      seq: 2,
-    });
-    const thirdCall = submitInboundMessage.mock.calls[2]?.[0] as
-      | {
-          body?: {
             technical?: {
               payload?: unknown;
             };
           };
         }
       | undefined;
-    expect(thirdCall?.body?.technical?.payload).toEqual({
+    expect(secondCall?.body?.technical?.payload).toEqual({
       runId: "run_1",
       sessionKey: "session_1",
       seq: 3,
       state: "delta",
-    });
-    const fourthCall = submitInboundMessage.mock.calls[3]?.[0] as
-      | {
-          body?: {
-            outcome?: string;
-            replyChunk?: {
-              text?: string;
-              runId?: string;
-              seq?: number;
-            };
-          };
-        }
-      | undefined;
-    expect(fourthCall?.body?.outcome).toBe("reply_chunk");
-    expect(fourthCall?.body?.replyChunk).toEqual({
-      text: "llo",
-      runId: "run_1",
-      seq: 3,
     });
   });
 
@@ -207,7 +171,7 @@ describe("createGatewayEventForwarder", () => {
     traceAvailable = true;
     await vi.advanceTimersByTimeAsync(250);
 
-    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
     expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
       body: {
         outcome: "technical",
@@ -224,16 +188,6 @@ describe("createGatewayEventForwarder", () => {
           trace: {
             backendMessageId: "msg_1",
           },
-        },
-      },
-    });
-    expect(submitInboundMessage.mock.calls[1]?.[0]).toMatchObject({
-      body: {
-        outcome: "reply_chunk",
-        replyChunk: {
-          text: "hello later",
-          runId: "run_delayed",
-          seq: 1,
         },
       },
     });
@@ -384,7 +338,7 @@ describe("createGatewayEventForwarder", () => {
     });
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
     expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
       body: {
         outcome: "technical",
@@ -396,16 +350,6 @@ describe("createGatewayEventForwarder", () => {
             seq: 2,
             state: "delta",
           },
-        },
-      },
-    });
-    expect(submitInboundMessage.mock.calls[1]?.[0]).toMatchObject({
-      body: {
-        outcome: "reply_chunk",
-        replyChunk: {
-          text: "hel",
-          runId: "run_1",
-          seq: 2,
         },
       },
     });
@@ -447,7 +391,7 @@ describe("createGatewayEventForwarder", () => {
     });
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
     expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
       body: {
         outcome: "technical",
@@ -467,19 +411,9 @@ describe("createGatewayEventForwarder", () => {
         },
       },
     });
-    expect(submitInboundMessage.mock.calls[1]?.[0]).toMatchObject({
-      body: {
-        outcome: "reply_chunk",
-        replyChunk: {
-          text: "continued",
-          runId: "run_empty_final",
-          seq: 2,
-        },
-      },
-    });
   });
 
-  it("continues forwarding later delta signals after terminal state until the run is closed", async () => {
+  it("continues forwarding later delta signals after terminal state before primary completion", async () => {
     vi.useFakeTimers();
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const forward = createGatewayEventForwarder({
@@ -530,8 +464,8 @@ describe("createGatewayEventForwarder", () => {
     });
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(submitInboundMessage).toHaveBeenCalledTimes(4);
-    expect(submitInboundMessage.mock.calls[2]?.[0]).toMatchObject({
+    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
+    expect(submitInboundMessage.mock.calls[1]?.[0]).toMatchObject({
       body: {
         outcome: "technical",
         technical: {
@@ -545,19 +479,9 @@ describe("createGatewayEventForwarder", () => {
         },
       },
     });
-    expect(submitInboundMessage.mock.calls[3]?.[0]).toMatchObject({
-      body: {
-        outcome: "reply_chunk",
-        replyChunk: {
-          text: "ignored",
-          runId: "run_1",
-          seq: 4,
-        },
-      },
-    });
   });
 
-  it("ignores late delta signals after the runner explicitly closes a run", async () => {
+  it("buffers late delta text after primary completion and flushes one recovery callback", async () => {
     vi.useFakeTimers();
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const forward = createGatewayEventForwarder({
@@ -574,17 +498,178 @@ describe("createGatewayEventForwarder", () => {
       payload: {
         runId: "run_1",
         sessionKey: "session_1",
-        seq: 4,
-        state: "delta",
-        message: { text: "late stale chunk" },
+        seq: 3,
+        state: "final",
+        message: { text: "already sent" },
       },
     });
     await vi.advanceTimersByTimeAsync(100);
 
+    forward.closeRun("run_1", "completed:reply_delivered");
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "session_1",
+        seq: 4,
+        state: "delta",
+        message: { text: "already sent plus one" },
+      },
+    });
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "session_1",
+        seq: 5,
+        state: "delta",
+        message: { text: "already sent plus one plus two" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100);
     expect(submitInboundMessage).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(9_900);
+
+    const recoveryCalls = submitInboundMessage.mock.calls.filter(([call]) => {
+      const submitted = call as { body?: { technical?: { event?: string } } } | undefined;
+      return submitted?.body?.technical?.event === "chat.user_facing_recovery";
+    });
+    expect(recoveryCalls).toHaveLength(1);
+    expect(recoveryCalls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "technical",
+        technical: {
+          event: "chat.user_facing_recovery",
+          payload: {
+            runId: "run_1",
+            sessionKey: "session_1",
+            seq: 5,
+            state: "delta",
+            reason: "delta_quiet_timeout",
+            userFacingText: "plus one plus two",
+            correlationStrength: "trace",
+          },
+        },
+      },
+    });
   });
 
-  it("forwards reply chunks even when raw gateway event forwarding is enabled", async () => {
+  it("forwards distinct late terminal text after primary completion", async () => {
+    vi.useFakeTimers();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const forward = createGatewayEventForwarder({
+      relayInstanceId: "relay_1",
+      backend: { submitInboundMessage } as never,
+      forwardFinalOnly: true,
+      getChatRunTrace: (runId) => (runId === "run_1" ? { backendMessageId: "msg_1" } : null),
+    });
+
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "session_1",
+        seq: 3,
+        state: "final",
+        message: { text: "first answer" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    forward.closeRun("run_1", "transport_delivered");
+
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "session_1",
+        seq: 8,
+        state: "final",
+        message: { text: "first answer\n\nfinal answer" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "technical",
+        technical: {
+          event: "chat.user_facing_recovery",
+          payload: {
+            runId: "run_1",
+            sessionKey: "session_1",
+            seq: 8,
+            state: "final",
+            reason: "terminal_final",
+            userFacingText: "final answer",
+            correlationStrength: "trace",
+          },
+        },
+      },
+    });
+  });
+
+  it("deduplicates repeated late delta seq values after primary completion", async () => {
+    vi.useFakeTimers();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const forward = createGatewayEventForwarder({
+      relayInstanceId: "relay_1",
+      backend: { submitInboundMessage } as never,
+      forwardFinalOnly: true,
+      getChatRunTrace: (runId) => (runId === "run_1" ? { backendMessageId: "msg_1" } : null),
+    });
+
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "session_1",
+        seq: 2,
+        state: "final",
+        message: { text: "first" },
+      },
+    });
+    forward.closeRun("run_1", "transport_delivered");
+
+    const lateDelta = {
+      type: "event" as const,
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "session_1",
+        seq: 4,
+        state: "delta",
+        message: { text: "first plus late" },
+      },
+    };
+    await forward(lateDelta);
+    await forward(lateDelta);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    const recoveryCalls = submitInboundMessage.mock.calls.filter(([call]) => {
+      const submitted = call as { body?: { technical?: { event?: string } } } | undefined;
+      return submitted?.body?.technical?.event === "chat.user_facing_recovery";
+    });
+    expect(recoveryCalls).toHaveLength(1);
+    expect(recoveryCalls[0]?.[0]).toMatchObject({
+      body: {
+        technical: {
+          event: "chat.user_facing_recovery",
+          payload: {
+            seq: 4,
+            userFacingText: "plus late",
+          },
+        },
+      },
+    });
+  });
+
+  it("forwards raw gateway events when raw gateway event forwarding is enabled", async () => {
     vi.useFakeTimers();
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const forward = createGatewayEventForwarder({
@@ -613,22 +698,12 @@ describe("createGatewayEventForwarder", () => {
     });
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(submitInboundMessage).toHaveBeenCalledTimes(2);
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
     expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
       body: {
         outcome: "technical",
         technical: {
           event: "chat",
-        },
-      },
-    });
-    expect(submitInboundMessage.mock.calls[1]?.[0]).toMatchObject({
-      body: {
-        outcome: "reply_chunk",
-        replyChunk: {
-          text: "hello",
-          runId: "run_1",
-          seq: 1,
         },
       },
     });

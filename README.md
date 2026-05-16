@@ -281,10 +281,16 @@ Relay includes all collected OpenClaw `chat` events (including intermediate/tech
 `reply.openclawEvents`, `noReply.openclawEvents`, or `error.openclawEvents`.
 
 By default (`RELAY_OPENCLAW_FORWARD_FINAL_ONLY=1`) relay does not forward raw `tick`, `connect.challenge`, or raw
-terminal `chat` frames to backend. Instead it sends only compact `technical.event=chat.delta_signal` callbacks for
-intermediate `delta` events so backend/messenger integrations can surface "agent is typing". In the same mode relay now
-also extracts plain assistant text from `chat.delta` payloads and forwards that text as `outcome=reply_chunk`
-callbacks so backend can batch and deliver those chunks to the messenger after a short inactivity window.
+terminal `chat` frames to backend. Instead it sends compact `technical.event=chat.delta_signal` callbacks for
+intermediate `delta` events so backend/messenger integrations can surface "agent is typing". Successful transport
+delivery is not a hard lock: relay keeps the run state for a bounded quiet-retention window, de-duplicates by
+`runId`/`seq`, and continues accepting later same-run user-facing text.
+
+After the primary reply has completed, late user-facing text is delivered through
+`technical.event=chat.user_facing_recovery` callbacks. Terminal/final user-facing messages are delivered when they are
+distinct from already delivered text. Late `delta` text is buffered by `runId`/`sessionKey` and flushed only after a
+short quiet window (or when no terminal ever arrives), so cumulative streams produce one recovery callback instead of a
+message per token/chunk.
 
 An OpenClaw `chat.final` event without a `message` is treated as a provisional empty final, not as immediate user
 delivery completion. Relay keeps the run correlation open for a short grace window so context-overflow
@@ -293,4 +299,4 @@ late `delta` events after the empty final are still forwarded and de-duplicated 
 reported only if no user-facing continuation appears before the grace window or the task timeout expires.
 
 When `RELAY_OPENCLAW_FORWARD_FINAL_ONLY=0`, relay keeps the legacy behavior and forwards all raw gateway events as
-`outcome=technical`, while still sending `outcome=reply_chunk` for plain assistant text chunks.
+`outcome=technical`, while still applying the same bounded recovery path for late user-facing assistant text.
