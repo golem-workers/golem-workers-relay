@@ -637,7 +637,7 @@ export class GatewayClient {
 
     const connectParams = {
       minProtocol: this.opts.minProtocol ?? 3,
-      maxProtocol: this.opts.maxProtocol ?? 3,
+      maxProtocol: this.opts.maxProtocol ?? 4,
       client: {
         id: clientId,
         version: process.env.npm_package_version
