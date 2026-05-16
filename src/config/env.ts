@@ -25,6 +25,7 @@ const envSchema = z.object({
   APP_GIT_REF: z.string().min(1).optional(),
   RELAY_INSTANCE_ID: z.string().min(1).optional(),
   RELAY_TASK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(2_147_483_647).optional(),
+  RELAY_SYSTEM_TASK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(2_147_483_647).optional(),
   RELAY_CHAT_BATCH_DEBOUNCE_MS: z.coerce.number().int().min(0).max(120_000).optional(),
   RELAY_LOW_DISK_ALERT_ENABLED: envBooleanSchema.optional(),
   RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT: z.coerce.number().min(1).max(100).optional(),
@@ -100,6 +101,7 @@ export type RelayConfig = {
   backendBaseUrl: string;
   relayInstanceId: string;
   taskTimeoutMs: number;
+  systemTaskTimeoutMs: number;
   chatBatchDebounceMs: number;
   lowDiskAlertEnabled: boolean;
   lowDiskAlertThresholdPercent: number;
@@ -205,6 +207,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     backendBaseUrl: parsed.BACKEND_BASE_URL.replace(/\/+$/, ""),
     relayInstanceId,
     taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 60 * 60_000,
+    systemTaskTimeoutMs: parsed.RELAY_SYSTEM_TASK_TIMEOUT_MS ?? 120_000,
     chatBatchDebounceMs: parsed.RELAY_CHAT_BATCH_DEBOUNCE_MS ?? 500,
     lowDiskAlertEnabled: parsed.RELAY_LOW_DISK_ALERT_ENABLED ?? true,
     lowDiskAlertThresholdPercent: parsed.RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT ?? 80,
@@ -332,6 +335,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     backendBaseUrl: "http://localhost:3000",
     relayInstanceId: "test-relay",
     taskTimeoutMs: 5000,
+    systemTaskTimeoutMs: 120_000,
     chatBatchDebounceMs: 500,
     lowDiskAlertEnabled: true,
     lowDiskAlertThresholdPercent: 80,

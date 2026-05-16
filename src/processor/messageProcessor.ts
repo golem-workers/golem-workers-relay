@@ -15,6 +15,7 @@ type MessageProcessorInput = {
   cfg: {
     relayInstanceId: string;
     taskTimeoutMs: number;
+    systemTaskTimeoutMs?: number;
     chatBatchDebounceMs: number;
     lowDiskAlertEnabled?: boolean;
     lowDiskAlertThresholdPercent?: number;
@@ -25,6 +26,7 @@ type MessageProcessorInput = {
   runner: ChatRunner;
   backend: BackendClient;
   readDiskUsage?: (path: string) => Promise<DiskUsageSnapshot>;
+  taskControl?: RelayTaskControl;
 };
 
 type DiskUsageSnapshot = {
@@ -37,7 +39,10 @@ type DiskUsageSnapshot = {
 type DeliverySystem = "relay_channel_v2";
 type RelayProcessingErrorCode =
   | "RELAY_INTERNAL_ERROR"
-  | "RELAY_DIRECT_TRANSPORT_DELIVERY_FAILED";
+  | "RELAY_DIRECT_TRANSPORT_DELIVERY_FAILED"
+  | "RELAY_TASK_TIMEOUT"
+  | "RELAY_SYSTEM_TASK_TIMEOUT"
+  | "RELAY_TASK_PREEMPTED";
 
 class RelayProcessingError extends Error {
   readonly code: RelayProcessingErrorCode;
@@ -49,15 +54,63 @@ class RelayProcessingError extends Error {
   }
 }
 
+type RelayTaskKind = "user_chat" | "system_reminder" | "other";
+
+export type ActiveRelayTaskSnapshot = {
+  messageId: string;
+  sessionKey: string | null;
+  taskKind: RelayTaskKind;
+  startedAtMs: number;
+};
+
+export type RelayTaskControl = {
+  register(task: ActiveRelayTaskSnapshot & { abort: (reason: string) => void }): () => void;
+  abortActive(predicate: (task: ActiveRelayTaskSnapshot) => boolean, reason: string): boolean;
+  getActiveTask(): ActiveRelayTaskSnapshot | null;
+};
+
+export function createRelayTaskControl(): RelayTaskControl {
+  let active:
+    | (ActiveRelayTaskSnapshot & {
+        abort: (reason: string) => void;
+      })
+    | null = null;
+  return {
+    register(task) {
+      active = task;
+      return () => {
+        if (active?.messageId === task.messageId) {
+          active = null;
+        }
+      };
+    },
+    abortActive(predicate, reason) {
+      if (!active || !predicate(active)) {
+        return false;
+      }
+      active.abort(reason);
+      return true;
+    },
+    getActiveTask() {
+      if (!active) {
+        return null;
+      }
+      const { messageId, sessionKey, taskKind, startedAtMs } = active;
+      return { messageId, sessionKey, taskKind, startedAtMs };
+    },
+  };
+}
+
 export function createMessageProcessor(input: MessageProcessorInput): (msg: InboundPushMessage) => Promise<void> {
   const { cfg, gateway, runner, backend } = input;
   const readDiskUsage = input.readDiskUsage ?? readDiskUsageSnapshot;
+  const taskControl = input.taskControl ?? createRelayTaskControl();
   const chatBatchesBySession = new Map<string, ChatBatchState>();
   const chatBatchDebounceMs = Math.max(0, Math.trunc(cfg.chatBatchDebounceMs));
 
   return async (msg: InboundPushMessage): Promise<void> => {
     if (msg.input.kind !== "chat" || chatBatchDebounceMs === 0) {
-      await processSingleMessage({ cfg, gateway, runner, backend, msg, readDiskUsage });
+      await processSingleMessage({ cfg, gateway, runner, backend, msg, readDiskUsage, taskControl });
       return;
     }
     await enqueueChatBatch({
@@ -66,7 +119,7 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
       debounceMs: chatBatchDebounceMs,
       chatBatchesBySession,
       flush: async (items) => {
-        await flushChatBatch({ cfg, gateway, runner, backend, items, readDiskUsage });
+        await flushChatBatch({ cfg, gateway, runner, backend, items, readDiskUsage, taskControl });
       },
     });
   };
@@ -99,6 +152,59 @@ function buildInboundMessageLogMeta(
     textPreview:
       msg.input.kind === "chat" ? makeTextPreview(msg.input.messageText, input.textMaxLen) : null,
     mediaCount: msg.input.kind === "chat" ? (msg.input.media?.length ?? 0) : null,
+  };
+}
+
+function readContextKind(context: unknown): string | null {
+  if (!isPlainObject(context)) return null;
+  return readNonEmptyString(context.kind) ?? null;
+}
+
+function classifyRelayTask(msg: InboundPushMessage): RelayTaskKind {
+  if (msg.input.kind !== "chat") {
+    return "other";
+  }
+  const contextKind = readContextKind(msg.input.context);
+  if (contextKind === "relay_stale_timeout_reminder" || contextKind === "relay_status_nudge") {
+    return "system_reminder";
+  }
+  return "user_chat";
+}
+
+function getEffectiveTaskTimeoutMs(input: {
+  taskKind: RelayTaskKind;
+  taskTimeoutMs: number;
+  systemTaskTimeoutMs?: number;
+}): number {
+  if (input.taskKind === "system_reminder") {
+    return Math.max(1, Math.trunc(input.systemTaskTimeoutMs ?? Math.min(input.taskTimeoutMs, 120_000)));
+  }
+  return Math.max(1, Math.trunc(input.taskTimeoutMs));
+}
+
+class RelayTaskAbortError extends RelayProcessingError {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super({
+      code: "RELAY_TASK_PREEMPTED",
+      message: `Relay task was preempted: ${reason}`,
+    });
+    this.reason = reason;
+  }
+}
+
+function createAbortPromise(): {
+  promise: Promise<never>;
+  abort: (reason: string) => void;
+} {
+  let rejectAbort!: (error: RelayTaskAbortError) => void;
+  const promise = new Promise<never>((_, reject) => {
+    rejectAbort = reject;
+  });
+  return {
+    promise,
+    abort: (reason: string) => rejectAbort(new RelayTaskAbortError(reason)),
   };
 }
 
@@ -140,6 +246,7 @@ async function flushChatBatch(input: {
   cfg: {
     relayInstanceId: string;
     taskTimeoutMs: number;
+    systemTaskTimeoutMs?: number;
     chatBatchDebounceMs: number;
     lowDiskAlertEnabled?: boolean;
     lowDiskAlertThresholdPercent?: number;
@@ -151,6 +258,7 @@ async function flushChatBatch(input: {
   backend: BackendClient;
   items: ChatBatchItem[];
   readDiskUsage: (path: string) => Promise<DiskUsageSnapshot>;
+  taskControl: RelayTaskControl;
 }): Promise<void> {
   if (input.items.length === 0) return;
   if (input.items.length === 1) {
@@ -163,6 +271,7 @@ async function flushChatBatch(input: {
         backend: input.backend,
         msg: only.msg,
         readDiskUsage: input.readDiskUsage,
+        taskControl: input.taskControl,
       });
       only.deferred.resolve();
     } catch (error) {
@@ -198,6 +307,7 @@ async function flushChatBatch(input: {
       backend: input.backend,
       msg: mergedMessage,
       readDiskUsage: input.readDiskUsage,
+      taskControl: input.taskControl,
     });
     target.deferred.resolve();
   } catch (error) {
@@ -234,6 +344,7 @@ async function submitBatchedNoReply(input: {
   cfg: {
     relayInstanceId: string;
     taskTimeoutMs: number;
+    systemTaskTimeoutMs?: number;
     chatBatchDebounceMs: number;
     devLogEnabled: boolean;
     devLogTextMaxLen: number;
@@ -289,6 +400,7 @@ async function processSingleMessage(input: {
   cfg: {
     relayInstanceId: string;
     taskTimeoutMs: number;
+    systemTaskTimeoutMs?: number;
     chatBatchDebounceMs: number;
     lowDiskAlertEnabled?: boolean;
     lowDiskAlertThresholdPercent?: number;
@@ -300,12 +412,19 @@ async function processSingleMessage(input: {
   backend: BackendClient;
   msg: InboundPushMessage;
   readDiskUsage: (path: string) => Promise<DiskUsageSnapshot>;
+  taskControl: RelayTaskControl;
 }): Promise<void> {
   const { cfg, gateway, runner, backend, msg } = input;
   const startedAt = Date.now();
   const relayMessageId = `relay_${randomUUID()}`;
   const messageMeta = buildInboundMessageLogMeta(msg, { textMaxLen: cfg.devLogTextMaxLen });
-  const watchdogDelayMs = Math.min(cfg.taskTimeoutMs, 30_000);
+  const taskKind = classifyRelayTask(msg);
+  const effectiveTaskTimeoutMs = getEffectiveTaskTimeoutMs({
+    taskKind,
+    taskTimeoutMs: cfg.taskTimeoutMs,
+    systemTaskTimeoutMs: cfg.systemTaskTimeoutMs,
+  });
+  const watchdogDelayMs = Math.min(effectiveTaskTimeoutMs, 30_000);
   const watchdog = setTimeout(() => {
     logger.warn(
       {
@@ -315,6 +434,8 @@ async function processSingleMessage(input: {
         backendMessageId: msg.messageId,
         relayMessageId,
         waitedMs: Date.now() - startedAt,
+        taskKind,
+        taskTimeoutMs: effectiveTaskTimeoutMs,
         ...messageMeta,
       },
       "Relay task is still running"
@@ -417,6 +538,14 @@ async function processSingleMessage(input: {
       throw new Error("agent_control tasks must be handled synchronously by relay ingress");
     } else {
       const deliverySystem = readDeliverySystemFromTaskContext(msg.input.context);
+      const abortController = createAbortPromise();
+      const unregisterActiveTask = input.taskControl.register({
+        messageId: msg.messageId,
+        sessionKey: msg.input.sessionKey,
+        taskKind,
+        startedAtMs: startedAt,
+        abort: abortController.abort,
+      });
       logger.info(
         {
           event: "message_flow",
@@ -431,104 +560,163 @@ async function processSingleMessage(input: {
         },
         "Dispatching chat task to OpenClaw"
       );
-      const { result, openclawMeta } = await runner.runChatTask({
+      const runnerPromise = runner.runChatTask({
         taskId: msg.messageId,
         sessionKey: msg.input.sessionKey,
         messageText: msg.input.messageText,
         media: msg.input.media,
         deliverySystem,
-        timeoutMs: cfg.taskTimeoutMs,
+        timeoutMs: effectiveTaskTimeoutMs,
       });
-      const openclawRunId =
-        result.outcome === "reply"
-          ? result.reply.runId
-          : result.outcome === "no_reply"
-            ? (result.noReply?.runId ?? null)
-            : result.error.runId;
-      logger.info(
-        {
-          event: "message_flow",
-          direction: "relay_to_openclaw",
-          stage: "chat_runner_finished",
-          backendMessageId: msg.messageId,
-          relayMessageId,
-          outcome: result.outcome,
-          deliverySystem,
-          openclawRunId,
-          durationMs: Date.now() - startedAt,
-        },
-        "OpenClaw chat task finished"
-      );
-      const finishedAtMs = Date.now();
-      if (result.outcome === "reply") {
-        const replyPayload = await buildReplyPayload(result.reply);
-        const directTransportMeta = await maybeDeliverRelayChannelReplyDirectly({
-          backend,
-          context: msg.input.context,
-          sessionKey: msg.input.sessionKey,
-          reply: replyPayload,
-          backendMessageId: msg.messageId,
-          relayMessageId,
-        });
-        await backend.submitInboundMessage({
-          body: {
-            relayInstanceId: cfg.relayInstanceId,
+      let timedOut = false;
+      try {
+        const { result, openclawMeta } = await Promise.race([
+          runnerPromise,
+          abortController.promise,
+          new Promise<never>((_, reject) => {
+            const timeout = setTimeout(() => {
+              timedOut = true;
+              reject(
+                new RelayProcessingError({
+                  code: taskKind === "system_reminder" ? "RELAY_SYSTEM_TASK_TIMEOUT" : "RELAY_TASK_TIMEOUT",
+                  message:
+                    taskKind === "system_reminder"
+                      ? "Relay system task timed out and was released to avoid blocking user messages"
+                      : "Relay task timed out and was released to avoid blocking the message queue",
+                })
+              );
+            }, effectiveTaskTimeoutMs);
+            timeout.unref?.();
+            runnerPromise.finally(() => clearTimeout(timeout)).catch(() => undefined);
+          }),
+        ]);
+        unregisterActiveTask();
+        const openclawRunId =
+          result.outcome === "reply"
+            ? result.reply.runId
+            : result.outcome === "no_reply"
+              ? (result.noReply?.runId ?? null)
+              : result.error.runId;
+        logger.info(
+          {
+            event: "message_flow",
+            direction: "relay_to_openclaw",
+            stage: "chat_runner_finished",
+            backendMessageId: msg.messageId,
             relayMessageId,
-            finishedAtMs,
-            outcome: "reply",
+            outcome: result.outcome,
+            deliverySystem,
+            openclawRunId,
+            durationMs: Date.now() - startedAt,
+          },
+          "OpenClaw chat task finished"
+        );
+        const finishedAtMs = Date.now();
+        if (result.outcome === "reply") {
+          const replyPayload = await buildReplyPayload(result.reply);
+          const directTransportMeta = await maybeDeliverRelayChannelReplyDirectly({
+            backend,
+            context: msg.input.context,
+            sessionKey: msg.input.sessionKey,
             reply: replyPayload,
-            openclawMeta: buildOpenclawMetaWithTrace(
-              normalizeOpenclawMeta(openclawMeta),
-              {
-                backendMessageId: msg.messageId,
-                relayMessageId,
-                relayInstanceId: cfg.relayInstanceId,
-                openclawRunId: result.reply.runId,
-              },
-              { deliverySystem, sessionKey: msg.input.sessionKey, ...directTransportMeta }
-            ),
-          },
-        });
-      } else if (result.outcome === "no_reply") {
-        await backend.submitInboundMessage({
-          body: {
-            relayInstanceId: cfg.relayInstanceId,
+            backendMessageId: msg.messageId,
             relayMessageId,
-            finishedAtMs,
-            outcome: "no_reply",
-            noReply: result.noReply ?? { reason: "no_message" },
-            openclawMeta: buildOpenclawMetaWithTrace(
-              normalizeOpenclawMeta(openclawMeta),
+          });
+          await backend.submitInboundMessage({
+            body: {
+              relayInstanceId: cfg.relayInstanceId,
+              relayMessageId,
+              finishedAtMs,
+              outcome: "reply",
+              reply: replyPayload,
+              openclawMeta: buildOpenclawMetaWithTrace(
+                normalizeOpenclawMeta(openclawMeta),
+                {
+                  backendMessageId: msg.messageId,
+                  relayMessageId,
+                  relayInstanceId: cfg.relayInstanceId,
+                  openclawRunId: result.reply.runId,
+                },
+                { deliverySystem, sessionKey: msg.input.sessionKey, ...directTransportMeta }
+              ),
+            },
+          });
+        } else if (result.outcome === "no_reply") {
+          await backend.submitInboundMessage({
+            body: {
+              relayInstanceId: cfg.relayInstanceId,
+              relayMessageId,
+              finishedAtMs,
+              outcome: "no_reply",
+              noReply: result.noReply ?? { reason: "no_message" },
+              openclawMeta: buildOpenclawMetaWithTrace(
+                normalizeOpenclawMeta(openclawMeta),
+                {
+                  backendMessageId: msg.messageId,
+                  relayMessageId,
+                  relayInstanceId: cfg.relayInstanceId,
+                  openclawRunId: result.noReply?.runId,
+                },
+                { deliverySystem, sessionKey: msg.input.sessionKey }
+              ),
+            },
+          });
+        } else {
+          await backend.submitInboundMessage({
+            body: {
+              relayInstanceId: cfg.relayInstanceId,
+              relayMessageId,
+              finishedAtMs,
+              outcome: "error",
+              error: result.error,
+              openclawMeta: buildOpenclawMetaWithTrace(
+                normalizeOpenclawMeta(openclawMeta),
+                {
+                  backendMessageId: msg.messageId,
+                  relayMessageId,
+                  relayInstanceId: cfg.relayInstanceId,
+                  openclawRunId: result.error.runId,
+                },
+                { deliverySystem, sessionKey: msg.input.sessionKey }
+              ),
+            },
+          });
+        }
+      } catch (error) {
+        unregisterActiveTask();
+        if (error instanceof RelayProcessingError) {
+          runnerPromise.catch((lateError) => {
+            logger.warn(
               {
+                event: "message_flow",
+                direction: "relay_to_openclaw",
+                stage: "late_completion_after_release",
                 backendMessageId: msg.messageId,
                 relayMessageId,
-                relayInstanceId: cfg.relayInstanceId,
-                openclawRunId: result.noReply?.runId,
+                error: lateError instanceof Error ? lateError.message : String(lateError),
               },
-              { deliverySystem, sessionKey: msg.input.sessionKey }
-            ),
-          },
-        });
-      } else {
-        await backend.submitInboundMessage({
-          body: {
-            relayInstanceId: cfg.relayInstanceId,
-            relayMessageId,
-            finishedAtMs,
-            outcome: "error",
-            error: result.error,
-            openclawMeta: buildOpenclawMetaWithTrace(
-              normalizeOpenclawMeta(openclawMeta),
+              "OpenClaw chat task settled after relay released the queue slot"
+            );
+          });
+          if (timedOut) {
+            logger.warn(
               {
+                event: "relay_queue",
+                stage: "active_task_timeout",
                 backendMessageId: msg.messageId,
                 relayMessageId,
-                relayInstanceId: cfg.relayInstanceId,
-                openclawRunId: result.error.runId,
+                taskKind,
+                taskTimeoutMs: effectiveTaskTimeoutMs,
+                durationMs: Date.now() - startedAt,
               },
-              { deliverySystem, sessionKey: msg.input.sessionKey }
-            ),
-          },
-        });
+              "Relay active task timed out; releasing queue slot"
+            );
+          }
+          if (typeof runner.abortTask === "function") {
+            await runner.abortTask(msg.messageId, error.code).catch(() => undefined);
+          }
+        }
+        throw error;
       }
     }
 

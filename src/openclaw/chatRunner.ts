@@ -789,6 +789,7 @@ export class ChatRunner {
   private runEventsByRunId = new Map<string, ChatEvent[]>();
   private runTraceByRunId = new Map<string, { backendMessageId: string }>();
   private runTraceCleanupTimersByRunId = new Map<string, NodeJS.Timeout>();
+  private activeRunByTaskId = new Map<string, { runId: string; sessionKey: string }>();
   private sessionMaintenanceLock: Promise<void> | null = null;
   private readonly devLogEnabled: boolean;
   private readonly devLogTextMaxLen: number;
@@ -905,6 +906,37 @@ export class ChatRunner {
     this.onRunCompleted?.(runId, reason);
   }
 
+  async abortTask(taskId: string, reason: string): Promise<boolean> {
+    const active = this.activeRunByTaskId.get(taskId);
+    if (!active) {
+      return false;
+    }
+    try {
+      await Promise.race([
+        this.gateway.request(
+          "chat.abort",
+          { sessionKey: active.sessionKey, runId: active.runId, reason },
+          { timeoutMs: 2_000 }
+        ),
+        sleep(2_500),
+      ]);
+    } catch (error) {
+      if (this.devLogEnabled) {
+        logger.warn(
+          {
+            taskId,
+            runId: active.runId,
+            sessionKey: active.sessionKey,
+            reason,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "Failed to abort active OpenClaw chat task"
+        );
+      }
+    }
+    return true;
+  }
+
   private registerRunTrace(runId: string, input: { sessionKey: string; backendMessageId: string }): void {
     this.clearRunTraceCleanupTimer(runId);
     this.runSessionByRunId.set(runId, input.sessionKey);
@@ -943,6 +975,7 @@ export class ChatRunner {
     deliverySystem?: DeliverySystem;
     timeoutMs: number;
   }): Promise<{ result: ChatRunResult; openclawMeta: OpenclawChatMeta }> {
+    try {
     await this.waitForSessionMaintenance();
     let baseMessageText: string;
     try {
@@ -1045,6 +1078,7 @@ export class ChatRunner {
           };
         }
         this.registerRunTrace(runId, { sessionKey: input.sessionKey, backendMessageId: input.taskId });
+        this.activeRunByTaskId.set(input.taskId, { runId, sessionKey: input.sessionKey });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         const classification = classifyRetryableGatewayError(msg);
@@ -1676,6 +1710,9 @@ export class ChatRunner {
       result: { outcome: "error", error: { code: "GATEWAY_ERROR", message: "Chat failed" } },
       openclawMeta: { method: "chat.send" },
     };
+    } finally {
+      this.activeRunByTaskId.delete(input.taskId);
+    }
   }
 
   async startNewSessionForAll(): Promise<{ reset: true; sessionsRotated: number; sessionsFailed: number }> {

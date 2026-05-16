@@ -12,7 +12,7 @@ vi.mock("../relayChannel/whatsappPersonalTransport.js", () => ({
   executeWhatsAppPersonalMessageSend: executeWhatsAppPersonalMessageSendMock,
 }));
 
-import { createMessageProcessor } from "./messageProcessor.js";
+import { createMessageProcessor, createRelayTaskControl } from "./messageProcessor.js";
 import type { InboundPushMessage } from "../backend/types.js";
 
 describe("createMessageProcessor", () => {
@@ -333,6 +333,156 @@ describe("createMessageProcessor", () => {
           deliverySystem: "relay_channel_v2",
           sessionKey: "tg:123:srv_1",
         },
+      },
+    });
+  });
+
+  it("times out stuck chat tasks, aborts them, and ignores late completion", async () => {
+    let resolveRun!: (value: {
+      result: {
+        outcome: "reply";
+        reply: { runId: string; message: { role: string; content: string } };
+      };
+      openclawMeta: { method: string; runId: string };
+    }) => void;
+    const runChatTask = vi.fn(
+      () =>
+        new Promise<{
+          result: {
+            outcome: "reply";
+            reply: { runId: string; message: { role: string; content: string } };
+          };
+          openclawMeta: { method: string; runId: string };
+        }>((resolve) => {
+          resolveRun = resolve;
+        })
+    );
+    const abortTask = vi.fn().mockResolvedValue(true);
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: { runChatTask, abortTask } as never,
+      backend: { submitInboundMessage } as never,
+    });
+
+    await processor({
+      messageId: "msg_timeout_1",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "hang",
+      },
+    });
+
+    expect(abortTask).toHaveBeenCalledWith("msg_timeout_1", "RELAY_TASK_TIMEOUT");
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "error",
+        error: { code: "RELAY_TASK_TIMEOUT" },
+        openclawMeta: {
+          trace: { backendMessageId: "msg_timeout_1", relayInstanceId: "relay_1" },
+          sessionKey: "s1",
+        },
+      },
+    });
+
+    resolveRun({
+      result: { outcome: "reply", reply: { runId: "late_run_1", message: { role: "assistant", content: "late" } } },
+      openclawMeta: { method: "chat.send", runId: "late_run_1" },
+    });
+    await Promise.resolve();
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the shorter system task timeout for stale reminders", async () => {
+    const runChatTask = vi.fn(() => new Promise(() => undefined));
+    const abortTask = vi.fn().mockResolvedValue(true);
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 1_000,
+        systemTaskTimeoutMs: 5,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: { runChatTask, abortTask } as never,
+      backend: { submitInboundMessage } as never,
+    });
+
+    await processor({
+      messageId: "relay-stale:source_1:test",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "status?",
+        context: { kind: "relay_stale_timeout_reminder", sourceBackendMessageId: "source_1" },
+      },
+    });
+
+    expect(runChatTask).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 5 }));
+    expect(abortTask).toHaveBeenCalledWith("relay-stale:source_1:test", "RELAY_SYSTEM_TASK_TIMEOUT");
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "error",
+        error: { code: "RELAY_SYSTEM_TASK_TIMEOUT" },
+      },
+    });
+  });
+
+  it("preempts active system reminders when task control aborts them", async () => {
+    const taskControl = createRelayTaskControl();
+    const runChatTask = vi.fn(() => new Promise(() => undefined));
+    const abortTask = vi.fn().mockResolvedValue(true);
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 1_000,
+        systemTaskTimeoutMs: 1_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: { runChatTask, abortTask } as never,
+      backend: { submitInboundMessage } as never,
+      taskControl,
+    });
+
+    const processing = processor({
+      messageId: "relay-stale:source_1:test",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "status?",
+        context: { kind: "relay_stale_timeout_reminder", sourceBackendMessageId: "source_1" },
+      },
+    });
+    await Promise.resolve();
+
+    const aborted = taskControl.abortActive(
+      (task) => task.taskKind === "system_reminder" && task.sessionKey === "s1",
+      "newer_user_message"
+    );
+    expect(aborted).toBe(true);
+    await processing;
+
+    expect(abortTask).toHaveBeenCalledWith("relay-stale:source_1:test", "RELAY_TASK_PREEMPTED");
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "error",
+        error: { code: "RELAY_TASK_PREEMPTED" },
       },
     });
   });

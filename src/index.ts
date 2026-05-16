@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import { logger } from "./logger.js";
 import { loadRelayConfig, type RelayConfig } from "./config/env.js";
 import { isCodexModelRef, readOpenclawPrimaryModelRef, resolveOpenclawConfig } from "./openclaw/openclawConfig.js";
@@ -9,7 +10,7 @@ import { ChatRunner } from "./openclaw/chatRunner.js";
 import { transcribeAudioWithOpenAi } from "./openclaw/openaiTranscription.js";
 import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
 import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inMemoryTaskQueue.js";
-import { createMessageProcessor } from "./processor/messageProcessor.js";
+import { createMessageProcessor, createRelayTaskControl } from "./processor/messageProcessor.js";
 import { createDevicePairingAutoApprover } from "./openclaw/devicePairingAutoApprover.js";
 import { createExecApprovalAutoApprover } from "./openclaw/execApprovalAutoApprover.js";
 import {
@@ -239,10 +240,12 @@ async function main(): Promise<void> {
   }
 
   let shuttingDown = false;
+  const taskControl = createRelayTaskControl();
   const processOne = createMessageProcessor({
     cfg: {
       relayInstanceId: cfg.relayInstanceId,
       taskTimeoutMs: cfg.taskTimeoutMs,
+      systemTaskTimeoutMs: cfg.systemTaskTimeoutMs,
       chatBatchDebounceMs: cfg.chatBatchDebounceMs,
       lowDiskAlertEnabled: cfg.lowDiskAlertEnabled,
       lowDiskAlertThresholdPercent: cfg.lowDiskAlertThresholdPercent,
@@ -252,6 +255,7 @@ async function main(): Promise<void> {
     gateway,
     runner,
     backend,
+    taskControl,
   });
 
   const queue = new InMemoryTaskQueue<InboundPushMessage>({
@@ -269,6 +273,8 @@ async function main(): Promise<void> {
     getHealth: () => {
       const queueState = queue.getState();
       const backendResilience = backend.getResilienceState();
+      const activeTask = taskControl.getActiveTask();
+      const activeTaskAgeMs = activeTask ? Date.now() - activeTask.startedAtMs : null;
       return {
         ok: true,
         ready: !shuttingDown && gateway.isReady() && queueState.queueLength < queueState.maxQueue,
@@ -277,6 +283,10 @@ async function main(): Promise<void> {
           gatewayReady: gateway.isReady(),
           queueLength: queueState.queueLength,
           inFlight: queueState.inFlight,
+          activeTaskAgeMs,
+          activeTaskMessageId: activeTask?.messageId ?? null,
+          activeTaskKind: activeTask?.taskKind ?? null,
+          activeTaskSessionKey: activeTask?.sessionKey ?? null,
           maxQueue: queueState.maxQueue,
           backendResilience,
           relayChannel: getRelayChannelHealth(),
@@ -285,6 +295,37 @@ async function main(): Promise<void> {
     },
     onMessage: (message) => {
       try {
+        if (message.input.kind === "chat" && isUserChatMessage(message)) {
+          const removed = queue.removeQueued(
+            (queued) =>
+              queued.input.kind === "chat" &&
+              queued.input.sessionKey === message.input.sessionKey &&
+              isSystemReminderMessage(queued)
+          );
+          for (const queued of removed) {
+            void submitDroppedSystemReminder({
+              backend,
+              relayInstanceId: cfg.relayInstanceId,
+              message: queued,
+              reason: "dropped_for_newer_user_message",
+            });
+          }
+          const aborted = taskControl.abortActive(
+            (task) => task.taskKind === "system_reminder" && task.sessionKey === message.input.sessionKey,
+            "newer_user_message"
+          );
+          if (aborted) {
+            logger.warn(
+              {
+                event: "relay_queue",
+                stage: "active_system_task_preempted",
+                backendMessageId: message.messageId,
+                sessionKey: message.input.sessionKey,
+              },
+              "Preempted active system reminder for newer user message"
+            );
+          }
+        }
         queue.enqueue(message);
         const queueState = queue.getState();
         logger.info(
@@ -495,6 +536,63 @@ main().catch((err) => {
   logger.error({ err: err instanceof Error ? err.message : String(err) }, "Relay crashed");
   process.exit(1);
 });
+
+type ChatPushMessage = InboundPushMessage & { input: Extract<InboundPushMessage["input"], { kind: "chat" }> };
+
+function isUserChatMessage(message: InboundPushMessage): message is ChatPushMessage {
+  return message.input.kind === "chat" && !isSystemReminderMessage(message);
+}
+
+function isSystemReminderMessage(message: InboundPushMessage): message is ChatPushMessage {
+  if (message.input.kind !== "chat") {
+    return false;
+  }
+  const context = message.input.context;
+  if (!context || typeof context !== "object" || Array.isArray(context)) {
+    return false;
+  }
+  const kind = (context as { kind?: unknown }).kind;
+  return kind === "relay_stale_timeout_reminder" || kind === "relay_status_nudge";
+}
+
+async function submitDroppedSystemReminder(input: {
+  backend: BackendClient;
+  relayInstanceId: string;
+  message: InboundPushMessage;
+  reason: string;
+}): Promise<void> {
+  const relayMessageId = `relay_drop_${randomUUID()}`;
+  try {
+    await input.backend.submitInboundMessage({
+      body: {
+        relayInstanceId: input.relayInstanceId,
+        relayMessageId,
+        finishedAtMs: Date.now(),
+        outcome: "no_reply",
+        noReply: { reason: input.reason },
+        openclawMeta: {
+          method: "relay_queue",
+          trace: {
+            backendMessageId: input.message.messageId,
+            relayMessageId,
+            relayInstanceId: input.relayInstanceId,
+          },
+          ...(input.message.input.kind === "chat" ? { sessionKey: input.message.input.sessionKey } : {}),
+        },
+      },
+    });
+  } catch (error) {
+    logger.warn(
+      {
+        event: "relay_queue",
+        stage: "dropped_system_task_callback_failed",
+        backendMessageId: input.message.messageId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "Failed to submit dropped system reminder callback"
+    );
+  }
+}
 
 function buildRelayDeliveryReportForBackend(
   cfg: RelayConfig,

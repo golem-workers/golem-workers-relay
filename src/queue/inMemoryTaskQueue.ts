@@ -44,6 +44,19 @@ export class InMemoryTaskQueue<T> {
     this.pump();
   }
 
+  removeQueued(predicate: (item: T) => boolean): T[] {
+    const removed: T[] = [];
+    for (let index = this.queue.length - 1; index >= 0; index -= 1) {
+      const item = this.queue[index];
+      if (item !== undefined && predicate(item)) {
+        removed.push(item);
+        this.queue.splice(index, 1);
+      }
+    }
+    removed.reverse();
+    return removed;
+  }
+
   stopAccepting(): void {
     this.accepting = false;
   }

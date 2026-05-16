@@ -44,6 +44,37 @@ describe("InMemoryTaskQueue", () => {
     expect(() => queue.enqueue(4)).toThrowError(QueueClosedError);
     release?.();
   });
+
+  it("removes matching queued items without touching the active task", async () => {
+    let release: (() => void) | null = null;
+    const processed: number[] = [];
+    const queue = new InMemoryTaskQueue<number>({
+      concurrency: 1,
+      maxQueue: 10,
+      processor: async (item) => {
+        processed.push(item);
+        if (item === 1) {
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+      },
+    });
+
+    queue.enqueue(1);
+    queue.enqueue(2);
+    queue.enqueue(3);
+    queue.enqueue(4);
+
+    const removed = queue.removeQueued((item) => item % 2 === 0);
+    expect(removed).toEqual([2, 4]);
+    expect(queue.getState()).toMatchObject({ inFlight: 1, queueLength: 1 });
+
+    release?.();
+    const drained = await queue.drain(1000);
+    expect(drained).toBe(true);
+    expect(processed).toEqual([1, 3]);
+  });
 });
 
 function sleep(ms: number): Promise<void> {
