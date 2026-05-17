@@ -880,11 +880,15 @@ import os from "node:os"
 import path from "node:path"
 
 const pluginId = "codex"
-const defaultInstallDir = path.join(os.homedir(), ".openclaw", "extensions", pluginId)
+const defaultInstallDirs = [
+  path.join(os.homedir(), ".openclaw", "npm", "node_modules", "@openclaw", "codex"),
+  path.join(os.homedir(), ".openclaw", "extensions", pluginId),
+]
 const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json")
 
 function resolveInstallDir(candidate) {
   if (typeof candidate !== "string" || candidate.trim().length === 0) return null
+  if (!fs.existsSync(candidate)) return null
   const resolved = fs.realpathSync(candidate)
   const manifestPath = path.join(resolved, "openclaw.plugin.json")
   if (!fs.existsSync(manifestPath)) return null
@@ -910,11 +914,11 @@ if (fs.existsSync(configPath)) {
 }
 
 if (!installDir) {
-  installDir = resolveInstallDir(defaultInstallDir)
+  installDir = defaultInstallDirs.map(resolveInstallDir).find(Boolean) ?? null
 }
 
 if (!installDir) {
-  throw new Error(`Unable to resolve codex install dir after install; checked config and ${defaultInstallDir}`)
+  throw new Error(`Unable to resolve codex install dir after install; checked config and ${defaultInstallDirs.join(", ")}`)
 }
 
 process.stdout.write(installDir)
@@ -1059,30 +1063,38 @@ function normalizeStringArray(value) {
 }
 
 function resolvePluginInstallDir(pluginId, installRecord) {
-  const directCandidate =
+  const directCandidates =
     installRecord &&
     typeof installRecord === "object" &&
     !Array.isArray(installRecord) &&
     typeof installRecord.installPath === "string" &&
     installRecord.installPath.trim().length > 0
-      ? installRecord.installPath
-      : path.join(defaultExtensionsDir, pluginId)
-  if (!fs.existsSync(directCandidate)) {
-    return null
+      ? [installRecord.installPath]
+      : [
+          ...(pluginId === "codex"
+            ? [path.join(configDir, "npm", "node_modules", "@openclaw", "codex")]
+            : []),
+          path.join(defaultExtensionsDir, pluginId),
+        ]
+  for (const directCandidate of directCandidates) {
+    if (!fs.existsSync(directCandidate)) {
+      continue
+    }
+    const resolved = fs.realpathSync(directCandidate)
+    const manifestPath = path.join(resolved, "openclaw.plugin.json")
+    if (!fs.existsSync(manifestPath)) {
+      continue
+    }
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+    if (manifest?.id !== pluginId) {
+      throw new Error(`Unexpected plugin id in ${manifestPath}`)
+    }
+    if (!fs.existsSync(path.join(resolved, "dist", "index.js"))) {
+      throw new Error(`Missing plugin dist/index.js in ${resolved}`)
+    }
+    return resolved
   }
-  const resolved = fs.realpathSync(directCandidate)
-  const manifestPath = path.join(resolved, "openclaw.plugin.json")
-  if (!fs.existsSync(manifestPath)) {
-    return null
-  }
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
-  if (manifest?.id !== pluginId) {
-    throw new Error(`Unexpected plugin id in ${manifestPath}`)
-  }
-  if (!fs.existsSync(path.join(resolved, "dist", "index.js"))) {
-    throw new Error(`Missing plugin dist/index.js in ${resolved}`)
-  }
-  return resolved
+  return null
 }
 
 const installs =
