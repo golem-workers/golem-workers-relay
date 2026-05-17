@@ -211,8 +211,8 @@ describe("ChatRunner", () => {
       deliver: true,
       originatingChannel: "relay-channel",
       originatingTo: "telegram:123",
-      originatingThreadId: "456",
     });
+    expect(sentParams).not.toHaveProperty("originatingThreadId");
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));

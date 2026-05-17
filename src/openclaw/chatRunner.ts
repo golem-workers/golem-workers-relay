@@ -1988,7 +1988,6 @@ function resolveChatSendDeliveryContext(context: unknown):
       deliver: true,
       originatingChannel: "relay-channel",
       originatingTo: buildTelegramRelayTarget(telegram),
-      ...(telegram.messageId ? { originatingThreadId: telegram.messageId } : {}),
     };
   }
   const whatsAppPersonal = readWhatsAppPersonalChatSendContext(context);
@@ -1997,7 +1996,6 @@ function resolveChatSendDeliveryContext(context: unknown):
       deliver: true,
       originatingChannel: "relay-channel",
       originatingTo: `whatsapp_personal:${whatsAppPersonal.chatId}`,
-      ...(whatsAppPersonal.messageId ? { originatingThreadId: whatsAppPersonal.messageId } : {}),
     };
   }
   return {};
