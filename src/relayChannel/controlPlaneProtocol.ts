@@ -284,6 +284,7 @@ export function buildActionCompleted(input: {
   actionId: string;
   result: {
     transportMessageId?: string;
+    transportMessageIds?: string[];
     conversationId?: string;
     threadId?: string;
     uploadUrl?: string;

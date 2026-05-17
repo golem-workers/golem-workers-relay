@@ -7,6 +7,10 @@ import {
   relayInboundMessageRequestSchema,
   relayOpenclawStatusRequestSchema,
   acceptedResponseSchema,
+  relayTransportActionReconcileRequestSchema,
+  relayTransportActionReconcileResponseSchema,
+  type RelayTransportActionReconcileRequest,
+  type RelayTransportActionReconcileResponse,
   relayTelegramMessageCorrelationRequestSchema,
   telegramTransportActionRequestSchema,
   telegramTransportActionResponseSchema,
@@ -152,6 +156,23 @@ export class BackendClient {
       }
     );
     return telegramTransportActionResponseSchema.parse(value);
+  }
+
+  async reconcileRelayTransportAction(
+    input: RelayTransportActionReconcileRequest
+  ): Promise<RelayTransportActionReconcileResponse> {
+    const url = `${this.opts.baseUrl}/api/v1/relays/transport/action/reconcile`;
+    const body = relayTransportActionReconcileRequestSchema.parse(input);
+    const value = await retryWithBackoff(
+      () => postJson(url, this.opts.relayToken, body, 15_000),
+      {
+        attempts: 3,
+        baseDelayMs: [500, 900, 1600],
+        jitterMs: 250,
+        shouldRetry: (err) => isRetryableBackendError(err),
+      }
+    );
+    return relayTransportActionReconcileResponseSchema.parse(value);
   }
 
   async sendWhatsAppPersonalTransportMessage(input: WhatsAppPersonalTransportSendRequest): Promise<{

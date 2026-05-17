@@ -22,8 +22,8 @@ keeps legacy aggregate capability maps for migration compatibility, while
 provider/channel surfaces currently wired behind the relay. The currently wired
 action surface includes:
 
-- `message.send`, including parse mode, single media, media groups, and
-  `file_id` reuse
+- `message.send`, including parse mode, single media, `mediaUrls` batches
+  converted to media groups, and `file_id` reuse
 - `typing.set`
 - `file.download.request` with a local download-token data plane
 

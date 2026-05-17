@@ -147,6 +147,28 @@ export function startRelayChannelControlPlane(input: {
         return;
       }
 
+      if (req.method === "POST" && pathname === "/actions/reconcile") {
+        const rawBody = await readJsonBody(req);
+        const body = isRecord(rawBody) ? rawBody : {};
+        const idempotencyKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey : undefined;
+        const actionId = typeof body.actionId === "string" ? body.actionId : undefined;
+        const provider = typeof body.provider === "string" ? body.provider : undefined;
+        if (!idempotencyKey && !actionId) {
+          sendJson(res, 400, buildProtocolError({
+            code: "RECONCILE_KEY_REQUIRED",
+            message: "actionId or idempotencyKey is required",
+          }));
+          return;
+        }
+        const result = await input.backend.reconcileRelayTransportAction({
+          ...(provider ? { provider } : {}),
+          ...(actionId ? { actionId } : {}),
+          ...(idempotencyKey ? { idempotencyKey } : {}),
+        });
+        sendJson(res, 200, result);
+        return;
+      }
+
       if (req.method === "POST" && pathname === "/agent-control") {
         const request = agentControlRequestSchema.parse(await readJsonBody(req));
         const result = await input.executeAgentControl(request.action);
@@ -349,6 +371,9 @@ async function executeTransportAction(input: {
       "transportMessageId" in result && typeof result.transportMessageId === "string"
         ? result.transportMessageId
         : `relay_${randomUUID()}`,
+    ...("transportMessageIds" in result && Array.isArray(result.transportMessageIds)
+      ? { transportMessageIds: result.transportMessageIds.filter((id): id is string => typeof id === "string") }
+      : {}),
     ...("conversationId" in result && typeof result.conversationId === "string"
       ? { conversationId: result.conversationId }
       : {}),
@@ -372,12 +397,18 @@ async function executeTransportAction(input: {
         : typeof input.action.thread?.threadId === "string"
           ? input.action.thread.threadId
           : null) ?? null;
-    await input.backend.registerTelegramMessageCorrelation({
-      chatId: input.action.transportTarget.chatId,
-      transportMessageId: completedResult.transportMessageId,
-      conversationHandle: input.action.conversation.handle ?? input.action.transportTarget.chatId,
-      threadHandle: input.action.thread?.handle ?? threadId,
-    });
+    const messageIds =
+      completedResult.transportMessageIds && completedResult.transportMessageIds.length > 0
+        ? completedResult.transportMessageIds
+        : [completedResult.transportMessageId];
+    for (const transportMessageId of messageIds) {
+      await input.backend.registerTelegramMessageCorrelation({
+        chatId: input.action.transportTarget.chatId,
+        transportMessageId,
+        conversationHandle: input.action.conversation.handle ?? input.action.transportTarget.chatId,
+        threadHandle: input.action.thread?.handle ?? threadId,
+      });
+    }
   }
 
   return completedResult;

@@ -284,6 +284,8 @@ const relayTelegramNativeQuoteSchema = z
 
 export const telegramTransportActionRequestSchema = z.object({
   action: z.object({
+    actionId: z.string().min(1).optional(),
+    idempotencyKey: z.string().min(1).optional(),
     kind: z.enum(["message.send", "typing.set", "file.download.request"]),
     transportTarget: z.object({
       channel: z.literal("telegram"),
@@ -340,6 +342,38 @@ export const telegramTransportActionResponseSchema = z
   })
   .strict();
 export type TelegramTransportActionResponse = z.infer<typeof telegramTransportActionResponseSchema>;
+
+export const relayTransportActionReconcileRequestSchema = z
+  .object({
+    provider: z.string().min(1).optional(),
+    actionId: z.string().min(1).optional(),
+    idempotencyKey: z.string().min(1).optional(),
+  })
+  .refine((value) => Boolean(value.actionId || value.idempotencyKey), {
+    message: "actionId or idempotencyKey is required",
+  });
+export type RelayTransportActionReconcileRequest = z.infer<
+  typeof relayTransportActionReconcileRequestSchema
+>;
+
+export const relayTransportActionReconcileResponseSchema = z.union([
+  z.object({
+    status: z.literal("sent"),
+    messageId: z.string().min(1).optional(),
+    receipt: telegramTransportActionResponseSchema,
+  }),
+  z.object({
+    status: z.literal("not_sent"),
+  }),
+  z.object({
+    status: z.literal("unresolved"),
+    retryable: z.boolean(),
+    error: z.string(),
+  }),
+]);
+export type RelayTransportActionReconcileResponse = z.infer<
+  typeof relayTransportActionReconcileResponseSchema
+>;
 
 export const relayTelegramMessageCorrelationRequestSchema = z.object({
   chatId: z.string().min(1),

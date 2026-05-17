@@ -3,6 +3,8 @@ import { type BackendClient } from "../backend/backendClient.js";
 import { readString, resolveMedia } from "./transportMedia.js";
 
 type TelegramTransportAction = {
+  actionId?: string;
+  idempotencyKey?: string;
   kind?: string;
   transportTarget: Record<string, string>;
   thread?: { handle?: string | null; threadId?: string | null };
@@ -103,6 +105,8 @@ export async function executeTelegramTransportActionViaBackend(input: {
 
   const result = await input.backend.sendTelegramTransportAction({
     action: {
+      ...(input.action.actionId ? { actionId: input.action.actionId } : {}),
+      ...(input.action.idempotencyKey ? { idempotencyKey: input.action.idempotencyKey } : {}),
       kind:
         input.action.kind === "message.send" ||
         input.action.kind === "typing.set" ||

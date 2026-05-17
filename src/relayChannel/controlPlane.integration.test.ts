@@ -1,7 +1,11 @@
 import { createServer, type Server } from "node:http";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { closeHttpServer, startRelayChannelDataPlaneServer } from "./startDataPlaneServer.js";
 import { startRelayChannelControlPlane } from "./startControlPlaneServer.js";
+import { executeTelegramTransportActionViaBackend } from "./telegramBackendTransport.js";
 
 const pluginIngressServers: Server[] = [];
 
@@ -208,6 +212,71 @@ describe("relay-channel control plane", () => {
 
     await cp.close();
     await closeHttpServer(dp.server);
+  });
+
+  it("converts telegram mediaUrls into a backend mediaGroup", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "relay-mediaurls-"));
+    try {
+      const firstPath = path.join(tempDir, "a.md");
+      const secondPath = path.join(tempDir, "b.md");
+      await writeFile(firstPath, "# first\n");
+      await writeFile(secondPath, "# second\n");
+      const sendTelegramTransportAction = vi.fn().mockResolvedValue({
+        transportMessageId: "202",
+        transportMessageIds: ["201", "202"],
+        conversationId: "123",
+      });
+
+      const result = await executeTelegramTransportActionViaBackend({
+        backend: {
+          sendTelegramTransportAction,
+        } as never,
+        action: {
+          kind: "message.send",
+          transportTarget: { channel: "telegram", chatId: "123" },
+          payload: {
+            text: "docs",
+            mediaUrls: [firstPath, secondPath],
+            forceDocument: true,
+          },
+        },
+      });
+
+      expect(result).toMatchObject({
+        transportMessageId: "202",
+        transportMessageIds: ["201", "202"],
+        conversationId: "123",
+      });
+      const sentActionInput = sendTelegramTransportAction.mock.calls[0]?.[0] as
+        | {
+            action?: {
+              kind?: string;
+              transportTarget?: Record<string, string>;
+              payload?: {
+                text?: string;
+                mediaGroup?: Array<{ fileName?: string; contentType?: string; forceDocument?: boolean }>;
+              };
+            };
+          }
+        | undefined;
+      expect(sentActionInput?.action?.kind).toBe("message.send");
+      expect(sentActionInput?.action?.transportTarget).toEqual({ channel: "telegram", chatId: "123" });
+      expect(sentActionInput?.action?.payload?.text).toBe("docs");
+      expect(sentActionInput?.action?.payload?.mediaGroup).toEqual([
+        expect.objectContaining({
+          fileName: "a.md",
+          contentType: "text/markdown",
+          forceDocument: true,
+        }),
+        expect.objectContaining({
+          fileName: "b.md",
+          contentType: "text/markdown",
+          forceDocument: true,
+        }),
+      ]);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("publishes events to plugin ingress over local HTTP", async () => {
