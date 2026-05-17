@@ -870,6 +870,131 @@ if (!fs.existsSync(path.join(installDir, "dist", "index.js"))) {
 console.log(`relay-channel prepared: ${installDir}`)
 NODE
 
+  set_step "openclaw_codex_plugin_install"
+  openclaw plugins uninstall codex --force >/dev/null 2>&1 || true
+  rm -rf /root/.openclaw/extensions/codex
+  openclaw plugins install @openclaw/codex
+  CODEX_PLUGIN_INSTALL_DIR="$(node --input-type=module - <<'NODE'
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+
+const pluginId = "codex"
+const defaultInstallDir = path.join(os.homedir(), ".openclaw", "extensions", pluginId)
+const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json")
+
+function resolveInstallDir(candidate) {
+  if (typeof candidate !== "string" || candidate.trim().length === 0) return null
+  const resolved = fs.realpathSync(candidate)
+  const manifestPath = path.join(resolved, "openclaw.plugin.json")
+  if (!fs.existsSync(manifestPath)) return null
+  return resolved
+}
+
+let installDir = null
+if (fs.existsSync(configPath)) {
+  const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
+  const installRecord =
+    cfg?.plugins &&
+    typeof cfg.plugins === "object" &&
+    !Array.isArray(cfg.plugins) &&
+    cfg.plugins.installs &&
+    typeof cfg.plugins.installs === "object" &&
+    !Array.isArray(cfg.plugins.installs)
+      ? cfg.plugins.installs[pluginId]
+      : null
+  installDir =
+    installRecord && typeof installRecord === "object" && !Array.isArray(installRecord)
+      ? resolveInstallDir(installRecord.installPath)
+      : null
+}
+
+if (!installDir) {
+  installDir = resolveInstallDir(defaultInstallDir)
+}
+
+if (!installDir) {
+  throw new Error(`Unable to resolve codex install dir after install; checked config and ${defaultInstallDir}`)
+}
+
+process.stdout.write(installDir)
+NODE
+)"
+  test -n "${CODEX_PLUGIN_INSTALL_DIR}"
+  openclaw plugins disable codex || true
+  node --input-type=module - "${CODEX_PLUGIN_INSTALL_DIR}" <<'NODE'
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+
+const expectedInstallDir = fs.realpathSync(process.argv[2])
+const pluginId = "codex"
+const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json")
+const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
+
+function ensureRecord(parent, key) {
+  const current = parent?.[key]
+  if (current && typeof current === "object" && !Array.isArray(current)) return current
+  const next = {}
+  parent[key] = next
+  return next
+}
+
+if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+  throw new Error(`Unexpected OpenClaw config shape in ${configPath}`)
+}
+
+const pluginsCfg = ensureRecord(cfg, "plugins")
+const installsCfg = ensureRecord(pluginsCfg, "installs")
+const installRecord =
+  installsCfg[pluginId] && typeof installsCfg[pluginId] === "object" && !Array.isArray(installsCfg[pluginId])
+    ? installsCfg[pluginId]
+    : {}
+installRecord.installPath = expectedInstallDir
+installsCfg[pluginId] = installRecord
+
+const entriesCfg = ensureRecord(pluginsCfg, "entries")
+const existingEntry = entriesCfg[pluginId]
+if (existingEntry && typeof existingEntry === "object" && !Array.isArray(existingEntry)) {
+  existingEntry.enabled = false
+}
+
+fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`)
+
+const persisted = JSON.parse(fs.readFileSync(configPath, "utf8"))
+const persistedInstallRecord =
+  persisted?.plugins &&
+  typeof persisted.plugins === "object" &&
+  !Array.isArray(persisted.plugins) &&
+  persisted.plugins.installs &&
+  typeof persisted.plugins.installs === "object" &&
+  !Array.isArray(persisted.plugins.installs)
+    ? persisted.plugins.installs[pluginId]
+    : null
+if (!persistedInstallRecord || typeof persistedInstallRecord !== "object" || Array.isArray(persistedInstallRecord)) {
+  throw new Error("Missing codex install record in openclaw.json")
+}
+if (
+  typeof persistedInstallRecord.installPath !== "string" ||
+  persistedInstallRecord.installPath.trim().length === 0
+) {
+  throw new Error("codex install record is missing installPath")
+}
+const installDir = fs.realpathSync(persistedInstallRecord.installPath)
+if (installDir !== expectedInstallDir) {
+  throw new Error(`codex installPath mismatch: expected ${expectedInstallDir}, got ${installDir}`)
+}
+const manifestPath = path.join(installDir, "openclaw.plugin.json")
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+if (manifest?.id !== "codex") {
+  throw new Error(`Unexpected codex plugin id in ${manifestPath}`)
+}
+if (!fs.existsSync(path.join(installDir, "dist", "index.js"))) {
+  throw new Error(`Missing codex dist/index.js in ${installDir}`)
+}
+console.log(`codex prepared: ${installDir}`)
+NODE
+
   test -f "${GLOBAL_PNPM_ROOT}/playwright/package.json"
   if [[ "${RUN_OPENCLAW_ONBOARD}" == "1" ]]; then
     set_step "openclaw_onboard"
@@ -902,8 +1027,8 @@ import path from "node:path"
 
 const configDir = path.join(os.homedir(), ".openclaw")
 const configPath = path.join(configDir, "openclaw.json")
-const requiredPluginIds = ["relay-channel"]
-const installedButDisabledPluginIds = ["relay-channel", "telegram", "whatsapp"]
+const requiredPluginIds = ["relay-channel", "codex"]
+const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram", "whatsapp"]
 const stalePluginIds = ["memory-lancedb-pro", "memory-lancedb"]
 const defaultExtensionsDir = path.join(configDir, "extensions")
 
