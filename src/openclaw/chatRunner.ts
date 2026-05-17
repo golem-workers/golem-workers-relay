@@ -3,13 +3,10 @@ import { type ChatEvent, chatEventSchema, type EventFrame } from "./protocol.js"
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { logger } from "../logger.js";
-import {
-  collectTranscriptArtifacts,
-  extractMediaDirectivePaths,
-  extractNativeMediaDirectivePaths,
-  type TranscriptArtifact,
-  type TranscriptArtifactCollectionReport,
-  type TranscriptMediaFile,
+import type {
+  TranscriptArtifact,
+  TranscriptArtifactCollectionReport,
+  TranscriptMediaFile,
 } from "./mediaDirectives.js";
 import { saveUploadedFiles } from "./fileUploads.js";
 import { makeTextPreview } from "../common/utils/text.js";
@@ -273,6 +270,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && (value as { constructor?: unknown }).constructor === Object;
 }
 
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
 function extractTextFromMessage(message: unknown): string | null {
   if (typeof message === "string") {
     const normalized = message.trim();
@@ -386,14 +387,6 @@ function matchesTranscriptUserMessage(candidateText: string, requestText: string
       compactCandidate.includes(requestPrefix) &&
       compactCandidate.includes(requestSuffix))
   );
-}
-
-function stripMediaDirectiveLines(text: string): string {
-  return text
-    .split(/\r?\n/)
-    .filter((line) => !/^\s*MEDIA:\s*/.test(line) && !/^\s*\[\[\s*media\s*:/.test(line))
-    .join("\n")
-    .trim();
 }
 
 async function readSessionsMapFromState(): Promise<Record<string, unknown> | null> {
@@ -581,7 +574,7 @@ async function waitForAssistantMessageFromSessionTranscript(input: {
   return undefined;
 }
 
-async function collectReplyArtifacts(input: {
+function collectReplyArtifacts(input: {
   taskId: string;
   runId: string;
   sessionKey: string;
@@ -589,49 +582,23 @@ async function collectReplyArtifacts(input: {
   finalMessage: unknown;
   transcriptFinalMessage?: unknown;
   openclawEvents: ChatEvent[];
-}): Promise<{
+}): {
   artifacts: TranscriptArtifact[];
   media: TranscriptMediaFile[];
   artifactResolution?: TranscriptArtifactCollectionReport;
-}> {
-  const artifactResolution = await collectTranscriptArtifacts({
-    message: input.finalMessage,
-    openclawEvents: input.openclawEvents,
-    opts: {
-      logContext: {
-        taskId: input.taskId,
-        runId: input.runId,
-        sessionKey: input.sessionKey,
-      },
-    },
-  }).catch((err) => {
-    const message = err instanceof Error ? err.message : String(err);
-    logger.warn(
-      { taskId: input.taskId, runId: input.runId, err: message },
-      "Failed to collect transcript artifacts"
-    );
-    return {
-      artifacts: [],
-      unresolved: [
-        {
-          source: "structured_artifact",
-          reason: "collection_failed",
-          fileName: "artifact-resolution",
-          candidatePaths: [message],
-        },
-      ],
-      requestedCount: 1,
-      recoveredCount: 0,
-      usedStructuredArtifacts: false,
-      usedLegacyMediaDirectives: false,
-    } satisfies TranscriptArtifactCollectionReport;
-  });
-  const media = artifactResolution.artifacts.map((artifact) => ({
-    path: artifact.path,
-    fileName: artifact.fileName,
-    contentType: artifact.contentType,
-    sizeBytes: artifact.sizeBytes,
-  }));
+} {
+  void input.deliverySystem;
+  void input.finalMessage;
+  void input.transcriptFinalMessage;
+  void input.openclawEvents;
+  const artifactResolution: TranscriptArtifactCollectionReport = {
+    artifacts: [],
+    unresolved: [],
+    requestedCount: 0,
+    recoveredCount: 0,
+    usedStructuredArtifacts: false,
+    usedLegacyMediaDirectives: false,
+  };
   logger.info(
     {
       event: "artifact_delivery",
@@ -649,9 +616,8 @@ async function collectReplyArtifacts(input: {
     "Transcript artifact collection completed"
   );
   return {
-    artifacts: artifactResolution.artifacts,
-    media,
-    ...(artifactResolution.requestedCount > 0 ? { artifactResolution } : {}),
+    artifacts: [],
+    media: [],
   };
 }
 
@@ -669,6 +635,7 @@ async function buildReplyRunResult(input: {
   result: ChatRunResult;
   openclawMeta: OpenclawChatMeta;
 }> {
+  await Promise.resolve();
   if (input.devLogEnabled) {
     logger.info(
       {
@@ -684,7 +651,7 @@ async function buildReplyRunResult(input: {
       "Message flow transition"
     );
   }
-  const artifactDelivery = await collectReplyArtifacts({
+  const artifactDelivery = collectReplyArtifacts({
     taskId: input.taskId,
     runId: input.runId,
     sessionKey: input.sessionKey,
@@ -720,24 +687,7 @@ function shouldPreferTranscriptReplyMessage(input: {
   if (!transcriptText) return false;
 
   const gatewayText = extractTextFromMessage(input.gatewayMessage);
-  if (!gatewayText) return true;
-
-  const gatewayMediaPaths = [
-    ...extractMediaDirectivePaths(gatewayText),
-    ...extractNativeMediaDirectivePaths(gatewayText),
-  ];
-  const transcriptMediaPaths = [
-    ...extractMediaDirectivePaths(transcriptText),
-    ...extractNativeMediaDirectivePaths(transcriptText),
-  ];
-  if (gatewayMediaPaths.length > 0 || transcriptMediaPaths.length === 0) {
-    return false;
-  }
-
-  return (
-    normalizeComparableText(stripMediaDirectiveLines(gatewayText)) ===
-    normalizeComparableText(stripMediaDirectiveLines(transcriptText))
-  );
+  return !gatewayText;
 }
 
 function buildAttemptIdempotencyKey(input: {
@@ -972,6 +922,7 @@ export class ChatRunner {
     sessionKey: string;
     messageText: string;
     media?: TaskMedia[];
+    context?: unknown;
     deliverySystem?: DeliverySystem;
     timeoutMs: number;
   }): Promise<{ result: ChatRunResult; openclawMeta: OpenclawChatMeta }> {
@@ -995,12 +946,8 @@ export class ChatRunner {
       }
       throw error;
     }
-    baseMessageText = applyTransportDeliveryInstructions({
-      sessionKey: input.sessionKey,
-      messageText: baseMessageText,
-      deliverySystem: input.deliverySystem ?? "relay_channel_v2",
-    });
     const deliverySystem = input.deliverySystem ?? "relay_channel_v2";
+    const chatSendDeliveryContext = resolveChatSendDeliveryContext(input.context);
     const shouldUseSessionTranscript = isTransportBackedSession(input.sessionKey);
     const preRunTranscriptSessionState = shouldUseSessionTranscript
       ? await readExistingSessionTranscriptState({
@@ -1063,6 +1010,7 @@ export class ChatRunner {
           sessionKey: input.sessionKey,
           message: attemptMessage,
           idempotencyKey,
+          ...chatSendDeliveryContext,
           timeoutMs: remainingMs,
         });
 
@@ -2021,31 +1969,85 @@ export function applyTransportDeliveryInstructions(input: {
   messageText: string;
   deliverySystem: DeliverySystem;
 }): string {
-  const isTelegramSession = input.sessionKey.startsWith("tg:");
-  const isWhatsAppPersonalSession = input.sessionKey.startsWith("whatsapp-personal:");
-  if (!isTelegramSession && !isWhatsAppPersonalSession) {
-    return input.messageText;
+  void input.sessionKey;
+  void input.deliverySystem;
+  return isOpenclawSlashCommand(input.messageText) ? input.messageText.trim() : input.messageText;
+}
+
+function resolveChatSendDeliveryContext(context: unknown):
+  | {
+      deliver: true;
+      originatingChannel: "relay-channel";
+      originatingTo: string;
+      originatingThreadId?: string;
+    }
+  | Record<string, never> {
+  const telegram = readTelegramChatSendContext(context);
+  if (telegram) {
+    return {
+      deliver: true,
+      originatingChannel: "relay-channel",
+      originatingTo: buildTelegramRelayTarget(telegram),
+      ...(telegram.messageId ? { originatingThreadId: telegram.messageId } : {}),
+    };
   }
-  // Slash-commands go to openclaw's slash-command handler, not to the model,
-  // so appending a model-facing transport note (a) is meaningless and (b) breaks
-  // openclaw's `/new` / `/compact` / `/clear` semantics by spilling extra content
-  // into the post-reset session. Leave such control-commands untouched.
-  if (isOpenclawSlashCommand(input.messageText)) {
-    return input.messageText.trim();
+  const whatsAppPersonal = readWhatsAppPersonalChatSendContext(context);
+  if (whatsAppPersonal) {
+    return {
+      deliver: true,
+      originatingChannel: "relay-channel",
+      originatingTo: `whatsapp_personal:${whatsAppPersonal.chatId}`,
+      ...(whatsAppPersonal.messageId ? { originatingThreadId: whatsAppPersonal.messageId } : {}),
+    };
   }
-  const transportLabel = isTelegramSession ? "Telegram" : "WhatsApp Personal";
-  const instruction = [
-    `[${transportLabel} plugin note]`,
-    "If you need to send the user a file, first save or locate the exact file inside the current workspace.",
-    "Before replying, verify that the file really exists at that exact local path.",
-    "In your final answer, add a separate final token exactly as `[[media:relative/path.ext]]`.",
-    "Use the real path only. Do not invent directories, rename the file inside the directive, or point to an approximate match.",
-    "If you need to send multiple files, add one separate `[[media:...]]` directive per file.",
-    "If you are not sure about the exact path, inspect the workspace first and only then reply.",
-    "Do not paste the full file contents into the reply when the intended output is a file attachment.",
-  ].join("\n");
-  const text = input.messageText.trim();
-  return text ? `${text}\n\n${instruction}` : instruction;
+  return {};
+}
+
+function buildTelegramRelayTarget(input: { chatId: string; chatType?: string }): string {
+  const chatType = input.chatType?.trim().toLowerCase();
+  if (chatType === "group" || chatType === "supergroup" || chatType === "channel") {
+    return `telegram:group:${input.chatId}`;
+  }
+  return `telegram:${input.chatId}`;
+}
+
+function readTelegramChatSendContext(context: unknown): { chatId: string; messageId?: string; chatType?: string } | null {
+  if (!isPlainObject(context) || context.channel !== "telegram" || !isPlainObject(context.telegram)) {
+    return null;
+  }
+  const chatId = readNonEmptyString(context.telegram.chatId);
+  if (!chatId) {
+    return null;
+  }
+  const messageId = readNonEmptyString(context.telegram.messageId);
+  const chatType = readNonEmptyString(context.telegram.chatType);
+  return {
+    chatId,
+    ...(messageId ? { messageId } : {}),
+    ...(chatType ? { chatType } : {}),
+  };
+}
+
+function readWhatsAppPersonalChatSendContext(context: unknown): { chatId: string; messageId?: string } | null {
+  if (!isPlainObject(context)) {
+    return null;
+  }
+  if (context.channel !== undefined && context.channel !== "whatsapp_personal") {
+    return null;
+  }
+  const payload = isPlainObject(context.whatsappPersonal) ? context.whatsappPersonal : null;
+  if (!payload) {
+    return null;
+  }
+  const chatId = readNonEmptyString(payload.chatId) ?? readNonEmptyString(payload.fromChatId);
+  if (!chatId) {
+    return null;
+  }
+  const messageId = readNonEmptyString(payload.messageId) ?? readNonEmptyString(payload.providerMessageId);
+  return {
+    chatId,
+    ...(messageId ? { messageId } : {}),
+  };
 }
 
 function toImageDataUrl(image: ImageTaskMedia): string {

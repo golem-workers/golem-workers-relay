@@ -133,10 +133,11 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("appends Telegram file delivery instructions for tg sessions", async () => {
+  it("does not append relay file delivery instructions for tg sessions", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
     let sentMessage = "";
+    let sentParams: Record<string, unknown> = {};
 
     const { wss, port } = startServer((ws) => {
       ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
@@ -162,6 +163,7 @@ describe("ChatRunner", () => {
         }
         if (frame.type === "req" && frame.method === "chat.send") {
           const params = (frame.params ?? {}) as Record<string, unknown>;
+          sentParams = params;
           sentMessage = typeof params.message === "string" ? params.message : "";
           const runId = "run_tg_1";
           ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
@@ -191,12 +193,26 @@ describe("ChatRunner", () => {
       taskId: "task_tg_1",
       sessionKey: "tg:123:srv_1",
       messageText: "Please prepare a report",
+      context: {
+        channel: "telegram",
+        telegram: {
+          chatId: "123",
+          messageId: "456",
+          chatType: "private",
+        },
+      },
       timeoutMs: 1000,
     });
     expect(result.outcome).toBe("reply");
-    expect(sentMessage).toContain("Please prepare a report");
-    expect(sentMessage).toContain("[Telegram plugin note]");
-    expect(sentMessage).toContain("[[media:relative/path.ext]]");
+    expect(sentMessage).toBe("Please prepare a report");
+    expect(sentMessage).not.toContain("[Telegram plugin note]");
+    expect(sentMessage).not.toContain("[[media:relative/path.ext]]");
+    expect(sentParams).toMatchObject({
+      deliver: true,
+      originatingChannel: "relay-channel",
+      originatingTo: "telegram:123",
+      originatingThreadId: "456",
+    });
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
@@ -277,7 +293,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("uses [[media:...]] directives for relay_channel_v2", async () => {
+  it("does not inject [[media:...]] directives for relay_channel_v2", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-native-media-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     await fs.mkdir(path.join(stateDir, "workspace", "files"), { recursive: true });
@@ -346,13 +362,13 @@ describe("ChatRunner", () => {
       timeoutMs: 1000,
     });
     expect(result.outcome).toBe("reply");
-    expect(sentMessage).toContain("Please prepare a report");
-    expect(sentMessage).toContain("[Telegram plugin note]");
-    expect(sentMessage).toContain("[[media:relative/path.ext]]");
+    expect(sentMessage).toBe("Please prepare a report");
+    expect(sentMessage).not.toContain("[Telegram plugin note]");
+    expect(sentMessage).not.toContain("[[media:relative/path.ext]]");
     expect(sentMessage).not.toContain("MEDIA: relative/path.ext");
     if (result.outcome !== "reply") throw new Error("expected reply");
-    expect(result.reply.artifacts?.[0]?.path).toBe("files/report.pdf");
-    expect(result.reply.media?.[0]?.fileName).toBe("report.pdf");
+    expect(result.reply.artifacts).toBeUndefined();
+    expect(result.reply.media).toBeUndefined();
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
@@ -1770,20 +1786,14 @@ describe("ChatRunner", () => {
     });
     expect(result.outcome).toBe("reply");
     if (result.outcome !== "reply") throw new Error("expected reply");
-    expect(Array.isArray(result.reply.artifacts)).toBe(true);
-    expect(result.reply.artifacts?.[0]?.kind).toBe("image");
-    expect(result.reply.artifacts?.[0]?.path).toBe("avatars/klava.svg");
-    expect(Array.isArray(result.reply.media)).toBe(true);
-    expect(result.reply.media?.[0]?.fileName).toBe("klava.svg");
-    expect(result.reply.media?.[0]?.contentType).toBe("image/svg+xml");
-    expect(result.reply.media?.[0]?.path).toBe("avatars/klava.svg");
-    expect(result.reply.media?.[0]?.sizeBytes).toBe(Buffer.from("<svg/>", "utf8").byteLength);
+    expect(result.reply.artifacts).toBeUndefined();
+    expect(result.reply.media).toBeUndefined();
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("recovers [[media:...]] from the current session transcript when gateway final drops the directive", async () => {
+  it("does not recover [[media:...]] from the current session transcript when gateway final drops the directive", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-media-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
 
@@ -1907,8 +1917,8 @@ describe("ChatRunner", () => {
     });
     expect(result.outcome).toBe("reply");
     if (result.outcome !== "reply") throw new Error("expected reply");
-    expect(result.reply.artifacts?.[0]?.path).toBe("output/golem_awake.mp4");
-    expect(JSON.stringify(result.reply.message)).toContain("[[media:output/golem_awake.mp4]]");
+    expect(result.reply.artifacts).toBeUndefined();
+    expect(JSON.stringify(result.reply.message)).not.toContain("[[media:output/golem_awake.mp4]]");
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
@@ -2583,10 +2593,7 @@ describe("ChatRunner", () => {
                 .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
                 .join("\n");
             })();
-            const noteMarker = "\n\n[Telegram plugin note]\n";
-            const noteIndex = sentText.indexOf(noteMarker);
-            const promptText = noteIndex >= 0 ? sentText.slice(0, noteIndex).trim() : sentText.trim();
-            const transportNote = noteIndex >= 0 ? sentText.slice(noteIndex + noteMarker.length).trim() : "";
+            const promptText = sentText.trim();
             const splitMarker = "\n\nProduction requirements:\n";
             const splitIndex = promptText.indexOf(splitMarker);
             const partOne =
@@ -2603,9 +2610,6 @@ describe("ChatRunner", () => {
               partOne,
               "[2026-04-18 05:06 UTC] 0xbbx: [part 2/2]",
               partTwo,
-              "",
-              "[Telegram plugin note]",
-              transportNote,
             ].join("\n");
             void fs.writeFile(
               sessionFile,
@@ -3486,14 +3490,14 @@ describe("applyTransportDeliveryInstructions", () => {
     expect(result).not.toContain("[Telegram plugin note]");
   });
 
-  it("still appends Telegram note to ordinary model-bound text", () => {
+  it("leaves ordinary model-bound text untouched", () => {
     const result = applyTransportDeliveryInstructions({
       sessionKey: tgSessionKey,
       messageText: "hello world",
       deliverySystem: "relay_channel_v2",
     });
-    expect(result.startsWith("hello world")).toBe(true);
-    expect(result).toContain("[Telegram plugin note]");
+    expect(result).toBe("hello world");
+    expect(result).not.toContain("[Telegram plugin note]");
   });
 
   it("leaves non-transport sessions untouched (no note ever appended)", () => {

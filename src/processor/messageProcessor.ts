@@ -6,8 +6,6 @@ import { type InboundPushMessage, type RelayInboundMessageRequest } from "../bac
 import { logger } from "../logger.js";
 import { type ChatRunner } from "../openclaw/chatRunner.js";
 import { type GatewayClient } from "../openclaw/gatewayClient.js";
-import { executeTelegramTransportActionViaBackend } from "../relayChannel/telegramBackendTransport.js";
-import { executeWhatsAppPersonalMessageSend } from "../relayChannel/whatsappPersonalTransport.js";
 import { makeTextPreview } from "../common/utils/text.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 
@@ -565,6 +563,7 @@ async function processSingleMessage(input: {
         sessionKey: msg.input.sessionKey,
         messageText: msg.input.messageText,
         media: msg.input.media,
+        context: msg.input.context,
         deliverySystem,
         timeoutMs: effectiveTaskTimeoutMs,
       });
@@ -614,7 +613,7 @@ async function processSingleMessage(input: {
         const finishedAtMs = Date.now();
         if (result.outcome === "reply") {
           const replyPayload = await buildReplyPayload(result.reply);
-          const directTransportMeta = await maybeDeliverRelayChannelReplyDirectly({
+          const directTransportMeta = maybeDeliverRelayChannelReplyDirectly({
             backend,
             context: msg.input.context,
             sessionKey: msg.input.sessionKey,
@@ -1002,33 +1001,25 @@ function readWhatsAppPersonalTaskContext(context: unknown):
   };
 }
 
-function stripNativeMediaDirectives(text: string): string {
-  return text
-    .replace(/\[\[\s*media\s*:[^\]\r\n]+?\s*\]\]/gi, "")
-    .replace(/(^|\n)\s*MEDIA:\s*[^\n\r]+(?=\r?\n|$)/g, "$1")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-async function maybeDeliverRelayChannelReplyDirectly(input: {
+function maybeDeliverRelayChannelReplyDirectly(input: {
   backend: BackendClient;
   context: unknown;
   sessionKey: string;
   reply: Extract<RelayInboundMessageRequest, { outcome: "reply" }>["reply"];
   backendMessageId: string;
   relayMessageId: string;
-}): Promise<{
+}): {
   transportDelivered: true;
   transportChannelId: "telegram" | "whatsapp_personal";
   transportAccountId: "default";
   transportMessageId?: string;
-} | null> {
+} | null {
+  void input.backend;
   const telegram = readTelegramTaskContext(input.context);
   const whatsAppPersonal = telegram ? null : readWhatsAppPersonalTaskContext(input.context);
-
-  const media = Array.isArray(input.reply.media) ? input.reply.media : [];
-  const text = stripNativeMediaDirectives(extractReplyText(input.reply.message));
-  if (!text && media.length === 0) {
+  const text = extractReplyText(input.reply.message);
+  const mediaCount = Array.isArray(input.reply.media) ? input.reply.media.length : 0;
+  if (!text && mediaCount === 0) {
     return null;
   }
   if (!telegram && !whatsAppPersonal) {
@@ -1041,120 +1032,26 @@ async function maybeDeliverRelayChannelReplyDirectly(input: {
     });
   }
 
-  try {
-    let firstTransportMessageId: string | undefined;
-    let remainingText = text;
+  logger.info(
+    {
+      event: "message_flow",
+      direction: "openclaw_to_transport",
+      stage: "sdk_delivered",
+      backendMessageId: input.backendMessageId,
+      relayMessageId: input.relayMessageId,
+      transport: telegram ? "telegram" : "whatsapp_personal",
+      chatId: telegram?.chatId ?? whatsAppPersonal?.chatId ?? null,
+      textLen: text.length,
+      mediaCount,
+    },
+    "Message flow transition"
+  );
 
-    if (media.length === 0) {
-      const sent = telegram
-        ? await executeTelegramTransportActionViaBackend({
-            backend: input.backend,
-            action: {
-              kind: "message.send",
-              transportTarget: { channel: "telegram", chatId: telegram.chatId },
-              reply: { replyToTransportMessageId: telegram.messageId ?? null },
-              payload: { text: remainingText },
-            },
-          })
-        : await executeWhatsAppPersonalMessageSend({
-            backend: input.backend,
-            action: {
-              transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
-              reply: { replyToTransportMessageId: whatsAppPersonal!.messageId ?? null },
-              payload: { text: remainingText },
-            },
-          });
-      firstTransportMessageId = sent.transportMessageId;
-    } else {
-      for (const item of media) {
-        const sent = telegram
-          ? await executeTelegramTransportActionViaBackend({
-              backend: input.backend,
-              action: {
-                kind: "message.send",
-                transportTarget: { channel: "telegram", chatId: telegram.chatId },
-                reply: { replyToTransportMessageId: firstTransportMessageId ? null : (telegram.messageId ?? null) },
-                payload: {
-                  ...(remainingText ? { text: remainingText } : {}),
-                  mediaUrl: item.path,
-                  fileName: item.fileName,
-                  contentType: item.contentType,
-                },
-              },
-            })
-          : await executeWhatsAppPersonalMessageSend({
-              backend: input.backend,
-              action: {
-                transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
-                reply: {
-                  replyToTransportMessageId: firstTransportMessageId ? null : (whatsAppPersonal!.messageId ?? null),
-                },
-                payload: {
-                  ...(remainingText ? { text: remainingText } : {}),
-                  mediaUrl: item.path,
-                  fileName: item.fileName,
-                  contentType: item.contentType,
-                },
-              },
-            });
-        firstTransportMessageId ??= sent.transportMessageId;
-        remainingText = "";
-      }
-
-      if (remainingText) {
-        const sent = telegram
-          ? await executeTelegramTransportActionViaBackend({
-              backend: input.backend,
-              action: {
-                kind: "message.send",
-                transportTarget: { channel: "telegram", chatId: telegram.chatId },
-                reply: { replyToTransportMessageId: telegram.messageId ?? null },
-                payload: { text: remainingText },
-              },
-            })
-          : await executeWhatsAppPersonalMessageSend({
-              backend: input.backend,
-              action: {
-                transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
-                reply: { replyToTransportMessageId: whatsAppPersonal!.messageId ?? null },
-                payload: { text: remainingText },
-              },
-            });
-        firstTransportMessageId ??= sent.transportMessageId;
-      }
-    }
-
-    logger.info(
-      {
-        event: "message_flow",
-        direction: "relay_to_transport",
-        stage: "sent",
-        backendMessageId: input.backendMessageId,
-        relayMessageId: input.relayMessageId,
-        transport: telegram ? "telegram" : "whatsapp_personal",
-        chatId: telegram?.chatId ?? whatsAppPersonal?.chatId ?? null,
-        textLen: text.length,
-        mediaCount: media.length,
-        transportMessageId: firstTransportMessageId ?? null,
-      },
-      "Message flow transition"
-    );
-
-    return {
-      transportDelivered: true,
-      transportChannelId: telegram ? "telegram" : "whatsapp_personal",
-      transportAccountId: "default",
-      ...(firstTransportMessageId ? { transportMessageId: firstTransportMessageId } : {}),
-    };
-  } catch (error) {
-    const transport = telegram ? "telegram" : "whatsapp_personal";
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new RelayProcessingError({
-      code: "RELAY_DIRECT_TRANSPORT_DELIVERY_FAILED",
-      message: `Relay direct ${transport} delivery failed: ${detail}`,
-      cause: error,
-    });
-  }
+  return {
+    transportDelivered: true,
+    transportChannelId: telegram ? "telegram" : "whatsapp_personal",
+    transportAccountId: "default",
+  };
 }
 
 function isTransportBackedSessionKey(sessionKey: string): boolean {
