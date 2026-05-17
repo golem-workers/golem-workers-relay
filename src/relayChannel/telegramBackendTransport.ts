@@ -10,6 +10,14 @@ type TelegramTransportAction = {
   payload: Record<string, unknown>;
 };
 
+type ResolvedTelegramMedia = {
+  dataB64: string;
+  fileName: string;
+  contentType: string;
+  asVoice?: boolean;
+  forceDocument?: boolean;
+};
+
 function readTelegramParseMode(value: unknown): "HTML" | "MarkdownV2" | "Markdown" | undefined {
   return value === "HTML" || value === "MarkdownV2" || value === "Markdown" ? value : undefined;
 }
@@ -54,6 +62,7 @@ export async function executeTelegramTransportActionViaBackend(input: {
   }) => { token: string; downloadUrl: string };
 }): Promise<{
   transportMessageId?: string;
+  transportMessageIds?: string[];
   conversationId?: string;
   threadId?: string;
   downloadUrl?: string;
@@ -66,27 +75,31 @@ export async function executeTelegramTransportActionViaBackend(input: {
 
   const payload = input.action.payload;
   const mediaUrl = readString(payload.mediaUrl);
+  const mediaUrls = Array.isArray(payload.mediaUrls)
+    ? payload.mediaUrls.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : [];
   const text = readString(payload.text) ?? undefined;
   const fileId = readString(payload.fileId) ?? undefined;
   const parseMode = readTelegramParseMode(payload.parseMode);
   const chatAction = readTelegramChatAction(payload.chatAction);
-  const media =
-    mediaUrl
-      ? await (async () => {
-          const resolved = await resolveMedia({
-            mediaUrl,
-            fileName: readString(payload.fileName),
-            contentType: readString(payload.contentType),
-          });
-          return {
-            dataB64: (await fs.readFile(resolved.filePath)).toString("base64"),
-            fileName: resolved.fileName,
-            contentType: resolved.contentType,
-            ...(payload.asVoice === true ? { asVoice: true } : {}),
-            ...(payload.forceDocument === true ? { forceDocument: true } : {}),
-          };
-        })()
-      : undefined;
+  const resolveMediaPayload = async (url: string): Promise<ResolvedTelegramMedia> => {
+    const resolved = await resolveMedia({
+      mediaUrl: url,
+      fileName: readString(payload.fileName),
+      contentType: readString(payload.contentType),
+    });
+    return {
+      dataB64: (await fs.readFile(resolved.filePath)).toString("base64"),
+      fileName: resolved.fileName,
+      contentType: resolved.contentType,
+      ...(payload.asVoice === true ? { asVoice: true } : {}),
+      ...(payload.forceDocument === true ? { forceDocument: true } : {}),
+    };
+  };
+  const resolvedMediaUrls = mediaUrls.length > 0 ? mediaUrls : mediaUrl ? [mediaUrl] : [];
+  const resolvedMedia = await Promise.all(resolvedMediaUrls.map((url) => resolveMediaPayload(url)));
+  const media = resolvedMedia[0];
+  const mediaGroup = resolvedMedia.length > 1 ? resolvedMedia : undefined;
 
   const result = await input.backend.sendTelegramTransportAction({
     action: {
@@ -105,7 +118,17 @@ export async function executeTelegramTransportActionViaBackend(input: {
       payload: {
         ...(text ? { text } : {}),
         ...(fileId ? { fileId } : {}),
-        ...(media ? { media } : {}),
+        ...(mediaGroup ? { mediaGroup } : media ? { media } : {}),
+        ...(payload.silent === true ? { silent: true } : {}),
+        ...(typeof payload.disableNotification === "boolean"
+          ? { disableNotification: payload.disableNotification }
+          : {}),
+        ...(typeof payload.nativeQuote === "object" && payload.nativeQuote !== null
+          ? { nativeQuote: payload.nativeQuote as Record<string, unknown> }
+          : {}),
+        ...(typeof payload.channelData === "object" && payload.channelData !== null
+          ? { channelData: payload.channelData as Record<string, unknown> }
+          : {}),
         ...(parseMode ? { parseMode } : {}),
         ...(typeof payload.disableWebPagePreview === "boolean"
           ? { disableWebPagePreview: payload.disableWebPagePreview }
@@ -127,6 +150,7 @@ export async function executeTelegramTransportActionViaBackend(input: {
     });
     return {
       ...(result.transportMessageId ? { transportMessageId: result.transportMessageId } : {}),
+      ...(result.transportMessageIds ? { transportMessageIds: result.transportMessageIds } : {}),
       ...(result.conversationId ? { conversationId: result.conversationId } : {}),
       ...(result.threadId ? { threadId: result.threadId } : {}),
       downloadUrl: download.downloadUrl,
@@ -136,6 +160,7 @@ export async function executeTelegramTransportActionViaBackend(input: {
 
   return {
     ...(result.transportMessageId ? { transportMessageId: result.transportMessageId } : {}),
+    ...(result.transportMessageIds ? { transportMessageIds: result.transportMessageIds } : {}),
     ...(result.conversationId ? { conversationId: result.conversationId } : {}),
     ...(result.threadId ? { threadId: result.threadId } : {}),
     ...(result.downloadUrl ? { downloadUrl: result.downloadUrl } : {}),

@@ -129,6 +129,7 @@ export class BackendClient {
 
   async sendTelegramTransportAction(input: TelegramTransportActionRequest): Promise<{
     transportMessageId?: string;
+    transportMessageIds?: string[];
     conversationId?: string;
     threadId?: string;
     token?: string;

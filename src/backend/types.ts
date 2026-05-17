@@ -273,6 +273,15 @@ const relayTelegramTransportMediaSchema = z.object({
   forceDocument: z.boolean().optional(),
 });
 
+const relayTelegramNativeQuoteSchema = z
+  .object({
+    replyToTransportMessageId: z.string().min(1).optional(),
+    messageId: z.string().min(1).optional(),
+    text: z.string().optional(),
+    author: z.string().optional(),
+  })
+  .passthrough();
+
 export const telegramTransportActionRequestSchema = z.object({
   action: z.object({
     kind: z.enum(["message.send", "typing.set", "file.download.request"]),
@@ -296,6 +305,12 @@ export const telegramTransportActionRequestSchema = z.object({
         text: z.string().optional(),
         fileId: z.string().min(1).optional(),
         media: relayTelegramTransportMediaSchema.optional(),
+        mediaGroup: z.array(relayTelegramTransportMediaSchema).optional(),
+        silent: z.boolean().optional(),
+        nativeQuote: relayTelegramNativeQuoteSchema.optional(),
+        presentation: z.unknown().optional(),
+        interactive: z.unknown().optional(),
+        channelData: z.record(z.string(), z.unknown()).optional(),
         parseMode: z.enum(["HTML", "MarkdownV2", "Markdown"]).optional(),
         disableWebPagePreview: z.boolean().optional(),
         enabled: z.boolean().optional(),
@@ -309,6 +324,7 @@ export type TelegramTransportActionRequest = z.infer<typeof telegramTransportAct
 export const telegramTransportActionResponseSchema = z
   .object({
     transportMessageId: z.string().min(1).optional(),
+    transportMessageIds: z.array(z.string().min(1)).optional(),
     conversationId: z.string().min(1).optional(),
     threadId: z.string().min(1).optional(),
     token: z.string().min(1).optional(),
