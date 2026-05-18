@@ -9,6 +9,12 @@ type TelegramTransportAction = {
   transportTarget: Record<string, string>;
   thread?: { handle?: string | null; threadId?: string | null };
   reply?: { replyToTransportMessageId?: string | null };
+  openclawContext?: {
+    backendMessageId?: string;
+    correlationMessageId?: string;
+    runId?: string;
+    sessionKey?: string;
+  };
   payload: Record<string, unknown>;
 };
 
@@ -119,6 +125,7 @@ export async function executeTelegramTransportActionViaBackend(input: {
       },
       ...(input.action.thread ? { thread: input.action.thread } : {}),
       ...(input.action.reply ? { reply: input.action.reply } : {}),
+      ...(input.action.openclawContext ? { openclawContext: input.action.openclawContext } : {}),
       payload: {
         ...(text ? { text } : {}),
         ...(fileId ? { fileId } : {}),

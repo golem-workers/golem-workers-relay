@@ -234,6 +234,11 @@ describe("relay-channel control plane", () => {
         action: {
           kind: "message.send",
           transportTarget: { channel: "telegram", chatId: "123" },
+          openclawContext: {
+            backendMessageId: "backend_1",
+            runId: "run_1",
+            sessionKey: "tg:123:srv_1",
+          },
           payload: {
             text: "docs",
             mediaUrls: [firstPath, secondPath],
@@ -252,6 +257,7 @@ describe("relay-channel control plane", () => {
             action?: {
               kind?: string;
               transportTarget?: Record<string, string>;
+              openclawContext?: Record<string, string>;
               payload?: {
                 text?: string;
                 mediaGroup?: Array<{ fileName?: string; contentType?: string; forceDocument?: boolean }>;
@@ -261,6 +267,11 @@ describe("relay-channel control plane", () => {
         | undefined;
       expect(sentActionInput?.action?.kind).toBe("message.send");
       expect(sentActionInput?.action?.transportTarget).toEqual({ channel: "telegram", chatId: "123" });
+      expect(sentActionInput?.action?.openclawContext).toEqual({
+        backendMessageId: "backend_1",
+        runId: "run_1",
+        sessionKey: "tg:123:srv_1",
+      });
       expect(sentActionInput?.action?.payload?.text).toBe("docs");
       expect(sentActionInput?.action?.payload?.mediaGroup).toEqual([
         expect.objectContaining({

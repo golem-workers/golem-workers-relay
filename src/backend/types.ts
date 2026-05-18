@@ -297,6 +297,15 @@ export const telegramTransportActionRequestSchema = z.object({
         threadId: z.string().min(1).nullable().optional(),
       })
       .optional(),
+    openclawContext: z
+      .object({
+        backendMessageId: z.string().min(1).optional(),
+        correlationMessageId: z.string().min(1).optional(),
+        runId: z.string().min(1).optional(),
+        sessionKey: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
     reply: z
       .object({
         replyToTransportMessageId: z.string().min(1).nullable().optional(),
