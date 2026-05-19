@@ -69,6 +69,7 @@ type Waiter = {
   resolve: (evt: ChatCompletionSignal) => void;
   reject: (err: Error) => void;
   timeout: NodeJS.Timeout;
+  onActivity?: (activity: ChatRunActivity) => void;
   minEventSeq?: number;
   ignoreFinalWithoutUserFacingMessage?: boolean;
   allowUserFacingDeltaCompletion?: boolean;
@@ -95,6 +96,12 @@ type OpenclawChatMeta = {
   method: string;
   runId?: string;
   model?: string;
+};
+
+export type ChatRunActivity = {
+  runId: string;
+  state: ChatEvent["state"] | "transcript";
+  observedAtMs: number;
 };
 
 type DeliverySystem = "relay_channel_v2";
@@ -827,6 +834,11 @@ export class ChatRunner {
     if (waiter.minEventSeq !== undefined && chatEvt.seq <= waiter.minEventSeq) {
       return;
     }
+    waiter.onActivity?.({
+      runId: chatEvt.runId,
+      state: chatEvt.state,
+      observedAtMs: Date.now(),
+    });
     if (chatEvt.state === "delta") {
       if (waiter.allowUserFacingDeltaCompletion && extractTextFromMessage(chatEvt.message)) {
         waiter.resolve(chatEvt);
@@ -865,7 +877,7 @@ export class ChatRunner {
       await Promise.race([
         this.gateway.request(
           "chat.abort",
-          { sessionKey: active.sessionKey, runId: active.runId, reason },
+          { sessionKey: active.sessionKey, runId: active.runId },
           { timeoutMs: 2_000 }
         ),
         sleep(2_500),
@@ -925,6 +937,7 @@ export class ChatRunner {
     context?: unknown;
     deliverySystem?: DeliverySystem;
     timeoutMs: number;
+    onActivity?: (activity: ChatRunActivity) => void;
   }): Promise<{ result: ChatRunResult; openclawMeta: OpenclawChatMeta }> {
     try {
     await this.waitForSessionMaintenance();
@@ -1105,6 +1118,7 @@ export class ChatRunner {
           sessionState: transcriptSessionState,
           allowTranscriptCompletion: true,
           ignoreFinalWithoutUserFacingMessage: true,
+          onActivity: input.onActivity,
         });
         let openclawEvents = this.consumeRunEvents(runId);
         if (finalEvt.state === "transcript") {
@@ -1203,6 +1217,7 @@ export class ChatRunner {
                   minEventSeq: finalEvt.seq,
                   ignoreFinalWithoutUserFacingMessage: true,
                   allowUserFacingDeltaCompletion: true,
+                  onActivity: input.onActivity,
                 }).catch(() => null)
               : null;
           const continuationEvents = this.consumeRunEvents(runId);
@@ -1748,6 +1763,7 @@ export class ChatRunner {
       minEventSeq?: number;
       ignoreFinalWithoutUserFacingMessage?: boolean;
       allowUserFacingDeltaCompletion?: boolean;
+      onActivity?: (activity: ChatRunActivity) => void;
     }
   ): Promise<ChatCompletionSignal> {
     return new Promise<ChatCompletionSignal>((resolve, reject) => {
@@ -1791,6 +1807,7 @@ export class ChatRunner {
         resolve: finalize,
         reject,
         timeout,
+        onActivity: opts?.onActivity,
         minEventSeq: opts?.minEventSeq,
         ignoreFinalWithoutUserFacingMessage: opts?.ignoreFinalWithoutUserFacingMessage,
         allowUserFacingDeltaCompletion: opts?.allowUserFacingDeltaCompletion,
@@ -1822,6 +1839,11 @@ export class ChatRunner {
             if (activeWaiter.transcriptCandidateKey !== candidateKey) {
               activeWaiter.transcriptCandidateKey = candidateKey;
               activeWaiter.transcriptCandidateFirstSeenAtMs = now;
+              activeWaiter.onActivity?.({
+                runId,
+                state: "transcript",
+                observedAtMs: now,
+              });
               return;
             }
             if (

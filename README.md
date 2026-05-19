@@ -195,7 +195,7 @@ Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 Push transport settings:
 - `RELAY_PUSH_PORT=18790` (HTTP port where backend sends push messages)
 - `RELAY_PUSH_PATH=/relay/messages` (HTTP path for backend push endpoint)
-- `RELAY_TASK_TIMEOUT_MS=3600000` (default one-hour hard cap for a chat task to produce a terminal callback before relay aborts it and reports `RELAY_TASK_TIMEOUT`)
+- `RELAY_TASK_TIMEOUT_MS=43200000` (default twelve-hour sliding timeout for a chat task to produce a terminal callback; OpenClaw chat activity refreshes the timeout before relay aborts it and reports `RELAY_TASK_TIMEOUT`)
 - `RELAY_SYSTEM_TASK_TIMEOUT_MS=120000` (short hard cap for low-priority system/reminder chat tasks so they cannot block newer user messages)
 - `RELAY_CHAT_BATCH_DEBOUNCE_MS=500` (default 500ms debounce for chat batching; lower it to send chats closer to immediately, or raise it to batch more aggressively)
 - `RELAY_LOW_DISK_ALERT_ENABLED=1` (when enabled, relay checks disk usage on every processed inbound message and reports low-space technical alerts to backend)

@@ -206,6 +206,45 @@ function createAbortPromise(): {
   };
 }
 
+function createSlidingTaskTimeout(input: {
+  timeoutMs: number;
+  buildError: () => RelayProcessingError;
+}): {
+  promise: Promise<never>;
+  touch: () => void;
+  clear: () => void;
+} {
+  let timeout: NodeJS.Timeout | null = null;
+  let cleared = false;
+  let rejectTimeout!: (error: RelayProcessingError) => void;
+  const arm = (): void => {
+    if (cleared) return;
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+    timeout = setTimeout(() => {
+      timeout = null;
+      cleared = true;
+      rejectTimeout(input.buildError());
+    }, input.timeoutMs);
+    timeout.unref?.();
+  };
+  const promise = new Promise<never>((_, reject) => {
+    rejectTimeout = reject;
+  });
+  arm();
+  return {
+    promise,
+    touch: arm,
+    clear: () => {
+      cleared = true;
+      if (!timeout) return;
+      clearTimeout(timeout);
+      timeout = null;
+    },
+  };
+}
+
 async function enqueueChatBatch(input: {
   sessionKey: string;
   msg: InboundPushMessage;
@@ -558,6 +597,20 @@ async function processSingleMessage(input: {
         },
         "Dispatching chat task to OpenClaw"
       );
+      let timedOut = false;
+      const taskTimeout = createSlidingTaskTimeout({
+        timeoutMs: effectiveTaskTimeoutMs,
+        buildError: () => {
+          timedOut = true;
+          return new RelayProcessingError({
+            code: taskKind === "system_reminder" ? "RELAY_SYSTEM_TASK_TIMEOUT" : "RELAY_TASK_TIMEOUT",
+            message:
+              taskKind === "system_reminder"
+                ? "Relay system task timed out and was released to avoid blocking user messages"
+                : "Relay task timed out and was released to avoid blocking the message queue",
+          });
+        },
+      });
       const runnerPromise = runner.runChatTask({
         taskId: msg.messageId,
         sessionKey: msg.input.sessionKey,
@@ -566,29 +619,15 @@ async function processSingleMessage(input: {
         context: msg.input.context,
         deliverySystem,
         timeoutMs: effectiveTaskTimeoutMs,
+        onActivity: taskTimeout.touch,
       });
-      let timedOut = false;
       try {
         const { result, openclawMeta } = await Promise.race([
           runnerPromise,
           abortController.promise,
-          new Promise<never>((_, reject) => {
-            const timeout = setTimeout(() => {
-              timedOut = true;
-              reject(
-                new RelayProcessingError({
-                  code: taskKind === "system_reminder" ? "RELAY_SYSTEM_TASK_TIMEOUT" : "RELAY_TASK_TIMEOUT",
-                  message:
-                    taskKind === "system_reminder"
-                      ? "Relay system task timed out and was released to avoid blocking user messages"
-                      : "Relay task timed out and was released to avoid blocking the message queue",
-                })
-              );
-            }, effectiveTaskTimeoutMs);
-            timeout.unref?.();
-            runnerPromise.finally(() => clearTimeout(timeout)).catch(() => undefined);
-          }),
+          taskTimeout.promise,
         ]);
+        taskTimeout.clear();
         unregisterActiveTask();
         const openclawRunId =
           result.outcome === "reply"
@@ -682,6 +721,7 @@ async function processSingleMessage(input: {
           });
         }
       } catch (error) {
+        taskTimeout.clear();
         unregisterActiveTask();
         if (error instanceof RelayProcessingError) {
           runnerPromise.catch((lateError) => {

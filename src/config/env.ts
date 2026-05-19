@@ -206,7 +206,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     relayToken: parsed.RELAY_TOKEN,
     backendBaseUrl: parsed.BACKEND_BASE_URL.replace(/\/+$/, ""),
     relayInstanceId,
-    taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 60 * 60_000,
+    taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 12 * 60 * 60_000,
     systemTaskTimeoutMs: parsed.RELAY_SYSTEM_TASK_TIMEOUT_MS ?? 120_000,
     chatBatchDebounceMs: parsed.RELAY_CHAT_BATCH_DEBOUNCE_MS ?? 500,
     lowDiskAlertEnabled: parsed.RELAY_LOW_DISK_ALERT_ENABLED ?? true,

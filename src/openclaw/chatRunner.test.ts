@@ -3452,6 +3452,31 @@ describe("isOpenclawSlashCommand", () => {
     await fs.rm(stateDir, { recursive: true, force: true });
     vi.unstubAllEnvs();
   });
+
+  it("aborts active tasks with the OpenClaw chat.abort schema", async () => {
+    const request = vi.fn().mockImplementation((method: string) => {
+      if (method === "chat.abort") {
+        return Promise.resolve({ aborted: true });
+      }
+      return Promise.reject(new Error(`unexpected method ${method}`));
+    });
+    const runner = new ChatRunner({ request } as never, {
+      retry: { attempts: 1, baseDelayMs: [1], jitterMs: 0 },
+    });
+    (
+      runner as unknown as {
+        activeRunByTaskId: Map<string, { runId: string; sessionKey: string }>;
+      }
+    ).activeRunByTaskId.set("task_abort_schema", {
+      sessionKey: "tg:449:server",
+      runId: "run_abort_schema",
+    });
+
+    await expect(runner.abortTask("task_abort_schema", "RELAY_TASK_TIMEOUT")).resolves.toBe(true);
+
+    const abortCall = request.mock.calls.find(([method]) => method === "chat.abort");
+    expect(abortCall?.[1]).toEqual({ sessionKey: "tg:449:server", runId: "run_abort_schema" });
+  });
 });
 
 describe("applyTransportDeliveryInstructions", () => {

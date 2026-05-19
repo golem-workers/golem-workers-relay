@@ -348,6 +348,75 @@ describe("createMessageProcessor", () => {
     expect(submitInboundMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes the chat task timeout when OpenClaw reports activity", async () => {
+    vi.useFakeTimers();
+    try {
+      const runChatTask = vi.fn(
+        (input: {
+          onActivity?: (activity: { runId: string; state: string; observedAtMs: number }) => void;
+        }) =>
+          new Promise<{
+            result: {
+              outcome: "reply";
+              reply: { runId: string; message: { role: string; content: string } };
+            };
+            openclawMeta: { method: string; runId: string };
+          }>((resolve) => {
+            setTimeout(() => input.onActivity?.({ runId: "run_active_1", state: "delta", observedAtMs: Date.now() }), 3);
+            setTimeout(() => input.onActivity?.({ runId: "run_active_1", state: "delta", observedAtMs: Date.now() }), 7);
+            setTimeout(
+              () =>
+                resolve({
+                  result: {
+                    outcome: "reply",
+                    reply: { runId: "run_active_1", message: { role: "assistant", content: "done" } },
+                  },
+                  openclawMeta: { method: "chat.send", runId: "run_active_1" },
+                }),
+              9
+            );
+          })
+      );
+      const abortTask = vi.fn().mockResolvedValue(true);
+      const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+      const processor = createMessageProcessor({
+        cfg: {
+          relayInstanceId: "relay_1",
+          taskTimeoutMs: 5,
+          chatBatchDebounceMs: 0,
+          devLogEnabled: false,
+          devLogTextMaxLen: 200,
+        },
+        gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+        runner: { runChatTask, abortTask } as never,
+        backend: { submitInboundMessage } as never,
+      });
+
+      const processing = processor({
+        messageId: "msg_active_1",
+        input: {
+          kind: "chat",
+          sessionKey: "s1",
+          messageText: "work",
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(9);
+      await processing;
+
+      expect(abortTask).not.toHaveBeenCalled();
+      expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+      expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+        body: {
+          outcome: "reply",
+          reply: { message: { content: "done" } },
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("uses the shorter system task timeout for stale reminders", async () => {
     const runChatTask = vi.fn(() => new Promise(() => undefined));
     const abortTask = vi.fn().mockResolvedValue(true);
