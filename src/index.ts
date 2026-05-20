@@ -273,8 +273,13 @@ async function main(): Promise<void> {
     getHealth: () => {
       const queueState = queue.getState();
       const backendResilience = backend.getResilienceState();
-      const activeTask = taskControl.getActiveTask();
-      const activeTaskAgeMs = activeTask ? Date.now() - activeTask.startedAtMs : null;
+      const activeTasks = taskControl.getActiveTasks();
+      const now = Date.now();
+      const oldestActiveTask =
+        activeTasks.length > 0
+          ? activeTasks.reduce((oldest, task) => (task.startedAtMs < oldest.startedAtMs ? task : oldest))
+          : null;
+      const activeTaskAgeMs = oldestActiveTask ? now - oldestActiveTask.startedAtMs : null;
       return {
         ok: true,
         ready: !shuttingDown && gateway.isReady() && queueState.queueLength < queueState.maxQueue,
@@ -283,10 +288,12 @@ async function main(): Promise<void> {
           gatewayReady: gateway.isReady(),
           queueLength: queueState.queueLength,
           inFlight: queueState.inFlight,
+          activeTaskCount: activeTasks.length,
           activeTaskAgeMs,
-          activeTaskMessageId: activeTask?.messageId ?? null,
-          activeTaskKind: activeTask?.taskKind ?? null,
-          activeTaskSessionKey: activeTask?.sessionKey ?? null,
+          activeTaskMessageId: oldestActiveTask?.messageId ?? null,
+          activeTaskKind: oldestActiveTask?.taskKind ?? null,
+          activeTaskSessionKey: oldestActiveTask?.sessionKey ?? null,
+          activeTasks,
           maxQueue: queueState.maxQueue,
           backendResilience,
           relayChannel: getRelayChannelHealth(),

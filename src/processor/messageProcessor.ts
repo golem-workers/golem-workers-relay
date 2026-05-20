@@ -65,36 +65,47 @@ export type RelayTaskControl = {
   register(task: ActiveRelayTaskSnapshot & { abort: (reason: string) => void }): () => void;
   abortActive(predicate: (task: ActiveRelayTaskSnapshot) => boolean, reason: string): boolean;
   getActiveTask(): ActiveRelayTaskSnapshot | null;
+  getActiveTasks(): ActiveRelayTaskSnapshot[];
 };
 
 export function createRelayTaskControl(): RelayTaskControl {
-  let active:
-    | (ActiveRelayTaskSnapshot & {
-        abort: (reason: string) => void;
-      })
-    | null = null;
+  const activeByMessageId = new Map<
+    string,
+    ActiveRelayTaskSnapshot & {
+      abort: (reason: string) => void;
+    }
+  >();
   return {
     register(task) {
-      active = task;
+      activeByMessageId.set(task.messageId, task);
       return () => {
-        if (active?.messageId === task.messageId) {
-          active = null;
+        if (activeByMessageId.get(task.messageId) === task) {
+          activeByMessageId.delete(task.messageId);
         }
       };
     },
     abortActive(predicate, reason) {
-      if (!active || !predicate(active)) {
-        return false;
+      let aborted = false;
+      for (const active of activeByMessageId.values()) {
+        if (!predicate(active)) continue;
+        active.abort(reason);
+        aborted = true;
       }
-      active.abort(reason);
-      return true;
+      return aborted;
     },
     getActiveTask() {
-      if (!active) {
-        return null;
-      }
+      const active = activeByMessageId.values().next().value;
+      if (!active) return null;
       const { messageId, sessionKey, taskKind, startedAtMs } = active;
       return { messageId, sessionKey, taskKind, startedAtMs };
+    },
+    getActiveTasks() {
+      return Array.from(activeByMessageId.values(), ({ messageId, sessionKey, taskKind, startedAtMs }) => ({
+        messageId,
+        sessionKey,
+        taskKind,
+        startedAtMs,
+      }));
     },
   };
 }

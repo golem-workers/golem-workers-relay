@@ -46,6 +46,12 @@ handle-first on the wire
 (`conversation.handle`, `thread.handle`), while legacy `targetScope` and
 `transportConversationId` remain optional compatibility fields.
 
+User chat pushes are processed concurrently by default. `RELAY_CONCURRENCY`
+defaults to `RELAY_PUSH_MAX_CONCURRENT_REQUESTS` (100 when unset), so relay
+does not serialize chat turns globally; OpenClaw is responsible for resolving
+ordering for concurrent messages in the same session. Set `RELAY_CONCURRENCY=1`
+only when reproducing legacy FIFO behavior.
+
 Generated artifact delivery uses the native relay channel directive form,
 `[[media:relative/path.ext]]`.
 

@@ -61,6 +61,29 @@ describe("loadRelayConfig", () => {
     expect(custom.taskTimeoutMs).toBe(45_000);
   });
 
+  it("processes relay messages concurrently by default and allows override", () => {
+    const def = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+    });
+    expect(def.concurrency).toBe(100);
+
+    const derived = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+      RELAY_PUSH_MAX_CONCURRENT_REQUESTS: "250",
+    });
+    expect(derived.concurrency).toBe(250);
+
+    const custom = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+      RELAY_PUSH_MAX_CONCURRENT_REQUESTS: "250",
+      RELAY_CONCURRENCY: "12",
+    });
+    expect(custom.concurrency).toBe(12);
+  });
+
   it("enables low disk alerts by default and allows threshold override", () => {
     const def = loadRelayConfig({
       RELAY_TOKEN: "t",

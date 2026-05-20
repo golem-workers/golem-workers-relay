@@ -502,6 +502,62 @@ describe("createMessageProcessor", () => {
     });
   });
 
+  it("tracks and aborts multiple active relay tasks", async () => {
+    const taskControl = createRelayTaskControl();
+    const runChatTask = vi.fn(() => new Promise(() => undefined));
+    const abortTask = vi.fn().mockResolvedValue(true);
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 1_000,
+        systemTaskTimeoutMs: 1_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: { runChatTask, abortTask } as never,
+      backend: { submitInboundMessage } as never,
+      taskControl,
+    });
+
+    const first = processor({
+      messageId: "relay-stale:source_1:test",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "status?",
+        context: { kind: "relay_stale_timeout_reminder", sourceBackendMessageId: "source_1" },
+      },
+    });
+    const second = processor({
+      messageId: "relay-stale:source_2:test",
+      input: {
+        kind: "chat",
+        sessionKey: "s2",
+        messageText: "status?",
+        context: { kind: "relay_stale_timeout_reminder", sourceBackendMessageId: "source_2" },
+      },
+    });
+    await Promise.resolve();
+
+    expect(taskControl.getActiveTasks()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ messageId: "relay-stale:source_1:test", sessionKey: "s1" }),
+        expect.objectContaining({ messageId: "relay-stale:source_2:test", sessionKey: "s2" }),
+      ])
+    );
+
+    const aborted = taskControl.abortActive((task) => task.taskKind === "system_reminder", "newer_user_message");
+    expect(aborted).toBe(true);
+    await Promise.all([first, second]);
+
+    expect(abortTask).toHaveBeenCalledWith("relay-stale:source_1:test", "RELAY_TASK_PREEMPTED");
+    expect(abortTask).toHaveBeenCalledWith("relay-stale:source_2:test", "RELAY_TASK_PREEMPTED");
+    expect(taskControl.getActiveTasks()).toEqual([]);
+  });
+
   it("emits a technical callback before processing when disk usage is above threshold", async () => {
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const processor = createMessageProcessor({
