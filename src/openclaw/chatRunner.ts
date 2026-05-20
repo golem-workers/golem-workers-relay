@@ -1343,6 +1343,53 @@ export class ChatRunner {
           };
         }
         if (finalEvt.state === "aborted") {
+          const gatewayFinalMessage = finalEvt.message ?? readLatestUserFacingMessage(openclawEvents);
+          let transcriptFinalMessage =
+            finalAttemptMessage !== null
+              ? await readLatestAssistantMessageFromSessionTranscript({
+                  sessionKey: input.sessionKey,
+                  requestMessage: finalAttemptMessage,
+                  sessionState: transcriptSessionState,
+                }).catch(() => undefined)
+              : undefined;
+          if (
+            transcriptFinalMessage === undefined &&
+            gatewayFinalMessage === undefined &&
+            finalAttemptMessage !== null
+          ) {
+            transcriptFinalMessage = await waitForAssistantMessageFromSessionTranscript({
+              sessionKey: input.sessionKey,
+              requestMessage: finalAttemptMessage,
+              timeoutMs: Math.min(1_000, Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))),
+              sessionState: transcriptSessionState,
+            }).catch(() => undefined);
+          }
+          const finalMessage = gatewayFinalMessage ?? transcriptFinalMessage;
+          if (finalMessage !== undefined) {
+            this.scheduleRunTraceCleanup(runId, "completed:aborted_user_facing_reply");
+            logger.info(
+              {
+                event: "message_flow",
+                direction: "openclaw_to_relay",
+                stage: "response_recovered_after_abort",
+                backendMessageId: input.taskId,
+                relayMessageId: null,
+                openclawRunId: runId,
+              },
+              "Recovered user-facing reply from aborted OpenClaw run"
+            );
+            return await buildReplyRunResult({
+              taskId: input.taskId,
+              runId,
+              sessionKey: input.sessionKey,
+              deliverySystem,
+              finalMessage,
+              transcriptFinalMessage,
+              openclawEvents,
+              startedAtMs,
+              devLogEnabled: this.devLogEnabled,
+            });
+          }
           this.scheduleRunTraceCleanup(runId, `completed:${finalEvt.state}`);
           logger.warn(
             {

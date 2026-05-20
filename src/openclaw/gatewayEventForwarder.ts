@@ -131,7 +131,11 @@ export function createGatewayEventForwarder(input: {
     const state = runStatesByRunId.get(runId);
     if (state) {
       state.primaryCompleted = true;
-      if (state.terminalText && !state.lastDeliveredUserFacingText) {
+      if (
+        shouldTreatTerminalTextAsPrimaryDelivered(reason) &&
+        state.terminalText &&
+        !state.lastDeliveredUserFacingText
+      ) {
         state.lastDeliveredUserFacingText = state.terminalText;
       }
       clearDebounceTimer(state);
@@ -528,6 +532,21 @@ export function createGatewayEventForwarder(input: {
   }) as GatewayEventForwarder;
   forward.closeRun = closeRun;
   return forward;
+}
+
+function shouldTreatTerminalTextAsPrimaryDelivered(reason: string): boolean {
+  const normalized = reason.toLowerCase();
+  if (
+    normalized.includes("aborted") ||
+    normalized.includes("error") ||
+    normalized.includes("timeout") ||
+    normalized.includes("failed") ||
+    normalized.includes("no_message") ||
+    normalized.includes("no_reply")
+  ) {
+    return false;
+  }
+  return true;
 }
 
 async function submitTechnicalEvent(input: {

@@ -133,6 +133,93 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("maps aborted chat event with user-facing message to reply", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: {
+                  methods: ["chat.send", "sessions.usage"],
+                  events: ["chat"],
+                },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          const runId = "run_aborted_1";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          const sessionKey = (() => {
+            if (!frame.params || typeof frame.params !== "object") return "unknown";
+            const value = (frame.params as Record<string, unknown>).sessionKey;
+            return typeof value === "string" ? value : "unknown";
+          })();
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: {
+                  runId,
+                  sessionKey,
+                  seq: 1,
+                  state: "aborted",
+                  message: { text: "partial but useful" },
+                },
+              })
+            );
+          }, 10);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const { result, openclawMeta } = await runner.runChatTask({
+      taskId: "task_aborted_1",
+      sessionKey: "tg:123:srv_1",
+      messageText: "hi",
+      timeoutMs: 1000,
+    });
+    expect(result).toMatchObject({
+      outcome: "reply",
+      reply: {
+        runId: "run_aborted_1",
+        message: { text: "partial but useful" },
+      },
+    });
+    expect(openclawMeta).toMatchObject({
+      method: "chat.send",
+      runId: "run_aborted_1",
+    });
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("does not append relay file delivery instructions for tg sessions", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);

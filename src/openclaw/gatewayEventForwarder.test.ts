@@ -613,6 +613,63 @@ describe("createGatewayEventForwarder", () => {
     });
   });
 
+  it("recovers terminal text when the primary run closes as aborted", async () => {
+    vi.useFakeTimers();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const forward = createGatewayEventForwarder({
+      relayInstanceId: "relay_1",
+      backend: { submitInboundMessage } as never,
+      forwardFinalOnly: true,
+      getChatRunTrace: (runId) => (runId === "run_1" ? { backendMessageId: "msg_1" } : null),
+    });
+
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "tg:123:srv_1",
+        seq: 3,
+        state: "aborted",
+        message: { text: "status before abort" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+
+    forward.closeRun("run_1", "completed:aborted");
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_1",
+        sessionKey: "tg:123:srv_1",
+        seq: 4,
+        state: "aborted",
+        message: { text: "status before abort" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "technical",
+        technical: {
+          event: "chat.user_facing_recovery",
+          payload: {
+            runId: "run_1",
+            sessionKey: "tg:123:srv_1",
+            seq: 4,
+            state: "aborted",
+            reason: "terminal_aborted",
+            userFacingText: "status before abort",
+            correlationStrength: "trace",
+          },
+        },
+      },
+    });
+  });
+
   it("deduplicates repeated late delta seq values after primary completion", async () => {
     vi.useFakeTimers();
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
