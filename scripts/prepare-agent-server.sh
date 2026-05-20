@@ -497,6 +497,9 @@ main() {
     file \
     git \
     wget \
+    xvfb \
+    pulseaudio \
+    pulseaudio-utils \
     dbus-user-session \
     nano \
     lsof \
@@ -518,6 +521,12 @@ main() {
   wget -q -O "${CHROME_DEB}" "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
   apt-get install -y "${CHROME_DEB}"
   google-chrome-stable --version
+
+  command -v Xvfb >/dev/null 2>&1 || { echo "Missing Xvfb after dependency install" >&2; exit 1; }
+  command -v pulseaudio >/dev/null 2>&1 || { echo "Missing pulseaudio after dependency install" >&2; exit 1; }
+  command -v pactl >/dev/null 2>&1 || { echo "Missing pactl after dependency install" >&2; exit 1; }
+  command -v parec >/dev/null 2>&1 || { echo "Missing parec after dependency install" >&2; exit 1; }
+  command -v pacat >/dev/null 2>&1 || { echo "Missing pacat after dependency install" >&2; exit 1; }
 
   set_step "logs"
   sed -i 's/^#SystemMaxUse=.*/SystemMaxUse=100M/' /etc/systemd/journald.conf

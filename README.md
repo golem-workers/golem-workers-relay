@@ -74,9 +74,15 @@ To skip interactive OpenClaw onboarding during image preparation:
 curl -fsSL https://raw.githubusercontent.com/golem-workers/golem-workers-relay/release/scripts/prepare-agent-server.sh | sudo bash -s -- --skip-openclaw-onboard
 ```
 
+The backend default snapshot refresh (`golem-workers-backend` `provider:snapshots:prepare-default`)
+downloads this script from the selected relay git ref, runs it on a fresh provider
+server, creates the provider snapshot from that prepared server, and stores the
+resulting snapshot id as the provider account `activeSnapshotId`. Snapshot-level
+runtime dependencies belong in this script, not in backend provisioning glue.
+
 The script:
 
-- installs base Ubuntu packages plus agent media/PDF tooling (`ffmpeg`, `poppler-utils`, `imagemagick`, `python3-pip`), Google Chrome Stable, Go, Linuxbrew, and Node 22;
+- installs base Ubuntu packages plus agent media/PDF tooling (`ffmpeg`, `poppler-utils`, `imagemagick`, `python3-pip`), Google Meet browser/audio runtime (`xvfb`, `pulseaudio`, `pulseaudio-utils`), Google Chrome Stable, Go, Linuxbrew, and Node 22;
 - pre-pulls and builds `golem-workers-relay` from `release` by default, or from explicit `RELAY_GIT_REF` when exported before running the script;
 - installs the relay-channel plugin from explicit `RELAY_CHANNEL_PLUGIN_GIT_REF` when exported, otherwise keeps the existing default coupling to the relay ref (`main` -> `main`, everything else -> `release`);
 - at runtime, relay also re-checks the installed `relay-channel` package version against the selected plugin repo ref and auto-updates the plugin before opening the relay control plane when the installed version is older;
