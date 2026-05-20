@@ -4,7 +4,7 @@ set -euo pipefail
 # Installs:
 # - systemd service to run relay (as root) via `npm run start`
 # - executable bit for update script
-# - hourly cron entry for update script
+# - every-10-minutes cron entry for update script
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -185,7 +185,7 @@ else
   echo "systemctl not found; skipping systemd service install."
 fi
 
-# Hourly cron entry for updates (root)
+# Every-10-minutes cron entry for updates (root)
 if [[ -d "/etc/cron.d" ]]; then
   echo "Installing cron entry: ${CRON_PATH}"
   mkdir -p "/var/log/${SERVICE_NAME}" 2>/dev/null || true
@@ -194,7 +194,7 @@ if [[ -d "/etc/cron.d" ]]; then
 SHELL=/bin/bash
 PATH=${NPM_DIR}:${NODE_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-0 * * * * root SERVICE_NAME=${SERVICE_NAME} NPM_BIN=${NPM_BIN} APP_GIT_REF=${APP_GIT_REF} ${ROOT_DIR}/scripts/update-repo.sh >> /var/log/${SERVICE_NAME}/cron-update.log 2>&1
+*/10 * * * * root SERVICE_NAME=${SERVICE_NAME} NPM_BIN=${NPM_BIN} APP_GIT_REF=${APP_GIT_REF} ${ROOT_DIR}/scripts/update-repo.sh >> /var/log/${SERVICE_NAME}/cron-update.log 2>&1
 EOF
 
   chmod 0644 "${CRON_PATH}"
