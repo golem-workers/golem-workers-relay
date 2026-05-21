@@ -120,6 +120,13 @@ export async function executeAgentControl(input: {
                     contextTokens: input.action.contextTokens ?? null,
                     thinkingDefault: input.action.thinkingDefault,
                   })
+                : input.action.kind === "chat.abortTask"
+                  ? (() => {
+                      throw new AgentControlError(
+                        "CHAT_ABORT_TASK_UNSUPPORTED",
+                        "chat.abortTask must be handled by relay ingress"
+                      );
+                    })()
                 : await setModel({
                     configPath: input.configPath,
                     model: input.action.model,

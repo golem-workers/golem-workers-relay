@@ -30,6 +30,7 @@ import { closeHttpServer, startRelayChannelDataPlaneServer } from "./relayChanne
 import { startRelayChannelControlPlane } from "./relayChannel/startControlPlaneServer.js";
 import { createRelayChannelTransportDeliveryTracker } from "./relayChannel/transportDeliveryTracker.js";
 import { ensureRelayChannelPluginUpToDate } from "./relayChannel/ensurePluginUpToDate.js";
+import { abortActiveChatTaskByBackendMessageId } from "./agentControl/abortActiveChatTask.js";
 import { executeAgentControl } from "./agentControl/executeAgentControl.js";
 
 async function main(): Promise<void> {
@@ -307,13 +308,14 @@ async function main(): Promise<void> {
     onMessage: (message) => {
       try {
         if (message.input.kind === "chat" && isUserChatMessage(message)) {
-          const removed = queue.removeQueued(
+          const sessionKey = message.input.sessionKey;
+          const removedSystemReminders = queue.removeQueued(
             (queued) =>
               queued.input.kind === "chat" &&
-              queued.input.sessionKey === message.input.sessionKey &&
+              queued.input.sessionKey === sessionKey &&
               isSystemReminderMessage(queued)
           );
-          for (const queued of removed) {
+          for (const queued of removedSystemReminders) {
             void submitDroppedSystemReminder({
               backend,
               relayInstanceId: cfg.relayInstanceId,
@@ -321,19 +323,49 @@ async function main(): Promise<void> {
               reason: "dropped_for_newer_user_message",
             });
           }
-          const aborted = taskControl.abortActive(
-            (task) => task.taskKind === "system_reminder" && task.sessionKey === message.input.sessionKey,
+          const removedUserChats = queue.removeQueued(
+            (queued) =>
+              queued.input.kind === "chat" &&
+              queued.input.sessionKey === sessionKey &&
+              isUserChatMessage(queued) &&
+              queued.messageId !== message.messageId
+          );
+          for (const queued of removedUserChats) {
+            void submitDroppedSupersededUserChat({
+              backend,
+              relayInstanceId: cfg.relayInstanceId,
+              message: queued,
+              reason: "superseded_by_newer_user_message",
+            });
+          }
+          const abortedSystemReminder = taskControl.abortActive(
+            (task) => task.taskKind === "system_reminder" && task.sessionKey === sessionKey,
             "newer_user_message"
           );
-          if (aborted) {
+          if (abortedSystemReminder) {
             logger.warn(
               {
                 event: "relay_queue",
                 stage: "active_system_task_preempted",
                 backendMessageId: message.messageId,
-                sessionKey: message.input.sessionKey,
+                sessionKey,
               },
               "Preempted active system reminder for newer user message"
+            );
+          }
+          const abortedUserChat = taskControl.abortActive(
+            (task) => task.taskKind === "user_chat" && task.sessionKey === sessionKey,
+            "newer_user_message"
+          );
+          if (abortedUserChat) {
+            logger.warn(
+              {
+                event: "relay_queue",
+                stage: "active_user_task_preempted",
+                backendMessageId: message.messageId,
+                sessionKey,
+              },
+              "Preempted active user chat for newer user message"
             );
           }
         }
@@ -390,9 +422,18 @@ async function main(): Promise<void> {
       publishRelayChannelEvent(message.input.event);
       return Promise.resolve();
     },
-    onAgentControl: (message) => {
+    onAgentControl: async (message) => {
       if (message.input.kind !== "agent_control") {
         throw new Error("agent_control payload expected");
+      }
+      if (message.input.action.kind === "chat.abortTask") {
+        const { aborted } = await abortActiveChatTaskByBackendMessageId({
+          taskControl,
+          runner,
+          backendMessageId: message.input.action.backendMessageId,
+          reason: message.input.action.reason ?? "backend_abort",
+        });
+        return { kind: "chat.abortTask", aborted };
       }
       return executeAgentControl({
         action: message.input.action,
@@ -564,6 +605,48 @@ function isSystemReminderMessage(message: InboundPushMessage): message is ChatPu
   }
   const kind = (context as { kind?: unknown }).kind;
   return kind === "relay_stale_timeout_reminder" || kind === "relay_status_nudge";
+}
+
+async function submitDroppedSupersededUserChat(input: {
+  backend: BackendClient;
+  relayInstanceId: string;
+  message: InboundPushMessage;
+  reason: string;
+}): Promise<void> {
+  const relayMessageId = `relay_drop_${randomUUID()}`;
+  try {
+    await input.backend.submitInboundMessage({
+      body: {
+        relayInstanceId: input.relayInstanceId,
+        relayMessageId,
+        finishedAtMs: Date.now(),
+        outcome: "error",
+        error: {
+          code: "RELAY_TASK_SUPERSEDED",
+          message: `Relay task was superseded: ${input.reason}`,
+        },
+        openclawMeta: {
+          method: "relay_queue",
+          trace: {
+            backendMessageId: input.message.messageId,
+            relayMessageId,
+            relayInstanceId: input.relayInstanceId,
+          },
+          ...(input.message.input.kind === "chat" ? { sessionKey: input.message.input.sessionKey } : {}),
+        },
+      },
+    });
+  } catch (error) {
+    logger.warn(
+      {
+        event: "relay_queue",
+        stage: "dropped_user_task_callback_failed",
+        backendMessageId: input.message.messageId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "Failed to submit dropped user chat callback"
+    );
+  }
 }
 
 async function submitDroppedSystemReminder(input: {

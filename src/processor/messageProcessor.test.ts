@@ -577,6 +577,7 @@ describe("createMessageProcessor", () => {
   });
 
   it("uses the shorter system task timeout for stale reminders", async () => {
+    const taskControl = createRelayTaskControl();
     const runChatTask = vi.fn(() => new Promise(() => undefined));
     const abortTask = vi.fn().mockResolvedValue(true);
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
@@ -592,6 +593,7 @@ describe("createMessageProcessor", () => {
       gateway: { start: vi.fn(), getHello: vi.fn() } as never,
       runner: { runChatTask, abortTask } as never,
       backend: { submitInboundMessage } as never,
+      taskControl,
     });
 
     await processor({
@@ -612,6 +614,54 @@ describe("createMessageProcessor", () => {
         error: { code: "RELAY_SYSTEM_TASK_TIMEOUT" },
       },
     });
+    expect(taskControl.getActiveTasks()).toEqual([]);
+  });
+
+  it("preempts active user chat when task control aborts them", async () => {
+    const taskControl = createRelayTaskControl();
+    const runChatTask = vi.fn(() => new Promise(() => undefined));
+    const abortTask = vi.fn().mockResolvedValue(true);
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 1_000,
+        systemTaskTimeoutMs: 1_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: { runChatTask, abortTask } as never,
+      backend: { submitInboundMessage } as never,
+      taskControl,
+    });
+
+    const processing = processor({
+      messageId: "user_msg_1",
+      input: {
+        kind: "chat",
+        sessionKey: "s1",
+        messageText: "hello",
+      },
+    });
+    await Promise.resolve();
+
+    const aborted = taskControl.abortActive(
+      (task) => task.taskKind === "user_chat" && task.sessionKey === "s1",
+      "newer_user_message"
+    );
+    expect(aborted).toBe(true);
+    await processing;
+
+    expect(abortTask).toHaveBeenCalledWith("user_msg_1", "RELAY_TASK_PREEMPTED");
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "error",
+        error: { code: "RELAY_TASK_PREEMPTED" },
+      },
+    });
+    expect(taskControl.getActiveTasks()).toEqual([]);
   });
 
   it("preempts active system reminders when task control aborts them", async () => {
@@ -659,6 +709,7 @@ describe("createMessageProcessor", () => {
         error: { code: "RELAY_TASK_PREEMPTED" },
       },
     });
+    expect(taskControl.getActiveTasks()).toEqual([]);
   });
 
   it("tracks and aborts multiple active relay tasks", async () => {

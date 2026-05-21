@@ -90,6 +90,11 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     sourceBackendMessageId: z.string().min(1),
     timeoutMs: z.number().int().min(1_000).max(120_000).optional(),
   }),
+  z.object({
+    kind: z.literal("chat.abortTask"),
+    backendMessageId: z.string().min(1),
+    reason: z.string().min(1).optional(),
+  }),
 ]);
 
 export type AgentControlAction = z.infer<typeof agentControlActionSchema>;
@@ -209,6 +214,10 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     kind: z.literal("chat.statusNudge"),
     accepted: z.literal(true),
     runId: z.string().min(1).nullable(),
+  }),
+  z.object({
+    kind: z.literal("chat.abortTask"),
+    aborted: z.boolean(),
   }),
 ]);
 

@@ -603,52 +603,52 @@ async function processSingleMessage(input: {
         startedAtMs: startedAt,
         abort: abortController.abort,
       });
-      logger.info(
-        {
-          event: "message_flow",
-          direction: "relay_to_openclaw",
-          stage: "chat_runner_start",
-          backendMessageId: msg.messageId,
-          relayMessageId,
-          sessionKey: msg.input.sessionKey,
-          deliverySystem,
-          textLen: msg.input.messageText.length,
-          mediaCount: msg.input.media?.length ?? 0,
-        },
-        "Dispatching chat task to OpenClaw"
-      );
-      let timedOut = false;
-      const taskTimeout = createSlidingTaskTimeout({
-        timeoutMs: effectiveTaskTimeoutMs,
-        buildError: () => {
-          timedOut = true;
-          return new RelayProcessingError({
-            code: taskKind === "system_reminder" ? "RELAY_SYSTEM_TASK_TIMEOUT" : "RELAY_TASK_TIMEOUT",
-            message:
-              taskKind === "system_reminder"
-                ? "Relay system task timed out and was released to avoid blocking user messages"
-                : "Relay task timed out and was released to avoid blocking the message queue",
-          });
-        },
-      });
-      const runnerPromise = runner.runChatTask({
-        taskId: msg.messageId,
-        sessionKey: msg.input.sessionKey,
-        messageText: msg.input.messageText,
-        media: msg.input.media,
-        context: msg.input.context,
-        deliverySystem,
-        timeoutMs: effectiveTaskTimeoutMs,
-        onActivity: taskTimeout.touch,
-      });
       try {
-        const { result, openclawMeta } = await Promise.race([
-          runnerPromise,
-          abortController.promise,
-          taskTimeout.promise,
-        ]);
-        taskTimeout.clear();
-        unregisterActiveTask();
+        logger.info(
+          {
+            event: "message_flow",
+            direction: "relay_to_openclaw",
+            stage: "chat_runner_start",
+            backendMessageId: msg.messageId,
+            relayMessageId,
+            sessionKey: msg.input.sessionKey,
+            deliverySystem,
+            textLen: msg.input.messageText.length,
+            mediaCount: msg.input.media?.length ?? 0,
+          },
+          "Dispatching chat task to OpenClaw"
+        );
+        let timedOut = false;
+        const taskTimeout = createSlidingTaskTimeout({
+          timeoutMs: effectiveTaskTimeoutMs,
+          buildError: () => {
+            timedOut = true;
+            return new RelayProcessingError({
+              code: taskKind === "system_reminder" ? "RELAY_SYSTEM_TASK_TIMEOUT" : "RELAY_TASK_TIMEOUT",
+              message:
+                taskKind === "system_reminder"
+                  ? "Relay system task timed out and was released to avoid blocking user messages"
+                  : "Relay task timed out and was released to avoid blocking the message queue",
+            });
+          },
+        });
+        const runnerPromise = runner.runChatTask({
+          taskId: msg.messageId,
+          sessionKey: msg.input.sessionKey,
+          messageText: msg.input.messageText,
+          media: msg.input.media,
+          context: msg.input.context,
+          deliverySystem,
+          timeoutMs: effectiveTaskTimeoutMs,
+          onActivity: taskTimeout.touch,
+        });
+        try {
+          const { result, openclawMeta } = await Promise.race([
+            runnerPromise,
+            abortController.promise,
+            taskTimeout.promise,
+          ]);
+          taskTimeout.clear();
         const openclawRunId =
           result.outcome === "reply"
             ? result.reply.runId
@@ -742,42 +742,44 @@ async function processSingleMessage(input: {
             },
           });
         }
-      } catch (error) {
-        taskTimeout.clear();
-        unregisterActiveTask();
-        if (error instanceof RelayProcessingError) {
-          runnerPromise.catch((lateError) => {
-            logger.warn(
-              {
-                event: "message_flow",
-                direction: "relay_to_openclaw",
-                stage: "late_completion_after_release",
-                backendMessageId: msg.messageId,
-                relayMessageId,
-                error: lateError instanceof Error ? lateError.message : String(lateError),
-              },
-              "OpenClaw chat task settled after relay released the queue slot"
-            );
-          });
-          if (timedOut) {
-            logger.warn(
-              {
-                event: "relay_queue",
-                stage: "active_task_timeout",
-                backendMessageId: msg.messageId,
-                relayMessageId,
-                taskKind,
-                taskTimeoutMs: effectiveTaskTimeoutMs,
-                durationMs: Date.now() - startedAt,
-              },
-              "Relay active task timed out; releasing queue slot"
-            );
+        } catch (error) {
+          taskTimeout.clear();
+          if (error instanceof RelayProcessingError) {
+            runnerPromise.catch((lateError) => {
+              logger.warn(
+                {
+                  event: "message_flow",
+                  direction: "relay_to_openclaw",
+                  stage: "late_completion_after_release",
+                  backendMessageId: msg.messageId,
+                  relayMessageId,
+                  error: lateError instanceof Error ? lateError.message : String(lateError),
+                },
+                "OpenClaw chat task settled after relay released the queue slot"
+              );
+            });
+            if (timedOut) {
+              logger.warn(
+                {
+                  event: "relay_queue",
+                  stage: "active_task_timeout",
+                  backendMessageId: msg.messageId,
+                  relayMessageId,
+                  taskKind,
+                  taskTimeoutMs: effectiveTaskTimeoutMs,
+                  durationMs: Date.now() - startedAt,
+                },
+                "Relay active task timed out; releasing queue slot"
+              );
+            }
+            if (typeof runner.abortTask === "function") {
+              await runner.abortTask(msg.messageId, error.code).catch(() => undefined);
+            }
           }
-          if (typeof runner.abortTask === "function") {
-            await runner.abortTask(msg.messageId, error.code).catch(() => undefined);
-          }
+          throw error;
         }
-        throw error;
+      } finally {
+        unregisterActiveTask();
       }
     }
 
