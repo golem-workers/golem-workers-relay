@@ -28,6 +28,7 @@ import { createGatewayEventForwarder } from "./openclaw/gatewayEventForwarder.js
 import { createOpenclawConnectionStatusReporter } from "./openclaw/connectionStatusReporter.js";
 import { closeHttpServer, startRelayChannelDataPlaneServer } from "./relayChannel/startDataPlaneServer.js";
 import { startRelayChannelControlPlane } from "./relayChannel/startControlPlaneServer.js";
+import { createRelayChannelTransportDeliveryTracker } from "./relayChannel/transportDeliveryTracker.js";
 import { ensureRelayChannelPluginUpToDate } from "./relayChannel/ensurePluginUpToDate.js";
 import { executeAgentControl } from "./agentControl/executeAgentControl.js";
 
@@ -111,6 +112,7 @@ async function main(): Promise<void> {
   let getRelayChannelHealth: () => Record<string, unknown> = () => ({ enabled: false });
   let relayChannelCleanup: (() => Promise<void>) | null = null;
   let publishRelayChannelEvent: ((event: Record<string, unknown>) => void) | null = null;
+  const transportDeliveryTracker = createRelayChannelTransportDeliveryTracker();
   if (cfg.relayChannel.enabled) {
     const dp = startRelayChannelDataPlaneServer({
       host: cfg.relayChannel.dataPlaneHost,
@@ -121,6 +123,7 @@ async function main(): Promise<void> {
       port: cfg.relayChannel.controlPlanePort,
       relayInstanceId: cfg.relayInstanceId,
       backend,
+      transportDeliveryTracker,
       executeAgentControl: (action) =>
         executeAgentControl({
           action,
@@ -256,6 +259,7 @@ async function main(): Promise<void> {
     runner,
     backend,
     taskControl,
+    transportDeliveryTracker,
   });
 
   const queue = new InMemoryTaskQueue<InboundPushMessage>({

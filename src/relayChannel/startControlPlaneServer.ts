@@ -12,6 +12,10 @@ import {
   transportActionRequestSchema,
 } from "./controlPlaneProtocol.js";
 import { executeTelegramTransportActionViaBackend } from "./telegramBackendTransport.js";
+import {
+  readTransportDeliveryCorrelationId,
+  type RelayChannelTransportDeliveryTracker,
+} from "./transportDeliveryTracker.js";
 import { executeWhatsAppPersonalMessageSend } from "./whatsappPersonalTransport.js";
 import type { AgentControlAction, AgentControlResult } from "../agentControl/protocol.js";
 
@@ -54,6 +58,7 @@ export function startRelayChannelControlPlane(input: {
   };
   backend: BackendClient;
   executeAgentControl: (action: AgentControlAction) => Promise<AgentControlResult>;
+  transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
   onStateChange?: (state: ControlPlaneRuntimeState) => void;
 }): {
   server: ReturnType<typeof createServer>;
@@ -132,6 +137,7 @@ export function startRelayChannelControlPlane(input: {
           action: request.action,
           backend: input.backend,
           getDataPlane: input.getDataPlane,
+          transportDeliveryTracker: input.transportDeliveryTracker,
         });
         clientConnected = true;
         input.onStateChange?.(getState());
@@ -330,6 +336,7 @@ export function startRelayChannelControlPlane(input: {
 async function executeTransportAction(input: {
   action: ReturnType<typeof transportActionRequestSchema.parse>["action"];
   backend: BackendClient;
+  transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
   getDataPlane: () => {
     uploadBaseUrl: string;
     downloadBaseUrl: string;
@@ -384,6 +391,19 @@ async function executeTransportAction(input: {
       : {}),
     ...("token" in result && typeof result.token === "string" ? { token: result.token } : {}),
   };
+
+  if (input.action.kind === "message.send") {
+    const correlationMessageId = readTransportDeliveryCorrelationId(input.action.openclawContext);
+    if (correlationMessageId && input.transportDeliveryTracker) {
+      input.transportDeliveryTracker.recordSdkDelivery({
+        correlationMessageId,
+        transportChannelId: channel === "whatsapp_personal" ? "whatsapp_personal" : "telegram",
+        ...(typeof completedResult.transportMessageId === "string"
+          ? { transportMessageId: completedResult.transportMessageId }
+          : {}),
+      });
+    }
+  }
 
   if (
     channel === "telegram" &&

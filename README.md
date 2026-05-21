@@ -4,6 +4,9 @@ Relay daemon that accepts push messages from `golem-workers-backend` over HTTP a
 OpenClaw Gateway over WebSocket (`ws://127.0.0.1:18789` by default).
 For messenger-backed `relay_channel_v2` transport, relay keeps only routing/context metadata and proxies
 secret-dependent provider actions back to backend instead of receiving raw messenger credentials.
+When OpenClaw finishes with user-facing reply text but the relay-channel plugin did not already send it,
+relay delivers that final reply through backend transport RPC before reporting `transportDelivered`.
+When the plugin did send during the run, relay reuses that SDK receipt and skips duplicate delivery.
 
 The relay also reports the current OpenClaw connectivity state back to backend:
 

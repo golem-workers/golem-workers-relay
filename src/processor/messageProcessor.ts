@@ -8,6 +8,9 @@ import { type ChatRunner } from "../openclaw/chatRunner.js";
 import { type GatewayClient } from "../openclaw/gatewayClient.js";
 import { makeTextPreview } from "../common/utils/text.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
+import { executeTelegramTransportActionViaBackend } from "../relayChannel/telegramBackendTransport.js";
+import { type RelayChannelTransportDeliveryTracker } from "../relayChannel/transportDeliveryTracker.js";
+import { executeWhatsAppPersonalMessageSend } from "../relayChannel/whatsappPersonalTransport.js";
 
 type MessageProcessorInput = {
   cfg: {
@@ -25,6 +28,7 @@ type MessageProcessorInput = {
   backend: BackendClient;
   readDiskUsage?: (path: string) => Promise<DiskUsageSnapshot>;
   taskControl?: RelayTaskControl;
+  transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
 };
 
 type DiskUsageSnapshot = {
@@ -114,12 +118,13 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
   const { cfg, gateway, runner, backend } = input;
   const readDiskUsage = input.readDiskUsage ?? readDiskUsageSnapshot;
   const taskControl = input.taskControl ?? createRelayTaskControl();
+  const transportDeliveryTracker = input.transportDeliveryTracker;
   const chatBatchesBySession = new Map<string, ChatBatchState>();
   const chatBatchDebounceMs = Math.max(0, Math.trunc(cfg.chatBatchDebounceMs));
 
   return async (msg: InboundPushMessage): Promise<void> => {
     if (msg.input.kind !== "chat" || chatBatchDebounceMs === 0) {
-      await processSingleMessage({ cfg, gateway, runner, backend, msg, readDiskUsage, taskControl });
+      await processSingleMessage({ cfg, gateway, runner, backend, msg, readDiskUsage, taskControl, transportDeliveryTracker });
       return;
     }
     await enqueueChatBatch({
@@ -128,7 +133,7 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
       debounceMs: chatBatchDebounceMs,
       chatBatchesBySession,
       flush: async (items) => {
-        await flushChatBatch({ cfg, gateway, runner, backend, items, readDiskUsage, taskControl });
+        await flushChatBatch({ cfg, gateway, runner, backend, items, readDiskUsage, taskControl, transportDeliveryTracker });
       },
     });
   };
@@ -307,6 +312,7 @@ async function flushChatBatch(input: {
   items: ChatBatchItem[];
   readDiskUsage: (path: string) => Promise<DiskUsageSnapshot>;
   taskControl: RelayTaskControl;
+  transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
 }): Promise<void> {
   if (input.items.length === 0) return;
   if (input.items.length === 1) {
@@ -320,6 +326,7 @@ async function flushChatBatch(input: {
         msg: only.msg,
         readDiskUsage: input.readDiskUsage,
         taskControl: input.taskControl,
+        transportDeliveryTracker: input.transportDeliveryTracker,
       });
       only.deferred.resolve();
     } catch (error) {
@@ -356,6 +363,7 @@ async function flushChatBatch(input: {
       msg: mergedMessage,
       readDiskUsage: input.readDiskUsage,
       taskControl: input.taskControl,
+      transportDeliveryTracker: input.transportDeliveryTracker,
     });
     target.deferred.resolve();
   } catch (error) {
@@ -461,6 +469,7 @@ async function processSingleMessage(input: {
   msg: InboundPushMessage;
   readDiskUsage: (path: string) => Promise<DiskUsageSnapshot>;
   taskControl: RelayTaskControl;
+  transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
 }): Promise<void> {
   const { cfg, gateway, runner, backend, msg } = input;
   const startedAt = Date.now();
@@ -663,14 +672,16 @@ async function processSingleMessage(input: {
         const finishedAtMs = Date.now();
         if (result.outcome === "reply") {
           const replyPayload = await buildReplyPayload(result.reply);
-          const directTransportMeta = maybeDeliverRelayChannelReplyDirectly({
+          const directTransportMeta = await maybeDeliverRelayChannelReplyDirectly({
             backend,
             context: msg.input.context,
             sessionKey: msg.input.sessionKey,
             reply: replyPayload,
             backendMessageId: msg.messageId,
             relayMessageId,
+            transportDeliveryTracker: input.transportDeliveryTracker,
           });
+          input.transportDeliveryTracker?.clear(msg.messageId);
           await backend.submitInboundMessage({
             body: {
               relayInstanceId: cfg.relayInstanceId,
@@ -1076,55 +1087,219 @@ function readWhatsAppPersonalTaskContext(context: unknown):
   };
 }
 
-function maybeDeliverRelayChannelReplyDirectly(input: {
+function stripNativeMediaDirectives(text: string): string {
+  return text
+    .replace(/\[\[\s*media\s*:[^\]\r\n]+?\s*\]\]/gi, "")
+    .replace(/(^|\n)\s*MEDIA:\s*[^\n\r]+(?=\r?\n|$)/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function readOptionalTransportMessageId(
+  target: { messageId?: string; chatId: string } | null | undefined
+): string | null {
+  if (!target || !("messageId" in target)) {
+    return null;
+  }
+  return typeof target.messageId === "string" && target.messageId.trim().length > 0
+    ? target.messageId.trim()
+    : null;
+}
+
+async function maybeDeliverRelayChannelReplyDirectly(input: {
   backend: BackendClient;
   context: unknown;
   sessionKey: string;
   reply: Extract<RelayInboundMessageRequest, { outcome: "reply" }>["reply"];
   backendMessageId: string;
   relayMessageId: string;
-}): {
+  transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
+}): Promise<{
   transportDelivered: true;
   transportChannelId: "telegram" | "whatsapp_personal";
   transportAccountId: "default";
   transportMessageId?: string;
-} | null {
-  void input.backend;
+} | null> {
   const telegram =
     readTelegramTaskContext(input.context) ?? readTelegramTaskContextFromSessionKey(input.sessionKey);
   const whatsAppPersonal = telegram
     ? null
     : readWhatsAppPersonalTaskContext(input.context) ??
       readWhatsAppPersonalTaskContextFromSessionKey(input.sessionKey);
-  const text = extractReplyText(input.reply.message);
-  const mediaCount = Array.isArray(input.reply.media) ? input.reply.media.length : 0;
-  if (!text && mediaCount === 0) {
+  const media = Array.isArray(input.reply.media) ? input.reply.media : [];
+  const text = stripNativeMediaDirectives(extractReplyText(input.reply.message));
+  if (!text && media.length === 0) {
     return null;
   }
   if (!telegram && !whatsAppPersonal) {
-    return null;
+    if (!isTransportBackedSessionKey(input.sessionKey)) {
+      return null;
+    }
+    throw new RelayProcessingError({
+      code: "RELAY_DIRECT_TRANSPORT_DELIVERY_FAILED",
+      message: "Relay direct delivery failed: user-facing reply has no messenger transport context",
+    });
   }
 
-  logger.info(
-    {
-      event: "message_flow",
-      direction: "openclaw_to_transport",
-      stage: "sdk_delivered",
-      backendMessageId: input.backendMessageId,
-      relayMessageId: input.relayMessageId,
-      transport: telegram ? "telegram" : "whatsapp_personal",
-      chatId: telegram?.chatId ?? whatsAppPersonal?.chatId ?? null,
-      textLen: text.length,
-      mediaCount,
-    },
-    "Message flow transition"
-  );
+  const sdkDelivery = input.transportDeliveryTracker?.getSdkDelivery(input.backendMessageId) ?? null;
+  if (sdkDelivery) {
+    logger.info(
+      {
+        event: "message_flow",
+        direction: "openclaw_to_transport",
+        stage: "sdk_delivered",
+        backendMessageId: input.backendMessageId,
+        relayMessageId: input.relayMessageId,
+        transport: sdkDelivery.transportChannelId,
+        chatId: telegram?.chatId ?? whatsAppPersonal?.chatId ?? null,
+        textLen: text.length,
+        mediaCount: media.length,
+        transportMessageId: sdkDelivery.transportMessageId ?? null,
+      },
+      "Message flow transition"
+    );
+    return {
+      transportDelivered: true,
+      transportChannelId: sdkDelivery.transportChannelId,
+      transportAccountId: "default",
+      ...(sdkDelivery.transportMessageId ? { transportMessageId: sdkDelivery.transportMessageId } : {}),
+    };
+  }
 
-  return {
-    transportDelivered: true,
-    transportChannelId: telegram ? "telegram" : "whatsapp_personal",
-    transportAccountId: "default",
-  };
+  try {
+    let firstTransportMessageId: string | undefined;
+    let remainingText = text;
+    const telegramReplyToMessageId = readOptionalTransportMessageId(telegram);
+    const whatsAppReplyToMessageId = readOptionalTransportMessageId(whatsAppPersonal);
+
+    if (media.length === 0) {
+      const sent = telegram
+        ? await executeTelegramTransportActionViaBackend({
+            backend: input.backend,
+            action: {
+              kind: "message.send",
+              transportTarget: { channel: "telegram", chatId: telegram.chatId },
+              reply: { replyToTransportMessageId: telegramReplyToMessageId },
+              openclawContext: {
+                backendMessageId: input.backendMessageId,
+                correlationMessageId: input.backendMessageId,
+                sessionKey: input.sessionKey,
+                runId: input.reply.runId,
+              },
+              payload: { text: remainingText },
+            },
+          })
+        : await executeWhatsAppPersonalMessageSend({
+            backend: input.backend,
+            action: {
+              transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
+              reply: { replyToTransportMessageId: whatsAppReplyToMessageId },
+              payload: { text: remainingText },
+            },
+          });
+      firstTransportMessageId = sent.transportMessageId;
+    } else {
+      for (const item of media) {
+        const sent = telegram
+          ? await executeTelegramTransportActionViaBackend({
+              backend: input.backend,
+              action: {
+                kind: "message.send",
+                transportTarget: { channel: "telegram", chatId: telegram.chatId },
+                reply: { replyToTransportMessageId: firstTransportMessageId ? null : telegramReplyToMessageId },
+                openclawContext: {
+                  backendMessageId: input.backendMessageId,
+                  correlationMessageId: input.backendMessageId,
+                  sessionKey: input.sessionKey,
+                  runId: input.reply.runId,
+                },
+                payload: {
+                  ...(remainingText ? { text: remainingText } : {}),
+                  mediaUrl: item.path,
+                  fileName: item.fileName,
+                  contentType: item.contentType,
+                },
+              },
+            })
+          : await executeWhatsAppPersonalMessageSend({
+              backend: input.backend,
+              action: {
+                transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
+                reply: {
+                  replyToTransportMessageId: firstTransportMessageId ? null : whatsAppReplyToMessageId,
+                },
+                payload: {
+                  ...(remainingText ? { text: remainingText } : {}),
+                  mediaUrl: item.path,
+                  fileName: item.fileName,
+                  contentType: item.contentType,
+                },
+              },
+            });
+        firstTransportMessageId ??= sent.transportMessageId;
+        remainingText = "";
+      }
+
+      if (remainingText) {
+        const sent = telegram
+          ? await executeTelegramTransportActionViaBackend({
+              backend: input.backend,
+              action: {
+                kind: "message.send",
+                transportTarget: { channel: "telegram", chatId: telegram.chatId },
+                reply: { replyToTransportMessageId: telegramReplyToMessageId },
+                openclawContext: {
+                  backendMessageId: input.backendMessageId,
+                  correlationMessageId: input.backendMessageId,
+                  sessionKey: input.sessionKey,
+                  runId: input.reply.runId,
+                },
+                payload: { text: remainingText },
+              },
+            })
+          : await executeWhatsAppPersonalMessageSend({
+              backend: input.backend,
+              action: {
+                transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
+                reply: { replyToTransportMessageId: whatsAppReplyToMessageId },
+                payload: { text: remainingText },
+              },
+            });
+        firstTransportMessageId ??= sent.transportMessageId;
+      }
+    }
+
+    logger.info(
+      {
+        event: "message_flow",
+        direction: "relay_to_transport",
+        stage: "sent",
+        backendMessageId: input.backendMessageId,
+        relayMessageId: input.relayMessageId,
+        transport: telegram ? "telegram" : "whatsapp_personal",
+        chatId: telegram?.chatId ?? whatsAppPersonal?.chatId ?? null,
+        textLen: text.length,
+        mediaCount: media.length,
+        transportMessageId: firstTransportMessageId ?? null,
+      },
+      "Message flow transition"
+    );
+
+    return {
+      transportDelivered: true,
+      transportChannelId: telegram ? "telegram" : "whatsapp_personal",
+      transportAccountId: "default",
+      ...(firstTransportMessageId ? { transportMessageId: firstTransportMessageId } : {}),
+    };
+  } catch (error) {
+    const transport = telegram ? "telegram" : "whatsapp_personal";
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new RelayProcessingError({
+      code: "RELAY_DIRECT_TRANSPORT_DELIVERY_FAILED",
+      message: `Relay direct ${transport} delivery failed: ${detail}`,
+      cause: error,
+    });
+  }
 }
 
 function isTransportBackedSessionKey(sessionKey: string): boolean {

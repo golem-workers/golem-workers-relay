@@ -14,13 +14,17 @@ vi.mock("../relayChannel/whatsappPersonalTransport.js", () => ({
 
 import { createMessageProcessor, createRelayTaskControl } from "./messageProcessor.js";
 import type { InboundPushMessage } from "../backend/types.js";
+import { createRelayChannelTransportDeliveryTracker } from "../relayChannel/transportDeliveryTracker.js";
 
 describe("createMessageProcessor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("marks relay_channel_v2 telegram replies as SDK-delivered without direct transport executor", async () => {
+  it("delivers relay_channel_v2 telegram replies via backend when SDK did not send", async () => {
+    executeTelegramTransportActionViaBackendMock.mockResolvedValueOnce({
+      transportMessageId: "tg-direct-1",
+    });
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const processor = createMessageProcessor({
       cfg: {
@@ -71,6 +75,75 @@ describe("createMessageProcessor", () => {
       },
     });
 
+    expect(executeTelegramTransportActionViaBackendMock).toHaveBeenCalledTimes(1);
+    const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
+      | {
+          body?: {
+            openclawMeta?: {
+              transportChannelId?: string;
+              transportAccountId?: string;
+              transportMessageId?: string;
+              transportDelivered?: boolean;
+            };
+          };
+        }
+      | undefined;
+    expect(firstCall?.body?.openclawMeta?.transportChannelId).toBe("telegram");
+    expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
+    expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("tg-direct-1");
+    expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
+  });
+
+  it("marks relay_channel_v2 telegram replies as SDK-delivered when relay-channel already sent", async () => {
+    const transportDeliveryTracker = createRelayChannelTransportDeliveryTracker();
+    transportDeliveryTracker.recordSdkDelivery({
+      correlationMessageId: "msg_v2_sdk_1",
+      transportChannelId: "telegram",
+      transportMessageId: "tg-sdk-1",
+    });
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockResolvedValue({
+          result: {
+            outcome: "reply",
+            reply: {
+              runId: "run_v2_sdk_1",
+              message: { role: "assistant", content: "Ответил в чат." },
+            },
+          },
+          openclawMeta: { method: "chat.send", runId: "run_v2_sdk_1" },
+        }),
+      } as never,
+      backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
+      transportDeliveryTracker,
+    });
+
+    await processor({
+      messageId: "msg_v2_sdk_1",
+      input: {
+        kind: "chat",
+        sessionKey: "tg:123:srv_1",
+        messageText: "ping",
+        context: {
+          channel: "telegram",
+          deliverySystem: "relay_channel_v2",
+          telegram: {
+            chatId: "123",
+            messageId: "55",
+          },
+        },
+      },
+    });
+
     expect(executeTelegramTransportActionViaBackendMock).not.toHaveBeenCalled();
     const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
       | {
@@ -86,11 +159,14 @@ describe("createMessageProcessor", () => {
       | undefined;
     expect(firstCall?.body?.openclawMeta?.transportChannelId).toBe("telegram");
     expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
-    expect(firstCall?.body?.openclawMeta?.transportMessageId).toBeUndefined();
+    expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("tg-sdk-1");
     expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
   });
 
-  it("marks relay_channel_v2 WhatsApp Personal replies as SDK-delivered without direct transport executor", async () => {
+  it("delivers relay_channel_v2 WhatsApp Personal replies via backend when SDK did not send", async () => {
+    executeWhatsAppPersonalMessageSendMock.mockResolvedValueOnce({
+      transportMessageId: "wa-direct-1",
+    });
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const processor = createMessageProcessor({
       cfg: {
@@ -141,7 +217,7 @@ describe("createMessageProcessor", () => {
       },
     });
 
-    expect(executeWhatsAppPersonalMessageSendMock).not.toHaveBeenCalled();
+    expect(executeWhatsAppPersonalMessageSendMock).toHaveBeenCalledTimes(1);
     const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
       | {
           body?: {
@@ -156,11 +232,11 @@ describe("createMessageProcessor", () => {
       | undefined;
     expect(firstCall?.body?.openclawMeta?.transportChannelId).toBe("whatsapp_personal");
     expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
-    expect(firstCall?.body?.openclawMeta?.transportMessageId).toBeUndefined();
+    expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("wa-direct-1");
     expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
   });
 
-  it("does not surface direct transport executor failures for SDK-delivered replies", async () => {
+  it("preserves direct transport delivery failures for relay_channel_v2 replies", async () => {
     executeTelegramTransportActionViaBackendMock.mockRejectedValueOnce(
       new Error("Telegram API error 400: Bad Request: replied message not found")
     );
@@ -219,9 +295,88 @@ describe("createMessageProcessor", () => {
       | {
           body?: {
             outcome?: string;
+            error?: {
+              code?: string;
+              message?: string;
+            };
+          };
+        }
+      | undefined;
+    expect(firstCall?.body?.outcome).toBe("error");
+    expect(firstCall?.body?.error).toEqual({
+      code: "RELAY_DIRECT_TRANSPORT_DELIVERY_FAILED",
+      message:
+        "Relay direct telegram delivery failed: Telegram API error 400: Bad Request: replied message not found",
+    });
+  });
+
+  it("does not surface direct transport executor failures for SDK-delivered replies", async () => {
+    const transportDeliveryTracker = createRelayChannelTransportDeliveryTracker();
+    transportDeliveryTracker.recordSdkDelivery({
+      correlationMessageId: "msg_v2_fail_1",
+      transportChannelId: "telegram",
+      transportMessageId: "tg-sdk-1",
+    });
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockResolvedValue({
+          result: {
+            outcome: "reply",
+            reply: {
+              runId: "run_v2_fail_1",
+              message: { role: "assistant", content: "hello user\n\n[[media:files/report.pdf]]" },
+              media: [
+                {
+                  path: "files/report.pdf",
+                  fileName: "report.pdf",
+                  contentType: "application/pdf",
+                  sizeBytes: 123,
+                },
+              ],
+            },
+          },
+          openclawMeta: { method: "chat.send", runId: "run_v2_fail_1" },
+        }),
+      } as never,
+      backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
+      transportDeliveryTracker,
+    });
+
+    await processor({
+      messageId: "msg_v2_fail_1",
+      input: {
+        kind: "chat",
+        sessionKey: "tg:123:srv_1",
+        messageText: "ping",
+        context: {
+          channel: "telegram",
+          deliverySystem: "relay_channel_v2",
+          telegram: {
+            chatId: "123",
+            messageId: "55",
+          },
+        },
+      },
+    });
+
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
+      | {
+          body?: {
+            outcome?: string;
             openclawMeta?: {
               transportDelivered?: boolean;
               transportChannelId?: string;
+              transportMessageId?: string;
             };
           };
         }
@@ -230,9 +385,13 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.outcome).toBe("reply");
     expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
     expect(firstCall?.body?.openclawMeta?.transportChannelId).toBe("telegram");
+    expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("tg-sdk-1");
   });
 
   it("accepts user-facing replies when transport can be resolved from session key", async () => {
+    executeTelegramTransportActionViaBackendMock.mockResolvedValueOnce({
+      transportMessageId: "tg-session-1",
+    });
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const processor = createMessageProcessor({
       cfg: {
@@ -268,6 +427,7 @@ describe("createMessageProcessor", () => {
     });
 
     expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    expect(executeTelegramTransportActionViaBackendMock).toHaveBeenCalledTimes(1);
     expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
       body: {
         outcome: "reply",
@@ -276,6 +436,7 @@ describe("createMessageProcessor", () => {
           sessionKey: "tg:123:srv_1",
           transportDelivered: true,
           transportChannelId: "telegram",
+          transportMessageId: "tg-session-1",
         },
       },
     });
