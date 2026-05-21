@@ -232,7 +232,7 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.openclawMeta?.transportChannelId).toBe("telegram");
   });
 
-  it("rejects user-facing replies without messenger transport context as undelivered", async () => {
+  it("accepts user-facing replies when transport can be resolved from session key", async () => {
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const processor = createMessageProcessor({
       cfg: {
@@ -270,14 +270,12 @@ describe("createMessageProcessor", () => {
     expect(submitInboundMessage).toHaveBeenCalledTimes(1);
     expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
       body: {
-        outcome: "error",
-        error: {
-          code: "RELAY_DIRECT_TRANSPORT_DELIVERY_FAILED",
-          message: "Relay direct delivery failed: user-facing reply has no messenger transport context",
-        },
+        outcome: "reply",
         openclawMeta: {
           deliverySystem: "relay_channel_v2",
           sessionKey: "tg:123:srv_1",
+          transportDelivered: true,
+          transportChannelId: "telegram",
         },
       },
     });

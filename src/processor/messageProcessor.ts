@@ -1018,6 +1018,30 @@ function readTelegramTaskContext(context: unknown):
   };
 }
 
+function readTelegramTaskContextFromSessionKey(sessionKey: string):
+  | {
+      chatId: string;
+    }
+  | null {
+  if (!sessionKey.startsWith("tg:")) {
+    return null;
+  }
+  const chatId = sessionKey.slice("tg:".length).split(":")[0]?.trim();
+  return chatId ? { chatId } : null;
+}
+
+function readWhatsAppPersonalTaskContextFromSessionKey(sessionKey: string):
+  | {
+      chatId: string;
+    }
+  | null {
+  if (!sessionKey.startsWith("whatsapp-personal:")) {
+    return null;
+  }
+  const chatId = sessionKey.slice("whatsapp-personal:".length).split(":")[0]?.trim();
+  return chatId ? { chatId } : null;
+}
+
 function readWhatsAppPersonalTaskContext(context: unknown):
   | {
       chatId: string;
@@ -1066,21 +1090,19 @@ function maybeDeliverRelayChannelReplyDirectly(input: {
   transportMessageId?: string;
 } | null {
   void input.backend;
-  const telegram = readTelegramTaskContext(input.context);
-  const whatsAppPersonal = telegram ? null : readWhatsAppPersonalTaskContext(input.context);
+  const telegram =
+    readTelegramTaskContext(input.context) ?? readTelegramTaskContextFromSessionKey(input.sessionKey);
+  const whatsAppPersonal = telegram
+    ? null
+    : readWhatsAppPersonalTaskContext(input.context) ??
+      readWhatsAppPersonalTaskContextFromSessionKey(input.sessionKey);
   const text = extractReplyText(input.reply.message);
   const mediaCount = Array.isArray(input.reply.media) ? input.reply.media.length : 0;
   if (!text && mediaCount === 0) {
     return null;
   }
   if (!telegram && !whatsAppPersonal) {
-    if (!isTransportBackedSessionKey(input.sessionKey)) {
-      return null;
-    }
-    throw new RelayProcessingError({
-      code: "RELAY_DIRECT_TRANSPORT_DELIVERY_FAILED",
-      message: "Relay direct delivery failed: user-facing reply has no messenger transport context",
-    });
+    return null;
   }
 
   logger.info(
