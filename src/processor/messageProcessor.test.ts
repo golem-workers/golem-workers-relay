@@ -26,6 +26,24 @@ describe("createMessageProcessor", () => {
       transportMessageId: "tg-direct-1",
     });
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const runChatTask = vi.fn().mockResolvedValue({
+      result: {
+        outcome: "reply",
+        reply: {
+          runId: "run_v2_1",
+          message: { role: "assistant", content: "hello user\n\n[[media:files/report.pdf]]" },
+          media: [
+            {
+              path: "files/report.pdf",
+              fileName: "report.pdf",
+              contentType: "application/pdf",
+              sizeBytes: 123,
+            },
+          ],
+        },
+      },
+      openclawMeta: { method: "chat.send", runId: "run_v2_1" },
+    });
     const processor = createMessageProcessor({
       cfg: {
         relayInstanceId: "relay_1",
@@ -35,26 +53,7 @@ describe("createMessageProcessor", () => {
         devLogTextMaxLen: 200,
       },
       gateway: { start: vi.fn(), getHello: vi.fn() } as never,
-      runner: {
-        runChatTask: vi.fn().mockResolvedValue({
-          result: {
-            outcome: "reply",
-            reply: {
-              runId: "run_v2_1",
-              message: { role: "assistant", content: "hello user\n\n[[media:files/report.pdf]]" },
-              media: [
-                {
-                  path: "files/report.pdf",
-                  fileName: "report.pdf",
-                  contentType: "application/pdf",
-                  sizeBytes: 123,
-                },
-              ],
-            },
-          },
-          openclawMeta: { method: "chat.send", runId: "run_v2_1" },
-        }),
-      } as never,
+      runner: { runChatTask } as never,
       backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
     });
 
@@ -75,6 +74,15 @@ describe("createMessageProcessor", () => {
       },
     });
 
+    expect(runChatTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        originRoute: {
+          originatingChannel: "relay-channel",
+          originatingTo: "telegram:123",
+          originatingAccountId: "default",
+        },
+      })
+    );
     expect(executeTelegramTransportActionViaBackendMock).toHaveBeenCalledTimes(1);
     const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
       | {
@@ -92,6 +100,56 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
     expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("tg-direct-1");
     expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
+  });
+
+  it("passes group telegram origin route to chat runner", async () => {
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const runChatTask = vi.fn().mockResolvedValue({
+      result: {
+        outcome: "no_reply",
+        noReply: { runId: "run_group_1" },
+      },
+      openclawMeta: { method: "chat.send", runId: "run_group_1" },
+    });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: { runChatTask } as never,
+      backend: { submitInboundMessage } as never,
+    });
+
+    await processor({
+      messageId: "msg_group_1",
+      input: {
+        kind: "chat",
+        sessionKey: "tg:-5292069601:srv_1",
+        messageText: "ping",
+        context: {
+          channel: "telegram",
+          telegram: {
+            chatId: "-5292069601",
+            messageId: "55",
+            chatType: "group",
+          },
+        },
+      },
+    });
+
+    expect(runChatTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        originRoute: {
+          originatingChannel: "relay-channel",
+          originatingTo: "telegram:group:-5292069601",
+          originatingAccountId: "default",
+        },
+      })
+    );
   });
 
   it("marks relay_channel_v2 telegram replies as SDK-delivered when relay-channel already sent", async () => {
@@ -1378,4 +1436,3 @@ describe("createMessageProcessor", () => {
     });
   });
 });
-

@@ -220,7 +220,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("does not append relay file delivery instructions for tg sessions", async () => {
+  it("passes supplied relay origin route without appending file delivery instructions", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
     let sentMessage = "";
@@ -280,13 +280,10 @@ describe("ChatRunner", () => {
       taskId: "task_tg_1",
       sessionKey: "tg:123:srv_1",
       messageText: "Please prepare a report",
-      context: {
-        channel: "telegram",
-        telegram: {
-          chatId: "123",
-          messageId: "456",
-          chatType: "private",
-        },
+      originRoute: {
+        originatingChannel: "relay-channel",
+        originatingTo: "telegram:123",
+        originatingAccountId: "default",
       },
       timeoutMs: 1000,
     });
@@ -295,8 +292,9 @@ describe("ChatRunner", () => {
     expect(sentMessage).not.toContain("[Telegram plugin note]");
     expect(sentMessage).not.toContain("[[media:relative/path.ext]]");
     expect(sentParams).not.toHaveProperty("deliver");
-    expect(sentParams).not.toHaveProperty("originatingChannel");
-    expect(sentParams).not.toHaveProperty("originatingTo");
+    expect(sentParams).toHaveProperty("originatingChannel", "relay-channel");
+    expect(sentParams).toHaveProperty("originatingTo", "telegram:123");
+    expect(sentParams).toHaveProperty("originatingAccountId", "default");
     expect(sentParams).not.toHaveProperty("originatingThreadId");
 
     client.stop();
@@ -3620,4 +3618,3 @@ describe("applyTransportDeliveryInstructions", () => {
     expect(result).not.toContain("[Telegram plugin note]");
   });
 });
-

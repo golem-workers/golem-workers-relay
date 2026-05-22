@@ -4,7 +4,7 @@ import path from "node:path";
 import { type BackendClient } from "../backend/backendClient.js";
 import { type InboundPushMessage, type RelayInboundMessageRequest } from "../backend/types.js";
 import { logger } from "../logger.js";
-import { type ChatRunner } from "../openclaw/chatRunner.js";
+import { type ChatRunner, type ChatSendOriginRoute } from "../openclaw/chatRunner.js";
 import { type GatewayClient } from "../openclaw/gatewayClient.js";
 import { makeTextPreview } from "../common/utils/text.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
@@ -639,6 +639,10 @@ async function processSingleMessage(input: {
           media: msg.input.media,
           context: msg.input.context,
           deliverySystem,
+          originRoute: buildChatSendOriginRoute({
+            context: msg.input.context,
+            sessionKey: msg.input.sessionKey,
+          }),
           timeoutMs: effectiveTaskTimeoutMs,
           onActivity: taskTimeout.touch,
         });
@@ -1106,6 +1110,44 @@ function readOptionalTransportMessageId(
   return typeof target.messageId === "string" && target.messageId.trim().length > 0
     ? target.messageId.trim()
     : null;
+}
+
+function formatTelegramOriginTo(input: { chatId: string; chatType?: string }): string {
+  const chatType = input.chatType?.trim().toLowerCase();
+  const isGroupLike =
+    chatType === "group" ||
+    chatType === "supergroup" ||
+    chatType === "channel" ||
+    input.chatId.trim().startsWith("-");
+  return isGroupLike ? `telegram:group:${input.chatId}` : `telegram:${input.chatId}`;
+}
+
+function buildChatSendOriginRoute(input: {
+  context: unknown;
+  sessionKey: string;
+}): ChatSendOriginRoute | null {
+  const telegram =
+    readTelegramTaskContext(input.context) ?? readTelegramTaskContextFromSessionKey(input.sessionKey);
+  if (telegram) {
+    return {
+      originatingChannel: "relay-channel",
+      originatingTo: formatTelegramOriginTo(telegram),
+      originatingAccountId: "default",
+    };
+  }
+
+  const whatsAppPersonal =
+    readWhatsAppPersonalTaskContext(input.context) ??
+    readWhatsAppPersonalTaskContextFromSessionKey(input.sessionKey);
+  if (whatsAppPersonal) {
+    return {
+      originatingChannel: "relay-channel",
+      originatingTo: `whatsapp_personal:${whatsAppPersonal.chatId}`,
+      originatingAccountId: "default",
+    };
+  }
+
+  return null;
 }
 
 async function maybeDeliverRelayChannelReplyDirectly(input: {

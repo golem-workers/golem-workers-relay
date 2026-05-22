@@ -106,6 +106,13 @@ export type ChatRunActivity = {
 
 type DeliverySystem = "relay_channel_v2";
 
+export type ChatSendOriginRoute = {
+  originatingChannel: string;
+  originatingTo: string;
+  originatingAccountId?: string;
+  originatingThreadId?: string;
+};
+
 type ResolvedSessionTranscriptState = {
   sessionFile: string;
   baselineLineCount?: number;
@@ -932,6 +939,7 @@ export class ChatRunner {
     media?: TaskMedia[];
     context?: unknown;
     deliverySystem?: DeliverySystem;
+    originRoute?: ChatSendOriginRoute | null;
     timeoutMs: number;
     onActivity?: (activity: ChatRunActivity) => void;
   }): Promise<{ result: ChatRunResult; openclawMeta: OpenclawChatMeta }> {
@@ -1019,6 +1027,7 @@ export class ChatRunner {
           message: attemptMessage,
           idempotencyKey,
           timeoutMs: remainingMs,
+          ...(input.originRoute ?? {}),
         });
 
         // Server will emit chat events keyed by runId.
@@ -2076,4 +2085,3 @@ function extractRunId(payload: unknown): string | null {
   const runId = (payload as { runId?: unknown }).runId;
   return typeof runId === "string" && runId.length > 0 ? runId : null;
 }
-
