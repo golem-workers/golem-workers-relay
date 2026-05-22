@@ -12,6 +12,7 @@ import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
 import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inMemoryTaskQueue.js";
 import { createMessageProcessor, createRelayTaskControl } from "./processor/messageProcessor.js";
 import { createDevicePairingAutoApprover } from "./openclaw/devicePairingAutoApprover.js";
+import { createNodePairingAutoApprover } from "./openclaw/nodePairingAutoApprover.js";
 import { createExecApprovalAutoApprover } from "./openclaw/execApprovalAutoApprover.js";
 import {
   LOCAL_PROXY_LISTEN_HOST,
@@ -187,6 +188,9 @@ async function main(): Promise<void> {
   let devicePairingAutoApprover:
     | ReturnType<typeof createDevicePairingAutoApprover>
     | null = null;
+  let nodePairingAutoApprover:
+    | ReturnType<typeof createNodePairingAutoApprover>
+    | null = null;
   let execApprovalAutoApprover:
     | ReturnType<typeof createExecApprovalAutoApprover>
     | null = null;
@@ -200,12 +204,14 @@ async function main(): Promise<void> {
     scopes: cfg.openclaw.scopes,
     onEvent: (evt) => {
       devicePairingAutoApprover?.handleEvent(evt);
+      nodePairingAutoApprover?.handleEvent(evt);
       execApprovalAutoApprover?.handleEvent(evt);
       chatRunner?.handleEvent(evt);
       void forwardGatewayEvent(evt);
     },
     onHelloOk: (hello) => {
       devicePairingAutoApprover?.handleHello(hello);
+      nodePairingAutoApprover?.handleHello(hello);
       execApprovalAutoApprover?.handleHello(hello);
     },
     onConnectionStateChange: (state) => {
@@ -219,6 +225,8 @@ async function main(): Promise<void> {
   });
   devicePairingAutoApprover = createDevicePairingAutoApprover({ gateway });
   devicePairingAutoApprover.start();
+  nodePairingAutoApprover = createNodePairingAutoApprover({ gateway });
+  nodePairingAutoApprover.start();
   execApprovalAutoApprover = createExecApprovalAutoApprover({ gateway });
   execApprovalAutoApprover.start();
   chatRunner = new ChatRunner(gateway, {
@@ -580,6 +588,7 @@ async function main(): Promise<void> {
   }
   gateway.stop();
   devicePairingAutoApprover.stop();
+  nodePairingAutoApprover.stop();
   execApprovalAutoApprover.stop();
   logger.info("Relay stopped");
 }
