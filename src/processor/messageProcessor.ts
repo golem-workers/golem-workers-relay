@@ -1132,7 +1132,6 @@ function buildChatSendOriginRoute(input: {
     return {
       originatingChannel: "relay-channel",
       originatingTo: formatTelegramOriginTo(telegram),
-      originatingAccountId: "default",
     };
   }
 
@@ -1143,7 +1142,6 @@ function buildChatSendOriginRoute(input: {
     return {
       originatingChannel: "relay-channel",
       originatingTo: `whatsapp_personal:${whatsAppPersonal.chatId}`,
-      originatingAccountId: "default",
     };
   }
 

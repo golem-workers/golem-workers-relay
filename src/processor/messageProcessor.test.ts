@@ -79,7 +79,6 @@ describe("createMessageProcessor", () => {
         originRoute: {
           originatingChannel: "relay-channel",
           originatingTo: "telegram:123",
-          originatingAccountId: "default",
         },
       })
     );
@@ -146,7 +145,6 @@ describe("createMessageProcessor", () => {
         originRoute: {
           originatingChannel: "relay-channel",
           originatingTo: "telegram:group:-5292069601",
-          originatingAccountId: "default",
         },
       })
     );

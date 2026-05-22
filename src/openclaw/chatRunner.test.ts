@@ -283,7 +283,6 @@ describe("ChatRunner", () => {
       originRoute: {
         originatingChannel: "relay-channel",
         originatingTo: "telegram:123",
-        originatingAccountId: "default",
       },
       timeoutMs: 1000,
     });
@@ -294,7 +293,7 @@ describe("ChatRunner", () => {
     expect(sentParams).not.toHaveProperty("deliver");
     expect(sentParams).toHaveProperty("originatingChannel", "relay-channel");
     expect(sentParams).toHaveProperty("originatingTo", "telegram:123");
-    expect(sentParams).toHaveProperty("originatingAccountId", "default");
+    expect(sentParams).not.toHaveProperty("originatingAccountId");
     expect(sentParams).not.toHaveProperty("originatingThreadId");
 
     client.stop();
