@@ -277,10 +277,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && (value as { constructor?: unknown }).constructor === Object;
 }
 
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
 function extractTextFromMessage(message: unknown): string | null {
   if (typeof message === "string") {
     const normalized = message.trim();
@@ -960,7 +956,6 @@ export class ChatRunner {
       throw error;
     }
     const deliverySystem = input.deliverySystem ?? "relay_channel_v2";
-    const chatSendDeliveryContext = resolveChatSendDeliveryContext(input.context);
     const shouldUseSessionTranscript = isTransportBackedSession(input.sessionKey);
     const preRunTranscriptSessionState = shouldUseSessionTranscript
       ? await readExistingSessionTranscriptState({
@@ -1023,7 +1018,6 @@ export class ChatRunner {
           sessionKey: input.sessionKey,
           message: attemptMessage,
           idempotencyKey,
-          ...chatSendDeliveryContext,
           timeoutMs: remainingMs,
         });
 
@@ -2041,80 +2035,6 @@ export function applyTransportDeliveryInstructions(input: {
   void input.sessionKey;
   void input.deliverySystem;
   return isOpenclawSlashCommand(input.messageText) ? input.messageText.trim() : input.messageText;
-}
-
-function resolveChatSendDeliveryContext(context: unknown):
-  | {
-      deliver: true;
-      originatingChannel: "relay-channel";
-      originatingTo: string;
-      originatingThreadId?: string;
-    }
-  | Record<string, never> {
-  const telegram = readTelegramChatSendContext(context);
-  if (telegram) {
-    return {
-      deliver: true,
-      originatingChannel: "relay-channel",
-      originatingTo: buildTelegramRelayTarget(telegram),
-    };
-  }
-  const whatsAppPersonal = readWhatsAppPersonalChatSendContext(context);
-  if (whatsAppPersonal) {
-    return {
-      deliver: true,
-      originatingChannel: "relay-channel",
-      originatingTo: `whatsapp_personal:${whatsAppPersonal.chatId}`,
-    };
-  }
-  return {};
-}
-
-function buildTelegramRelayTarget(input: { chatId: string; chatType?: string }): string {
-  const chatType = input.chatType?.trim().toLowerCase();
-  if (chatType === "group" || chatType === "supergroup" || chatType === "channel") {
-    return `telegram:group:${input.chatId}`;
-  }
-  return `telegram:${input.chatId}`;
-}
-
-function readTelegramChatSendContext(context: unknown): { chatId: string; messageId?: string; chatType?: string } | null {
-  if (!isPlainObject(context) || context.channel !== "telegram" || !isPlainObject(context.telegram)) {
-    return null;
-  }
-  const chatId = readNonEmptyString(context.telegram.chatId);
-  if (!chatId) {
-    return null;
-  }
-  const messageId = readNonEmptyString(context.telegram.messageId);
-  const chatType = readNonEmptyString(context.telegram.chatType);
-  return {
-    chatId,
-    ...(messageId ? { messageId } : {}),
-    ...(chatType ? { chatType } : {}),
-  };
-}
-
-function readWhatsAppPersonalChatSendContext(context: unknown): { chatId: string; messageId?: string } | null {
-  if (!isPlainObject(context)) {
-    return null;
-  }
-  if (context.channel !== undefined && context.channel !== "whatsapp_personal") {
-    return null;
-  }
-  const payload = isPlainObject(context.whatsappPersonal) ? context.whatsappPersonal : null;
-  if (!payload) {
-    return null;
-  }
-  const chatId = readNonEmptyString(payload.chatId) ?? readNonEmptyString(payload.fromChatId);
-  if (!chatId) {
-    return null;
-  }
-  const messageId = readNonEmptyString(payload.messageId) ?? readNonEmptyString(payload.providerMessageId);
-  return {
-    chatId,
-    ...(messageId ? { messageId } : {}),
-  };
 }
 
 function toImageDataUrl(image: ImageTaskMedia): string {

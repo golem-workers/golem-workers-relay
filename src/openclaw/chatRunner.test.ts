@@ -294,11 +294,9 @@ describe("ChatRunner", () => {
     expect(sentMessage).toBe("Please prepare a report");
     expect(sentMessage).not.toContain("[Telegram plugin note]");
     expect(sentMessage).not.toContain("[[media:relative/path.ext]]");
-    expect(sentParams).toMatchObject({
-      deliver: true,
-      originatingChannel: "relay-channel",
-      originatingTo: "telegram:123",
-    });
+    expect(sentParams).not.toHaveProperty("deliver");
+    expect(sentParams).not.toHaveProperty("originatingChannel");
+    expect(sentParams).not.toHaveProperty("originatingTo");
     expect(sentParams).not.toHaveProperty("originatingThreadId");
 
     client.stop();
