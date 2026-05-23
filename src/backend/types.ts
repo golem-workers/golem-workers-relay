@@ -303,6 +303,7 @@ export const telegramTransportActionRequestSchema = z.object({
         correlationMessageId: z.string().min(1).optional(),
         runId: z.string().min(1).optional(),
         sessionKey: z.string().min(1).optional(),
+        deliveryKind: z.enum(["tool", "block", "final"]).optional(),
       })
       .strict()
       .optional(),

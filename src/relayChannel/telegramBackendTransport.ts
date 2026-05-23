@@ -14,6 +14,7 @@ type TelegramTransportAction = {
     correlationMessageId?: string;
     runId?: string;
     sessionKey?: string;
+    deliveryKind?: "tool" | "block" | "final";
   };
   payload: Record<string, unknown>;
 };

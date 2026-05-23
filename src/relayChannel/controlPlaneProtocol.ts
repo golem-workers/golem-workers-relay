@@ -120,14 +120,15 @@ export const transportActionSchema = z.object({
     })
     .optional(),
   payload: z.record(z.string(), z.unknown()),
-  openclawContext: z
-    .object({
-      sessionKey: z.string().optional(),
-      runId: z.string().optional(),
-      backendMessageId: z.string().optional(),
-      correlationMessageId: z.string().optional(),
-    })
-    .optional(),
+    openclawContext: z
+      .object({
+        sessionKey: z.string().optional(),
+        runId: z.string().optional(),
+        backendMessageId: z.string().optional(),
+        correlationMessageId: z.string().optional(),
+        deliveryKind: z.enum(["tool", "block", "final"]).optional(),
+      })
+      .optional(),
 });
 
 export const transportActionRequestSchema = z.object({
