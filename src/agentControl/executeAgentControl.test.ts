@@ -548,7 +548,7 @@ describe("executeAgentControl Codex login", () => {
 });
 
 describe("executeAgentControl GitHub auth", () => {
-  it("records GitHub App installation metadata for a marketing campaign", async () => {
+  it("stores GitHub OAuth token metadata for a marketing campaign", async () => {
     const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-github-auth-"));
     process.env.HOME = tempHome;
 
@@ -556,10 +556,10 @@ describe("executeAgentControl GitHub auth", () => {
       action: {
         kind: "github.auth.configure",
         campaignId: "mcamp_1",
-        authMethod: "GITHUB_APP",
+        authMethod: "GITHUB_OAUTH",
         githubAccount: "golem-marketing-agent",
-        repositoryUrl: "https://github.com/acme/frontend",
-        appInstallationId: "install_1",
+        repositoryUrl: "",
+        accessToken: "gho_test_token",
       },
       configPath: path.join(tempHome, "openclaw.json"),
       gateway: noopGateway,
@@ -568,11 +568,14 @@ describe("executeAgentControl GitHub auth", () => {
     expect(result).toEqual({
       kind: "github.auth.configure",
       configured: true,
-      authMethod: "GITHUB_APP",
-      credentialState: "pending",
-      message: "GitHub App installation was recorded; backend app-token exchange is pending.",
+      authMethod: "GITHUB_OAUTH",
+      credentialState: "configured",
+      message: "GitHub OAuth token was stored on the agent.",
       repositoryReachable: null,
       configPath: path.join(tempHome, ".config", "golem-marketing", "github", "mcamp_1.json"),
+      verificationUrl: null,
+      userCode: null,
+      pollAfterMs: null,
     });
     expect(result.kind).toBe("github.auth.configure");
     if (result.kind !== "github.auth.configure") {
@@ -581,11 +584,10 @@ describe("executeAgentControl GitHub auth", () => {
     const stored = JSON.parse(await fs.readFile(result.configPath, "utf8")) as Record<string, unknown>;
     expect(stored).toMatchObject({
       campaignId: "mcamp_1",
-      authMethod: "GITHUB_APP",
+      authMethod: "GITHUB_OAUTH",
       githubAccount: "golem-marketing-agent",
-      repositoryUrl: "https://github.com/acme/frontend",
-      appInstallationId: "install_1",
-      credentialState: "pending",
+      repositoryUrl: "",
+      credentialState: "configured",
     });
   });
 });

@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
@@ -21,6 +21,8 @@ const CHANNELS_STATUS_TIMEOUT_MS = 15_000;
 const FILE_LOCK_RETRY_ATTEMPTS = 50;
 const FILE_LOCK_RETRY_DELAY_MS = 100;
 const VALID_THINKING_DEFAULTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive"]);
+const GITHUB_DEVICE_CODE_RE = /\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/;
+const GITHUB_VERIFICATION_URL = "https://github.com/login/device";
 
 type GatewayLike = {
   request(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
@@ -103,6 +105,8 @@ export async function executeAgentControl(input: {
                 ? await getCodexLoginStatus(input.configPath)
               : input.action.kind === "github.auth.configure"
                 ? await configureGitHubAuth(input.action)
+              : input.action.kind === "github.oauth.status"
+                ? await getGitHubOauthStatus(input.action)
               : input.action.kind === "chat.statusNudge"
                 ? await sendStatusNudge({
                     action: input.action,
@@ -144,6 +148,20 @@ function safeFileSegment(value: string): string {
   return normalized || "campaign";
 }
 
+type PendingGitHubOauthLogin = {
+  campaignId: string;
+  configPath: string;
+  repositoryUrl: string;
+  childExited: boolean;
+  exitCode: number | null;
+  stderr: string;
+  stdout: string;
+  userCode: string | null;
+  startedAtMs: number;
+};
+
+const pendingGitHubOauthByCampaign = new Map<string, PendingGitHubOauthLogin>();
+
 async function runGitLsRemote(input: {
   repositoryUrl: string;
   env?: NodeJS.ProcessEnv;
@@ -178,7 +196,6 @@ async function configureGitHubAuth(
     authMethod: action.authMethod,
     githubAccount: action.githubAccount.trim(),
     repositoryUrl: action.repositoryUrl.trim(),
-    appInstallationId: action.appInstallationId?.trim() || null,
     configuredAt: new Date().toISOString(),
   };
 
@@ -210,55 +227,199 @@ async function configureGitHubAuth(
         : "SSH GitHub access was configured on the agent.",
       repositoryReachable,
       configPath,
+      verificationUrl: null,
+      userCode: null,
+      pollAfterMs: null,
     };
   }
 
   if (action.authMethod === "GITHUB_OAUTH") {
-    const token = action.accessToken?.trim() || action.oauthCode?.trim();
-    if (!token) {
-      throw new AgentControlError("GITHUB_OAUTH_TOKEN_MISSING", "GitHub OAuth token or authorization code is required.");
+    const accessToken = action.accessToken?.trim();
+    if (accessToken) {
+      const tokenPath = path.join(configDir, `${campaignKey}.token`);
+      await fs.writeFile(tokenPath, `${accessToken}\n`, { encoding: "utf8", mode: 0o600 });
+      await fs.chmod(tokenPath, 0o600);
+      const repositoryReachable = await runGitLsRemote({
+        repositoryUrl: action.repositoryUrl,
+        env: {
+          GH_TOKEN: accessToken,
+          GITHUB_TOKEN: accessToken,
+        },
+      });
+      await fs.writeFile(
+        configPath,
+        `${JSON.stringify({ ...baseConfig, tokenPath, credentialState: "configured", repositoryReachable }, null, 2)}\n`,
+        { encoding: "utf8", mode: 0o600 }
+      );
+      return {
+        kind: "github.auth.configure",
+        configured: true,
+        authMethod: action.authMethod,
+        credentialState: "configured",
+        message: "GitHub OAuth token was stored on the agent.",
+        repositoryReachable,
+        configPath,
+        verificationUrl: null,
+        userCode: null,
+        pollAfterMs: null,
+      };
     }
-    const tokenPath = path.join(configDir, `${campaignKey}.token`);
-    await fs.writeFile(tokenPath, `${token}\n`, { encoding: "utf8", mode: 0o600 });
-    await fs.chmod(tokenPath, 0o600);
-    const repositoryReachable = await runGitLsRemote({
+
+    const started = await startGitHubOauthDeviceLogin({
+      campaignId: action.campaignId,
       repositoryUrl: action.repositoryUrl,
-      env: {
-        GIT_ASKPASS: "echo",
-      },
+      configPath,
     });
     await fs.writeFile(
       configPath,
-      `${JSON.stringify({ ...baseConfig, tokenPath, credentialState: "configured", repositoryReachable }, null, 2)}\n`,
+      `${JSON.stringify({
+        ...baseConfig,
+        credentialState: "pending",
+        repositoryReachable: null,
+        verificationUrl: GITHUB_VERIFICATION_URL,
+        userCode: started.userCode,
+      }, null, 2)}\n`,
       { encoding: "utf8", mode: 0o600 }
     );
     return {
       kind: "github.auth.configure",
       configured: true,
       authMethod: action.authMethod,
-      credentialState: "configured",
-      message: "GitHub OAuth credential was stored on the agent.",
-      repositoryReachable,
+      credentialState: "pending",
+      message: started.userCode
+        ? `Open ${GITHUB_VERIFICATION_URL} and enter code ${started.userCode}.`
+        : `Open the GitHub device login prompt on the agent and complete authorization.`,
+      repositoryReachable: null,
       configPath,
+      verificationUrl: GITHUB_VERIFICATION_URL,
+      userCode: started.userCode,
+      pollAfterMs: 3000,
     };
   }
 
-  if (!action.appInstallationId?.trim()) {
-    throw new AgentControlError("GITHUB_APP_INSTALLATION_MISSING", "GitHub App installation is required.");
+  throw new AgentControlError("GITHUB_AUTH_METHOD_UNSUPPORTED", "Unsupported GitHub authorization method.");
+}
+
+async function startGitHubOauthDeviceLogin(input: {
+  campaignId: string;
+  repositoryUrl: string;
+  configPath: string;
+}): Promise<{ userCode: string | null }> {
+  const existing = pendingGitHubOauthByCampaign.get(input.campaignId);
+  if (existing && !existing.childExited) {
+    return { userCode: existing.userCode };
   }
-  await fs.writeFile(
-    configPath,
-    `${JSON.stringify({ ...baseConfig, credentialState: "pending", repositoryReachable: null }, null, 2)}\n`,
-    { encoding: "utf8", mode: 0o600 }
+
+  const child = spawn("gh", ["auth", "login", "--hostname", "github.com", "--git-protocol", "ssh", "--web"], {
+    env: process.env,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const pending: PendingGitHubOauthLogin = {
+    campaignId: input.campaignId,
+    configPath: input.configPath,
+    repositoryUrl: input.repositoryUrl,
+    childExited: false,
+    exitCode: null,
+    stderr: "",
+    stdout: "",
+    userCode: null,
+    startedAtMs: Date.now(),
+  };
+  pendingGitHubOauthByCampaign.set(input.campaignId, pending);
+
+  const collect = (chunk: Buffer) => {
+    const text = chunk.toString("utf8");
+    pending.stdout += text;
+    const match = GITHUB_DEVICE_CODE_RE.exec(`${pending.stdout}\n${pending.stderr}`);
+    if (match) {
+      pending.userCode = match[1] ?? null;
+      child.stdin?.write("\n");
+    }
+  };
+  child.stdout?.on("data", collect);
+  child.stderr?.on("data", (chunk: Buffer) => {
+    const text = chunk.toString("utf8");
+    pending.stderr += text;
+    const match = GITHUB_DEVICE_CODE_RE.exec(`${pending.stdout}\n${pending.stderr}`);
+    if (match) {
+      pending.userCode = match[1] ?? null;
+      child.stdin?.write("\n");
+    }
+  });
+  child.on("exit", (code) => {
+    pending.childExited = true;
+    pending.exitCode = code;
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  return { userCode: pending.userCode };
+}
+
+async function getGitHubOauthStatus(
+  action: Extract<AgentControlAction, { kind: "github.oauth.status" }>
+): Promise<Extract<AgentControlResult, { kind: "github.oauth.status" }>> {
+  const configDir = path.join(os.homedir(), ".config", "golem-marketing", "github");
+  const campaignKey = safeFileSegment(action.campaignId);
+  const configPath = path.join(configDir, `${campaignKey}.json`);
+  const pending = pendingGitHubOauthByCampaign.get(action.campaignId) ?? null;
+  const authStatus = await execFile("gh", ["auth", "status", "--hostname", "github.com"], {
+    timeout: 10_000,
+  }).then(
+    () => true,
+    () => false
   );
+  if (authStatus) {
+    const repositoryReachable = await runGitLsRemote({ repositoryUrl: action.repositoryUrl });
+    await fs.mkdir(configDir, { recursive: true, mode: 0o700 });
+    await fs.writeFile(
+      configPath,
+      `${JSON.stringify({
+        campaignId: action.campaignId,
+        authMethod: "GITHUB_OAUTH",
+        repositoryUrl: action.repositoryUrl,
+        credentialState: "configured",
+        repositoryReachable,
+        configuredAt: new Date().toISOString(),
+      }, null, 2)}\n`,
+      { encoding: "utf8", mode: 0o600 }
+    );
+    pendingGitHubOauthByCampaign.delete(action.campaignId);
+    return {
+      kind: "github.oauth.status",
+      credentialState: "configured",
+      message: "GitHub OAuth authorization completed on the agent.",
+      repositoryReachable,
+      configPath,
+      verificationUrl: null,
+      userCode: null,
+      pollAfterMs: null,
+    };
+  }
+
+  if (pending?.childExited && pending.exitCode !== 0) {
+    return {
+      kind: "github.oauth.status",
+      credentialState: "failed",
+      message: pending.stderr.trim() || "GitHub OAuth authorization failed on the agent.",
+      repositoryReachable: null,
+      configPath,
+      verificationUrl: GITHUB_VERIFICATION_URL,
+      userCode: pending.userCode,
+      pollAfterMs: null,
+    };
+  }
+
   return {
-    kind: "github.auth.configure",
-    configured: true,
-    authMethod: action.authMethod,
+    kind: "github.oauth.status",
     credentialState: "pending",
-    message: "GitHub App installation was recorded; backend app-token exchange is pending.",
+    message: pending?.userCode
+      ? `Open ${GITHUB_VERIFICATION_URL} and enter code ${pending.userCode}.`
+      : "Waiting for GitHub OAuth authorization to complete.",
     repositoryReachable: null,
     configPath,
+    verificationUrl: GITHUB_VERIFICATION_URL,
+    userCode: pending?.userCode ?? null,
+    pollAfterMs: 3000,
   };
 }
 
