@@ -84,6 +84,17 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("codex.login.status"),
   }),
   z.object({
+    kind: z.literal("github.auth.configure"),
+    campaignId: z.string().min(1),
+    authMethod: z.enum(["SSH_TOKEN", "GITHUB_OAUTH", "GITHUB_APP"]),
+    githubAccount: z.string(),
+    repositoryUrl: z.string(),
+    accessToken: z.string().optional(),
+    sshPrivateKey: z.string().optional(),
+    oauthCode: z.string().optional(),
+    appInstallationId: z.string().optional(),
+  }),
+  z.object({
     kind: z.literal("chat.statusNudge"),
     sessionKey: z.string().min(1),
     messageText: z.string().min(1),
@@ -209,6 +220,15 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     email: z.string().min(1).nullable(),
     accountId: z.string().min(1).nullable(),
     lastError: z.string().min(1).nullable(),
+  }),
+  z.object({
+    kind: z.literal("github.auth.configure"),
+    configured: z.boolean(),
+    authMethod: z.enum(["SSH_TOKEN", "GITHUB_OAUTH", "GITHUB_APP"]),
+    credentialState: z.enum(["configured", "pending", "failed"]),
+    message: z.string().min(1),
+    repositoryReachable: z.boolean().nullable(),
+    configPath: z.string().min(1),
   }),
   z.object({
     kind: z.literal("chat.statusNudge"),

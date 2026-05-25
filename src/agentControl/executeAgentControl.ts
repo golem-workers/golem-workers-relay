@@ -101,6 +101,8 @@ export async function executeAgentControl(input: {
                 ? await startCodexLogin(input.configPath)
               : input.action.kind === "codex.login.status"
                 ? await getCodexLoginStatus(input.configPath)
+              : input.action.kind === "github.auth.configure"
+                ? await configureGitHubAuth(input.action)
               : input.action.kind === "chat.statusNudge"
                 ? await sendStatusNudge({
                     action: input.action,
@@ -135,6 +137,129 @@ export async function executeAgentControl(input: {
                     thinkingDefault: input.action.thinkingDefault,
                   });
   return agentControlResultSchema.parse(result);
+}
+
+function safeFileSegment(value: string): string {
+  const normalized = value.trim().replace(/[^a-zA-Z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized || "campaign";
+}
+
+async function runGitLsRemote(input: {
+  repositoryUrl: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<boolean | null> {
+  const repositoryUrl = input.repositoryUrl.trim();
+  if (!repositoryUrl) return null;
+  try {
+    await execFile("git", ["ls-remote", "--heads", repositoryUrl], {
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        ...(input.env ?? {}),
+        GIT_TERMINAL_PROMPT: "0",
+      },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function configureGitHubAuth(
+  action: Extract<AgentControlAction, { kind: "github.auth.configure" }>
+): Promise<Extract<AgentControlResult, { kind: "github.auth.configure" }>> {
+  const configDir = path.join(os.homedir(), ".config", "golem-marketing", "github");
+  const campaignKey = safeFileSegment(action.campaignId);
+  const configPath = path.join(configDir, `${campaignKey}.json`);
+  await fs.mkdir(configDir, { recursive: true, mode: 0o700 });
+
+  const baseConfig = {
+    campaignId: action.campaignId,
+    authMethod: action.authMethod,
+    githubAccount: action.githubAccount.trim(),
+    repositoryUrl: action.repositoryUrl.trim(),
+    appInstallationId: action.appInstallationId?.trim() || null,
+    configuredAt: new Date().toISOString(),
+  };
+
+  if (action.authMethod === "SSH_TOKEN") {
+    const sshPrivateKey = action.sshPrivateKey?.trim();
+    if (!sshPrivateKey) {
+      throw new AgentControlError("GITHUB_SSH_KEY_MISSING", "SSH token or private key is required.");
+    }
+    const keyPath = path.join(configDir, `${campaignKey}.key`);
+    await fs.writeFile(keyPath, `${sshPrivateKey}\n`, { encoding: "utf8", mode: 0o600 });
+    await fs.chmod(keyPath, 0o600);
+    const gitSshCommand = `ssh -i ${keyPath} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`;
+    const repositoryReachable = await runGitLsRemote({
+      repositoryUrl: action.repositoryUrl,
+      env: { GIT_SSH_COMMAND: gitSshCommand },
+    });
+    await fs.writeFile(
+      configPath,
+      `${JSON.stringify({ ...baseConfig, keyPath, credentialState: "configured", repositoryReachable }, null, 2)}\n`,
+      { encoding: "utf8", mode: 0o600 }
+    );
+    return {
+      kind: "github.auth.configure",
+      configured: true,
+      authMethod: action.authMethod,
+      credentialState: "configured",
+      message: repositoryReachable === false
+        ? "SSH key was stored, but repository reachability check failed."
+        : "SSH GitHub access was configured on the agent.",
+      repositoryReachable,
+      configPath,
+    };
+  }
+
+  if (action.authMethod === "GITHUB_OAUTH") {
+    const token = action.accessToken?.trim() || action.oauthCode?.trim();
+    if (!token) {
+      throw new AgentControlError("GITHUB_OAUTH_TOKEN_MISSING", "GitHub OAuth token or authorization code is required.");
+    }
+    const tokenPath = path.join(configDir, `${campaignKey}.token`);
+    await fs.writeFile(tokenPath, `${token}\n`, { encoding: "utf8", mode: 0o600 });
+    await fs.chmod(tokenPath, 0o600);
+    const repositoryReachable = await runGitLsRemote({
+      repositoryUrl: action.repositoryUrl,
+      env: {
+        GIT_ASKPASS: "echo",
+      },
+    });
+    await fs.writeFile(
+      configPath,
+      `${JSON.stringify({ ...baseConfig, tokenPath, credentialState: "configured", repositoryReachable }, null, 2)}\n`,
+      { encoding: "utf8", mode: 0o600 }
+    );
+    return {
+      kind: "github.auth.configure",
+      configured: true,
+      authMethod: action.authMethod,
+      credentialState: "configured",
+      message: "GitHub OAuth credential was stored on the agent.",
+      repositoryReachable,
+      configPath,
+    };
+  }
+
+  if (!action.appInstallationId?.trim()) {
+    throw new AgentControlError("GITHUB_APP_INSTALLATION_MISSING", "GitHub App installation is required.");
+  }
+  await fs.writeFile(
+    configPath,
+    `${JSON.stringify({ ...baseConfig, credentialState: "pending", repositoryReachable: null }, null, 2)}\n`,
+    { encoding: "utf8", mode: 0o600 }
+  );
+  return {
+    kind: "github.auth.configure",
+    configured: true,
+    authMethod: action.authMethod,
+    credentialState: "pending",
+    message: "GitHub App installation was recorded; backend app-token exchange is pending.",
+    repositoryReachable: null,
+    configPath,
+  };
 }
 
 function getChatRunResultRunId(result: ChatRunResult): string | null {

@@ -14,6 +14,7 @@ const noopGateway = {
 
 const originalStateDir = process.env.OPENCLAW_STATE_DIR;
 const originalPath = process.env.PATH;
+const originalHome = process.env.HOME;
 const originalFetch = global.fetch;
 
 afterEach(() => {
@@ -26,6 +27,11 @@ afterEach(() => {
     delete process.env.PATH;
   } else {
     process.env.PATH = originalPath;
+  }
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
   }
   global.fetch = originalFetch;
 });
@@ -537,6 +543,49 @@ describe("executeAgentControl Codex login", () => {
       email: "user@example.com",
       accountId: "acct-123",
       lastError: null,
+    });
+  });
+});
+
+describe("executeAgentControl GitHub auth", () => {
+  it("records GitHub App installation metadata for a marketing campaign", async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-github-auth-"));
+    process.env.HOME = tempHome;
+
+    const result = await executeAgentControl({
+      action: {
+        kind: "github.auth.configure",
+        campaignId: "mcamp_1",
+        authMethod: "GITHUB_APP",
+        githubAccount: "golem-marketing-agent",
+        repositoryUrl: "https://github.com/acme/frontend",
+        appInstallationId: "install_1",
+      },
+      configPath: path.join(tempHome, "openclaw.json"),
+      gateway: noopGateway,
+    });
+
+    expect(result).toEqual({
+      kind: "github.auth.configure",
+      configured: true,
+      authMethod: "GITHUB_APP",
+      credentialState: "pending",
+      message: "GitHub App installation was recorded; backend app-token exchange is pending.",
+      repositoryReachable: null,
+      configPath: path.join(tempHome, ".config", "golem-marketing", "github", "mcamp_1.json"),
+    });
+    expect(result.kind).toBe("github.auth.configure");
+    if (result.kind !== "github.auth.configure") {
+      throw new Error("Unexpected GitHub auth result kind");
+    }
+    const stored = JSON.parse(await fs.readFile(result.configPath, "utf8")) as Record<string, unknown>;
+    expect(stored).toMatchObject({
+      campaignId: "mcamp_1",
+      authMethod: "GITHUB_APP",
+      githubAccount: "golem-marketing-agent",
+      repositoryUrl: "https://github.com/acme/frontend",
+      appInstallationId: "install_1",
+      credentialState: "pending",
     });
   });
 });
