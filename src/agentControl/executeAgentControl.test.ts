@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __testing as codexLoginTesting } from "./codexLogin.js";
+import { __testing as githubAuthTesting } from "./githubAuth.js";
 import { executeAgentControl } from "./executeAgentControl.js";
 
 const noopGateway = {
@@ -39,6 +40,7 @@ afterEach(() => {
 beforeEach(() => {
   vi.restoreAllMocks();
   codexLoginTesting.resetCodexLoginState();
+  githubAuthTesting.resetGitHubOauthState();
 });
 
 async function createTempStateDir() {
