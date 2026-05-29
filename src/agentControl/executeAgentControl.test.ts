@@ -731,7 +731,7 @@ describe("executeAgentControl model set", () => {
     expect(config.agents?.defaults?.thinkingDefault).toBeUndefined();
   });
 
-  it("prefers direct openai-codex model refs when a Codex OAuth login is saved", async () => {
+  it("keeps public codex model refs when a Codex OAuth login is saved", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-codex-oauth-"));
     const configPath = path.join(tempDir, "openclaw.json");
     await installFakeSystemctl();
@@ -786,13 +786,13 @@ describe("executeAgentControl model set", () => {
       contextTokens: 272000,
       thinkingDefault: "high",
     });
-    expect(config.agents?.defaults?.model?.primary).toBe("openai-codex/gpt-5.3-codex");
+    expect(config.agents?.defaults?.model?.primary).toBe("codex/gpt-5.3-codex");
     expect(config.agents?.defaults?.model?.fallbacks).toEqual([
-      "openai-codex/gpt-5.4",
+      "codex/gpt-5.4",
       "openrouter/google/gemini-3-flash-preview",
     ]);
-    expect(config.agents?.defaults?.models?.["openai-codex/gpt-5.3-codex"]).toEqual({});
-    expect(config.agents?.defaults?.models?.["openai-codex/gpt-5.4"]).toEqual({});
+    expect(config.agents?.defaults?.models?.["codex/gpt-5.3-codex"]).toEqual({});
+    expect(config.agents?.defaults?.models?.["codex/gpt-5.4"]).toEqual({});
     expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3-flash-preview"]).toEqual({});
   });
 
@@ -904,5 +904,68 @@ describe("executeAgentControl model set", () => {
     expect(config.agents?.defaults?.models?.["fal/fal-ai/minimax/video-01-live"]).toEqual({});
     expect(config.agents?.defaults?.models?.["openai/sora-2"]).toEqual({});
     expect(config.agents?.defaults?.thinkingDefault).toBeUndefined();
+  });
+
+  it("keeps public codex refs for model assignments when a Codex OAuth login is saved", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-assignment-codex-oauth-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await installFakeSystemctl();
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    await fs.writeFile(
+      path.join(tempDir, "auth-profiles.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          profiles: {
+            "openai-codex:user@example.com": {
+              type: "oauth",
+              provider: "openai-codex",
+              access: "access-token",
+              refresh: "refresh-token",
+              expires: Date.now() + 60_000,
+              email: "user@example.com",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const result = await executeAgentControl({
+      action: {
+        kind: "modelAssignment.set",
+        purpose: "main",
+        primary: "codex/gpt-5.5",
+        fallback: "codex/gpt-5.4",
+        contextTokens: 400000,
+        thinkingDefault: "medium",
+      },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+      agents?: {
+        defaults?: {
+          model?: { primary?: string; fallbacks?: string[] };
+          models?: Record<string, unknown>;
+        };
+      };
+    };
+
+    expect(result).toMatchObject({
+      kind: "modelAssignment.set",
+      purpose: "main",
+      primary: "codex/gpt-5.5",
+      fallback: "codex/gpt-5.4",
+      contextTokens: 400000,
+      thinkingDefault: "medium",
+    });
+    expect(config.agents?.defaults?.model?.primary).toBe("codex/gpt-5.5");
+    expect(config.agents?.defaults?.model?.fallbacks).toEqual(["codex/gpt-5.4"]);
+    expect(config.agents?.defaults?.models?.["codex/gpt-5.5"]).toEqual({});
+    expect(config.agents?.defaults?.models?.["codex/gpt-5.4"]).toEqual({});
   });
 });

@@ -10,7 +10,7 @@ import {
   agentControlResultSchema,
   type AgentControlResult,
 } from "./protocol.js";
-import { getCodexLoginStatus, hasConnectedCodexLogin, startCodexLogin } from "./codexLogin.js";
+import { getCodexLoginStatus, startCodexLogin } from "./codexLogin.js";
 import { configureGitHubAuth, getGitHubOauthStatus } from "./githubAuth.js";
 import type { ChatRunResult } from "../openclaw/chatRunner.js";
 import type { RelayInboundMessageRequest } from "../backend/types.js";
@@ -608,9 +608,8 @@ async function setModel(input: {
   const agentsCfg = ensureRecord(nextConfig, "agents");
   const defaultsCfg = ensureRecord(agentsCfg, "defaults");
   const modelCfg = ensureRecord(defaultsCfg, "model");
-  const prefersDirectCodex = await hasConnectedCodexLogin(input.configPath);
-  const storedPrimaryModel = prefersDirectCodex ? mapCodexModelRefForDirectAuth(input.model) : input.model;
-  const storedFallbacks = prefersDirectCodex ? fallbacks.map(mapCodexModelRefForDirectAuth) : fallbacks;
+  const storedPrimaryModel = input.model.trim();
+  const storedFallbacks = fallbacks;
   modelCfg.primary = storedPrimaryModel;
   modelCfg.fallbacks = storedFallbacks;
   ensureModelRegistryEntry(defaultsCfg, storedPrimaryModel);
@@ -658,8 +657,8 @@ function getPurposeConfigKey(purpose: ModelAssignmentPurpose): string {
   }
 }
 
-function mapStoredModelRef(modelRef: string, prefersDirectCodex: boolean): string {
-  return prefersDirectCodex ? mapCodexModelRefForDirectAuth(modelRef) : modelRef.trim();
+function mapStoredModelRef(modelRef: string): string {
+  return modelRef.trim();
 }
 
 function mapPublicModelRef(modelRef: string | null | undefined): string | null {
@@ -726,9 +725,8 @@ async function setModelAssignment(input: {
   const agentsCfg = ensureRecord(nextConfig, "agents");
   const defaultsCfg = ensureRecord(agentsCfg, "defaults");
   const modelCfg = ensureRecord(defaultsCfg, getPurposeConfigKey(input.purpose));
-  const prefersDirectCodex = await hasConnectedCodexLogin(input.configPath);
-  const storedPrimaryModel = mapStoredModelRef(input.primary, prefersDirectCodex);
-  const storedFallback = input.fallback ? mapStoredModelRef(input.fallback, prefersDirectCodex) : null;
+  const storedPrimaryModel = mapStoredModelRef(input.primary);
+  const storedFallback = input.fallback ? mapStoredModelRef(input.fallback) : null;
   modelCfg.primary = storedPrimaryModel;
   modelCfg.fallbacks = storedFallback ? [storedFallback] : [];
   ensureModelRegistryEntry(defaultsCfg, storedPrimaryModel);
@@ -758,14 +756,6 @@ async function setModelAssignment(input: {
     subState: restart.subState,
     result: restart.result,
   };
-}
-
-function mapCodexModelRefForDirectAuth(modelRef: string): string {
-  const trimmed = modelRef.trim();
-  if (!trimmed.toLowerCase().startsWith("codex/")) {
-    return trimmed;
-  }
-  return `openai-codex/${trimmed.slice("codex/".length)}`;
 }
 
 async function restartGatewayService(): Promise<Extract<AgentControlResult, { kind: "gateway.restart" }>> {
