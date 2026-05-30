@@ -105,9 +105,10 @@ export async function ensureRelayChannelPluginUpToDate(
 
   const bundlePath = await buildPluginBundle(plugin, runtime);
   const gatewayServicePresent = await hasGatewayServiceUnit();
+  let gatewayWasStopped = false;
 
   if (gatewayServicePresent) {
-    await stopGatewayServiceIfRunning(runtime);
+    gatewayWasStopped = await stopGatewayServiceIfRunning(runtime);
   }
 
   const desiredChannelConfig = installed.channelConfig ?? installed.entryConfig ?? { accounts: [{ id: "default" }] };
@@ -137,7 +138,7 @@ export async function ensureRelayChannelPluginUpToDate(
     );
   }
 
-  if (gatewayServicePresent) {
+  if (gatewayWasStopped) {
     await restartGatewayService(runtime);
   }
 
@@ -374,13 +375,14 @@ async function hasGatewayServiceUnit(): Promise<boolean> {
   return pathExists(path.join(os.homedir(), ".config", "systemd", "user", DEFAULT_GATEWAY_SERVICE_NAME));
 }
 
-async function stopGatewayServiceIfRunning(deps: Deps): Promise<void> {
+async function stopGatewayServiceIfRunning(deps: Deps): Promise<boolean> {
   const state = await readGatewayServiceState(deps);
   if (!["active", "activating", "reloading"].includes(state.activeState)) {
-    return;
+    return false;
   }
   await execSystemctl(["--user", "stop", DEFAULT_GATEWAY_SERVICE_NAME], deps);
   await waitForGatewayState((current) => current.activeState === "inactive", deps, "stop");
+  return true;
 }
 
 async function restartGatewayService(deps: Deps): Promise<void> {
