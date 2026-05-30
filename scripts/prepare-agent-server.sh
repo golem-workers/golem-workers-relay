@@ -1038,11 +1038,28 @@ function patchCodexNativeHookRelayDefaults(dir) {
 }
 
 patchCodexNativeHookRelayDefaults(installDir)
-if (patchedFiles.length === 0) {
-  throw new Error(`Failed to disable Codex native hook relay in ${installDir}; no harness defaults were patched`)
+function hasEnabledCodexNativeHookRelayDefault(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (entry.name === "node_modules" || entry.name === ".git") continue
+      if (hasEnabledCodexNativeHookRelayDefault(fullPath)) return true
+      continue
+    }
+    if (!entry.isFile() || !entry.name.endsWith(".js")) continue
+    const source = fs.readFileSync(fullPath, "utf8")
+    if (/nativeHookRelay:\s*\{\s*enabled:\s*true\s*\}/.test(source) || /nativeHookRelay:\{enabled:true\}/.test(source)) {
+      return true
+    }
+  }
+  return false
+}
+
+if (hasEnabledCodexNativeHookRelayDefault(installDir)) {
+  throw new Error(`Failed to disable Codex native hook relay in ${installDir}; enabled harness defaults remain`)
 }
 console.log(`codex prepared: ${installDir}`)
-console.log(`codex native hook relay disabled in: ${patchedFiles.join(", ")}`)
+console.log(patchedFiles.length > 0 ? `codex native hook relay disabled in: ${patchedFiles.join(", ")}` : "codex native hook relay already disabled")
 NODE
 
   test -f "${GLOBAL_PNPM_ROOT}/playwright/package.json"
