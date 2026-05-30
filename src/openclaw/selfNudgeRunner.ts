@@ -15,7 +15,7 @@ const MIN_BASE_TIMEOUT_MS = 1_000;
 const MAX_ANALYZED_RECENT_MESSAGE_COUNT = 50;
 const MAX_MESSAGE_TEXT_LEN = 4_000;
 
-export type RelayChannelNudgeSettings = {
+export type RelaySelfNudgeSettings = {
   enabled: boolean;
   analyzedRecentMessageCount: number;
   baseTimeoutMs: number;
@@ -95,7 +95,7 @@ export function createSelfNudgeRunner(input: {
     if (stopped || ticking) return;
     ticking = true;
     try {
-      const settings = await readRelayChannelNudgeSettings(input.openclawConfigPath);
+      const settings = await readRelaySelfNudgeSettings(input.openclawConfigPath);
       if (!settings.enabled) {
         resetState(state);
         schedule(DISABLED_POLL_INTERVAL_MS);
@@ -144,14 +144,14 @@ export function createSelfNudgeRunner(input: {
 }
 
 export async function evaluateSelfNudgeTick(input: {
-  settings: RelayChannelNudgeSettings;
+  settings: RelaySelfNudgeSettings;
   transcript: FreshestSessionTranscript;
   state: SelfNudgeState;
   nowMs: number;
   runner: RunnerLike;
   systemTaskTimeoutMs: number;
   decide: (input: {
-    settings: RelayChannelNudgeSettings;
+    settings: RelaySelfNudgeSettings;
     transcript: FreshestSessionTranscript;
   }) => Promise<SelfNudgeDecision>;
 }): Promise<{ nudged: boolean; nextDelayMs: number }> {
@@ -203,9 +203,9 @@ export async function evaluateSelfNudgeTick(input: {
   };
 }
 
-export async function readRelayChannelNudgeSettings(
+export async function readRelaySelfNudgeSettings(
   configPath: string
-): Promise<RelayChannelNudgeSettings> {
+): Promise<RelaySelfNudgeSettings> {
   const raw = await fs.readFile(configPath, "utf8").catch(() => "");
   if (!raw.trim()) {
     return defaultNudgeSettings();
@@ -216,7 +216,9 @@ export async function readRelayChannelNudgeSettings(
   } catch {
     return defaultNudgeSettings();
   }
-  const rawNudge = getNested(parsed, ["channels", "relay-channel", "nudge"]);
+  const rawNudge =
+    getNested(parsed, ["golemWorkers", "selfNudge"]) ??
+    getNested(parsed, ["channels", "relay-channel", "nudge"]);
   if (!isPlainObject(rawNudge)) {
     return defaultNudgeSettings();
   }
@@ -294,7 +296,7 @@ export function formatStatusNudgeMessage(body: string): string {
 }
 
 async function decideSelfNudgeWithOpenRouter(input: {
-  settings: RelayChannelNudgeSettings;
+  settings: RelaySelfNudgeSettings;
   transcript: FreshestSessionTranscript;
   openrouterProxyPort: number;
   fetchImpl: typeof fetch;
@@ -476,7 +478,7 @@ function normalizeSessionKey(mapKey: string): string {
   return mapKey.startsWith("agent:main:") ? mapKey.slice("agent:main:".length) : mapKey;
 }
 
-function defaultNudgeSettings(): RelayChannelNudgeSettings {
+function defaultNudgeSettings(): RelaySelfNudgeSettings {
   return {
     enabled: false,
     analyzedRecentMessageCount: 0,

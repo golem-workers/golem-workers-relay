@@ -7,13 +7,13 @@ import {
   evaluateSelfNudgeTick,
   formatStatusNudgeMessage,
   readFreshestSessionTranscript,
-  readRelayChannelNudgeSettings,
+  readRelaySelfNudgeSettings,
   type FreshestSessionTranscript,
-  type RelayChannelNudgeSettings,
+  type RelaySelfNudgeSettings,
   type SelfNudgeState,
 } from "./selfNudgeRunner.js";
 
-const enabledSettings: RelayChannelNudgeSettings = {
+const enabledSettings: RelaySelfNudgeSettings = {
   enabled: true,
   analyzedRecentMessageCount: 1,
   baseTimeoutMs: 1_000,
@@ -41,7 +41,33 @@ function makeTranscript(input?: Partial<FreshestSessionTranscript>): FreshestSes
 }
 
 describe("selfNudgeRunner", () => {
-  it("reads relay-channel nudge settings from OpenClaw config", async () => {
+  it("reads relay-level self-nudge settings from OpenClaw config", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-config-"));
+    const file = path.join(dir, "openclaw.json");
+    await fs.writeFile(
+      file,
+      JSON.stringify({
+        golemWorkers: {
+          selfNudge: {
+            enabled: true,
+            analyzedRecentMessageCount: 3,
+            baseTimeoutMs: 12_000,
+            model: "openrouter/google/gemini-2.5-flash",
+          },
+        },
+      }),
+      "utf8"
+    );
+
+    await expect(readRelaySelfNudgeSettings(file)).resolves.toEqual({
+      enabled: true,
+      analyzedRecentMessageCount: 3,
+      baseTimeoutMs: 12_000,
+      model: "openrouter/google/gemini-2.5-flash",
+    });
+  });
+
+  it("keeps reading legacy relay-channel nudge settings during migration", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-config-"));
     const file = path.join(dir, "openclaw.json");
     await fs.writeFile(
@@ -51,9 +77,9 @@ describe("selfNudgeRunner", () => {
           "relay-channel": {
             nudge: {
               enabled: true,
-              analyzedRecentMessageCount: 3,
-              baseTimeoutMs: 12_000,
-              model: "openrouter/google/gemini-2.5-flash",
+              analyzedRecentMessageCount: 2,
+              baseTimeoutMs: 30_000,
+              model: null,
             },
           },
         },
@@ -61,11 +87,11 @@ describe("selfNudgeRunner", () => {
       "utf8"
     );
 
-    await expect(readRelayChannelNudgeSettings(file)).resolves.toEqual({
+    await expect(readRelaySelfNudgeSettings(file)).resolves.toEqual({
       enabled: true,
-      analyzedRecentMessageCount: 3,
-      baseTimeoutMs: 12_000,
-      model: "openrouter/google/gemini-2.5-flash",
+      analyzedRecentMessageCount: 2,
+      baseTimeoutMs: 30_000,
+      model: null,
     });
   });
 
