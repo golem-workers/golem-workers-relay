@@ -169,7 +169,7 @@ describe("ensureRelayChannelPluginUpToDate", () => {
     ]);
   });
 
-  it("reinstalls and restarts when the installed plugin version is outdated", async () => {
+  it("reinstalls on disk without restarting the gateway when the installed plugin version is outdated", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "relay-plugin-update-"));
     process.env.HOME = tempRoot;
     const repoDir = path.join(tempRoot, "plugin-repo");
@@ -342,7 +342,8 @@ describe("ensureRelayChannelPluginUpToDate", () => {
     expect(commands).toContain("npm ci --include=dev");
     expect(commands).toContain("openclaw plugins uninstall relay-channel --force");
     expect(commands).toContain("openclaw plugins install " + path.join(repoDir, ".artifacts", "relay-channel", "relay-channel-bundle.tgz"));
-    expect(commands).toContain("systemctl --user restart openclaw-gateway.service");
+    expect(commands).not.toContain("systemctl --user stop openclaw-gateway.service");
+    expect(commands).not.toContain("systemctl --user restart openclaw-gateway.service");
   });
 
   it("does not restart an inactive gateway service after updating the plugin", async () => {

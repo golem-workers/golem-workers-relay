@@ -9,9 +9,6 @@ import type { RelayConfig } from "../config/env.js";
 
 const execFile = promisify(execFileCallback);
 const RELAY_CHANNEL_PLUGIN_ID = "relay-channel";
-const DEFAULT_GATEWAY_SERVICE_NAME = "openclaw-gateway.service";
-const GATEWAY_RESTART_CHECK_ATTEMPTS = 30;
-const GATEWAY_RESTART_CHECK_DELAY_MS = 500;
 
 type RelayChannelPluginConfig = RelayConfig["relayChannel"]["plugin"];
 
@@ -72,7 +69,6 @@ export async function ensureRelayChannelPluginUpToDate(
     gitRef: input.plugin.gitRef,
   };
 
-  const gatewayWasRunningAtUpdateStart = await isGatewayServiceRunning(runtime);
   const desiredVersion = await syncPluginRepoAndReadVersion(plugin, runtime);
   const installed = await readInstalledPluginState(input.openclawConfigPath, plugin.id);
 
@@ -105,11 +101,6 @@ export async function ensureRelayChannelPluginUpToDate(
   );
 
   const bundlePath = await buildPluginBundle(plugin, runtime);
-  let gatewayWasStopped = false;
-
-  if (gatewayWasRunningAtUpdateStart) {
-    gatewayWasStopped = await stopGatewayServiceIfRunning(runtime);
-  }
 
   const desiredChannelConfig = installed.channelConfig ?? installed.entryConfig ?? { accounts: [{ id: "default" }] };
   await writePluginRuntimeConfig({
@@ -138,10 +129,6 @@ export async function ensureRelayChannelPluginUpToDate(
     );
   }
 
-  if (gatewayWasStopped) {
-    await restartGatewayService(runtime);
-  }
-
   logger.info(
     {
       event: "relay_channel_plugin_update",
@@ -150,7 +137,7 @@ export async function ensureRelayChannelPluginUpToDate(
       installPath: updated.installPath,
       pluginGitRef: plugin.gitRef,
     },
-    "Relay-channel plugin is ready"
+    "Relay-channel plugin is ready on disk"
   );
 }
 
@@ -369,80 +356,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return null;
   }
   return value as Record<string, unknown>;
-}
-
-async function hasGatewayServiceUnit(): Promise<boolean> {
-  return pathExists(path.join(os.homedir(), ".config", "systemd", "user", DEFAULT_GATEWAY_SERVICE_NAME));
-}
-
-async function isGatewayServiceRunning(deps: Deps): Promise<boolean> {
-  if (!(await hasGatewayServiceUnit())) {
-    return false;
-  }
-  const state = await readGatewayServiceState(deps);
-  return ["active", "activating", "reloading"].includes(state.activeState);
-}
-
-async function stopGatewayServiceIfRunning(deps: Deps): Promise<boolean> {
-  const state = await readGatewayServiceState(deps);
-  if (!["active", "activating", "reloading"].includes(state.activeState)) {
-    return false;
-  }
-  await execSystemctl(["--user", "stop", DEFAULT_GATEWAY_SERVICE_NAME], deps);
-  await waitForGatewayState((current) => current.activeState === "inactive", deps, "stop");
-  return true;
-}
-
-async function restartGatewayService(deps: Deps): Promise<void> {
-  await execSystemctl(["--user", "reset-failed", DEFAULT_GATEWAY_SERVICE_NAME], deps);
-  await execSystemctl(["--user", "restart", DEFAULT_GATEWAY_SERVICE_NAME], deps);
-  await waitForGatewayState((current) => current.activeState === "active", deps, "restart");
-}
-
-async function waitForGatewayState(
-  predicate: (state: { activeState: string; subState: string; result: string | null }) => boolean,
-  deps: Deps,
-  action: "stop" | "restart"
-): Promise<void> {
-  for (let attempt = 0; attempt < GATEWAY_RESTART_CHECK_ATTEMPTS; attempt += 1) {
-    const state = await readGatewayServiceState(deps);
-    if (predicate(state)) {
-      return;
-    }
-    await deps.sleep(GATEWAY_RESTART_CHECK_DELAY_MS);
-  }
-  const state = await readGatewayServiceState(deps);
-  throw new Error(
-    `OpenClaw gateway did not ${action} cleanly (activeState=${state.activeState}, subState=${state.subState}, result=${state.result ?? "n/a"})`
-  );
-}
-
-async function readGatewayServiceState(
-  deps: Deps
-): Promise<{ activeState: string; subState: string; result: string | null }> {
-  const [activeState, subState, result] = await Promise.all([
-    execSystemctl(["--user", "show", DEFAULT_GATEWAY_SERVICE_NAME, "-p", "ActiveState", "--value"], deps),
-    execSystemctl(["--user", "show", DEFAULT_GATEWAY_SERVICE_NAME, "-p", "SubState", "--value"], deps),
-    execSystemctl(["--user", "show", DEFAULT_GATEWAY_SERVICE_NAME, "-p", "Result", "--value"], deps),
-  ]);
-  return {
-    activeState: activeState.trim() || "unknown",
-    subState: subState.trim() || "unknown",
-    result: result.trim() || null,
-  };
-}
-
-async function execSystemctl(args: string[], deps: Deps): Promise<string> {
-  const runtimeDir = process.env.XDG_RUNTIME_DIR || "/run/user/0";
-  const result = await deps.exec("systemctl", args, {
-    env: {
-      ...process.env,
-      HOME: process.env.HOME || "/root",
-      XDG_RUNTIME_DIR: runtimeDir,
-      DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS || `unix:path=${runtimeDir}/bus`,
-    },
-  });
-  return result.stdout;
 }
 
 async function pathExists(targetPath: string): Promise<boolean> {
