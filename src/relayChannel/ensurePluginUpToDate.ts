@@ -96,8 +96,8 @@ export async function ensureRelayChannelPluginUpToDate(
       pluginRepoDir: plugin.repoDir,
     },
     installed.version
-      ? "Updating outdated relay-channel plugin before relay startup"
-      : "Installing missing relay-channel plugin before relay startup"
+      ? "Updating outdated relay-channel plugin in the background"
+      : "Installing missing relay-channel plugin in the background"
   );
 
   const bundlePath = await buildPluginBundle(plugin, runtime);

@@ -95,13 +95,6 @@ async function main(): Promise<void> {
     "Relay starting"
   );
 
-  if (cfg.relayChannel.enabled) {
-    await ensureRelayChannelPluginUpToDate({
-      openclawConfigPath: openclaw.configPath,
-      plugin: cfg.relayChannel.plugin,
-    });
-  }
-
   const backend = new BackendClient({
     baseUrl: cfg.backendBaseUrl,
     relayToken: cfg.relayToken,
@@ -171,6 +164,18 @@ async function main(): Promise<void> {
       await cp.close();
       await closeHttpServer(dp.server);
     };
+
+    void ensureRelayChannelPluginUpToDate({
+      openclawConfigPath: openclaw.configPath,
+      plugin: cfg.relayChannel.plugin,
+    }).catch((error) => {
+      logger.error(
+        {
+          err: error instanceof Error ? error.message : String(error),
+        },
+        "Relay-channel plugin auto-update failed"
+      );
+    });
   }
 
   reportOpenclawConnectionStatus = createOpenclawConnectionStatusReporter({
