@@ -26,6 +26,7 @@ import {
   startRunwayProxyServer,
 } from "./openrouter/proxyServer.js";
 import { createGatewayEventForwarder } from "./openclaw/gatewayEventForwarder.js";
+import { createSelfNudgeRunner } from "./openclaw/selfNudgeRunner.js";
 import { createOpenclawConnectionStatusReporter } from "./openclaw/connectionStatusReporter.js";
 import { closeHttpServer, startRelayChannelDataPlaneServer } from "./relayChannel/startDataPlaneServer.js";
 import { startRelayChannelControlPlane } from "./relayChannel/startControlPlaneServer.js";
@@ -544,9 +545,20 @@ async function main(): Promise<void> {
         backendPathPrefix: cfg.moonshotProxy.backendPathPrefix,
       })
     : null;
+  const selfNudgeRunner =
+    cfg.relayChannel.enabled && cfg.openrouterProxy.enabled
+      ? createSelfNudgeRunner({
+          openclawConfigPath: openclaw.configPath,
+          runner,
+          openrouterProxyPort: cfg.openrouterProxy.port,
+          systemTaskTimeoutMs: cfg.systemTaskTimeoutMs,
+        })
+      : null;
+  selfNudgeRunner?.start();
 
   await waitForStop(stop);
   shuttingDown = true;
+  selfNudgeRunner?.stop();
   queue.stopAccepting();
   const drainState = queue.getState();
   logger.info({ inFlight: drainState.inFlight, queueLength: drainState.queueLength }, "Stop signal received; draining relay queue");
@@ -763,4 +775,3 @@ async function closeServer(server: import("node:http").Server): Promise<void> {
     server.close(() => resolve());
   });
 }
-
