@@ -17,6 +17,12 @@ const thinkingDefaultSchema = z
   .optional();
 const modelFallbacksSchema = z.array(z.string().min(1));
 const modelRefStringSchema = z.string().min(1).nullable();
+const selfNudgeSettingsSchema = z.object({
+  enabled: z.boolean(),
+  analyzedRecentMessageCount: z.number().int().min(0).max(50),
+  baseTimeoutMs: z.number().int().min(1_000).max(2_147_483_647),
+  model: z.string().min(1).nullable(),
+});
 
 export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -31,6 +37,10 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("gateway.restart"),
+  }),
+  z.object({
+    kind: z.literal("relay.selfNudge.set"),
+    settings: selfNudgeSettingsSchema,
   }),
   z.object({
     kind: z.literal("devicePairing.list"),
@@ -133,6 +143,11 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     activeState: z.string().min(1),
     subState: z.string().min(1),
     result: z.string().nullable(),
+  }),
+  z.object({
+    kind: z.literal("relay.selfNudge.set"),
+    applied: z.literal(true),
+    restartScheduled: z.literal(true),
   }),
   z.object({
     kind: z.literal("devicePairing.list"),

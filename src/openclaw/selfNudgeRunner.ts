@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import JSON5 from "json5";
 import { logger } from "../logger.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 import type { ChatRunner } from "./chatRunner.js";
@@ -12,7 +11,6 @@ const DEFAULT_NUDGE_MODEL = "google/gemini-3.1-flash-lite";
 const DEFAULT_POLL_INTERVAL_MS = 10_000;
 const DISABLED_POLL_INTERVAL_MS = 30_000;
 const MIN_BASE_TIMEOUT_MS = 1_000;
-const MAX_ANALYZED_RECENT_MESSAGE_COUNT = 50;
 const MAX_MESSAGE_TEXT_LEN = 4_000;
 
 export type RelaySelfNudgeSettings = {
@@ -58,7 +56,7 @@ export type SelfNudgeRunner = {
 };
 
 export function createSelfNudgeRunner(input: {
-  openclawConfigPath: string;
+  settings: RelaySelfNudgeSettings;
   stateDir?: string;
   runner: RunnerLike;
   openrouterProxyPort: number;
@@ -95,7 +93,7 @@ export function createSelfNudgeRunner(input: {
     if (stopped || ticking) return;
     ticking = true;
     try {
-      const settings = await readRelaySelfNudgeSettings(input.openclawConfigPath);
+      const settings = input.settings;
       if (!settings.enabled) {
         resetState(state);
         schedule(DISABLED_POLL_INTERVAL_MS);
@@ -201,40 +199,6 @@ export async function evaluateSelfNudgeTick(input: {
     nudged: true,
     nextDelayMs: computeSelfNudgeWaitMs(input.settings.baseTimeoutMs, input.state.consecutiveNudges),
   };
-}
-
-export async function readRelaySelfNudgeSettings(
-  configPath: string
-): Promise<RelaySelfNudgeSettings> {
-  const raw = await fs.readFile(configPath, "utf8").catch(() => "");
-  if (!raw.trim()) {
-    return defaultNudgeSettings();
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON5.parse(raw);
-  } catch {
-    return defaultNudgeSettings();
-  }
-  const rawNudge =
-    getNested(parsed, ["golemWorkers", "selfNudge"]) ??
-    getNested(parsed, ["channels", "relay-channel", "nudge"]);
-  if (!isPlainObject(rawNudge)) {
-    return defaultNudgeSettings();
-  }
-  const enabled = rawNudge.enabled === true;
-  const analyzedRecentMessageCount = clampInt(
-    rawNudge.analyzedRecentMessageCount,
-    0,
-    MAX_ANALYZED_RECENT_MESSAGE_COUNT,
-    0
-  );
-  const baseTimeoutMs = clampInt(rawNudge.baseTimeoutMs, MIN_BASE_TIMEOUT_MS, Number.MAX_SAFE_INTEGER, 300_000);
-  const model =
-    typeof rawNudge.model === "string" && rawNudge.model.trim().length > 0
-      ? rawNudge.model.trim()
-      : null;
-  return { enabled, analyzedRecentMessageCount, baseTimeoutMs, model };
 }
 
 export async function readFreshestSessionTranscript(input: {
@@ -478,26 +442,11 @@ function normalizeSessionKey(mapKey: string): string {
   return mapKey.startsWith("agent:main:") ? mapKey.slice("agent:main:".length) : mapKey;
 }
 
-function defaultNudgeSettings(): RelaySelfNudgeSettings {
-  return {
-    enabled: false,
-    analyzedRecentMessageCount: 0,
-    baseTimeoutMs: 300_000,
-    model: null,
-  };
-}
-
 function resetState(state: SelfNudgeState): void {
   state.sessionKey = null;
   state.latestUserFingerprint = null;
   state.consecutiveNudges = 0;
   state.lastNudgeAtMs = null;
-}
-
-function clampInt(value: unknown, min: number, max: number, fallback: number): number {
-  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : NaN;
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(min, Math.min(max, Math.trunc(parsed)));
 }
 
 function truncateText(text: string, maxLen: number): string {
@@ -507,13 +456,4 @@ function truncateText(text: string, maxLen: number): string {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function getNested(value: unknown, keys: string[]): unknown {
-  let current: unknown = value;
-  for (const key of keys) {
-    if (!isPlainObject(current)) return undefined;
-    current = current[key];
-  }
-  return current;
 }

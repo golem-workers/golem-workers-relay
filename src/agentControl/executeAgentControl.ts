@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
@@ -84,10 +84,15 @@ export async function executeAgentControl(input: {
             configPath: input.configPath,
             configText: input.action.configText,
           })
-        : input.action.kind === "gateway.restart"
-          ? await restartGatewayService()
-          : input.action.kind === "devicePairing.list"
-            ? await listDevicePairing(input.gateway)
+      : input.action.kind === "gateway.restart"
+        ? await restartGatewayService()
+        : input.action.kind === "relay.selfNudge.set"
+          ? await setRelaySelfNudgeSettings({
+              configPath: input.configPath,
+              settings: input.action.settings,
+            })
+      : input.action.kind === "devicePairing.list"
+        ? await listDevicePairing(input.gateway)
             : input.action.kind === "devicePairing.approve"
               ? await approveDevicePairing(input.gateway, input.action.requestId)
             : input.action.kind === "channelPairing.list"
@@ -277,6 +282,64 @@ async function applyConfig(input: {
     kind: "config.apply",
     applied: true,
   };
+}
+
+async function setRelaySelfNudgeSettings(input: {
+  configPath: string;
+  settings: {
+    enabled: boolean;
+    analyzedRecentMessageCount: number;
+    baseTimeoutMs: number;
+    model: string | null;
+  };
+}): Promise<AgentControlResult> {
+  const { settings } = input;
+  const envPath = resolveRelayEnvPath();
+  const current = await fs.readFile(envPath, "utf8").catch((error) => {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return "";
+    throw error;
+  });
+  const next = updateDotenv(current, {
+    RELAY_SELF_NUDGE_ENABLED: settings.enabled ? "1" : "0",
+    RELAY_SELF_NUDGE_ANALYZED_RECENT_MESSAGE_COUNT: String(settings.analyzedRecentMessageCount),
+    RELAY_SELF_NUDGE_BASE_TIMEOUT_MS: String(settings.baseTimeoutMs),
+    RELAY_SELF_NUDGE_MODEL: settings.model,
+  });
+  await atomicWriteUtf8(envPath, next);
+  await removeLegacySelfNudgeFromOpenclawConfig(input.configPath);
+  scheduleRelayRestart();
+  return {
+    kind: "relay.selfNudge.set",
+    applied: true,
+    restartScheduled: true,
+  };
+}
+
+async function removeLegacySelfNudgeFromOpenclawConfig(configPath: string): Promise<void> {
+  const raw = await fs.readFile(configPath, "utf8").catch((error) => {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return "";
+    throw error;
+  });
+  if (!raw.trim()) return;
+  const parsed = parseConfigText(raw);
+  let changed = false;
+  if (isRecord(parsed.golemWorkers) && "selfNudge" in parsed.golemWorkers) {
+    delete parsed.golemWorkers.selfNudge;
+    if (Object.keys(parsed.golemWorkers).length === 0) {
+      delete parsed.golemWorkers;
+    }
+    changed = true;
+  }
+  const relayChannel = isRecord(parsed.channels) && isRecord(parsed.channels["relay-channel"])
+    ? parsed.channels["relay-channel"]
+    : null;
+  if (relayChannel && "nudge" in relayChannel) {
+    delete relayChannel.nudge;
+    changed = true;
+  }
+  if (changed) {
+    await atomicWriteUtf8(configPath, `${JSON.stringify(parsed, null, 2)}\n`);
+  }
 }
 
 async function listDevicePairing(gateway: GatewayLike): Promise<AgentControlResult> {
@@ -811,6 +874,53 @@ async function execSystemctl(args: string[]): Promise<string> {
       { cause: error }
     );
   }
+}
+
+function resolveRelayEnvPath(): string {
+  const explicit = process.env.RELAY_ENV_PATH?.trim();
+  if (explicit) return path.resolve(explicit);
+  return path.join(process.cwd(), ".env");
+}
+
+function updateDotenv(current: string, updates: Record<string, string | null>): string {
+  const seen = new Set<string>();
+  const lines = current.split(/\r?\n/);
+  const nextLines = lines
+    .filter((line, index) => index < lines.length - 1 || line.length > 0)
+    .flatMap((line) => {
+      const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+      if (!match) return [line];
+      const key = match[1];
+      if (!(key in updates)) return [line];
+      seen.add(key);
+      const value = updates[key];
+      return value === null ? [] : [`${key}=${dotenvValue(value)}`];
+    });
+  for (const [key, value] of Object.entries(updates)) {
+    if (!seen.has(key) && value !== null) {
+      nextLines.push(`${key}=${dotenvValue(value)}`);
+    }
+  }
+  return `${nextLines.join("\n")}\n`;
+}
+
+function dotenvValue(value: string): string {
+  if (/^[A-Za-z0-9_./:@+-]*$/.test(value)) return value;
+  return JSON.stringify(value);
+}
+
+function scheduleRelayRestart(): void {
+  setTimeout(() => {
+    const child = spawn("systemctl", ["restart", "golem-workers-relay"], {
+      detached: true,
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        HOME: process.env.HOME || "/root",
+      },
+    });
+    child.unref();
+  }, 1_000).unref();
 }
 
 async function readConfigFile(configPath: string): Promise<{ configText: string; config: Record<string, unknown> }> {

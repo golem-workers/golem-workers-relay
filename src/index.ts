@@ -541,7 +541,7 @@ async function main(): Promise<void> {
   const selfNudgeRunner =
     cfg.relayChannel.enabled && cfg.openrouterProxy.enabled
       ? createSelfNudgeRunner({
-          openclawConfigPath: openclaw.configPath,
+          settings: cfg.selfNudge,
           runner,
           openrouterProxyPort: cfg.openrouterProxy.port,
           systemTaskTimeoutMs: cfg.systemTaskTimeoutMs,

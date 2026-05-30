@@ -16,6 +16,7 @@ const noopGateway = {
 const originalStateDir = process.env.OPENCLAW_STATE_DIR;
 const originalPath = process.env.PATH;
 const originalHome = process.env.HOME;
+const originalRelayEnvPath = process.env.RELAY_ENV_PATH;
 const originalFetch = global.fetch;
 
 afterEach(() => {
@@ -34,7 +35,13 @@ afterEach(() => {
   } else {
     process.env.HOME = originalHome;
   }
+  if (originalRelayEnvPath === undefined) {
+    delete process.env.RELAY_ENV_PATH;
+  } else {
+    process.env.RELAY_ENV_PATH = originalRelayEnvPath;
+  }
   global.fetch = originalFetch;
+  vi.useRealTimers();
 });
 
 beforeEach(() => {
@@ -62,6 +69,9 @@ set -eu
 if [ "$#" -ge 3 ] && [ "$1" = "--user" ] && [ "$2" = "restart" ] && [ "$3" = "openclaw-gateway.service" ]; then
   exit 0
 fi
+if [ "$#" -ge 2 ] && [ "$1" = "restart" ] && [ "$2" = "golem-workers-relay" ]; then
+  exit 0
+fi
 if [ "$#" -ge 6 ] && [ "$1" = "--user" ] && [ "$2" = "show" ] && [ "$3" = "openclaw-gateway.service" ] && [ "$4" = "-p" ] && [ "$6" = "--value" ]; then
   case "$5" in
     ActiveState) printf 'active\\n' ;;
@@ -78,6 +88,72 @@ exit 1
   fsSync.chmodSync(scriptPath, 0o755);
   process.env.PATH = `${binDir}:${originalPath ?? ""}`;
 }
+
+describe("executeAgentControl relay self nudge settings", () => {
+  it("writes relay env settings and schedules relay restart", async () => {
+    vi.useFakeTimers();
+    await installFakeSystemctl();
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-env-"));
+    const envPath = path.join(tempDir, ".env");
+    const configPath = path.join(tempDir, "openclaw.json");
+    process.env.RELAY_ENV_PATH = envPath;
+    await fs.writeFile(envPath, "RELAY_TOKEN=t\nRELAY_SELF_NUDGE_ENABLED=0\n", "utf8");
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({
+        golemWorkers: {
+          selfNudge: {
+            enabled: true,
+          },
+        },
+        channels: {
+          "relay-channel": {
+            nudge: {
+              enabled: true,
+            },
+          },
+        },
+      }),
+      "utf8"
+    );
+
+    const result = await executeAgentControl({
+      action: {
+        kind: "relay.selfNudge.set",
+        settings: {
+          enabled: true,
+          analyzedRecentMessageCount: 2,
+          baseTimeoutMs: 600_000,
+          model: "openrouter/google/gemini-2.5-flash",
+        },
+      },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    expect(result).toEqual({
+      kind: "relay.selfNudge.set",
+      applied: true,
+      restartScheduled: true,
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.runOnlyPendingTimersAsync();
+    await expect(fs.readFile(envPath, "utf8")).resolves.toContain("RELAY_SELF_NUDGE_ENABLED=1");
+    await expect(fs.readFile(envPath, "utf8")).resolves.toContain(
+      "RELAY_SELF_NUDGE_ANALYZED_RECENT_MESSAGE_COUNT=2"
+    );
+    await expect(fs.readFile(envPath, "utf8")).resolves.toContain("RELAY_SELF_NUDGE_BASE_TIMEOUT_MS=600000");
+    await expect(fs.readFile(envPath, "utf8")).resolves.toContain(
+      "RELAY_SELF_NUDGE_MODEL=openrouter/google/gemini-2.5-flash"
+    );
+    const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+      golemWorkers?: unknown;
+      channels: Record<string, { nudge?: unknown }>;
+    };
+    expect(config.golemWorkers).toBeUndefined();
+    expect(config.channels["relay-channel"]?.nudge).toBeUndefined();
+  });
+});
 
 describe("executeAgentControl status nudge", () => {
   it("runs a status nudge through the chat runner and submits a reply callback", async () => {

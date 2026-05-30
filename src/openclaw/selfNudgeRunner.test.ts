@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import {
   computeSelfNudgeWaitMs,
+  createSelfNudgeRunner,
   evaluateSelfNudgeTick,
   formatStatusNudgeMessage,
   readFreshestSessionTranscript,
-  readRelaySelfNudgeSettings,
   type FreshestSessionTranscript,
   type RelaySelfNudgeSettings,
   type SelfNudgeState,
@@ -41,58 +41,22 @@ function makeTranscript(input?: Partial<FreshestSessionTranscript>): FreshestSes
 }
 
 describe("selfNudgeRunner", () => {
-  it("reads relay-level self-nudge settings from OpenClaw config", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-config-"));
-    const file = path.join(dir, "openclaw.json");
-    await fs.writeFile(
-      file,
-      JSON.stringify({
-        golemWorkers: {
-          selfNudge: {
-            enabled: true,
-            analyzedRecentMessageCount: 3,
-            baseTimeoutMs: 12_000,
-            model: "openrouter/google/gemini-2.5-flash",
-          },
-        },
-      }),
-      "utf8"
-    );
-
-    await expect(readRelaySelfNudgeSettings(file)).resolves.toEqual({
-      enabled: true,
-      analyzedRecentMessageCount: 3,
-      baseTimeoutMs: 12_000,
-      model: "openrouter/google/gemini-2.5-flash",
+  it("uses relay env-backed self-nudge settings passed at startup", async () => {
+    const runner = createSelfNudgeRunner({
+      settings: {
+        enabled: false,
+        analyzedRecentMessageCount: 3,
+        baseTimeoutMs: 12_000,
+        model: "openrouter/google/gemini-2.5-flash",
+      },
+      stateDir: await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-")),
+      runner: { runChatTask: vi.fn() },
+      openrouterProxyPort: 18080,
+      systemTaskTimeoutMs: 1_000,
+      pollIntervalMs: 1_000,
     });
-  });
 
-  it("keeps reading legacy relay-channel nudge settings during migration", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-config-"));
-    const file = path.join(dir, "openclaw.json");
-    await fs.writeFile(
-      file,
-      JSON.stringify({
-        channels: {
-          "relay-channel": {
-            nudge: {
-              enabled: true,
-              analyzedRecentMessageCount: 2,
-              baseTimeoutMs: 30_000,
-              model: null,
-            },
-          },
-        },
-      }),
-      "utf8"
-    );
-
-    await expect(readRelaySelfNudgeSettings(file)).resolves.toEqual({
-      enabled: true,
-      analyzedRecentMessageCount: 2,
-      baseTimeoutMs: 30_000,
-      model: null,
-    });
+    await expect(runner.tick()).resolves.toBeUndefined();
   });
 
   it("selects the freshest OpenClaw session transcript and returns the latest 1 + N messages", async () => {

@@ -117,6 +117,34 @@ describe("loadRelayConfig", () => {
     expect(custom.openclawForwardFinalOnly).toBe(false);
   });
 
+  it("keeps self-nudge disabled by default and allows relay env override", () => {
+    const def = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+    });
+    expect(def.selfNudge).toEqual({
+      enabled: false,
+      analyzedRecentMessageCount: 0,
+      baseTimeoutMs: 300_000,
+      model: null,
+    });
+
+    const custom = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+      RELAY_SELF_NUDGE_ENABLED: "1",
+      RELAY_SELF_NUDGE_ANALYZED_RECENT_MESSAGE_COUNT: "2",
+      RELAY_SELF_NUDGE_BASE_TIMEOUT_MS: "600000",
+      RELAY_SELF_NUDGE_MODEL: "openrouter/google/gemini-2.5-flash",
+    });
+    expect(custom.selfNudge).toEqual({
+      enabled: true,
+      analyzedRecentMessageCount: 2,
+      baseTimeoutMs: 600_000,
+      model: "openrouter/google/gemini-2.5-flash",
+    });
+  });
+
   it("uses a 10x gateway tick timeout multiplier by default and allows override", () => {
     const def = loadRelayConfig({
       RELAY_TOKEN: "t",
@@ -213,4 +241,3 @@ describe("loadRelayConfig", () => {
     expect(cfg.relayChannel.plugin.gitRef).toBe("feature/channel-plugin");
   });
 });
-
