@@ -478,6 +478,141 @@ describe("ensureRelayChannelPluginUpToDate", () => {
     expect(commands).not.toContain("systemctl --user restart openclaw-gateway.service");
   });
 
+  it("does not stop a gateway that becomes active after plugin update starts", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "relay-plugin-update-race-"));
+    process.env.HOME = tempRoot;
+    const repoDir = path.join(tempRoot, "plugin-repo");
+    const configPath = path.join(tempRoot, ".openclaw", "openclaw.json");
+    const installDir = path.join(tempRoot, ".openclaw", "extensions", "relay-channel-old");
+    const finalInstallDir = path.join(tempRoot, ".openclaw", "extensions", "relay-channel");
+    const gatewayUnitPath = path.join(tempRoot, ".config", "systemd", "user", "openclaw-gateway.service");
+
+    await fs.mkdir(path.join(repoDir, ".git"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoDir, "package.json"),
+      `${JSON.stringify({ name: "golem-workers-openclaw-channel-plugin", version: "1.0.13" }, null, 2)}\n`
+    );
+    await fs.mkdir(installDir, { recursive: true });
+    await fs.writeFile(
+      path.join(installDir, "package.json"),
+      `${JSON.stringify({ name: "golem-workers-openclaw-channel-plugin", version: "1.0.12" }, null, 2)}\n`
+    );
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(
+      configPath,
+      `${JSON.stringify(
+        {
+          plugins: {
+            installs: {
+              "relay-channel": {
+                installPath: installDir,
+              },
+            },
+            entries: {
+              "relay-channel": {
+                enabled: true,
+                config: { accounts: [{ id: "srv_1", port: 43129 }] },
+              },
+            },
+          },
+          channels: {
+            "relay-channel": {
+              accounts: [{ id: "srv_1", port: 43129 }],
+            },
+          },
+        },
+        null,
+        2
+      )}\n`
+    );
+    await fs.mkdir(path.dirname(gatewayUnitPath), { recursive: true });
+    await fs.writeFile(gatewayUnitPath, "[Unit]\nDescription=OpenClaw Gateway\n");
+
+    let gatewayActiveState = "inactive";
+    const commands: string[] = [];
+    await ensureRelayChannelPluginUpToDate(
+      {
+        openclawConfigPath: configPath,
+        plugin: {
+          autoUpdateEnabled: true,
+          repoDir,
+          repoUrl: "https://example.com/plugin.git",
+          gitRef: "release",
+        },
+      },
+      {
+        exec: async (command, args, options) => {
+          commands.push([command, ...args].join(" "));
+
+          if (command === "git") {
+            return { stdout: "", stderr: "" };
+          }
+
+          if (command === "npm" && args.join(" ") === "ci --include=dev") {
+            gatewayActiveState = "active";
+            return { stdout: "", stderr: "" };
+          }
+
+          if (command === "npm" && args.join(" ") === "run bundle:agent") {
+            const bundlePath = path.join(repoDir, ".artifacts", "relay-channel", "relay-channel-bundle.tgz");
+            await fs.mkdir(path.dirname(bundlePath), { recursive: true });
+            await fs.writeFile(bundlePath, "bundle");
+            return { stdout: "", stderr: "" };
+          }
+
+          if (command === "systemctl" && args.includes("show")) {
+            const property = args[4];
+            if (property === "ActiveState") {
+              return { stdout: `${gatewayActiveState}\n`, stderr: "" };
+            }
+            if (property === "SubState") {
+              return { stdout: `${gatewayActiveState === "active" ? "running" : "dead"}\n`, stderr: "" };
+            }
+            if (property === "Result") {
+              return { stdout: "success\n", stderr: "" };
+            }
+          }
+
+          if (command === "openclaw" && args.join(" ") === "plugins uninstall relay-channel --force") {
+            await fs.rm(installDir, { recursive: true, force: true });
+            return { stdout: "", stderr: "" };
+          }
+
+          if (command === "openclaw" && args[0] === "plugins" && args[1] === "install") {
+            await fs.mkdir(finalInstallDir, { recursive: true });
+            await fs.writeFile(
+              path.join(finalInstallDir, "package.json"),
+              `${JSON.stringify({ name: "golem-workers-openclaw-channel-plugin", version: "1.0.13" }, null, 2)}\n`
+            );
+            await fs.writeFile(
+              path.join(finalInstallDir, "openclaw.plugin.json"),
+              `${JSON.stringify({ id: "relay-channel" }, null, 2)}\n`
+            );
+            const rawConfig = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;
+            const plugins = rawConfig.plugins as {
+              installs?: Record<string, unknown>;
+            };
+            plugins.installs = plugins.installs ?? {};
+            plugins.installs["relay-channel"] = { installPath: finalInstallDir };
+            await fs.writeFile(configPath, `${JSON.stringify(rawConfig, null, 2)}\n`);
+            return { stdout: "", stderr: "" };
+          }
+
+          if (command === "openclaw" && args.join(" ") === "plugins enable relay-channel") {
+            return { stdout: "", stderr: "" };
+          }
+
+          throw new Error(`Unexpected command: ${command} ${args.join(" ")} (cwd=${options?.cwd ?? ""})`);
+        },
+        sleep: () => Promise.resolve(),
+      }
+    );
+
+    expect(commands).toContain("openclaw plugins install " + path.join(repoDir, ".artifacts", "relay-channel", "relay-channel-bundle.tgz"));
+    expect(commands).not.toContain("systemctl --user stop openclaw-gateway.service");
+    expect(commands).not.toContain("systemctl --user restart openclaw-gateway.service");
+  });
+
   it("accepts a successful install even when OpenClaw omits plugins.installs", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "relay-plugin-install-no-record-"));
     process.env.HOME = tempRoot;

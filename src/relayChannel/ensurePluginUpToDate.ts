@@ -72,6 +72,7 @@ export async function ensureRelayChannelPluginUpToDate(
     gitRef: input.plugin.gitRef,
   };
 
+  const gatewayWasRunningAtUpdateStart = await isGatewayServiceRunning(runtime);
   const desiredVersion = await syncPluginRepoAndReadVersion(plugin, runtime);
   const installed = await readInstalledPluginState(input.openclawConfigPath, plugin.id);
 
@@ -104,10 +105,9 @@ export async function ensureRelayChannelPluginUpToDate(
   );
 
   const bundlePath = await buildPluginBundle(plugin, runtime);
-  const gatewayServicePresent = await hasGatewayServiceUnit();
   let gatewayWasStopped = false;
 
-  if (gatewayServicePresent) {
+  if (gatewayWasRunningAtUpdateStart) {
     gatewayWasStopped = await stopGatewayServiceIfRunning(runtime);
   }
 
@@ -373,6 +373,14 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 async function hasGatewayServiceUnit(): Promise<boolean> {
   return pathExists(path.join(os.homedir(), ".config", "systemd", "user", DEFAULT_GATEWAY_SERVICE_NAME));
+}
+
+async function isGatewayServiceRunning(deps: Deps): Promise<boolean> {
+  if (!(await hasGatewayServiceUnit())) {
+    return false;
+  }
+  const state = await readGatewayServiceState(deps);
+  return ["active", "activating", "reloading"].includes(state.activeState);
 }
 
 async function stopGatewayServiceIfRunning(deps: Deps): Promise<boolean> {
