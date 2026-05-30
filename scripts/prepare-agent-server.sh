@@ -664,6 +664,15 @@ sandbox_mode = \"danger-full-access\"
 approval_policy = \"never\"
 allow_login_shell = true
 web_search = \"live\"
+
+[features]
+hooks = false
+
+[hooks]
+PreToolUse = []
+PostToolUse = []
+PermissionRequest = []
+Stop = []
 "
   write_file /root/.codex/auth.json "{
   \"auth_mode\": \"apikey\",
@@ -681,7 +690,7 @@ fi
 mkdir -p \"\${CODEX_HOME}\"
 # Agent servers are already externally isolated; keep Codex shell commands
 # unsandboxed here so tools like gh can open DNS/TCP sockets normally.
-exec \"\${REAL_CODEX}\" --dangerously-bypass-approvals-and-sandbox -c sandbox_mode='\"danger-full-access\"' -c approval_policy='\"never\"' -c allow_login_shell=true -c web_search='\"live\"' \"\$@\"
+exec \"\${REAL_CODEX}\" --dangerously-bypass-approvals-and-sandbox -c sandbox_mode='\"danger-full-access\"' -c approval_policy='\"never\"' -c allow_login_shell=true -c web_search='\"live\"' -c features.hooks=false -c hooks.PreToolUse=[] -c hooks.PostToolUse=[] -c hooks.PermissionRequest=[] -c hooks.Stop=[] \"\$@\"
 "
   chmod 0755 "${CODEX_WRAPPER_PATH}"
   OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/grammy"
@@ -1005,7 +1014,35 @@ if (manifest?.id !== "codex") {
 if (!fs.existsSync(path.join(installDir, "dist", "index.js"))) {
   throw new Error(`Missing codex dist/index.js in ${installDir}`)
 }
+
+const patchedFiles = []
+function patchCodexNativeHookRelayDefaults(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (entry.name === "node_modules" || entry.name === ".git") continue
+      patchCodexNativeHookRelayDefaults(fullPath)
+      continue
+    }
+    if (!entry.isFile() || !entry.name.endsWith(".js")) continue
+    let source = fs.readFileSync(fullPath, "utf8")
+    const original = source
+    source = source
+      .replace(/nativeHookRelay:\s*\{\s*enabled:\s*true\s*\}/g, "nativeHookRelay: { enabled: false }")
+      .replace(/nativeHookRelay:\{enabled:true\}/g, "nativeHookRelay:{enabled:false}")
+    if (source !== original) {
+      fs.writeFileSync(fullPath, source)
+      patchedFiles.push(path.relative(installDir, fullPath))
+    }
+  }
+}
+
+patchCodexNativeHookRelayDefaults(installDir)
+if (patchedFiles.length === 0) {
+  throw new Error(`Failed to disable Codex native hook relay in ${installDir}; no harness defaults were patched`)
+}
 console.log(`codex prepared: ${installDir}`)
+console.log(`codex native hook relay disabled in: ${patchedFiles.join(", ")}`)
 NODE
 
   test -f "${GLOBAL_PNPM_ROOT}/playwright/package.json"
