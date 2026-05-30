@@ -60,6 +60,7 @@ export function createSelfNudgeRunner(input: {
   stateDir?: string;
   runner: RunnerLike;
   openrouterProxyPort: number;
+  openrouterProxyPathPrefix: string;
   systemTaskTimeoutMs: number;
   pollIntervalMs?: number;
   fetchImpl?: typeof fetch;
@@ -119,6 +120,7 @@ export function createSelfNudgeRunner(input: {
             ...decisionInput,
             fetchImpl: input.fetchImpl ?? fetch,
             openrouterProxyPort: input.openrouterProxyPort,
+            openrouterProxyPathPrefix: input.openrouterProxyPathPrefix,
           }),
       });
       schedule(outcome.nextDelayMs ?? pollIntervalMs);
@@ -263,11 +265,15 @@ async function decideSelfNudgeWithOpenRouter(input: {
   settings: RelaySelfNudgeSettings;
   transcript: FreshestSessionTranscript;
   openrouterProxyPort: number;
+  openrouterProxyPathPrefix: string;
   fetchImpl: typeof fetch;
 }): Promise<SelfNudgeDecision> {
   const model = normalizeOpenRouterModel(input.settings.model);
   const response = await input.fetchImpl(
-    `http://127.0.0.1:${input.openrouterProxyPort}/api/v1/chat/completions`,
+    buildOpenRouterProxyChatCompletionsUrl({
+      port: input.openrouterProxyPort,
+      pathPrefix: input.openrouterProxyPathPrefix,
+    }),
     {
       method: "POST",
       headers: {
@@ -305,6 +311,14 @@ async function decideSelfNudgeWithOpenRouter(input: {
     throw new Error("OpenRouter nudge analysis returned empty content");
   }
   return parseSelfNudgeDecision(content);
+}
+
+export function buildOpenRouterProxyChatCompletionsUrl(input: {
+  port: number;
+  pathPrefix: string;
+}): string {
+  const normalizedPrefix = `/${input.pathPrefix.trim().replace(/^\/+|\/+$/g, "")}`;
+  return `http://127.0.0.1:${input.port}${normalizedPrefix}/api/v1/chat/completions`;
 }
 
 async function readTranscriptMessages(sessionFile: string): Promise<TranscriptMessage[]> {

@@ -544,6 +544,7 @@ async function main(): Promise<void> {
           settings: cfg.selfNudge,
           runner,
           openrouterProxyPort: cfg.openrouterProxy.port,
+          openrouterProxyPathPrefix: cfg.openrouterProxy.pathPrefix,
           systemTaskTimeoutMs: cfg.systemTaskTimeoutMs,
         })
       : null;

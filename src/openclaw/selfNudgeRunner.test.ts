@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  buildOpenRouterProxyChatCompletionsUrl,
   computeSelfNudgeWaitMs,
   createSelfNudgeRunner,
   evaluateSelfNudgeTick,
@@ -52,6 +53,7 @@ describe("selfNudgeRunner", () => {
       stateDir: await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-")),
       runner: { runChatTask: vi.fn() },
       openrouterProxyPort: 18080,
+      openrouterProxyPathPrefix: "/provider-proxy/openrouter",
       systemTaskTimeoutMs: 1_000,
       pollIntervalMs: 1_000,
     });
@@ -206,5 +208,14 @@ describe("selfNudgeRunner", () => {
 
   it("does not double-prefix status nudge messages", () => {
     expect(formatStatusNudgeMessage("[STATUS_NUDGE]\nContinue.")).toBe("[STATUS_NUDGE]\nContinue.");
+  });
+
+  it("uses the configured OpenRouter provider proxy path for analysis", () => {
+    expect(
+      buildOpenRouterProxyChatCompletionsUrl({
+        port: 18080,
+        pathPrefix: "/provider-proxy/openrouter/",
+      })
+    ).toBe("http://127.0.0.1:18080/provider-proxy/openrouter/api/v1/chat/completions");
   });
 });
