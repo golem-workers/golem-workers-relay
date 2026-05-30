@@ -31,7 +31,6 @@ import { createOpenclawConnectionStatusReporter } from "./openclaw/connectionSta
 import { closeHttpServer, startRelayChannelDataPlaneServer } from "./relayChannel/startDataPlaneServer.js";
 import { startRelayChannelControlPlane } from "./relayChannel/startControlPlaneServer.js";
 import { createRelayChannelTransportDeliveryTracker } from "./relayChannel/transportDeliveryTracker.js";
-import { ensureRelayChannelPluginUpToDate } from "./relayChannel/ensurePluginUpToDate.js";
 import { abortActiveChatTaskByBackendMessageId } from "./agentControl/abortActiveChatTask.js";
 import { executeAgentControl } from "./agentControl/executeAgentControl.js";
 
@@ -165,17 +164,6 @@ async function main(): Promise<void> {
       await closeHttpServer(dp.server);
     };
 
-    void ensureRelayChannelPluginUpToDate({
-      openclawConfigPath: openclaw.configPath,
-      plugin: cfg.relayChannel.plugin,
-    }).catch((error) => {
-      logger.error(
-        {
-          err: error instanceof Error ? error.message : String(error),
-        },
-        "Relay-channel plugin auto-update failed"
-      );
-    });
   }
 
   reportOpenclawConnectionStatus = createOpenclawConnectionStatusReporter({
