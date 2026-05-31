@@ -1126,6 +1126,7 @@ const requiredPluginIds = ["relay-channel", "codex"]
 const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram", "whatsapp"]
 const stalePluginIds = ["memory-lancedb-pro", "memory-lancedb"]
 const defaultExtensionsDir = path.join(configDir, "extensions")
+const pluginIndexPath = path.join(configDir, "plugins", "installs.json")
 
 if (!fs.existsSync(configPath)) {
   throw new Error(`Missing canonical OpenClaw config at ${configPath}`)
@@ -1154,27 +1155,14 @@ function normalizeStringArray(value) {
 }
 
 function resolvePluginInstallDir(pluginId, installRecord) {
-  const directCandidates =
-    installRecord &&
-    typeof installRecord === "object" &&
-    !Array.isArray(installRecord) &&
-    typeof installRecord.installPath === "string" &&
-    installRecord.installPath.trim().length > 0
-      ? [installRecord.installPath]
-      : [
-          ...(pluginId === "codex"
-            ? [path.join(configDir, "npm", "node_modules", "@openclaw", "codex")]
-            : []),
-          path.join(defaultExtensionsDir, pluginId),
-        ]
-  for (const directCandidate of directCandidates) {
-    if (!fs.existsSync(directCandidate)) {
-      continue
+  function validatePluginDir(candidate) {
+    if (!fs.existsSync(candidate)) {
+      return null
     }
-    const resolved = fs.realpathSync(directCandidate)
+    const resolved = fs.realpathSync(candidate)
     const manifestPath = path.join(resolved, "openclaw.plugin.json")
     if (!fs.existsSync(manifestPath)) {
-      continue
+      return null
     }
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
     if (manifest?.id !== pluginId) {
@@ -1184,6 +1172,54 @@ function resolvePluginInstallDir(pluginId, installRecord) {
       throw new Error(`Missing plugin dist/index.js in ${resolved}`)
     }
     return resolved
+  }
+
+  const directCandidates = []
+  if (
+    installRecord &&
+    typeof installRecord === "object" &&
+    !Array.isArray(installRecord) &&
+    typeof installRecord.installPath === "string" &&
+    installRecord.installPath.trim().length > 0
+  ) {
+    directCandidates.push(installRecord.installPath)
+  }
+  if (fs.existsSync(pluginIndexPath)) {
+    const pluginIndex = JSON.parse(fs.readFileSync(pluginIndexPath, "utf8"))
+    const indexedInstallRecord =
+      pluginIndex?.installRecords &&
+      typeof pluginIndex.installRecords === "object" &&
+      !Array.isArray(pluginIndex.installRecords)
+        ? pluginIndex.installRecords[pluginId]
+        : null
+    if (
+      indexedInstallRecord &&
+      typeof indexedInstallRecord === "object" &&
+      !Array.isArray(indexedInstallRecord) &&
+      typeof indexedInstallRecord.installPath === "string" &&
+      indexedInstallRecord.installPath.trim().length > 0
+    ) {
+      directCandidates.push(indexedInstallRecord.installPath)
+    }
+  }
+  if (pluginId === "codex") {
+    directCandidates.push(path.join(configDir, "npm", "node_modules", "@openclaw", "codex"))
+  }
+  directCandidates.push(path.join(defaultExtensionsDir, pluginId))
+
+  for (const directCandidate of directCandidates) {
+    const resolved = validatePluginDir(directCandidate)
+    if (resolved) return resolved
+  }
+  if (pluginId === "codex") {
+    const projectRoot = path.join(configDir, "npm", "projects")
+    if (fs.existsSync(projectRoot)) {
+      for (const projectName of fs.readdirSync(projectRoot)) {
+        if (!projectName.startsWith("openclaw-codex-")) continue
+        const resolved = validatePluginDir(path.join(projectRoot, projectName, "node_modules", "@openclaw", "codex"))
+        if (resolved) return resolved
+      }
+    }
   }
   return null
 }
