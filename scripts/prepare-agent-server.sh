@@ -903,6 +903,7 @@ const defaultInstallDirs = [
   path.join(os.homedir(), ".openclaw", "extensions", pluginId),
 ]
 const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json")
+const pluginIndexPath = path.join(os.homedir(), ".openclaw", "plugins", "installs.json")
 
 function resolveInstallDir(candidate) {
   if (typeof candidate !== "string" || candidate.trim().length === 0) return null
@@ -931,12 +932,39 @@ if (fs.existsSync(configPath)) {
       : null
 }
 
+if (!installDir && fs.existsSync(pluginIndexPath)) {
+  const pluginIndex = JSON.parse(fs.readFileSync(pluginIndexPath, "utf8"))
+  const installRecord =
+    pluginIndex?.installRecords &&
+    typeof pluginIndex.installRecords === "object" &&
+    !Array.isArray(pluginIndex.installRecords)
+      ? pluginIndex.installRecords[pluginId]
+      : null
+  installDir =
+    installRecord && typeof installRecord === "object" && !Array.isArray(installRecord)
+      ? resolveInstallDir(installRecord.installPath)
+      : null
+}
+
 if (!installDir) {
   installDir = defaultInstallDirs.map(resolveInstallDir).find(Boolean) ?? null
 }
 
 if (!installDir) {
-  throw new Error(`Unable to resolve codex install dir after install; checked config and ${defaultInstallDirs.join(", ")}`)
+  const projectRoot = path.join(os.homedir(), ".openclaw", "npm", "projects")
+  if (fs.existsSync(projectRoot)) {
+    installDir =
+      fs.readdirSync(projectRoot)
+        .filter((name) => name.startsWith("openclaw-codex-"))
+        .map((name) => resolveInstallDir(path.join(projectRoot, name)))
+        .find(Boolean) ?? null
+  }
+}
+
+if (!installDir) {
+  throw new Error(
+    `Unable to resolve codex install dir after install; checked config, ${pluginIndexPath}, and ${defaultInstallDirs.join(", ")}`
+  )
 }
 
 process.stdout.write(installDir)
