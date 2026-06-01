@@ -219,6 +219,77 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
   });
 
+  it("marks relay_channel_v2 telegram replies as SDK-delivered when only session key is known", async () => {
+    const transportDeliveryTracker = createRelayChannelTransportDeliveryTracker();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockImplementation(async () => {
+          transportDeliveryTracker.recordSdkDelivery({
+            sessionKey: "tg:123:srv_1",
+            transportChannelId: "telegram",
+            transportMessageId: "tg-sdk-session-1",
+          });
+          return {
+            result: {
+              outcome: "reply",
+              reply: {
+                runId: "run_v2_sdk_session_1",
+                message: { role: "assistant", content: "Ответил в чат." },
+              },
+            },
+            openclawMeta: { method: "chat.send", runId: "run_v2_sdk_session_1" },
+          };
+        }),
+      } as never,
+      backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
+      transportDeliveryTracker,
+    });
+
+    await processor({
+      messageId: "msg_without_sdk_correlation",
+      input: {
+        kind: "chat",
+        sessionKey: "tg:123:srv_1",
+        messageText: "ping",
+        context: {
+          channel: "telegram",
+          deliverySystem: "relay_channel_v2",
+          telegram: {
+            chatId: "123",
+            messageId: "55",
+          },
+        },
+      },
+    });
+
+    expect(executeTelegramTransportActionViaBackendMock).not.toHaveBeenCalled();
+    const firstCall = submitInboundMessage.mock.calls[0]?.[0] as
+      | {
+          body?: {
+            openclawMeta?: {
+              transportChannelId?: string;
+              transportAccountId?: string;
+              transportMessageId?: string;
+              transportDelivered?: boolean;
+            };
+          };
+        }
+      | undefined;
+    expect(firstCall?.body?.openclawMeta?.transportChannelId).toBe("telegram");
+    expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
+    expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("tg-sdk-session-1");
+    expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
+  });
+
   it("delivers relay_channel_v2 WhatsApp Personal replies via backend when SDK did not send", async () => {
     executeWhatsAppPersonalMessageSendMock.mockResolvedValueOnce({
       transportMessageId: "wa-direct-1",

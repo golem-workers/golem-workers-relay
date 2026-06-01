@@ -14,6 +14,7 @@ import {
 import { executeTelegramTransportActionViaBackend } from "./telegramBackendTransport.js";
 import {
   readTransportDeliveryCorrelationId,
+  readTransportDeliverySessionKey,
   type RelayChannelTransportDeliveryTracker,
 } from "./transportDeliveryTracker.js";
 import { executeWhatsAppPersonalMessageSend } from "./whatsappPersonalTransport.js";
@@ -394,9 +395,11 @@ async function executeTransportAction(input: {
 
   if (input.action.kind === "message.send") {
     const correlationMessageId = readTransportDeliveryCorrelationId(input.action.openclawContext);
-    if (correlationMessageId && input.transportDeliveryTracker) {
+    const sessionKey = readTransportDeliverySessionKey(input.action.openclawContext);
+    if ((correlationMessageId || sessionKey) && input.transportDeliveryTracker) {
       input.transportDeliveryTracker.recordSdkDelivery({
-        correlationMessageId,
+        ...(correlationMessageId ? { correlationMessageId } : {}),
+        ...(sessionKey ? { sessionKey } : {}),
         transportChannelId: channel === "whatsapp_personal" ? "whatsapp_personal" : "telegram",
         ...(typeof completedResult.transportMessageId === "string"
           ? { transportMessageId: completedResult.transportMessageId }

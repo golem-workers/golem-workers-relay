@@ -13,11 +13,37 @@ describe("transportDeliveryTracker", () => {
       transportMessageId: "tg-1",
     });
 
-    expect(tracker.getSdkDelivery("msg_1")).toEqual({
+    expect(tracker.getSdkDelivery({ correlationMessageId: "msg_1" })).toEqual({
       transportChannelId: "telegram",
       transportMessageId: "tg-1",
     });
-    expect(tracker.getSdkDelivery("msg_2")).toBeNull();
+    expect(tracker.getSdkDelivery({ correlationMessageId: "msg_2" })).toBeNull();
+  });
+
+  it("records and clears SDK deliveries by session key", () => {
+    const tracker = createRelayChannelTransportDeliveryTracker();
+    tracker.begin({
+      correlationMessageId: "msg_1",
+      sessionKey: "tg:123:srv_1",
+    });
+    tracker.recordSdkDelivery({
+      sessionKey: "tg:123:srv_1",
+      transportChannelId: "telegram",
+      transportMessageId: "tg-session-1",
+    });
+
+    expect(tracker.getSdkDelivery({ sessionKey: "tg:123:srv_1" })).toEqual({
+      transportChannelId: "telegram",
+      transportMessageId: "tg-session-1",
+    });
+    expect(tracker.getSdkDelivery({ correlationMessageId: "msg_1" })).toEqual({
+      transportChannelId: "telegram",
+      transportMessageId: "tg-session-1",
+    });
+
+    tracker.clear({ sessionKey: "tg:123:srv_1" });
+
+    expect(tracker.getSdkDelivery({ sessionKey: "tg:123:srv_1" })).toBeNull();
   });
 
   it("prefers correlationMessageId over backendMessageId", () => {

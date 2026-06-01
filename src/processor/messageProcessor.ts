@@ -632,6 +632,10 @@ async function processSingleMessage(input: {
             });
           },
         });
+        input.transportDeliveryTracker?.begin({
+          correlationMessageId: msg.messageId,
+          sessionKey: msg.input.sessionKey,
+        });
         const runnerPromise = runner.runChatTask({
           taskId: msg.messageId,
           sessionKey: msg.input.sessionKey,
@@ -685,7 +689,10 @@ async function processSingleMessage(input: {
             relayMessageId,
             transportDeliveryTracker: input.transportDeliveryTracker,
           });
-          input.transportDeliveryTracker?.clear(msg.messageId);
+          input.transportDeliveryTracker?.clear({
+            correlationMessageId: msg.messageId,
+            sessionKey: msg.input.sessionKey,
+          });
           await backend.submitInboundMessage({
             body: {
               relayInstanceId: cfg.relayInstanceId,
@@ -1183,7 +1190,11 @@ async function maybeDeliverRelayChannelReplyDirectly(input: {
     });
   }
 
-  const sdkDelivery = input.transportDeliveryTracker?.getSdkDelivery(input.backendMessageId) ?? null;
+  const sdkDelivery =
+    input.transportDeliveryTracker?.getSdkDelivery({
+      correlationMessageId: input.backendMessageId,
+      sessionKey: input.sessionKey,
+    }) ?? null;
   if (sdkDelivery) {
     logger.info(
       {
