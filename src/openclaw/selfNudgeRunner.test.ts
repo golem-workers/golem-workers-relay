@@ -109,6 +109,54 @@ describe("selfNudgeRunner", () => {
     expect(transcript?.latestUserMessage).toEqual({ role: "user", text: "latest", lineIndex: 2, timestampMs: 4_200 });
   });
 
+  it("ignores internal maintenance sessions when choosing a nudge transcript", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-"));
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const heartbeatSessionFile = path.join(sessionsDir, "main.jsonl");
+    const workSessionFile = path.join(sessionsDir, "work.jsonl");
+    await fs.writeFile(
+      heartbeatSessionFile,
+      [
+        JSON.stringify({
+          type: "message",
+          message: {
+            role: "user",
+            timestamp: 5_000,
+            content: "Read HEARTBEAT.md if it exists. If nothing needs attention, reply HEARTBEAT_OK.",
+          },
+        }),
+        JSON.stringify({ type: "message", message: { role: "assistant", timestamp: 5_100, content: "HEARTBEAT_OK" } }),
+      ].join("\n")
+    );
+    await fs.writeFile(
+      workSessionFile,
+      [
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", timestamp: 4_000, content: "Complete the runtime scenario checks." },
+        }),
+        JSON.stringify({ type: "message", message: { role: "assistant", timestamp: 4_100, content: "Working." } }),
+      ].join("\n")
+    );
+    await fs.writeFile(
+      path.join(sessionsDir, "sessions.json"),
+      JSON.stringify({
+        "agent:main:main": { sessionFile: heartbeatSessionFile },
+        "agent:main:tg:-5297593928:cmp9kwhbf0175209zotr1q9le": { sessionFile: "work.jsonl" },
+      }),
+      "utf8"
+    );
+
+    const transcript = await readFreshestSessionTranscript({
+      stateDir,
+      analyzedRecentMessageCount: 1,
+    });
+
+    expect(transcript?.sessionKey).toBe("tg:-5297593928:cmp9kwhbf0175209zotr1q9le");
+    expect(transcript?.latestUserMessage?.text).toBe("Complete the runtime scenario checks.");
+  });
+
   it("waits for T * (X + 1), sends a marked self-nudge, then increases backoff", async () => {
     const runChatTask = vi.fn().mockResolvedValue({
       result: { outcome: "no_reply", noReply: { runId: "run_1" } },
