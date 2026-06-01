@@ -63,7 +63,6 @@ export type ActiveRelayTaskSnapshot = {
   sessionKey: string | null;
   taskKind: RelayTaskKind;
   startedAtMs: number;
-  messageText?: string | null;
 };
 
 export type RelayTaskControl = {
@@ -101,16 +100,15 @@ export function createRelayTaskControl(): RelayTaskControl {
     getActiveTask() {
       const active = activeByMessageId.values().next().value;
       if (!active) return null;
-      const { messageId, sessionKey, taskKind, startedAtMs, messageText } = active;
-      return { messageId, sessionKey, taskKind, startedAtMs, messageText };
+      const { messageId, sessionKey, taskKind, startedAtMs } = active;
+      return { messageId, sessionKey, taskKind, startedAtMs };
     },
     getActiveTasks() {
-      return Array.from(activeByMessageId.values(), ({ messageId, sessionKey, taskKind, startedAtMs, messageText }) => ({
+      return Array.from(activeByMessageId.values(), ({ messageId, sessionKey, taskKind, startedAtMs }) => ({
         messageId,
         sessionKey,
         taskKind,
         startedAtMs,
-        messageText,
       }));
     },
   };
@@ -603,7 +601,6 @@ async function processSingleMessage(input: {
         sessionKey: msg.input.sessionKey,
         taskKind,
         startedAtMs: startedAt,
-        messageText: taskKind === "user_chat" ? msg.input.messageText : null,
         abort: abortController.abort,
       });
       try {

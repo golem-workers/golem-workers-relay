@@ -543,7 +543,6 @@ async function main(): Promise<void> {
       ? createSelfNudgeRunner({
           settings: cfg.selfNudge,
           runner,
-          getActiveRelayTasks: taskControl.getActiveTasks,
           openrouterProxyPort: cfg.openrouterProxy.port,
           openrouterProxyPathPrefix: cfg.openrouterProxy.pathPrefix,
           systemTaskTimeoutMs: cfg.systemTaskTimeoutMs,
