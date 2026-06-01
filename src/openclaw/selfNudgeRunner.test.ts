@@ -61,28 +61,37 @@ describe("selfNudgeRunner", () => {
     await expect(runner.tick()).resolves.toBeUndefined();
   });
 
-  it("selects the freshest OpenClaw session transcript and returns the latest 1 + N messages", async () => {
+  it("selects the OpenClaw session with the newest user message and returns the latest 1 + N messages", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-"));
     const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
-    const oldSessionFile = path.join(sessionsDir, "old.jsonl");
-    const freshSessionFile = path.join(sessionsDir, "fresh.jsonl");
-    await fs.writeFile(oldSessionFile, `${JSON.stringify({ type: "message", message: { role: "user", content: "old" } })}\n`);
+    const completedSessionFile = path.join(sessionsDir, "completed.jsonl");
+    const activeSessionFile = path.join(sessionsDir, "active.jsonl");
     await fs.writeFile(
-      freshSessionFile,
+      completedSessionFile,
       [
-        JSON.stringify({ type: "message", message: { role: "user", content: "first" } }),
-        JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "working" }] } }),
-        JSON.stringify({ type: "message", message: { role: "user", content: "latest" } }),
+        JSON.stringify({ type: "message", message: { role: "user", timestamp: 1_000, content: "older request" } }),
+        JSON.stringify({ type: "message", message: { role: "assistant", timestamp: 1_100, content: "Done." } }),
       ].join("\n")
     );
-    await fs.utimes(oldSessionFile, new Date(1_000), new Date(1_000));
-    await fs.utimes(freshSessionFile, new Date(2_000), new Date(2_000));
+    await fs.writeFile(
+      activeSessionFile,
+      [
+        JSON.stringify({ type: "message", message: { role: "user", timestamp: 4_000, content: "first" } }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "assistant", timestamp: 4_100, content: [{ type: "text", text: "working" }] },
+        }),
+        JSON.stringify({ type: "message", message: { role: "user", timestamp: 4_200, content: "latest" } }),
+      ].join("\n")
+    );
+    await fs.utimes(completedSessionFile, new Date(5_000), new Date(5_000));
+    await fs.utimes(activeSessionFile, new Date(2_000), new Date(2_000));
     await fs.writeFile(
       path.join(sessionsDir, "sessions.json"),
       JSON.stringify({
-        "agent:main:old": { sessionFile: oldSessionFile },
-        "agent:main:fresh": { sessionFile: "fresh.jsonl" },
+        "agent:main:completed": { sessionFile: completedSessionFile },
+        "agent:main:active": { sessionFile: "active.jsonl" },
       }),
       "utf8"
     );
@@ -92,12 +101,12 @@ describe("selfNudgeRunner", () => {
       analyzedRecentMessageCount: 1,
     });
 
-    expect(transcript?.sessionKey).toBe("fresh");
+    expect(transcript?.sessionKey).toBe("active");
     expect(transcript?.messages).toEqual([
-      { role: "assistant", text: "working", lineIndex: 1 },
-      { role: "user", text: "latest", lineIndex: 2 },
+      { role: "assistant", text: "working", lineIndex: 1, timestampMs: 4_100 },
+      { role: "user", text: "latest", lineIndex: 2, timestampMs: 4_200 },
     ]);
-    expect(transcript?.latestUserMessage).toEqual({ role: "user", text: "latest", lineIndex: 2 });
+    expect(transcript?.latestUserMessage).toEqual({ role: "user", text: "latest", lineIndex: 2, timestampMs: 4_200 });
   });
 
   it("waits for T * (X + 1), sends a marked self-nudge, then increases backoff", async () => {

@@ -24,6 +24,7 @@ export type TranscriptMessage = {
   role: "user" | "assistant";
   text: string;
   lineIndex: number;
+  timestampMs?: number;
 };
 
 export type FreshestSessionTranscript = {
@@ -236,18 +237,28 @@ export async function readFreshestSessionTranscript(input: {
       mtimeMs: stat.mtimeMs,
     });
   }
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  const freshest = candidates[0];
-  if (!freshest) return null;
+  const transcripts: FreshestSessionTranscript[] = [];
+  for (const candidate of candidates) {
+    const transcriptMessages = await readTranscriptMessages(candidate.sessionFile);
+    const latestUserMessage = findLatestUserMessage(transcriptMessages);
+    if (!latestUserMessage) continue;
+    transcripts.push({
+      ...candidate,
+      messages: transcriptMessages.slice(-Math.max(1, input.analyzedRecentMessageCount + 1)),
+      latestUserMessage,
+    });
+  }
+  transcripts.sort(compareSessionTranscriptsForNudge);
+  return transcripts[0] ?? null;
+}
 
-  const transcriptMessages = await readTranscriptMessages(freshest.sessionFile);
-  const messages = transcriptMessages.slice(-Math.max(1, input.analyzedRecentMessageCount + 1));
-  const latestUserMessage = findLatestUserMessage(transcriptMessages);
-  return {
-    ...freshest,
-    messages,
-    latestUserMessage,
-  };
+function compareSessionTranscriptsForNudge(
+  a: FreshestSessionTranscript,
+  b: FreshestSessionTranscript
+): number {
+  const aLatestUserMs = a.latestUserMessage?.timestampMs ?? a.mtimeMs;
+  const bLatestUserMs = b.latestUserMessage?.timestampMs ?? b.mtimeMs;
+  return bLatestUserMs - aLatestUserMs || b.mtimeMs - a.mtimeMs;
 }
 
 export function computeSelfNudgeWaitMs(baseTimeoutMs: number, consecutiveNudges: number): number {
@@ -341,9 +352,28 @@ async function readTranscriptMessages(sessionFile: string): Promise<TranscriptMe
     if (!role) return;
     const text = extractTextFromMessage(message).trim();
     if (!text) return;
-    messages.push({ role, text, lineIndex: index });
+    const timestampMs = extractMessageTimestampMs(parsed, message);
+    messages.push(
+      typeof timestampMs === "number"
+        ? { role, text, lineIndex: index, timestampMs }
+        : { role, text, lineIndex: index }
+    );
   });
   return messages;
+}
+
+function extractMessageTimestampMs(
+  record: Record<string, unknown>,
+  message: Record<string, unknown>
+): number | undefined {
+  return parseTimestampMs(message.timestamp) ?? parseTimestampMs(record.timestamp);
+}
+
+function parseTimestampMs(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function buildSelfNudgeSystemPrompt(): string {
