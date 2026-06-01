@@ -8,6 +8,7 @@ import {
   createSelfNudgeRunner,
   evaluateSelfNudgeTick,
   formatStatusNudgeMessage,
+  readFreshestActiveRelayTaskTranscript,
   readFreshestSessionTranscript,
   type FreshestSessionTranscript,
   type RelaySelfNudgeSettings,
@@ -98,6 +99,90 @@ describe("selfNudgeRunner", () => {
       { role: "user", text: "latest", lineIndex: 2 },
     ]);
     expect(transcript?.latestUserMessage).toEqual({ role: "user", text: "latest", lineIndex: 2 });
+  });
+
+  it("builds a nudge transcript from the freshest active relay user chat", () => {
+    const transcript = readFreshestActiveRelayTaskTranscript([
+      {
+        messageId: "system_1",
+        sessionKey: "s1",
+        taskKind: "system_reminder",
+        startedAtMs: 3_000,
+        messageText: "[STATUS_NUDGE]\ncontinue",
+      },
+      {
+        messageId: "user_old",
+        sessionKey: "s1",
+        taskKind: "user_chat",
+        startedAtMs: 1_000,
+        messageText: "old request",
+      },
+      {
+        messageId: "user_new",
+        sessionKey: "s2",
+        taskKind: "user_chat",
+        startedAtMs: 2_000,
+        messageText: "latest backend request",
+      },
+    ]);
+
+    expect(transcript).toEqual({
+      sessionKey: "s2",
+      sessionFile: "relay-active:user_new",
+      mtimeMs: 2_000,
+      messages: [{ role: "user", text: "latest backend request", lineIndex: 0 }],
+      latestUserMessage: { role: "user", text: "latest backend request", lineIndex: 0 },
+    });
+  });
+
+  it("prefers active relay user chat over stale local transcript for self nudges", async () => {
+    const runChatTask = vi.fn().mockResolvedValue({
+      result: { outcome: "no_reply", noReply: { runId: "run_1" } },
+      openclawMeta: { method: "chat.send" },
+    });
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-"));
+    const runner = createSelfNudgeRunner({
+      settings: enabledSettings,
+      stateDir,
+      runner: { runChatTask },
+      getActiveRelayTasks: () => [
+        {
+          messageId: "backend_1",
+          sessionKey: "transport_session",
+          taskKind: "user_chat",
+          startedAtMs: 10_000,
+          messageText: "transport request that has not reached the OpenClaw transcript",
+        },
+      ],
+      openrouterProxyPort: 18080,
+      openrouterProxyPathPrefix: "/provider-proxy/openrouter",
+      systemTaskTimeoutMs: 60_000,
+      pollIntervalMs: 1_000,
+      fetchImpl: vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  shouldNudge: true,
+                  statusNudgeMessage: "Continue the transport request and report progress.",
+                }),
+              },
+            },
+          ],
+        }),
+      } as Response),
+    });
+
+    await runner.tick(11_000);
+
+    expect(runChatTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "transport_session",
+        messageText: "[STATUS_NUDGE]\nContinue the transport request and report progress.",
+      })
+    );
   });
 
   it("waits for T * (X + 1), sends a marked self-nudge, then increases backoff", async () => {

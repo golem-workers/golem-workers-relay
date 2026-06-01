@@ -34,6 +34,14 @@ export type FreshestSessionTranscript = {
   latestUserMessage: TranscriptMessage | null;
 };
 
+export type RelaySelfNudgeActiveTask = {
+  messageId: string;
+  sessionKey: string | null;
+  taskKind: "user_chat" | "system_reminder" | "other";
+  startedAtMs: number;
+  messageText?: string | null;
+};
+
 export type SelfNudgeDecision = {
   shouldNudge: boolean;
   statusNudgeMessage: string | null;
@@ -59,6 +67,7 @@ export function createSelfNudgeRunner(input: {
   settings: RelaySelfNudgeSettings;
   stateDir?: string;
   runner: RunnerLike;
+  getActiveRelayTasks?: () => RelaySelfNudgeActiveTask[];
   openrouterProxyPort: number;
   openrouterProxyPathPrefix: string;
   systemTaskTimeoutMs: number;
@@ -100,10 +109,12 @@ export function createSelfNudgeRunner(input: {
         schedule(DISABLED_POLL_INTERVAL_MS);
         return;
       }
-      const transcript = await readFreshestSessionTranscript({
-        stateDir: input.stateDir ?? resolveOpenclawStateDir(),
-        analyzedRecentMessageCount: settings.analyzedRecentMessageCount,
-      });
+      const transcript =
+        readFreshestActiveRelayTaskTranscript(input.getActiveRelayTasks?.()) ??
+        (await readFreshestSessionTranscript({
+          stateDir: input.stateDir ?? resolveOpenclawStateDir(),
+          analyzedRecentMessageCount: settings.analyzedRecentMessageCount,
+        }));
       if (!transcript) {
         schedule(pollIntervalMs);
         return;
@@ -200,6 +211,32 @@ export async function evaluateSelfNudgeTick(input: {
   return {
     nudged: true,
     nextDelayMs: computeSelfNudgeWaitMs(input.settings.baseTimeoutMs, input.state.consecutiveNudges),
+  };
+}
+
+export function readFreshestActiveRelayTaskTranscript(
+  tasks: RelaySelfNudgeActiveTask[] | null | undefined
+): FreshestSessionTranscript | null {
+  const candidates = (tasks ?? [])
+    .filter((task) => task.taskKind === "user_chat")
+    .filter((task) => typeof task.sessionKey === "string" && task.sessionKey.trim().length > 0)
+    .filter((task) => typeof task.messageText === "string" && task.messageText.trim().length > 0)
+    .sort((a, b) => b.startedAtMs - a.startedAtMs);
+  const active = candidates[0];
+  if (!active?.sessionKey || !active.messageText) {
+    return null;
+  }
+  const latestUserMessage: TranscriptMessage = {
+    role: "user",
+    text: active.messageText,
+    lineIndex: 0,
+  };
+  return {
+    sessionKey: active.sessionKey,
+    sessionFile: `relay-active:${active.messageId}`,
+    mtimeMs: active.startedAtMs,
+    messages: [latestUserMessage],
+    latestUserMessage,
   };
 }
 
