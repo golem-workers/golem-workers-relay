@@ -232,7 +232,7 @@ describe("createMessageProcessor", () => {
       },
       gateway: { start: vi.fn(), getHello: vi.fn() } as never,
       runner: {
-        runChatTask: vi.fn().mockImplementation(async () => {
+        runChatTask: vi.fn().mockImplementation(() => {
           transportDeliveryTracker.recordSdkDelivery({
             sessionKey: "tg:123:srv_1",
             transportChannelId: "telegram",
