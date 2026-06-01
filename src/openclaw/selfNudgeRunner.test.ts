@@ -201,6 +201,39 @@ describe("selfNudgeRunner", () => {
     expect(computeSelfNudgeWaitMs(1_000, state.consecutiveNudges)).toBe(2_000);
   });
 
+  it("keeps self-nudge replies on the original telegram route", async () => {
+    const runChatTask = vi.fn().mockResolvedValue({
+      result: { outcome: "no_reply", noReply: { runId: "run_1" } },
+      openclawMeta: { method: "chat.send" },
+    });
+
+    await evaluateSelfNudgeTick({
+      settings: enabledSettings,
+      transcript: makeTranscript({
+        sessionKey: "tg:-5297593928:cmp9kwhbf0175209zotr1q9le",
+        mtimeMs: 10_000,
+      }),
+      state: makeState(),
+      nowMs: 11_000,
+      runner: { runChatTask },
+      systemTaskTimeoutMs: 60_000,
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: true,
+        statusNudgeMessage: "Continue.",
+      }),
+    });
+
+    expect(runChatTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "tg:-5297593928:cmp9kwhbf0175209zotr1q9le",
+        originRoute: {
+          originatingChannel: "relay-channel",
+          originatingTo: "telegram:-5297593928",
+        },
+      })
+    );
+  });
+
   it("resets consecutive nudge backoff when a new user message appears", async () => {
     const runChatTask = vi.fn().mockResolvedValue({
       result: { outcome: "no_reply", noReply: { runId: "run_1" } },

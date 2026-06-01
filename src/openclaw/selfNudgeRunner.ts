@@ -4,7 +4,7 @@ import path from "node:path";
 import { logger } from "../logger.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 import { classifySessionActivity } from "../conversation/activityIndex.js";
-import type { ChatRunner } from "./chatRunner.js";
+import type { ChatRunner, ChatSendOriginRoute } from "./chatRunner.js";
 
 export const STATUS_NUDGE_MARKER = "[STATUS_NUDGE]";
 
@@ -195,6 +195,7 @@ export async function evaluateSelfNudgeTick(input: {
     sessionKey: input.transcript.sessionKey,
     messageText: formatStatusNudgeMessage(body),
     deliverySystem: "relay_channel_v2",
+    originRoute: buildSelfNudgeOriginRoute(input.transcript.sessionKey),
     timeoutMs: input.systemTaskTimeoutMs,
   });
   input.state.consecutiveNudges += 1;
@@ -203,6 +204,30 @@ export async function evaluateSelfNudgeTick(input: {
     nudged: true,
     nextDelayMs: computeSelfNudgeWaitMs(input.settings.baseTimeoutMs, input.state.consecutiveNudges),
   };
+}
+
+function buildSelfNudgeOriginRoute(sessionKey: string): ChatSendOriginRoute | null {
+  if (sessionKey.startsWith("tg:")) {
+    const chatId = sessionKey.slice("tg:".length).split(":")[0]?.trim();
+    return chatId
+      ? {
+          originatingChannel: "relay-channel",
+          originatingTo: `telegram:${chatId}`,
+        }
+      : null;
+  }
+
+  if (sessionKey.startsWith("whatsapp-personal:")) {
+    const chatId = sessionKey.slice("whatsapp-personal:".length).split(":")[0]?.trim();
+    return chatId
+      ? {
+          originatingChannel: "relay-channel",
+          originatingTo: `whatsapp_personal:${chatId}`,
+        }
+      : null;
+  }
+
+  return null;
 }
 
 export async function readFreshestSessionTranscript(input: {
