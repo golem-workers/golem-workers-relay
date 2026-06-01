@@ -250,6 +250,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     verificationUrl: z.string().min(1).nullable(),
     userCode: z.string().min(1).nullable(),
     pollAfterMs: z.number().int().min(0).nullable(),
+    deployPublicKey: z.string().min(1).nullable(),
   }),
   z.object({
     kind: z.literal("github.oauth.status"),

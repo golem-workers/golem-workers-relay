@@ -69,6 +69,13 @@ function resolveGitHubConfigPaths(campaignId: string): { configDir: string; camp
   };
 }
 
+function toDeployKeyRepositoryUrl(repositoryUrl: string): string {
+  const trimmed = repositoryUrl.trim();
+  const match = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+?)(?:\.git)?(?:[/?#].*)?$/i.exec(trimmed);
+  if (!match) return trimmed;
+  return `git@github.com:${match[1]}/${match[2]}.git`;
+}
+
 async function writeSecureJson(filePath: string, value: unknown): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
@@ -104,6 +111,7 @@ function buildConfigureResult(params: {
   verificationUrl?: string | null;
   userCode?: string | null;
   pollAfterMs?: number | null;
+  deployPublicKey?: string | null;
 }): Extract<AgentControlResult, { kind: "github.auth.configure" }> {
   return {
     kind: "github.auth.configure",
@@ -116,6 +124,7 @@ function buildConfigureResult(params: {
     verificationUrl: params.verificationUrl ?? null,
     userCode: params.userCode ?? null,
     pollAfterMs: params.pollAfterMs ?? null,
+    deployPublicKey: params.deployPublicKey ?? null,
   };
 }
 
@@ -281,35 +290,58 @@ async function configureGitHubSshAuth(
   const { configDir, campaignKey, configPath } = resolveGitHubConfigPaths(action.campaignId);
   await fs.mkdir(configDir, { recursive: true, mode: 0o700 });
   const sshPrivateKey = action.sshPrivateKey?.trim();
-  if (!sshPrivateKey) {
-    throw new GitHubAuthError("GITHUB_SSH_KEY_MISSING", "SSH token or private key is required.");
-  }
   const keyPath = path.join(configDir, `${campaignKey}.key`);
-  await fs.writeFile(keyPath, `${sshPrivateKey}\n`, { encoding: "utf8", mode: 0o600 });
+  const publicKeyPath = `${keyPath}.pub`;
+  if (sshPrivateKey) {
+    await fs.writeFile(keyPath, `${sshPrivateKey}\n`, { encoding: "utf8", mode: 0o600 });
+    await fs.chmod(keyPath, 0o600);
+    await execFile("ssh-keygen", ["-y", "-f", keyPath], { timeout: 10_000 }).then(async ({ stdout }) => {
+      await fs.writeFile(publicKeyPath, stdout, { encoding: "utf8", mode: 0o644 });
+    });
+  } else {
+    const existingKey = await fs.stat(keyPath).then(
+      () => true,
+      () => false,
+    );
+    if (!existingKey) {
+      await execFile("ssh-keygen", ["-t", "ed25519", "-C", `golem-marketing-${campaignKey}`, "-N", "", "-f", keyPath], {
+        timeout: 10_000,
+      });
+    }
+  }
   await fs.chmod(keyPath, 0o600);
+  const deployPublicKey = await fs.readFile(publicKeyPath, "utf8").then(
+    (value) => value.trim(),
+    () => "",
+  ) || null;
   const gitSshCommand = `ssh -i ${keyPath} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`;
+  const repositoryUrl = toDeployKeyRepositoryUrl(action.repositoryUrl);
   const repositoryReachable = await runGitLsRemote({
-    repositoryUrl: action.repositoryUrl,
+    repositoryUrl,
     env: { GIT_SSH_COMMAND: gitSshCommand },
   });
+  const credentialState = repositoryReachable === true ? "configured" : "pending";
   await writeSecureJson(configPath, {
     campaignId: action.campaignId,
     authMethod: action.authMethod,
     githubAccount: action.githubAccount.trim(),
     repositoryUrl: action.repositoryUrl.trim(),
+    effectiveRepositoryUrl: repositoryUrl,
     keyPath,
-    credentialState: "configured",
+    publicKeyPath,
+    credentialState,
     repositoryReachable,
     configuredAt: new Date().toISOString(),
   });
   return buildConfigureResult({
     authMethod: action.authMethod,
-    credentialState: "configured",
-    message: repositoryReachable === false
-      ? "SSH key was stored, but repository reachability check failed."
-      : "SSH GitHub access was configured on the agent.",
+    credentialState,
+    message: repositoryReachable === true
+      ? "Single-repository deploy key is configured on the agent."
+      : "Add this public key as a GitHub deploy key for the repository, then check access again.",
     repositoryReachable,
     configPath,
+    deployPublicKey,
   });
 }
 

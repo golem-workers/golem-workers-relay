@@ -626,6 +626,44 @@ describe("executeAgentControl Codex login", () => {
 });
 
 describe("executeAgentControl GitHub auth", () => {
+  it("generates a repository deploy key on the agent without returning a private key", async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-github-deploy-key-"));
+    process.env.HOME = tempHome;
+
+    const result = await executeAgentControl({
+      action: {
+        kind: "github.auth.configure",
+        campaignId: "mcamp_deploy",
+        authMethod: "SSH_TOKEN",
+        githubAccount: "",
+        repositoryUrl: "",
+      },
+      configPath: path.join(tempHome, "openclaw.json"),
+      gateway: noopGateway,
+    });
+
+    expect(result).toMatchObject({
+      kind: "github.auth.configure",
+      configured: true,
+      authMethod: "SSH_TOKEN",
+      credentialState: "pending",
+      repositoryReachable: null,
+      deployPublicKey: expect.stringMatching(/^ssh-ed25519 /) as string,
+    });
+    expect(result.kind).toBe("github.auth.configure");
+    if (result.kind !== "github.auth.configure") {
+      throw new Error("Unexpected GitHub auth result kind");
+    }
+    const stored = JSON.parse(await fs.readFile(result.configPath, "utf8")) as Record<string, unknown>;
+    expect(stored).toMatchObject({
+      campaignId: "mcamp_deploy",
+      authMethod: "SSH_TOKEN",
+      credentialState: "pending",
+    });
+    expect(String(stored.keyPath)).toContain("mcamp_deploy.key");
+    await expect(fs.readFile(String(stored.keyPath), "utf8")).resolves.toContain("PRIVATE KEY");
+  });
+
   it("stores GitHub OAuth token metadata for a marketing campaign", async () => {
     const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-github-auth-"));
     process.env.HOME = tempHome;
@@ -654,6 +692,7 @@ describe("executeAgentControl GitHub auth", () => {
       verificationUrl: null,
       userCode: null,
       pollAfterMs: null,
+      deployPublicKey: null,
     });
     expect(result.kind).toBe("github.auth.configure");
     if (result.kind !== "github.auth.configure") {
