@@ -130,12 +130,26 @@ const agentControlTaskInputSchema = z.object({
   action: agentControlActionSchema,
 });
 
+const systemNotificationTaskInputSchema = z
+  .object({
+    kind: z.literal("system_notification"),
+    notificationId: z.string().min(1),
+    userId: z.string().min(1),
+    text: z.string().min(1),
+    eventKey: z.string().min(1),
+    code: z.string().min(1),
+    severity: z.enum(["info", "warning", "error", "critical"]).optional(),
+    rawTaskResult: z.unknown().optional(),
+  })
+  .strict();
+
 export const taskInputSchema = z.discriminatedUnion("kind", [
   chatTaskInputSchema,
   handshakeTaskInputSchema,
   sessionNewTaskInputSchema,
   transportEventTaskInputSchema,
   agentControlTaskInputSchema,
+  systemNotificationTaskInputSchema,
 ]);
 
 export type TaskInput = z.infer<typeof taskInputSchema>;
@@ -216,6 +230,35 @@ export const acceptedResponseSchema = z.object({
 export type AcceptedResponse = z.infer<typeof acceptedResponseSchema>;
 export type { AgentControlResult };
 export { agentControlActionSchema, agentControlResultSchema, agentControlAcceptedResponseSchema };
+
+export const systemNotificationDeliveryRequestSchema = z
+  .object({
+    notificationId: z.string().min(1),
+    idempotencyKey: z.string().min(1),
+    sessionKey: z.string().min(1),
+    channel: z.enum([
+      "telegram",
+      "whatsapp",
+      "whatsapp_personal",
+      "api",
+      "webchat",
+      "direct_openclaw",
+      "unknown",
+    ]),
+    text: z.string().min(1),
+    eventKey: z.string().min(1).optional(),
+    severity: z.enum(["info", "warning", "error", "critical"]).optional(),
+    rawTaskResult: z.unknown().optional(),
+    transportMessageId: z.string().min(1).optional(),
+  })
+  .strict();
+export type SystemNotificationDeliveryRequest = z.infer<typeof systemNotificationDeliveryRequestSchema>;
+
+export const systemNotificationDeliveryResponseSchema = z.object({
+  accepted: z.literal(true),
+  backendMessageId: z.string().min(1),
+});
+export type SystemNotificationDeliveryResponse = z.infer<typeof systemNotificationDeliveryResponseSchema>;
 
 export const whatsAppPersonalTransportSendRequestSchema = z.object({
   action: z.object({
@@ -396,4 +439,3 @@ export const relayTelegramMessageCorrelationRequestSchema = z.object({
 export type RelayTelegramMessageCorrelationRequest = z.infer<
   typeof relayTelegramMessageCorrelationRequestSchema
 >;
-

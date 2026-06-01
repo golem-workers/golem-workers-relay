@@ -33,6 +33,12 @@ import { startRelayChannelControlPlane } from "./relayChannel/startControlPlaneS
 import { createRelayChannelTransportDeliveryTracker } from "./relayChannel/transportDeliveryTracker.js";
 import { abortActiveChatTaskByBackendMessageId } from "./agentControl/abortActiveChatTask.js";
 import { executeAgentControl } from "./agentControl/executeAgentControl.js";
+import {
+  createConversationActivityIndex,
+  inferConversationChannel,
+  inferTransportTarget,
+} from "./conversation/activityIndex.js";
+import { deliverSystemNotificationFromRelay } from "./conversation/systemNotificationDelivery.js";
 
 async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
@@ -99,6 +105,8 @@ async function main(): Promise<void> {
     relayToken: cfg.relayToken,
     devLogEnabled: cfg.devLogEnabled,
   });
+  const activityIndex = createConversationActivityIndex();
+  await activityIndex.load();
 
   let gateway: GatewayClient | null = null;
   let reportOpenclawConnectionStatus:
@@ -311,6 +319,25 @@ async function main(): Promise<void> {
       try {
         if (message.input.kind === "chat" && isUserChatMessage(message)) {
           const sessionKey = message.input.sessionKey;
+          void activityIndex
+            .recordInbound({
+              sessionKey,
+              text: message.input.messageText,
+              context: message.input.context,
+              at: message.sentAtMs ?? Date.now(),
+            })
+            .catch((error) => {
+              logger.warn(
+                {
+                  event: "conversation_activity",
+                  stage: "record_inbound_failed",
+                  backendMessageId: message.messageId,
+                  sessionKey,
+                  error: error instanceof Error ? error.message : String(error),
+                },
+                "Failed to record conversation inbound activity"
+              );
+            });
           const removedSystemReminders = queue.removeQueued(
             (queued) =>
               queued.input.kind === "chat" &&
@@ -422,6 +449,10 @@ async function main(): Promise<void> {
         });
       }
       publishRelayChannelEvent(message.input.event);
+      void recordTransportEventActivity({
+        activityIndex,
+        message,
+      });
       return Promise.resolve();
     },
     onAgentControl: async (message) => {
@@ -447,6 +478,12 @@ async function main(): Promise<void> {
         statusNudgeRunner: runner,
       });
     },
+    onSystemNotification: (message) =>
+      deliverSystemNotificationFromRelay({
+        backend,
+        activityIndex,
+        message,
+      }),
   });
   const openrouterProxyServer = cfg.openrouterProxy.enabled
     ? startOpenRouterProxyServer({
@@ -620,6 +657,74 @@ function isSystemReminderMessage(message: InboundPushMessage): message is ChatPu
   }
   const kind = (context as { kind?: unknown }).kind;
   return kind === "relay_stale_timeout_reminder" || kind === "relay_status_nudge";
+}
+
+async function recordTransportEventActivity(input: {
+  activityIndex: ReturnType<typeof createConversationActivityIndex>;
+  message: InboundPushMessage;
+}): Promise<void> {
+  if (input.message.input.kind !== "transport_event") return;
+  const event = input.message.input.event;
+  if (event.eventType !== "transport.message.received" && event.eventType !== "transport.delivery.receipt") {
+    return;
+  }
+  const payload = event.payload;
+  const sessionKey = readString(payload.sessionKey) ?? readString(payload.conversationKey);
+  if (!sessionKey) return;
+  const channel = readConversationChannel(payload.channel) ?? inferConversationChannel(sessionKey);
+  const transportTarget = inferTransportTarget({
+    sessionKey,
+    channel,
+    context: payload,
+  });
+  try {
+    if (event.eventType === "transport.message.received") {
+      await input.activityIndex.recordInbound({
+        sessionKey,
+        channel,
+        transportTarget,
+        text: readString(payload.text) ?? readString(payload.messageText) ?? undefined,
+        at: input.message.sentAtMs ?? Date.now(),
+      });
+    } else {
+      await input.activityIndex.recordOutbound({
+        sessionKey,
+        channel,
+        transportTarget,
+        at: input.message.sentAtMs ?? Date.now(),
+      });
+    }
+  } catch (error) {
+    logger.warn(
+      {
+        event: "conversation_activity",
+        stage: "record_transport_event_failed",
+        backendMessageId: input.message.messageId,
+        sessionKey,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "Failed to record conversation transport activity"
+    );
+  }
+}
+
+function readConversationChannel(value: unknown): ReturnType<typeof inferConversationChannel> | null {
+  if (
+    value === "telegram" ||
+    value === "whatsapp" ||
+    value === "whatsapp_personal" ||
+    value === "api" ||
+    value === "webchat" ||
+    value === "direct_openclaw" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 async function submitDroppedSupersededUserChat(input: {

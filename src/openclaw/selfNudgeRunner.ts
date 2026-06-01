@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { logger } from "../logger.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
+import { classifySessionActivity } from "../conversation/activityIndex.js";
 import type { ChatRunner } from "./chatRunner.js";
 
 export const STATUS_NUDGE_MARKER = "[STATUS_NUDGE]";
@@ -242,7 +243,14 @@ export async function readFreshestSessionTranscript(input: {
     const transcriptMessages = await readTranscriptMessages(candidate.sessionFile);
     const latestUserMessage = findLatestUserMessage(transcriptMessages);
     if (!latestUserMessage) continue;
-    if (isInternalMaintenanceUserMessage(candidate.sessionKey, latestUserMessage.text)) continue;
+    if (
+      classifySessionActivity({
+        sessionKey: candidate.sessionKey,
+        latestUserText: latestUserMessage.text,
+      }) !== "external_user_chat"
+    ) {
+      continue;
+    }
     transcripts.push({
       ...candidate,
       messages: transcriptMessages.slice(-Math.max(1, input.analyzedRecentMessageCount + 1)),
@@ -260,17 +268,6 @@ function compareSessionTranscriptsForNudge(
   const aLatestUserMs = a.latestUserMessage?.timestampMs ?? a.mtimeMs;
   const bLatestUserMs = b.latestUserMessage?.timestampMs ?? b.mtimeMs;
   return bLatestUserMs - aLatestUserMs || b.mtimeMs - a.mtimeMs;
-}
-
-function isInternalMaintenanceUserMessage(sessionKey: string, text: string): boolean {
-  if (sessionKey !== "main") return false;
-  const normalized = text.trim().toLowerCase();
-  return (
-    normalized.includes("heartbeat_ok") ||
-    normalized.includes("read heartbeat.md") ||
-    normalized.includes("pre-compaction memory flush") ||
-    normalized.includes("store durable memories only in")
-  );
 }
 
 export function computeSelfNudgeWaitMs(baseTimeoutMs: number, consecutiveNudges: number): number {

@@ -593,6 +593,8 @@ async function processSingleMessage(input: {
       );
     } else if (msg.input.kind === "agent_control") {
       throw new Error("agent_control tasks must be handled synchronously by relay ingress");
+    } else if (msg.input.kind === "system_notification") {
+      throw new Error("system_notification tasks must be handled synchronously by relay ingress");
     } else {
       const deliverySystem = readDeliverySystemFromTaskContext(msg.input.context);
       const abortController = createAbortPromise();

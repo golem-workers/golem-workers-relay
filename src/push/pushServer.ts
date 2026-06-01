@@ -94,6 +94,13 @@ export function startPushServer(input: {
   onMessage: (message: InboundPushMessage) => Promise<void>;
   onTransportEvent?: (message: InboundPushMessage) => Promise<void>;
   onAgentControl?: (message: InboundPushMessage) => Promise<AgentControlResult>;
+  onSystemNotification?: (message: InboundPushMessage) => Promise<{
+    status: "delivered" | "no_route" | "failed";
+    selectedChannel?: string;
+    sessionKey?: string;
+    transportMessageId?: string;
+    error?: string;
+  }>;
 }): http.Server {
   const pushPath = input.path.startsWith("/") ? input.path : `/${input.path}`;
   const mediaPath = replaceLastPathSegment(pushPath, "media");
@@ -263,6 +270,29 @@ export function startPushServer(input: {
           });
         }
         const result = await input.onAgentControl(parsed.data);
+        logger.info(
+          {
+            event: "message_flow",
+            direction: "backend_to_relay",
+            stage: "accepted",
+            backendMessageId: parsed.data.messageId,
+            relayMessageId: null,
+            kind: parsed.data.input.kind,
+            status: 200,
+          },
+          "Message flow transition"
+        );
+        sendJson(res, 200, { accepted: true, result });
+        return;
+      } else if (parsed.data.input.kind === "system_notification") {
+        if (!input.onSystemNotification) {
+          throw new PushServerHttpError({
+            statusCode: 503,
+            code: "SYSTEM_NOTIFICATION_UNSUPPORTED",
+            message: "Relay system notification ingress is not enabled",
+          });
+        }
+        const result = await input.onSystemNotification(parsed.data);
         logger.info(
           {
             event: "message_flow",

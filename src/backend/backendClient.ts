@@ -12,12 +12,16 @@ import {
   type RelayTransportActionReconcileRequest,
   type RelayTransportActionReconcileResponse,
   relayTelegramMessageCorrelationRequestSchema,
+  systemNotificationDeliveryRequestSchema,
+  systemNotificationDeliveryResponseSchema,
   telegramTransportActionRequestSchema,
   telegramTransportActionResponseSchema,
   type TelegramTransportActionRequest,
   whatsAppPersonalTransportSendRequestSchema,
   whatsAppPersonalTransportSendResponseSchema,
   type WhatsAppPersonalTransportSendRequest,
+  type SystemNotificationDeliveryRequest,
+  type SystemNotificationDeliveryResponse,
 } from "./types.js";
 
 export type BackendClientOptions = {
@@ -213,6 +217,21 @@ export class BackendClient {
     return { accepted: true };
   }
 
+  async deliverSystemNotification(input: SystemNotificationDeliveryRequest): Promise<SystemNotificationDeliveryResponse> {
+    const url = `${this.opts.baseUrl}/api/v1/relays/system-notifications/deliver`;
+    const body = systemNotificationDeliveryRequestSchema.parse(input);
+    const value = await retryWithBackoff(
+      () => postJson(url, this.opts.relayToken, body, 15_000),
+      {
+        attempts: 5,
+        baseDelayMs: [500, 900, 1600, 3000, 6000, 10_000],
+        jitterMs: 250,
+        shouldRetry: (err) => isRetryableBackendError(err),
+      }
+    );
+    return systemNotificationDeliveryResponseSchema.parse(value);
+  }
+
   getResilienceState(): {
     writeBreaker: { state: "closed" | "open" | "half_open"; consecutiveFailures: number; retryAfterMs: number };
   } {
@@ -312,4 +331,3 @@ function readBackendMessageId(openclawMeta: unknown): string | null {
   const backendMessageId = (trace as { backendMessageId?: unknown }).backendMessageId;
   return typeof backendMessageId === "string" && backendMessageId.trim().length > 0 ? backendMessageId : null;
 }
-
