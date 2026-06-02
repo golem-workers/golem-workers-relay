@@ -11,11 +11,15 @@ import {
 } from "./errorDiagnostics.js";
 
 describe("relay error diagnostics", () => {
-  it("groups known runtime error signals", () => {
+  it("groups whitelisted user-facing runtime error signals", () => {
     const analysis = analyzeDiagnosticLogs([
       {
         source: "user:openclaw-gateway.service",
         text: "context-engine compaction failed: RELAY_UNAUTHORIZED Invalid relay token",
+      },
+      {
+        source: "user:openclaw-gateway.service",
+        text: "Invalid relay token while connecting model relay",
       },
       {
         source: "user:openclaw-gateway.service",
@@ -25,16 +29,39 @@ describe("relay error diagnostics", () => {
         source: "system:golem-workers-relay.service",
         text: "relay-openai-proxy request failed UPSTREAM_TIMEOUT",
       },
+      {
+        source: "system:golem-workers-relay.service",
+        text: "unrelated generic error failed timed out",
+      },
     ]);
 
     expect(analysis.issueCount).toBe(3);
     expect(analysis.issues.map((issue) => issue.code)).toEqual([
+      "compaction_failure",
       "relay_auth",
-      "provider_proxy",
       "openclaw_turn_timeout",
     ]);
-    expect(formatDiagnosticNotification({ analysis, lookbackMs: 600_000, relayInstanceId: "relay-1" })).toContain(
-      "Relay diagnostics detected 3 runtime error signal(s)"
+    expect(formatDiagnosticNotification({ analysis, lookbackMs: 300_000, relayInstanceId: "relay-1" })).toBe(
+      "Relay diagnostic: Context compaction failed x1; Relay authorization failed x1; OpenClaw turn timed out x1 in the last 5m. Relay: relay-1"
+    );
+  });
+
+  it("maps compaction failures to a clear one-line user report", () => {
+    const analysis = analyzeDiagnosticLogs([
+      {
+        source: "user:openclaw-gateway.service",
+        text: "Auto-compaction could not recover this turn",
+      },
+      {
+        source: "user:openclaw-gateway.service",
+        text: "context-engine compaction failed after summarization",
+      },
+    ]);
+
+    expect(analysis.issueCount).toBe(2);
+    expect(analysis.issues.map((issue) => issue.code)).toEqual(["compaction_failure"]);
+    expect(formatDiagnosticNotification({ analysis, lookbackMs: 300_000, relayInstanceId: "relay-1" })).toBe(
+      "Relay diagnostic: Context compaction failed x2 in the last 5m. Relay: relay-1"
     );
   });
 

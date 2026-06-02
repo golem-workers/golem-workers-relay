@@ -29,13 +29,7 @@ export type DiagnosticLogLine = {
 export type DiagnosticIssueCode =
   | "relay_auth"
   | "compaction_failure"
-  | "openclaw_turn_timeout"
-  | "gateway_auth"
-  | "provider_proxy"
-  | "backend_delivery"
-  | "relay_channel"
-  | "runtime_crash"
-  | "generic_error";
+  | "openclaw_turn_timeout";
 
 export type DiagnosticIssue = {
   code: DiagnosticIssueCode;
@@ -68,58 +62,22 @@ const issueMatchers: Array<{
   patterns: RegExp[];
 }> = [
   {
-    code: "relay_auth",
-    title: "model relay authorization failures",
-    severity: "error",
-    patterns: [/RELAY_UNAUTHORIZED/i, /Invalid relay token/i, /Failed to extract accountId from token/i],
-  },
-  {
     code: "compaction_failure",
-    title: "context compaction failures",
+    title: "Context compaction failed",
     severity: "error",
     patterns: [/context-engine compaction failed/i, /compaction summarization failed/i, /Auto-compaction could not recover/i],
   },
   {
+    code: "relay_auth",
+    title: "Relay authorization failed",
+    severity: "error",
+    patterns: [/RELAY_UNAUTHORIZED/i, /Invalid relay token/i, /Failed to extract accountId from token/i],
+  },
+  {
     code: "openclaw_turn_timeout",
-    title: "OpenClaw/Codex turn timeouts",
+    title: "OpenClaw turn timed out",
     severity: "warning",
     patterns: [/codex app-server turn idle timed out/i, /turn idle timed out waiting for completion/i],
-  },
-  {
-    code: "gateway_auth",
-    title: "OpenClaw gateway auth or pairing failures",
-    severity: "warning",
-    patterns: [/pairing required/i, /gateway token mismatch/i, /OpenClaw gateway auth is not configured/i],
-  },
-  {
-    code: "provider_proxy",
-    title: "local provider proxy failures",
-    severity: "error",
-    patterns: [/provider proxy/i, /relay-(openai|openrouter|google-ai|jina|moonshot|runway|fal|elevenlabs)-proxy.*failed/i, /UPSTREAM_(ERROR|TIMEOUT)/i],
-  },
-  {
-    code: "backend_delivery",
-    title: "backend delivery failures",
-    severity: "error",
-    patterns: [/Backend HTTP [45]\d\d/i, /Backend request timed out/i, /Backend rejected relay/i, /relay_to_backend.*failed/i],
-  },
-  {
-    code: "relay_channel",
-    title: "relay-channel transport failures",
-    severity: "warning",
-    patterns: [/relay-channel/i, /RELAY_CHANNEL_DISABLED/i, /control plane disconnected/i],
-  },
-  {
-    code: "runtime_crash",
-    title: "runtime crashes",
-    severity: "critical",
-    patterns: [/uncaught exception/i, /unhandled rejection/i, /request crashed/i, /websocket crashed/i],
-  },
-  {
-    code: "generic_error",
-    title: "generic runtime errors",
-    severity: "warning",
-    patterns: [/\berror\b/i, /\bfailed\b/i, /\btimed out\b/i, /\btimeout\b/i],
   },
 ];
 
@@ -167,21 +125,11 @@ export function formatDiagnosticNotification(input: {
   relayInstanceId: string;
 }): string {
   const windowMinutes = Math.max(1, Math.round(input.lookbackMs / 60_000));
-  const topIssues = input.analysis.issues.slice(0, 5);
-  const lines = [
-    `Relay diagnostics detected ${input.analysis.issueCount} runtime error signal(s) in the last ${windowMinutes}m.`,
-    "",
-    ...topIssues.map((issue) => {
-      const sources = issue.sources.length > 0 ? ` (${issue.sources.slice(0, 3).join(", ")})` : "";
-      return `- ${issue.title}: ${issue.count}${sources}`;
-    }),
-  ];
-  const examples = topIssues.flatMap((issue) => issue.examples.map((example) => `- ${example}`)).slice(0, 3);
-  if (examples.length > 0) {
-    lines.push("", "Examples:", ...examples);
-  }
-  lines.push("", `Relay: ${input.relayInstanceId}`);
-  return lines.join("\n");
+  const issueSummary = input.analysis.issues
+    .slice(0, 5)
+    .map((issue) => `${issue.title} x${issue.count}`)
+    .join("; ");
+  return `Relay diagnostic: ${issueSummary} in the last ${windowMinutes}m. Relay: ${input.relayInstanceId}`;
 }
 
 export function createRelayDiagnosticNotifier(input: RelayDiagnosticNotifierInput): {
