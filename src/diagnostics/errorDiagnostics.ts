@@ -1,0 +1,446 @@
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import { promisify } from "node:util";
+import { logger } from "../logger.js";
+import type { BackendClient } from "../backend/backendClient.js";
+import type { InboundPushMessage } from "../backend/types.js";
+import type { ConversationActivityIndex } from "../conversation/activityIndex.js";
+import { deliverSystemNotificationFromRelay } from "../conversation/systemNotificationDelivery.js";
+
+const execFileAsync = promisify(execFile);
+
+export type RelayDiagnosticNotifierSettings = {
+  enabled: boolean;
+  intervalMs: number;
+  lookbackMs: number;
+  throttleMs: number;
+  maxLines: number;
+  journalUserUnits: string[];
+  journalSystemUnits: string[];
+  logFiles: string[];
+  targetUserId: string | null;
+};
+
+export type DiagnosticLogLine = {
+  source: string;
+  text: string;
+};
+
+export type DiagnosticIssueCode =
+  | "relay_auth"
+  | "compaction_failure"
+  | "openclaw_turn_timeout"
+  | "gateway_auth"
+  | "provider_proxy"
+  | "backend_delivery"
+  | "relay_channel"
+  | "runtime_crash"
+  | "generic_error";
+
+export type DiagnosticIssue = {
+  code: DiagnosticIssueCode;
+  title: string;
+  severity: "warning" | "error" | "critical";
+  count: number;
+  sources: string[];
+  examples: string[];
+};
+
+export type DiagnosticAnalysis = {
+  issueCount: number;
+  issues: DiagnosticIssue[];
+};
+
+type RelayDiagnosticNotifierInput = {
+  settings: RelayDiagnosticNotifierSettings;
+  backend: BackendClient;
+  activityIndex: ConversationActivityIndex;
+  relayInstanceId: string;
+  collectLogs?: () => Promise<DiagnosticLogLine[]>;
+  now?: () => number;
+};
+
+const issueMatchers: Array<{
+  code: DiagnosticIssueCode;
+  title: string;
+  severity: DiagnosticIssue["severity"];
+  patterns: RegExp[];
+}> = [
+  {
+    code: "relay_auth",
+    title: "model relay authorization failures",
+    severity: "error",
+    patterns: [/RELAY_UNAUTHORIZED/i, /Invalid relay token/i, /Failed to extract accountId from token/i],
+  },
+  {
+    code: "compaction_failure",
+    title: "context compaction failures",
+    severity: "error",
+    patterns: [/context-engine compaction failed/i, /compaction summarization failed/i, /Auto-compaction could not recover/i],
+  },
+  {
+    code: "openclaw_turn_timeout",
+    title: "OpenClaw/Codex turn timeouts",
+    severity: "warning",
+    patterns: [/codex app-server turn idle timed out/i, /turn idle timed out waiting for completion/i],
+  },
+  {
+    code: "gateway_auth",
+    title: "OpenClaw gateway auth or pairing failures",
+    severity: "warning",
+    patterns: [/pairing required/i, /gateway token mismatch/i, /OpenClaw gateway auth is not configured/i],
+  },
+  {
+    code: "provider_proxy",
+    title: "local provider proxy failures",
+    severity: "error",
+    patterns: [/provider proxy/i, /relay-(openai|openrouter|google-ai|jina|moonshot|runway|fal|elevenlabs)-proxy.*failed/i, /UPSTREAM_(ERROR|TIMEOUT)/i],
+  },
+  {
+    code: "backend_delivery",
+    title: "backend delivery failures",
+    severity: "error",
+    patterns: [/Backend HTTP [45]\d\d/i, /Backend request timed out/i, /Backend rejected relay/i, /relay_to_backend.*failed/i],
+  },
+  {
+    code: "relay_channel",
+    title: "relay-channel transport failures",
+    severity: "warning",
+    patterns: [/relay-channel/i, /RELAY_CHANNEL_DISABLED/i, /control plane disconnected/i],
+  },
+  {
+    code: "runtime_crash",
+    title: "runtime crashes",
+    severity: "critical",
+    patterns: [/uncaught exception/i, /unhandled rejection/i, /request crashed/i, /websocket crashed/i],
+  },
+  {
+    code: "generic_error",
+    title: "generic runtime errors",
+    severity: "warning",
+    patterns: [/\berror\b/i, /\bfailed\b/i, /\btimed out\b/i, /\btimeout\b/i],
+  },
+];
+
+export function analyzeDiagnosticLogs(lines: DiagnosticLogLine[]): DiagnosticAnalysis {
+  const byCode = new Map<DiagnosticIssueCode, DiagnosticIssue>();
+  for (const line of lines) {
+    const text = line.text.trim();
+    if (!text) continue;
+    const matcher = issueMatchers.find((candidate) => candidate.patterns.some((pattern) => pattern.test(text)));
+    if (!matcher) continue;
+    const issue = byCode.get(matcher.code) ?? {
+      code: matcher.code,
+      title: matcher.title,
+      severity: matcher.severity,
+      count: 0,
+      sources: [],
+      examples: [],
+    };
+    issue.count += 1;
+    if (!issue.sources.includes(line.source)) {
+      issue.sources.push(line.source);
+    }
+    const example = sanitizeLogLine(text);
+    if (example && issue.examples.length < 2 && !issue.examples.includes(example)) {
+      issue.examples.push(example);
+    }
+    byCode.set(matcher.code, issue);
+  }
+  const issues = [...byCode.values()].sort(compareIssues);
+  return {
+    issueCount: issues.reduce((sum, issue) => sum + issue.count, 0),
+    issues,
+  };
+}
+
+export function formatDiagnosticNotification(input: {
+  analysis: DiagnosticAnalysis;
+  lookbackMs: number;
+  relayInstanceId: string;
+}): string {
+  const windowMinutes = Math.max(1, Math.round(input.lookbackMs / 60_000));
+  const topIssues = input.analysis.issues.slice(0, 5);
+  const lines = [
+    `Relay diagnostics detected ${input.analysis.issueCount} runtime error signal(s) in the last ${windowMinutes}m.`,
+    "",
+    ...topIssues.map((issue) => {
+      const sources = issue.sources.length > 0 ? ` (${issue.sources.slice(0, 3).join(", ")})` : "";
+      return `- ${issue.title}: ${issue.count}${sources}`;
+    }),
+  ];
+  const examples = topIssues.flatMap((issue) => issue.examples.map((example) => `- ${example}`)).slice(0, 3);
+  if (examples.length > 0) {
+    lines.push("", "Examples:", ...examples);
+  }
+  lines.push("", `Relay: ${input.relayInstanceId}`);
+  return lines.join("\n");
+}
+
+export function createRelayDiagnosticNotifier(input: RelayDiagnosticNotifierInput): {
+  start: () => void;
+  stop: () => void;
+  runOnce: () => Promise<void>;
+} {
+  const now = input.now ?? (() => Date.now());
+  let timer: NodeJS.Timeout | null = null;
+  let running = false;
+  const lastSentAtByFingerprint = new Map<string, number>();
+  const collectLogs =
+    input.collectLogs ??
+    (() =>
+      collectDiagnosticLogs({
+        settings: input.settings,
+        sinceMs: now() - input.settings.lookbackMs,
+      }));
+
+  async function runOnce(): Promise<void> {
+    if (!input.settings.enabled || running) return;
+    running = true;
+    try {
+      const logs = await collectLogs();
+      const analysis = analyzeDiagnosticLogs(logs.slice(-input.settings.maxLines));
+      if (analysis.issueCount === 0) return;
+      const fingerprint = analysis.issues.map((issue) => `${issue.code}:${issue.count}`).join("|");
+      const previousSentAt = lastSentAtByFingerprint.get(fingerprint);
+      const currentTime = now();
+      if (previousSentAt != null && currentTime - previousSentAt < input.settings.throttleMs) {
+        return;
+      }
+      const route = input.activityIndex.findBestUserVisibleRoute({
+        ...(input.settings.targetUserId ? { userId: input.settings.targetUserId } : {}),
+        now: currentTime,
+      });
+      if (!route) {
+        logger.warn(
+          {
+            event: "relay_diagnostics",
+            stage: "notification_not_delivered",
+            status: "no_route",
+            issueCount: analysis.issueCount,
+          },
+          "Relay diagnostics notification had no user-visible route"
+        );
+        return;
+      }
+      const message = buildDiagnosticNotificationMessage({
+        settings: input.settings,
+        analysis,
+        relayInstanceId: input.relayInstanceId,
+        nowMs: currentTime,
+        userId: input.settings.targetUserId ?? route.userId ?? "relay-diagnostics",
+      });
+      const result = await deliverSystemNotificationFromRelay({
+        backend: input.backend,
+        activityIndex: input.activityIndex,
+        message,
+      });
+      if (result.status === "delivered") {
+        lastSentAtByFingerprint.set(fingerprint, currentTime);
+        logger.warn(
+          {
+            event: "relay_diagnostics",
+            stage: "notified",
+            issueCount: analysis.issueCount,
+            issueCodes: analysis.issues.map((issue) => issue.code),
+            selectedChannel: result.selectedChannel,
+            sessionKey: result.sessionKey,
+          },
+          "Relay diagnostics notification delivered"
+        );
+      } else {
+        logger.warn(
+          {
+            event: "relay_diagnostics",
+            stage: "notification_not_delivered",
+            status: result.status,
+            error: result.error,
+          },
+          "Relay diagnostics notification was not delivered"
+        );
+      }
+    } catch (error) {
+      logger.warn(
+        {
+          event: "relay_diagnostics",
+          stage: "run_failed",
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Relay diagnostics notifier failed"
+      );
+    } finally {
+      running = false;
+    }
+  }
+
+  return {
+    start: () => {
+      if (!input.settings.enabled || timer) return;
+      logger.info(
+        {
+          event: "relay_diagnostics",
+          intervalMs: input.settings.intervalMs,
+          lookbackMs: input.settings.lookbackMs,
+          throttleMs: input.settings.throttleMs,
+          journalUserUnits: input.settings.journalUserUnits,
+          journalSystemUnits: input.settings.journalSystemUnits,
+          logFiles: input.settings.logFiles,
+        },
+        "Relay diagnostics notifier enabled"
+      );
+      void runOnce();
+      timer = setInterval(() => {
+        void runOnce();
+      }, input.settings.intervalMs);
+      timer.unref?.();
+    },
+    stop: () => {
+      if (!timer) return;
+      clearInterval(timer);
+      timer = null;
+    },
+    runOnce,
+  };
+}
+
+export async function collectDiagnosticLogs(input: {
+  settings: RelayDiagnosticNotifierSettings;
+  sinceMs: number;
+}): Promise<DiagnosticLogLine[]> {
+  const chunks = await Promise.all([
+    ...input.settings.journalUserUnits.map((unit) => readJournalUnit({ scope: "user", unit, sinceMs: input.sinceMs })),
+    ...input.settings.journalSystemUnits.map((unit) =>
+      readJournalUnit({ scope: "system", unit, sinceMs: input.sinceMs })
+    ),
+    ...input.settings.logFiles.map((filePath) => readLogFile({ filePath, maxLines: input.settings.maxLines })),
+  ]);
+  return chunks.flat().slice(-input.settings.maxLines);
+}
+
+function buildDiagnosticNotificationMessage(input: {
+  settings: RelayDiagnosticNotifierSettings;
+  analysis: DiagnosticAnalysis;
+  relayInstanceId: string;
+  nowMs: number;
+  userId: string;
+}): InboundPushMessage {
+  const notificationId = `relay-diagnostics:${input.relayInstanceId}:${input.nowMs}`;
+  return {
+    messageId: `system-notification:${notificationId}`,
+    sentAtMs: input.nowMs,
+    input: {
+      kind: "system_notification",
+      notificationId,
+      userId: input.userId,
+      text: formatDiagnosticNotification({
+        analysis: input.analysis,
+        lookbackMs: input.settings.lookbackMs,
+        relayInstanceId: input.relayInstanceId,
+      }),
+      eventKey: `relay.diagnostics.${input.analysis.issues[0]?.code ?? "error"}`,
+      code: "relay:diagnostics:error",
+      severity: highestSeverity(input.analysis),
+      rawTaskResult: {
+        relayInstanceId: input.relayInstanceId,
+        issues: input.analysis.issues.map((issue) => ({
+          code: issue.code,
+          count: issue.count,
+          sources: issue.sources,
+        })),
+      },
+    },
+  };
+}
+
+async function readJournalUnit(input: {
+  scope: "user" | "system";
+  unit: string;
+  sinceMs: number;
+}): Promise<DiagnosticLogLine[]> {
+  const sinceSeconds = Math.floor(input.sinceMs / 1000);
+  const args = [
+    ...(input.scope === "user" ? ["--user"] : []),
+    "-u",
+    input.unit,
+    `--since=@${sinceSeconds}`,
+    "--no-pager",
+    "-o",
+    "cat",
+  ];
+  try {
+    const { stdout } = await execFileAsync("journalctl", args, {
+      timeout: 15_000,
+      maxBuffer: 2_000_000,
+    });
+    return splitLines(stdout).map((text) => ({ source: `${input.scope}:${input.unit}`, text }));
+  } catch (error) {
+    logger.warn(
+      {
+        event: "relay_diagnostics",
+        stage: "journal_read_failed",
+        scope: input.scope,
+        unit: input.unit,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "Failed to read diagnostics journal source"
+    );
+    return [];
+  }
+}
+
+async function readLogFile(input: {
+  filePath: string;
+  maxLines: number;
+}): Promise<DiagnosticLogLine[]> {
+  try {
+    const raw = await fs.readFile(input.filePath, "utf8");
+    return splitLines(raw)
+      .slice(-input.maxLines)
+      .map((text) => ({ source: input.filePath, text }));
+  } catch (error) {
+    logger.warn(
+      {
+        event: "relay_diagnostics",
+        stage: "log_file_read_failed",
+        filePath: input.filePath,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "Failed to read diagnostics log source"
+    );
+    return [];
+  }
+}
+
+function compareIssues(a: DiagnosticIssue, b: DiagnosticIssue): number {
+  const severityDelta = severityRank(b.severity) - severityRank(a.severity);
+  if (severityDelta !== 0) return severityDelta;
+  return b.count - a.count;
+}
+
+function severityRank(severity: DiagnosticIssue["severity"]): number {
+  if (severity === "critical") return 3;
+  if (severity === "error") return 2;
+  return 1;
+}
+
+function highestSeverity(analysis: DiagnosticAnalysis): DiagnosticIssue["severity"] {
+  return analysis.issues.reduce<DiagnosticIssue["severity"]>((current, issue) => {
+    return severityRank(issue.severity) > severityRank(current) ? issue.severity : current;
+  }, "warning");
+}
+
+function sanitizeLogLine(value: string): string {
+  return value
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer <redacted>")
+    .replace(/(token|password|authorization)=\S+/gi, "$1=<redacted>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
+}
+
+function splitLines(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}

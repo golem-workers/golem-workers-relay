@@ -29,6 +29,15 @@ const envSchema = z.object({
   RELAY_CHAT_BATCH_DEBOUNCE_MS: z.coerce.number().int().min(0).max(120_000).optional(),
   RELAY_LOW_DISK_ALERT_ENABLED: envBooleanSchema.optional(),
   RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT: z.coerce.number().min(1).max(100).optional(),
+  RELAY_DIAGNOSTIC_NOTIFIER_ENABLED: envBooleanSchema.optional(),
+  RELAY_DIAGNOSTIC_NOTIFIER_INTERVAL_MS: z.coerce.number().int().min(10_000).max(86_400_000).optional(),
+  RELAY_DIAGNOSTIC_NOTIFIER_LOOKBACK_MS: z.coerce.number().int().min(10_000).max(86_400_000).optional(),
+  RELAY_DIAGNOSTIC_NOTIFIER_THROTTLE_MS: z.coerce.number().int().min(10_000).max(86_400_000).optional(),
+  RELAY_DIAGNOSTIC_NOTIFIER_MAX_LINES: z.coerce.number().int().min(10).max(100_000).optional(),
+  RELAY_DIAGNOSTIC_NOTIFIER_JOURNAL_USER_UNITS: z.string().optional(),
+  RELAY_DIAGNOSTIC_NOTIFIER_JOURNAL_SYSTEM_UNITS: z.string().optional(),
+  RELAY_DIAGNOSTIC_NOTIFIER_LOG_FILES: z.string().optional(),
+  RELAY_DIAGNOSTIC_NOTIFIER_USER_ID: z.string().optional(),
   RELAY_CONCURRENCY: z.coerce.number().int().min(1).max(10_000).optional(),
   RELAY_PUSH_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_PUSH_PATH: z.string().min(1).optional(),
@@ -109,6 +118,17 @@ export type RelayConfig = {
   chatBatchDebounceMs: number;
   lowDiskAlertEnabled: boolean;
   lowDiskAlertThresholdPercent: number;
+  diagnosticNotifier: {
+    enabled: boolean;
+    intervalMs: number;
+    lookbackMs: number;
+    throttleMs: number;
+    maxLines: number;
+    journalUserUnits: string[];
+    journalSystemUnits: string[];
+    logFiles: string[];
+    targetUserId: string | null;
+  };
   concurrency: number;
   pushPort: number;
   pushPath: string;
@@ -221,6 +241,21 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     chatBatchDebounceMs: parsed.RELAY_CHAT_BATCH_DEBOUNCE_MS ?? 500,
     lowDiskAlertEnabled: parsed.RELAY_LOW_DISK_ALERT_ENABLED ?? true,
     lowDiskAlertThresholdPercent: parsed.RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT ?? 80,
+    diagnosticNotifier: {
+      enabled: parsed.RELAY_DIAGNOSTIC_NOTIFIER_ENABLED ?? false,
+      intervalMs: parsed.RELAY_DIAGNOSTIC_NOTIFIER_INTERVAL_MS ?? 300_000,
+      lookbackMs: parsed.RELAY_DIAGNOSTIC_NOTIFIER_LOOKBACK_MS ?? 600_000,
+      throttleMs: parsed.RELAY_DIAGNOSTIC_NOTIFIER_THROTTLE_MS ?? 600_000,
+      maxLines: parsed.RELAY_DIAGNOSTIC_NOTIFIER_MAX_LINES ?? 2_000,
+      journalUserUnits: parseCsv(parsed.RELAY_DIAGNOSTIC_NOTIFIER_JOURNAL_USER_UNITS) ?? [
+        "openclaw-gateway.service",
+      ],
+      journalSystemUnits: parseCsv(parsed.RELAY_DIAGNOSTIC_NOTIFIER_JOURNAL_SYSTEM_UNITS) ?? [
+        "golem-workers-relay.service",
+      ],
+      logFiles: parseCsv(parsed.RELAY_DIAGNOSTIC_NOTIFIER_LOG_FILES) ?? [],
+      targetUserId: parsed.RELAY_DIAGNOSTIC_NOTIFIER_USER_ID?.trim() || null,
+    },
     concurrency: parsed.RELAY_CONCURRENCY ?? parsed.RELAY_PUSH_MAX_CONCURRENT_REQUESTS ?? 100,
     pushPort: parsed.RELAY_PUSH_PORT ?? 18790,
     pushPath: parsed.RELAY_PUSH_PATH ?? "/relay/messages",
@@ -355,6 +390,17 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     chatBatchDebounceMs: 500,
     lowDiskAlertEnabled: true,
     lowDiskAlertThresholdPercent: 80,
+    diagnosticNotifier: {
+      enabled: false,
+      intervalMs: 300_000,
+      lookbackMs: 600_000,
+      throttleMs: 600_000,
+      maxLines: 2_000,
+      journalUserUnits: ["openclaw-gateway.service"],
+      journalSystemUnits: ["golem-workers-relay.service"],
+      logFiles: [],
+      targetUserId: null,
+    },
     concurrency: 100,
     pushPort: 18790,
     pushPath: "/relay/messages",
@@ -443,6 +489,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     ...base,
     ...overrides,
     openrouterProxy: { ...base.openrouterProxy, ...(overrides.openrouterProxy ?? {}) },
+    diagnosticNotifier: { ...base.diagnosticNotifier, ...(overrides.diagnosticNotifier ?? {}) },
     openaiProxy: { ...base.openaiProxy, ...(overrides.openaiProxy ?? {}) },
     jinaProxy: { ...base.jinaProxy, ...(overrides.jinaProxy ?? {}) },
     googleAiProxy: { ...base.googleAiProxy, ...(overrides.googleAiProxy ?? {}) },

@@ -39,6 +39,7 @@ import {
   inferTransportTarget,
 } from "./conversation/activityIndex.js";
 import { deliverSystemNotificationFromRelay } from "./conversation/systemNotificationDelivery.js";
+import { createRelayDiagnosticNotifier } from "./diagnostics/errorDiagnostics.js";
 
 async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
@@ -96,6 +97,7 @@ async function main(): Promise<void> {
       relayChannelPluginAutoUpdateEnabled: cfg.relayChannel.plugin.autoUpdateEnabled,
       relayChannelPluginGitRef: cfg.relayChannel.plugin.gitRef,
       relayChannelPluginRepoDir: cfg.relayChannel.plugin.repoDir,
+      diagnosticNotifierEnabled: cfg.diagnosticNotifier.enabled,
     },
     "Relay starting"
   );
@@ -586,9 +588,17 @@ async function main(): Promise<void> {
         })
       : null;
   selfNudgeRunner?.start();
+  const diagnosticNotifier = createRelayDiagnosticNotifier({
+    settings: cfg.diagnosticNotifier,
+    backend,
+    activityIndex,
+    relayInstanceId: cfg.relayInstanceId,
+  });
+  diagnosticNotifier.start();
 
   await waitForStop(stop);
   shuttingDown = true;
+  diagnosticNotifier.stop();
   selfNudgeRunner?.stop();
   queue.stopAccepting();
   const drainState = queue.getState();

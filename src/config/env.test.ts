@@ -102,6 +102,49 @@ describe("loadRelayConfig", () => {
     expect(custom.lowDiskAlertThresholdPercent).toBe(92);
   });
 
+  it("keeps relay diagnostic notifier disabled by default and allows env override", () => {
+    const def = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+    });
+    expect(def.diagnosticNotifier).toEqual({
+      enabled: false,
+      intervalMs: 300_000,
+      lookbackMs: 600_000,
+      throttleMs: 600_000,
+      maxLines: 2_000,
+      journalUserUnits: ["openclaw-gateway.service"],
+      journalSystemUnits: ["golem-workers-relay.service"],
+      logFiles: [],
+      targetUserId: null,
+    });
+
+    const custom = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+      RELAY_DIAGNOSTIC_NOTIFIER_ENABLED: "1",
+      RELAY_DIAGNOSTIC_NOTIFIER_INTERVAL_MS: "120000",
+      RELAY_DIAGNOSTIC_NOTIFIER_LOOKBACK_MS: "300000",
+      RELAY_DIAGNOSTIC_NOTIFIER_THROTTLE_MS: "900000",
+      RELAY_DIAGNOSTIC_NOTIFIER_MAX_LINES: "500",
+      RELAY_DIAGNOSTIC_NOTIFIER_JOURNAL_USER_UNITS: "openclaw-gateway.service,other-user.service",
+      RELAY_DIAGNOSTIC_NOTIFIER_JOURNAL_SYSTEM_UNITS: "golem-workers-relay.service",
+      RELAY_DIAGNOSTIC_NOTIFIER_LOG_FILES: "/var/log/golem-workers/prepare-agent-server.log",
+      RELAY_DIAGNOSTIC_NOTIFIER_USER_ID: "user_1",
+    });
+    expect(custom.diagnosticNotifier).toEqual({
+      enabled: true,
+      intervalMs: 120_000,
+      lookbackMs: 300_000,
+      throttleMs: 900_000,
+      maxLines: 500,
+      journalUserUnits: ["openclaw-gateway.service", "other-user.service"],
+      journalSystemUnits: ["golem-workers-relay.service"],
+      logFiles: ["/var/log/golem-workers/prepare-agent-server.log"],
+      targetUserId: "user_1",
+    });
+  });
+
   it("enables final-only OpenClaw forwarding by default and allows override", () => {
     const def = loadRelayConfig({
       RELAY_TOKEN: "t",
