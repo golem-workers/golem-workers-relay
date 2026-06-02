@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { BackendClient } from "../backend/backendClient.js";
+import type { SystemNotificationDeliveryRequest } from "../backend/types.js";
 import { ConversationActivityIndex } from "../conversation/activityIndex.js";
 import {
   analyzeDiagnosticLogs,
@@ -100,7 +101,7 @@ describe("relay error diagnostics", () => {
       userId: "user_1",
       at: nowMs,
     });
-    const deliverSystemNotification = vi.fn().mockResolvedValue({
+    const deliverSystemNotification = vi.fn<BackendClient["deliverSystemNotification"]>().mockResolvedValue({
       accepted: true,
       backendMessageId: "system-notification:notif_1:webchat:conversation-1",
     });
@@ -136,15 +137,14 @@ describe("relay error diagnostics", () => {
     await notifier.runOnce();
 
     expect(deliverSystemNotification).toHaveBeenCalledTimes(2);
-    expect(deliverSystemNotification).toHaveBeenCalledWith(
-      expect.objectContaining({
-        notificationId: expect.stringContaining("relay-diagnostics:relay-1:"),
-        sessionKey: "webchat:conversation-1",
-        channel: "webchat",
-        eventKey: "relay.diagnostics.compaction_failure",
-        severity: "error",
-      })
-    );
+    const [notificationInput] = deliverSystemNotification.mock.calls.at(-1) as [SystemNotificationDeliveryRequest];
+    expect(notificationInput.notificationId).toContain("relay-diagnostics:relay-1:");
+    expect(notificationInput).toMatchObject({
+      sessionKey: "webchat:conversation-1",
+      channel: "webchat",
+      eventKey: "relay.diagnostics.compaction_failure",
+      severity: "error",
+    });
   });
 });
 

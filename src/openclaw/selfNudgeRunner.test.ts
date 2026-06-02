@@ -11,6 +11,7 @@ import {
   readFreshestSessionTranscript,
   type FreshestSessionTranscript,
   type RelaySelfNudgeSettings,
+  type SelfNudgeDecision,
   type SelfNudgeState,
 } from "./selfNudgeRunner.js";
 
@@ -21,6 +22,12 @@ const enabledSettings: RelaySelfNudgeSettings = {
   model: "openrouter/google/gemini-test",
   finalNoticeEnabled: false,
   finalNoticeText: "Final message.",
+};
+
+type FinalDecisionNotice = {
+  transcript: FreshestSessionTranscript;
+  decision: SelfNudgeDecision;
+  nowMs: number;
 };
 
 function makeState(): SelfNudgeState {
@@ -300,7 +307,7 @@ describe("selfNudgeRunner", () => {
   });
 
   it("optionally notifies once when the model decides the latest request is final", async () => {
-    const notifyFinalDecision = vi.fn().mockResolvedValue(undefined);
+    const notifyFinalDecision = vi.fn<(input: FinalDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
     const state = makeState();
     const settings: RelaySelfNudgeSettings = {
       ...enabledSettings,
@@ -349,12 +356,9 @@ describe("selfNudgeRunner", () => {
     expect(first).toEqual({ nudged: false, nextDelayMs: 1_000 });
     expect(second).toEqual({ nudged: false, nextDelayMs: 1_000 });
     expect(notifyFinalDecision).toHaveBeenCalledTimes(1);
-    expect(notifyFinalDecision).toHaveBeenCalledWith(
-      expect.objectContaining({
-        nowMs: 11_000,
-        decision: expect.objectContaining({ reasonCode: "final_answer" }),
-      })
-    );
+    const [notice] = notifyFinalDecision.mock.calls[0] as [FinalDecisionNotice];
+    expect(notice.nowMs).toBe(11_000);
+    expect(notice.decision.reasonCode).toBe("final_answer");
   });
 
   it("does not send final notices for waiting-on-user decisions", async () => {
