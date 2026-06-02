@@ -42,7 +42,7 @@ describe("relay error diagnostics", () => {
       "openclaw_turn_timeout",
     ]);
     expect(formatDiagnosticNotification({ analysis, lookbackMs: 300_000, relayInstanceId: "relay-1" })).toBe(
-      "Relay diagnostic: Context compaction failed x1; Relay authorization failed x1; OpenClaw turn timed out x1 in the last 5m. Relay: relay-1"
+      "====== DIAGNOSTIC ======\nContext compaction failed x1; Relay authorization failed x1; OpenClaw turn timed out x1 in the last 5m. Relay: relay-1"
     );
   });
 
@@ -61,7 +61,7 @@ describe("relay error diagnostics", () => {
     expect(analysis.issueCount).toBe(2);
     expect(analysis.issues.map((issue) => issue.code)).toEqual(["compaction_failure"]);
     expect(formatDiagnosticNotification({ analysis, lookbackMs: 300_000, relayInstanceId: "relay-1" })).toBe(
-      "Relay diagnostic: Context compaction failed x2 in the last 5m. Relay: relay-1"
+      "====== DIAGNOSTIC ======\nContext compaction failed x2 in the last 5m. Relay: relay-1"
     );
   });
 

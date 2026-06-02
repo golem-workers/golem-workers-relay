@@ -129,7 +129,7 @@ export function formatDiagnosticNotification(input: {
     .slice(0, 5)
     .map((issue) => `${issue.title} x${issue.count}`)
     .join("; ");
-  return `Relay diagnostic: ${issueSummary} in the last ${windowMinutes}m. Relay: ${input.relayInstanceId}`;
+  return `====== DIAGNOSTIC ======\n${issueSummary} in the last ${windowMinutes}m. Relay: ${input.relayInstanceId}`;
 }
 
 export function createRelayDiagnosticNotifier(input: RelayDiagnosticNotifierInput): {
