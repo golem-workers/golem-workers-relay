@@ -10,6 +10,7 @@ export type RelayChannelTransportDeliveryTracker = {
     sessionKey?: string;
     transportChannelId: "telegram" | "whatsapp_personal";
     transportMessageId?: string;
+    allowUnscopedActiveFallback?: boolean;
   }): void;
   getSdkDelivery(input: {
     correlationMessageId?: string;
@@ -40,12 +41,22 @@ export function createRelayChannelTransportDeliveryTracker(): RelayChannelTransp
       const activeCorrelationMessageId = sessionKey
         ? activeCorrelationIdBySessionKey.get(sessionKey)
         : undefined;
-      const correlationMessageId = input.correlationMessageId?.trim() || activeCorrelationMessageId;
+      const activeEntries = [...activeCorrelationIdBySessionKey.entries()];
+      const soleActiveEntry =
+        input.allowUnscopedActiveFallback === true &&
+        !input.correlationMessageId?.trim() &&
+        !sessionKey &&
+        activeEntries.length === 1
+          ? activeEntries[0]
+          : null;
+      const correlationMessageId =
+        input.correlationMessageId?.trim() || activeCorrelationMessageId || soleActiveEntry?.[1];
+      const effectiveSessionKey = sessionKey || soleActiveEntry?.[0];
       if (correlationMessageId) {
         deliveriesByCorrelationId.set(correlationMessageId, receipt);
       }
-      if (sessionKey && activeCorrelationMessageId) {
-        deliveriesBySessionKey.set(sessionKey, receipt);
+      if (effectiveSessionKey && correlationMessageId) {
+        deliveriesBySessionKey.set(effectiveSessionKey, receipt);
       }
     },
     getSdkDelivery(input) {
@@ -94,4 +105,12 @@ export function readTransportDeliverySessionKey(openclawContext: unknown): strin
   const context = openclawContext as Record<string, unknown>;
   const sessionKey = typeof context.sessionKey === "string" ? context.sessionKey.trim() : "";
   return sessionKey.length > 0 ? sessionKey : null;
+}
+
+export function readTransportDeliveryKind(openclawContext: unknown): "tool" | "block" | "final" | null {
+  if (!openclawContext || typeof openclawContext !== "object" || Array.isArray(openclawContext)) {
+    return null;
+  }
+  const deliveryKind = (openclawContext as Record<string, unknown>).deliveryKind;
+  return deliveryKind === "tool" || deliveryKind === "block" || deliveryKind === "final" ? deliveryKind : null;
 }

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { closeHttpServer, startRelayChannelDataPlaneServer } from "./startDataPlaneServer.js";
 import { startRelayChannelControlPlane } from "./startControlPlaneServer.js";
 import { executeTelegramTransportActionViaBackend } from "./telegramBackendTransport.js";
+import { createRelayChannelTransportDeliveryTracker } from "./transportDeliveryTracker.js";
 
 const pluginIngressServers: Server[] = [];
 
@@ -129,6 +130,75 @@ describe("relay-channel control plane", () => {
 
     expect(completed.eventType).toBe("transport.action.completed");
     expect(completed.payload?.result?.transportMessageId).toBe("1001");
+
+    await cp.close();
+    await closeHttpServer(dp.server);
+  });
+
+  it("records legacy uncorrelated telegram actions against the active relay task", async () => {
+    const dp = startRelayChannelDataPlaneServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve) => dp.server.once("listening", resolve));
+    const transportDeliveryTracker = createRelayChannelTransportDeliveryTracker();
+    transportDeliveryTracker.begin({
+      correlationMessageId: "backend_msg_1",
+      sessionKey: "tg:123:srv_1",
+    });
+
+    const cp = startRelayChannelControlPlane({
+      host: "127.0.0.1",
+      port: 0,
+      relayInstanceId: "relay-test",
+      backend: {
+        sendTelegramTransportAction: vi.fn().mockResolvedValue({
+          transportMessageId: "1002",
+          conversationId: "123",
+        }),
+        registerTelegramMessageCorrelation: vi.fn().mockResolvedValue({ accepted: true }),
+        sendWhatsAppPersonalTransportMessage: vi.fn(),
+      } as never,
+      transportDeliveryTracker,
+      getDataPlane: () => {
+        const s = dp.getState();
+        return {
+          uploadBaseUrl: s.uploadBaseUrl,
+          downloadBaseUrl: s.downloadBaseUrl,
+          registerDownload: dp.registerDownload,
+        };
+      },
+      executeAgentControl: vi.fn().mockResolvedValue({
+        kind: "config.read",
+        configText: "{\n  \"ok\": true\n}\n",
+        config: { ok: true },
+      }),
+    });
+    await new Promise<void>((resolve) => cp.server.once("listening", resolve));
+    const address = cp.server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+
+    await fetch(`http://127.0.0.1:${port}/actions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "request",
+        requestType: "transport.action",
+        requestId: "req-legacy-1",
+        action: {
+          actionId: "act-legacy-1",
+          kind: "message.send",
+          idempotencyKey: "idem-legacy-1",
+          accountId: "acc-test",
+          transportTarget: { channel: "telegram", chatId: "123" },
+          conversation: { handle: "123" },
+          openclawContext: { deliveryKind: "final" },
+          payload: { text: "already sent" },
+        },
+      }),
+    });
+
+    expect(transportDeliveryTracker.getSdkDelivery({ correlationMessageId: "backend_msg_1" })).toEqual({
+      transportChannelId: "telegram",
+      transportMessageId: "1002",
+    });
 
     await cp.close();
     await closeHttpServer(dp.server);

@@ -46,6 +46,65 @@ describe("transportDeliveryTracker", () => {
     expect(tracker.getSdkDelivery({ sessionKey: "tg:123:srv_1" })).toBeNull();
   });
 
+  it("records unscoped SDK deliveries against the sole active session", () => {
+    const tracker = createRelayChannelTransportDeliveryTracker();
+    tracker.begin({
+      correlationMessageId: "msg_1",
+      sessionKey: "tg:123:srv_1",
+    });
+
+    tracker.recordSdkDelivery({
+      transportChannelId: "telegram",
+      transportMessageId: "tg-unscoped-1",
+      allowUnscopedActiveFallback: true,
+    });
+
+    expect(tracker.getSdkDelivery({ correlationMessageId: "msg_1" })).toEqual({
+      transportChannelId: "telegram",
+      transportMessageId: "tg-unscoped-1",
+    });
+    expect(tracker.getSdkDelivery({ sessionKey: "tg:123:srv_1" })).toEqual({
+      transportChannelId: "telegram",
+      transportMessageId: "tg-unscoped-1",
+    });
+  });
+
+  it("does not guess unscoped SDK delivery when multiple sessions are active", () => {
+    const tracker = createRelayChannelTransportDeliveryTracker();
+    tracker.begin({
+      correlationMessageId: "msg_1",
+      sessionKey: "tg:123:srv_1",
+    });
+    tracker.begin({
+      correlationMessageId: "msg_2",
+      sessionKey: "tg:456:srv_1",
+    });
+
+    tracker.recordSdkDelivery({
+      transportChannelId: "telegram",
+      transportMessageId: "tg-unscoped-1",
+      allowUnscopedActiveFallback: true,
+    });
+
+    expect(tracker.getSdkDelivery({ correlationMessageId: "msg_1" })).toBeNull();
+    expect(tracker.getSdkDelivery({ correlationMessageId: "msg_2" })).toBeNull();
+  });
+
+  it("ignores unscoped SDK deliveries unless active fallback is explicitly allowed", () => {
+    const tracker = createRelayChannelTransportDeliveryTracker();
+    tracker.begin({
+      correlationMessageId: "msg_1",
+      sessionKey: "tg:123:srv_1",
+    });
+
+    tracker.recordSdkDelivery({
+      transportChannelId: "telegram",
+      transportMessageId: "tg-unscoped-1",
+    });
+
+    expect(tracker.getSdkDelivery({ correlationMessageId: "msg_1" })).toBeNull();
+  });
+
   it("prefers correlationMessageId over backendMessageId", () => {
     expect(
       readTransportDeliveryCorrelationId({
