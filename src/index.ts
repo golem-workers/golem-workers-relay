@@ -585,6 +585,49 @@ async function main(): Promise<void> {
           openrouterProxyPort: cfg.openrouterProxy.port,
           openrouterProxyPathPrefix: cfg.openrouterProxy.pathPrefix,
           systemTaskTimeoutMs: cfg.systemTaskTimeoutMs,
+          notifyFinalDecision: cfg.selfNudge.finalNoticeEnabled
+            ? async ({ transcript, decision, nowMs }) => {
+                const route =
+                  activityIndex.snapshot().find((record) => record.sessionKey === transcript.sessionKey) ??
+                  activityIndex.findBestUserVisibleRoute({ now: nowMs });
+                const userId = route?.userId ?? "relay-self-nudge-final";
+                const notificationId = `relay-self-nudge-final:${cfg.relayInstanceId}:${randomUUID()}`;
+                const message: InboundPushMessage = {
+                  messageId: `system-notification:${notificationId}`,
+                  sentAtMs: nowMs,
+                  input: {
+                    kind: "system_notification",
+                    notificationId,
+                    userId,
+                    text: cfg.selfNudge.finalNoticeText,
+                    eventKey: "relay.self_nudge.final_answer",
+                    code: "relay:self_nudge:final_answer",
+                    severity: "info",
+                    rawTaskResult: {
+                      relayInstanceId: cfg.relayInstanceId,
+                      sessionKey: transcript.sessionKey,
+                      reasonCode: decision.reasonCode ?? null,
+                      reason: decision.reason ?? null,
+                    },
+                  },
+                };
+                const result = await deliverSystemNotificationFromRelay({
+                  backend,
+                  activityIndex,
+                  message,
+                });
+                logger.info(
+                  {
+                    event: "relay_self_nudge_final_notice",
+                    status: result.status,
+                    selectedChannel: result.selectedChannel,
+                    sessionKey: result.sessionKey,
+                    error: result.error,
+                  },
+                  "Relay self-nudge final notice processed"
+                );
+              }
+            : undefined,
         })
       : null;
   selfNudgeRunner?.start();

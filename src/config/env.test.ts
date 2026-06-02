@@ -170,6 +170,8 @@ describe("loadRelayConfig", () => {
       analyzedRecentMessageCount: 0,
       baseTimeoutMs: 300_000,
       model: null,
+      finalNoticeEnabled: false,
+      finalNoticeText: "Final message.",
     });
 
     const custom = loadRelayConfig({
@@ -179,12 +181,16 @@ describe("loadRelayConfig", () => {
       RELAY_SELF_NUDGE_ANALYZED_RECENT_MESSAGE_COUNT: "2",
       RELAY_SELF_NUDGE_BASE_TIMEOUT_MS: "600000",
       RELAY_SELF_NUDGE_MODEL: "openrouter/google/gemini-2.5-flash",
+      RELAY_SELF_NUDGE_FINAL_NOTICE_ENABLED: "1",
+      RELAY_SELF_NUDGE_FINAL_NOTICE_TEXT: "Final reply detected.",
     });
     expect(custom.selfNudge).toEqual({
       enabled: true,
       analyzedRecentMessageCount: 2,
       baseTimeoutMs: 600_000,
       model: "openrouter/google/gemini-2.5-flash",
+      finalNoticeEnabled: true,
+      finalNoticeText: "Final reply detected.",
     });
   });
 

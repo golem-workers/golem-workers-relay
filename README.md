@@ -226,6 +226,8 @@ Push transport settings:
 - `RELAY_DIAGNOSTIC_NOTIFIER_JOURNAL_SYSTEM_UNITS=golem-workers-relay.service` (comma-separated system journal units to scan)
 - `RELAY_DIAGNOSTIC_NOTIFIER_LOG_FILES=` (optional comma-separated extra log files to scan)
 - `RELAY_DIAGNOSTIC_NOTIFIER_USER_ID=` (optional backend user id route filter; leave blank to notify the most recent user-visible conversation route)
+- `RELAY_SELF_NUDGE_FINAL_NOTICE_ENABLED=0` (opt-in debug notice; when enabled, relay sends a short system notification when self-nudge analysis decides the latest user request already has a final answer)
+- `RELAY_SELF_NUDGE_FINAL_NOTICE_TEXT=Final message.` (text for the opt-in self-nudge final-answer notice)
 - `RELAY_OPENROUTER_PROXY_ENABLED=1` (enable local OpenRouter-compatible proxy listener)
 - `RELAY_OPENROUTER_PROXY_PORT=18080` (local proxy port used by agent-side rewrite rules; binds to `127.0.0.1` by default)
 - `RELAY_OPENROUTER_PROXY_PATH_PREFIX=/provider-proxy/openrouter` (primary local OpenClaw -> relay OpenRouter path prefix; legacy `/api/v1` stays supported)

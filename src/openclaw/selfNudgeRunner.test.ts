@@ -19,6 +19,8 @@ const enabledSettings: RelaySelfNudgeSettings = {
   analyzedRecentMessageCount: 1,
   baseTimeoutMs: 1_000,
   model: "openrouter/google/gemini-test",
+  finalNoticeEnabled: false,
+  finalNoticeText: "Final message.",
 };
 
 function makeState(): SelfNudgeState {
@@ -27,6 +29,7 @@ function makeState(): SelfNudgeState {
     latestUserFingerprint: null,
     consecutiveNudges: 0,
     lastNudgeAtMs: null,
+    lastFinalNoticeFingerprint: null,
   };
 }
 
@@ -294,6 +297,94 @@ describe("selfNudgeRunner", () => {
 
     expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
     expect(runChatTask).not.toHaveBeenCalled();
+  });
+
+  it("optionally notifies once when the model decides the latest request is final", async () => {
+    const notifyFinalDecision = vi.fn().mockResolvedValue(undefined);
+    const state = makeState();
+    const settings: RelaySelfNudgeSettings = {
+      ...enabledSettings,
+      finalNoticeEnabled: true,
+    };
+    const decision = vi.fn().mockResolvedValue({
+      shouldNudge: false,
+      statusNudgeMessage: null,
+      reasonCode: "final_answer",
+      reason: "assistant completed the request",
+    });
+
+    const first = await evaluateSelfNudgeTick({
+      settings,
+      transcript: makeTranscript({
+        mtimeMs: 10_000,
+        messages: [
+          { role: "user", text: "please do x", lineIndex: 0 },
+          { role: "assistant", text: "Done.", lineIndex: 1 },
+        ],
+      }),
+      state,
+      nowMs: 11_000,
+      runner: { runChatTask: vi.fn() },
+      systemTaskTimeoutMs: 60_000,
+      notifyFinalDecision,
+      decide: decision,
+    });
+    const second = await evaluateSelfNudgeTick({
+      settings,
+      transcript: makeTranscript({
+        mtimeMs: 12_000,
+        messages: [
+          { role: "user", text: "please do x", lineIndex: 0 },
+          { role: "assistant", text: "Done.", lineIndex: 1 },
+        ],
+      }),
+      state,
+      nowMs: 13_000,
+      runner: { runChatTask: vi.fn() },
+      systemTaskTimeoutMs: 60_000,
+      notifyFinalDecision,
+      decide: decision,
+    });
+
+    expect(first).toEqual({ nudged: false, nextDelayMs: 1_000 });
+    expect(second).toEqual({ nudged: false, nextDelayMs: 1_000 });
+    expect(notifyFinalDecision).toHaveBeenCalledTimes(1);
+    expect(notifyFinalDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nowMs: 11_000,
+        decision: expect.objectContaining({ reasonCode: "final_answer" }),
+      })
+    );
+  });
+
+  it("does not send final notices for waiting-on-user decisions", async () => {
+    const notifyFinalDecision = vi.fn().mockResolvedValue(undefined);
+
+    await evaluateSelfNudgeTick({
+      settings: {
+        ...enabledSettings,
+        finalNoticeEnabled: true,
+      },
+      transcript: makeTranscript({
+        mtimeMs: 10_000,
+        messages: [
+          { role: "user", text: "please do x", lineIndex: 0 },
+          { role: "assistant", text: "Which repo should I use?", lineIndex: 1 },
+        ],
+      }),
+      state: makeState(),
+      nowMs: 11_000,
+      runner: { runChatTask: vi.fn() },
+      systemTaskTimeoutMs: 60_000,
+      notifyFinalDecision,
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: false,
+        statusNudgeMessage: null,
+        reasonCode: "waiting_for_user",
+      }),
+    });
+
+    expect(notifyFinalDecision).not.toHaveBeenCalled();
   });
 
   it("does not double-prefix status nudge messages", () => {

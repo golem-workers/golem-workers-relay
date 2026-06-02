@@ -81,6 +81,8 @@ const envSchema = z.object({
   RELAY_SELF_NUDGE_ANALYZED_RECENT_MESSAGE_COUNT: z.coerce.number().int().min(0).max(50).optional(),
   RELAY_SELF_NUDGE_BASE_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(2_147_483_647).optional(),
   RELAY_SELF_NUDGE_MODEL: z.string().min(1).optional(),
+  RELAY_SELF_NUDGE_FINAL_NOTICE_ENABLED: envBooleanSchema.optional(),
+  RELAY_SELF_NUDGE_FINAL_NOTICE_TEXT: z.string().min(1).max(500).optional(),
 
   RELAY_CHANNEL_ENABLED: envBooleanSchema.optional(),
   RELAY_CHANNEL_CONTROL_PLANE_HOST: z.string().min(1).optional(),
@@ -189,6 +191,8 @@ export type RelayConfig = {
     analyzedRecentMessageCount: number;
     baseTimeoutMs: number;
     model: string | null;
+    finalNoticeEnabled: boolean;
+    finalNoticeText: string;
   };
   devLogEnabled: boolean;
   devLogTextMaxLen: number;
@@ -340,6 +344,8 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
       analyzedRecentMessageCount: parsed.RELAY_SELF_NUDGE_ANALYZED_RECENT_MESSAGE_COUNT ?? 0,
       baseTimeoutMs: parsed.RELAY_SELF_NUDGE_BASE_TIMEOUT_MS ?? 300_000,
       model: parsed.RELAY_SELF_NUDGE_MODEL?.trim() || null,
+      finalNoticeEnabled: parsed.RELAY_SELF_NUDGE_FINAL_NOTICE_ENABLED ?? false,
+      finalNoticeText: parsed.RELAY_SELF_NUDGE_FINAL_NOTICE_TEXT?.trim() || "Final message.",
     },
     devLogEnabled,
     devLogTextMaxLen,
@@ -461,6 +467,8 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
       analyzedRecentMessageCount: 0,
       baseTimeoutMs: 300_000,
       model: null,
+      finalNoticeEnabled: false,
+      finalNoticeText: "Final message.",
     },
     devLogEnabled: false,
     devLogTextMaxLen: 200,

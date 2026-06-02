@@ -19,6 +19,8 @@ export type RelaySelfNudgeSettings = {
   analyzedRecentMessageCount: number;
   baseTimeoutMs: number;
   model: string | null;
+  finalNoticeEnabled: boolean;
+  finalNoticeText: string;
 };
 
 export type TranscriptMessage = {
@@ -39,6 +41,7 @@ export type FreshestSessionTranscript = {
 export type SelfNudgeDecision = {
   shouldNudge: boolean;
   statusNudgeMessage: string | null;
+  reasonCode?: "final_answer" | "waiting_for_user" | "no_active_request" | "unknown";
   reason?: string;
 };
 
@@ -49,6 +52,7 @@ export type SelfNudgeState = {
   latestUserFingerprint: string | null;
   consecutiveNudges: number;
   lastNudgeAtMs: number | null;
+  lastFinalNoticeFingerprint?: string | null;
 };
 
 export type SelfNudgeRunner = {
@@ -66,6 +70,11 @@ export function createSelfNudgeRunner(input: {
   systemTaskTimeoutMs: number;
   pollIntervalMs?: number;
   fetchImpl?: typeof fetch;
+  notifyFinalDecision?: (input: {
+    transcript: FreshestSessionTranscript;
+    decision: SelfNudgeDecision;
+    nowMs: number;
+  }) => Promise<void>;
 }): SelfNudgeRunner {
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
@@ -75,6 +84,7 @@ export function createSelfNudgeRunner(input: {
     latestUserFingerprint: null,
     consecutiveNudges: 0,
     lastNudgeAtMs: null,
+    lastFinalNoticeFingerprint: null,
   };
   const pollIntervalMs = Math.max(1_000, Math.trunc(input.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS));
 
@@ -117,6 +127,7 @@ export function createSelfNudgeRunner(input: {
         nowMs,
         runner: input.runner,
         systemTaskTimeoutMs: input.systemTaskTimeoutMs,
+        notifyFinalDecision: input.notifyFinalDecision,
         decide: (decisionInput) =>
           decideSelfNudgeWithOpenRouter({
             ...decisionInput,
@@ -152,6 +163,11 @@ export async function evaluateSelfNudgeTick(input: {
   nowMs: number;
   runner: RunnerLike;
   systemTaskTimeoutMs: number;
+  notifyFinalDecision?: (input: {
+    transcript: FreshestSessionTranscript;
+    decision: SelfNudgeDecision;
+    nowMs: number;
+  }) => Promise<void>;
   decide: (input: {
     settings: RelaySelfNudgeSettings;
     transcript: FreshestSessionTranscript;
@@ -172,6 +188,7 @@ export async function evaluateSelfNudgeTick(input: {
     input.state.latestUserFingerprint = userFingerprint;
     input.state.consecutiveNudges = 0;
     input.state.lastNudgeAtMs = null;
+    input.state.lastFinalNoticeFingerprint = null;
   }
 
   const waitMs = computeSelfNudgeWaitMs(input.settings.baseTimeoutMs, input.state.consecutiveNudges);
@@ -186,6 +203,19 @@ export async function evaluateSelfNudgeTick(input: {
     transcript: input.transcript,
   });
   if (!decision.shouldNudge) {
+    if (
+      input.settings.finalNoticeEnabled &&
+      input.notifyFinalDecision &&
+      isFinalAnswerDecision(decision) &&
+      input.state.lastFinalNoticeFingerprint !== userFingerprint
+    ) {
+      await input.notifyFinalDecision({
+        transcript: input.transcript,
+        decision,
+        nowMs: input.nowMs,
+      });
+      input.state.lastFinalNoticeFingerprint = userFingerprint;
+    }
     return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
   }
 
@@ -414,9 +444,12 @@ function buildSelfNudgeSystemPrompt(): string {
   return [
     "You decide whether an OpenClaw agent should receive a self-nudge to continue active work.",
     "Inspect only the provided OpenClaw session transcript messages.",
-    "Return strict JSON with keys: shouldNudge, statusNudgeMessage, reason.",
+    "Return strict JSON with keys: shouldNudge, statusNudgeMessage, reasonCode, reason.",
+    "Set reasonCode to one of: final_answer, waiting_for_user, no_active_request, unknown.",
     "Set shouldNudge=true only when the latest user request appears unfinished, blocked by no external user input, or the assistant was still actively working.",
-    "Set shouldNudge=false when the assistant clearly completed the request, asked the user a necessary question, or there is no user request to continue.",
+    "Set shouldNudge=false with reasonCode=final_answer when the assistant clearly completed the request.",
+    "Set shouldNudge=false with reasonCode=waiting_for_user when the assistant asked the user a necessary question.",
+    "Set shouldNudge=false with reasonCode=no_active_request when there is no user request to continue.",
     "When shouldNudge=true, statusNudgeMessage must be a concise imperative message for the agent to continue the in-flight task and report new evidence.",
     "Do not include the [STATUS_NUDGE] marker; the relay adds it.",
   ].join("\n");
@@ -442,11 +475,29 @@ function parseSelfNudgeDecision(raw: string): SelfNudgeDecision {
       ? parsed.statusNudgeMessage.trim()
       : null;
   const reason = typeof parsed.reason === "string" ? parsed.reason : undefined;
+  const reasonCode = parseSelfNudgeReasonCode(parsed.reasonCode);
   return {
     shouldNudge,
     statusNudgeMessage: shouldNudge ? normalizeNudgeBody(statusNudgeMessage) : null,
+    ...(reasonCode ? { reasonCode } : {}),
     reason,
   };
+}
+
+function parseSelfNudgeReasonCode(value: unknown): SelfNudgeDecision["reasonCode"] | undefined {
+  return value === "final_answer" ||
+    value === "waiting_for_user" ||
+    value === "no_active_request" ||
+    value === "unknown"
+    ? value
+    : undefined;
+}
+
+function isFinalAnswerDecision(decision: SelfNudgeDecision): boolean {
+  if (decision.reasonCode === "final_answer") return true;
+  if (decision.reasonCode) return false;
+  const reason = decision.reason?.toLowerCase() ?? "";
+  return /\b(final|complete|completed|done|finished|answered)\b/.test(reason);
 }
 
 function extractJsonObject(raw: string): string {
