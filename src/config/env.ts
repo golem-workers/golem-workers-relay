@@ -232,6 +232,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
   const devLogTextMaxLen = 200;
   const devLogGatewayFrames = false;
 
+  const diagnosticNotifierIntervalMs = parsed.RELAY_DIAGNOSTIC_NOTIFIER_INTERVAL_MS ?? 300_000;
   const relayInstanceId =
     parsed.RELAY_INSTANCE_ID ||
     `${os.hostname()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
@@ -247,8 +248,8 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     lowDiskAlertThresholdPercent: parsed.RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT ?? 80,
     diagnosticNotifier: {
       enabled: parsed.RELAY_DIAGNOSTIC_NOTIFIER_ENABLED ?? false,
-      intervalMs: parsed.RELAY_DIAGNOSTIC_NOTIFIER_INTERVAL_MS ?? 300_000,
-      lookbackMs: parsed.RELAY_DIAGNOSTIC_NOTIFIER_LOOKBACK_MS ?? 600_000,
+      intervalMs: diagnosticNotifierIntervalMs,
+      lookbackMs: parsed.RELAY_DIAGNOSTIC_NOTIFIER_LOOKBACK_MS ?? diagnosticNotifierIntervalMs,
       throttleMs: parsed.RELAY_DIAGNOSTIC_NOTIFIER_THROTTLE_MS ?? 600_000,
       maxLines: parsed.RELAY_DIAGNOSTIC_NOTIFIER_MAX_LINES ?? 2_000,
       journalUserUnits: parseCsv(parsed.RELAY_DIAGNOSTIC_NOTIFIER_JOURNAL_USER_UNITS) ?? [

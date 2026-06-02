@@ -38,6 +38,30 @@ describe("relay error diagnostics", () => {
     );
   });
 
+  it("ignores relay restart and startup noise", () => {
+    const analysis = analyzeDiagnosticLogs([
+      {
+        source: "system:golem-workers-relay.service",
+        text: "golem-workers-relay.service: State 'final-sigterm' timed out. Killing.",
+      },
+      {
+        source: "system:golem-workers-relay.service",
+        text: "golem-workers-relay.service: Failed with result 'timeout'.",
+      },
+      {
+        source: "system:golem-workers-relay.service",
+        text: '{"level":30,"time":1780411638688,"pid":1361038,"hostname":"ubuntu-fc-uvm","host":"127.0.0.1","port":43130,"msg":"Relay-channel data plane listening"}',
+      },
+      {
+        source: "system:golem-workers-relay.service",
+        text: '{"level":40,"time":1780411633938,"pid":1301364,"hostname":"ubuntu-fc-uvm","error":"Gateway connection lost while waiting for run 0aca2ad60a1f313dc2ed169fbb79c496: Gateway client stopped","msg":"Gateway disconnected while waiting for a terminal chat event"}',
+      },
+    ]);
+
+    expect(analysis.issueCount).toBe(0);
+    expect(analysis.issues).toEqual([]);
+  });
+
   it("delivers a throttled system notification through the activity route", async () => {
     const index = new ConversationActivityIndex({ filePath: await tempIndexPath() });
     let nowMs = Date.now();

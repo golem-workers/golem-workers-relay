@@ -44,6 +44,7 @@ export type DiagnosticIssue = {
   count: number;
   sources: string[];
   examples: string[];
+  fingerprints: string[];
 };
 
 export type DiagnosticAnalysis = {
@@ -127,6 +128,7 @@ export function analyzeDiagnosticLogs(lines: DiagnosticLogLine[]): DiagnosticAna
   for (const line of lines) {
     const text = line.text.trim();
     if (!text) continue;
+    if (isIgnoredDiagnosticLogLine(text)) continue;
     const matcher = issueMatchers.find((candidate) => candidate.patterns.some((pattern) => pattern.test(text)));
     if (!matcher) continue;
     const issue = byCode.get(matcher.code) ?? {
@@ -136,6 +138,7 @@ export function analyzeDiagnosticLogs(lines: DiagnosticLogLine[]): DiagnosticAna
       count: 0,
       sources: [],
       examples: [],
+      fingerprints: [],
     };
     issue.count += 1;
     if (!issue.sources.includes(line.source)) {
@@ -144,6 +147,10 @@ export function analyzeDiagnosticLogs(lines: DiagnosticLogLine[]): DiagnosticAna
     const example = sanitizeLogLine(text);
     if (example && issue.examples.length < 2 && !issue.examples.includes(example)) {
       issue.examples.push(example);
+    }
+    const fingerprint = normalizeLogFingerprint(line.source, text);
+    if (fingerprint && !issue.fingerprints.includes(fingerprint)) {
+      issue.fingerprints.push(fingerprint);
     }
     byCode.set(matcher.code, issue);
   }
@@ -201,7 +208,9 @@ export function createRelayDiagnosticNotifier(input: RelayDiagnosticNotifierInpu
       const logs = await collectLogs();
       const analysis = analyzeDiagnosticLogs(logs.slice(-input.settings.maxLines));
       if (analysis.issueCount === 0) return;
-      const fingerprint = analysis.issues.map((issue) => `${issue.code}:${issue.count}`).join("|");
+      const fingerprint = analysis.issues
+        .map((issue) => `${issue.code}:${issue.fingerprints.slice().sort().join(",") || issue.count}`)
+        .join("|");
       const previousSentAt = lastSentAtByFingerprint.get(fingerprint);
       const currentTime = now();
       if (previousSentAt != null && currentTime - previousSentAt < input.settings.throttleMs) {
@@ -436,6 +445,34 @@ function sanitizeLogLine(value: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 240);
+}
+
+function isIgnoredDiagnosticLogLine(value: string): boolean {
+  return [
+    /^Stopping golem-workers-relay\.service\b/i,
+    /^Stopped golem-workers-relay\.service\b/i,
+    /^Started golem-workers-relay\.service\b/i,
+    /^golem-workers-relay\.service: Deactivated successfully\b/i,
+    /^golem-workers-relay\.service: State 'final-sigterm' timed out\. Killing\./i,
+    /^golem-workers-relay\.service: Killing process \d+ /i,
+    /^golem-workers-relay\.service: Failed with result 'timeout'\./i,
+    /"msg":"Stop signal received; draining relay queue"/i,
+    /"msg":"Relay stopped"/i,
+    /Gateway connection lost while waiting for run .*Gateway client stopped/i,
+    /"msg":"Relay-channel (data|control) plane listening"/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function normalizeLogFingerprint(source: string, value: string): string {
+  return `${source}:${sanitizeLogLine(value)
+    .replace(/"time":\d+/g, '"time":<n>')
+    .replace(/"pid":\d+/g, '"pid":<n>')
+    .replace(/pid=\d+/gi, "pid=<n>")
+    .replace(/\bprocess \d+\b/gi, "process <n>")
+    .replace(/\brelay_[a-f0-9-]+\b/gi, "relay_<id>")
+    .replace(/\b[0-9a-f]{24,}\b/gi, "<hex>")
+    .replace(/\b\d{10,}\b/g, "<n>")
+    .trim()}`;
 }
 
 function splitLines(value: string): string[] {

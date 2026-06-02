@@ -110,7 +110,7 @@ describe("loadRelayConfig", () => {
     expect(def.diagnosticNotifier).toEqual({
       enabled: false,
       intervalMs: 300_000,
-      lookbackMs: 600_000,
+      lookbackMs: 300_000,
       throttleMs: 600_000,
       maxLines: 2_000,
       journalUserUnits: ["openclaw-gateway.service"],

@@ -219,7 +219,7 @@ Push transport settings:
 - `RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT=80` (send low-space alert when used disk percent is at or above this threshold)
 - `RELAY_DIAGNOSTIC_NOTIFIER_ENABLED=0` (opt-in runtime diagnostics; when enabled, relay periodically scans configured local journal/log sources for known error signals and sends debounced user-visible summaries through the existing system-notification route)
 - `RELAY_DIAGNOSTIC_NOTIFIER_INTERVAL_MS=300000` (diagnostics scan interval)
-- `RELAY_DIAGNOSTIC_NOTIFIER_LOOKBACK_MS=600000` (log lookback window per scan)
+- `RELAY_DIAGNOSTIC_NOTIFIER_LOOKBACK_MS=300000` (log lookback window per scan; defaults to the scan interval)
 - `RELAY_DIAGNOSTIC_NOTIFIER_THROTTLE_MS=600000` (minimum time before repeating the same diagnostics fingerprint)
 - `RELAY_DIAGNOSTIC_NOTIFIER_MAX_LINES=2000` (maximum recent log lines analyzed per scan)
 - `RELAY_DIAGNOSTIC_NOTIFIER_JOURNAL_USER_UNITS=openclaw-gateway.service` (comma-separated user journal units to scan)
