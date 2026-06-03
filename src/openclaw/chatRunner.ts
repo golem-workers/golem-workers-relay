@@ -8,6 +8,7 @@ import type {
   TranscriptArtifactCollectionReport,
   TranscriptMediaFile,
 } from "./mediaDirectives.js";
+import { collectTranscriptArtifacts } from "./mediaDirectives.js";
 import { saveUploadedFiles } from "./fileUploads.js";
 import { makeTextPreview } from "../common/utils/text.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
@@ -584,7 +585,7 @@ async function waitForAssistantMessageFromSessionTranscript(input: {
   return undefined;
 }
 
-function collectReplyArtifacts(input: {
+async function collectReplyArtifacts(input: {
   taskId: string;
   runId: string;
   sessionKey: string;
@@ -592,23 +593,15 @@ function collectReplyArtifacts(input: {
   finalMessage: unknown;
   transcriptFinalMessage?: unknown;
   openclawEvents: ChatEvent[];
-}): {
+}): Promise<{
   artifacts: TranscriptArtifact[];
   media: TranscriptMediaFile[];
   artifactResolution?: TranscriptArtifactCollectionReport;
-} {
-  void input.deliverySystem;
-  void input.finalMessage;
-  void input.transcriptFinalMessage;
-  void input.openclawEvents;
-  const artifactResolution: TranscriptArtifactCollectionReport = {
-    artifacts: [],
-    unresolved: [],
-    requestedCount: 0,
-    recoveredCount: 0,
-    usedStructuredArtifacts: false,
-    usedLegacyMediaDirectives: false,
-  };
+}> {
+  const artifactResolution = await collectTranscriptArtifacts({
+    message: input.finalMessage,
+    openclawEvents: input.openclawEvents,
+  });
   logger.info(
     {
       event: "artifact_delivery",
@@ -625,9 +618,16 @@ function collectReplyArtifacts(input: {
     },
     "Transcript artifact collection completed"
   );
+  const media = artifactResolution.artifacts.map((artifact) => ({
+    path: artifact.path,
+    fileName: artifact.fileName,
+    contentType: artifact.contentType,
+    sizeBytes: artifact.sizeBytes,
+  }));
   return {
-    artifacts: [],
-    media: [],
+    artifacts: artifactResolution.artifacts,
+    media,
+    artifactResolution,
   };
 }
 
@@ -661,7 +661,7 @@ async function buildReplyRunResult(input: {
       "Message flow transition"
     );
   }
-  const artifactDelivery = collectReplyArtifacts({
+  const artifactDelivery = await collectReplyArtifacts({
     taskId: input.taskId,
     runId: input.runId,
     sessionKey: input.sessionKey,

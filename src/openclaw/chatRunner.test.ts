@@ -449,8 +449,20 @@ describe("ChatRunner", () => {
     expect(sentMessage).not.toContain("[[media:relative/path.ext]]");
     expect(sentMessage).not.toContain("MEDIA: relative/path.ext");
     if (result.outcome !== "reply") throw new Error("expected reply");
-    expect(result.reply.artifacts).toBeUndefined();
-    expect(result.reply.media).toBeUndefined();
+    expect(result.reply.artifacts).toEqual([
+      expect.objectContaining({
+        path: "files/report.pdf",
+        fileName: "report.pdf",
+        contentType: "application/octet-stream",
+      }),
+    ]);
+    expect(result.reply.media).toEqual([
+      expect.objectContaining({
+        path: "files/report.pdf",
+        fileName: "report.pdf",
+        contentType: "application/octet-stream",
+      }),
+    ]);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
@@ -1868,8 +1880,20 @@ describe("ChatRunner", () => {
     });
     expect(result.outcome).toBe("reply");
     if (result.outcome !== "reply") throw new Error("expected reply");
-    expect(result.reply.artifacts).toBeUndefined();
-    expect(result.reply.media).toBeUndefined();
+    expect(result.reply.artifacts).toEqual([
+      expect.objectContaining({
+        path: "avatars/klava.svg",
+        fileName: "klava.svg",
+        contentType: "image/svg+xml",
+      }),
+    ]);
+    expect(result.reply.media).toEqual([
+      expect.objectContaining({
+        path: "avatars/klava.svg",
+        fileName: "klava.svg",
+        contentType: "image/svg+xml",
+      }),
+    ]);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
