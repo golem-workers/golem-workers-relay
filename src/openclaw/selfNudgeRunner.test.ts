@@ -198,6 +198,7 @@ describe("selfNudgeRunner", () => {
       decide: vi.fn().mockResolvedValue({
         shouldNudge: true,
         statusNudgeMessage: "Continue with the migration and report the next concrete step.",
+        finalConfidence: 10,
       }),
     });
 
@@ -232,6 +233,7 @@ describe("selfNudgeRunner", () => {
       decide: vi.fn().mockResolvedValue({
         shouldNudge: true,
         statusNudgeMessage: "Continue.",
+        finalConfidence: 0,
       }),
     });
 
@@ -262,6 +264,7 @@ describe("selfNudgeRunner", () => {
       decide: vi.fn().mockResolvedValue({
         shouldNudge: true,
         statusNudgeMessage: "Continue.",
+        finalConfidence: 0,
       }),
     });
     expect(state.consecutiveNudges).toBe(1);
@@ -301,7 +304,7 @@ describe("selfNudgeRunner", () => {
       nowMs: 11_000,
       runner: { runChatTask },
       systemTaskTimeoutMs: 60_000,
-      decide: vi.fn().mockResolvedValue({ shouldNudge: false, statusNudgeMessage: null }),
+      decide: vi.fn().mockResolvedValue({ shouldNudge: false, statusNudgeMessage: null, finalConfidence: 0 }),
     });
 
     expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
@@ -318,6 +321,7 @@ describe("selfNudgeRunner", () => {
     const decision = vi.fn().mockResolvedValue({
       shouldNudge: false,
       statusNudgeMessage: null,
+      finalConfidence: 97,
       reasonCode: "final_answer",
       reason: "assistant completed the request",
     });
@@ -360,10 +364,42 @@ describe("selfNudgeRunner", () => {
     expect(notifyFinalDecision).toHaveBeenCalledTimes(1);
     const [notice] = notifyFinalDecision.mock.calls[0] as [FinalDecisionNotice];
     expect(notice.nowMs).toBe(11_000);
+    expect(notice.decision.finalConfidence).toBe(97);
     expect(notice.decision.reasonCode).toBe("final_answer");
   });
 
-  it("formats final notices with the final assistant preview and time", () => {
+  it("does not send final notices when final confidence is exactly 90", async () => {
+    const notifyFinalDecision = vi.fn().mockResolvedValue(undefined);
+
+    await evaluateSelfNudgeTick({
+      settings: {
+        ...enabledSettings,
+        finalNoticeEnabled: true,
+      },
+      transcript: makeTranscript({
+        mtimeMs: 10_000,
+        messages: [
+          { role: "user", text: "please do x", lineIndex: 0 },
+          { role: "assistant", text: "Probably done.", lineIndex: 1 },
+        ],
+      }),
+      state: makeState(),
+      nowMs: 11_000,
+      runner: { runChatTask: vi.fn() },
+      systemTaskTimeoutMs: 60_000,
+      notifyFinalDecision,
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: false,
+        statusNudgeMessage: null,
+        finalConfidence: 90,
+        reasonCode: "final_answer",
+      }),
+    });
+
+    expect(notifyFinalDecision).not.toHaveBeenCalled();
+  });
+
+  it("formats final notices with confidence, final assistant preview, and time", () => {
     const text = buildFinalDecisionNoticeText({
       transcript: makeTranscript({
         messages: [
@@ -382,10 +418,16 @@ describe("selfNudgeRunner", () => {
           timestampMs: Date.UTC(2026, 5, 3, 11, 10),
         },
       }),
+      decision: {
+        shouldNudge: false,
+        statusNudgeMessage: null,
+        finalConfidence: 97,
+        reasonCode: "final_answer",
+      },
       nowMs: Date.UTC(2026, 5, 3, 11, 12),
     });
 
-    expect(text).toBe('FINAL: message "Finished t..." from 11:11 is final');
+    expect(text).toBe('FINAL(97%): message "Finished t..." from 11:11 is final');
   });
 
   it("does not send final notices for waiting-on-user decisions", async () => {
@@ -411,6 +453,7 @@ describe("selfNudgeRunner", () => {
       decide: vi.fn().mockResolvedValue({
         shouldNudge: false,
         statusNudgeMessage: null,
+        finalConfidence: 40,
         reasonCode: "waiting_for_user",
       }),
     });
@@ -445,6 +488,7 @@ describe("selfNudgeRunner", () => {
       decide: vi.fn().mockResolvedValue({
         shouldNudge: false,
         statusNudgeMessage: null,
+        finalConfidence: 100,
         reasonCode: "final_answer",
         reason: "assistant completed the request",
       }),
@@ -454,6 +498,7 @@ describe("selfNudgeRunner", () => {
     const afterRestartDecision = vi.fn().mockResolvedValue({
       shouldNudge: false,
       statusNudgeMessage: null,
+      finalConfidence: 100,
       reasonCode: "final_answer",
     });
     const result = await evaluateSelfNudgeTick({

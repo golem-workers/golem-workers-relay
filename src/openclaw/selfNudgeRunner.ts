@@ -41,6 +41,7 @@ export type FreshestSessionTranscript = {
 export type SelfNudgeDecision = {
   shouldNudge: boolean;
   statusNudgeMessage: string | null;
+  finalConfidence: number;
   reasonCode?: "final_answer" | "waiting_for_user" | "no_active_request" | "unknown";
   reason?: string;
 };
@@ -85,12 +86,13 @@ export type SelfNudgeRunner = {
 
 export function buildFinalDecisionNoticeText(input: {
   transcript: FreshestSessionTranscript;
+  decision: SelfNudgeDecision;
   nowMs: number;
 }): string {
   const finalMessage = findFinalAssistantMessage(input.transcript) ?? input.transcript.latestUserMessage;
   const preview = makeFinalNoticePreview(finalMessage?.text ?? "");
   const timeText = formatNoticeTime(finalMessage?.timestampMs ?? input.nowMs);
-  return `FINAL: message "${preview}" from ${timeText} is final`;
+  return `FINAL(${input.decision.finalConfidence}%): message "${preview}" from ${timeText} is final`;
 }
 
 export function createSelfNudgeRunner(input: {
@@ -506,10 +508,13 @@ function buildSelfNudgeSystemPrompt(): string {
   return [
     "You decide whether an OpenClaw agent should receive a self-nudge to continue active work.",
     "Inspect only the provided OpenClaw session transcript messages.",
-    "Return strict JSON with keys: shouldNudge, statusNudgeMessage, reasonCode, reason.",
+    "Return strict JSON with keys: shouldNudge, statusNudgeMessage, finalConfidence, reasonCode, reason.",
+    "Set finalConfidence to an integer from 0 to 100: your confidence that the latest user request has a final assistant answer.",
+    "Use finalConfidence=100 only when you are completely certain the assistant finished the latest request.",
     "Set reasonCode to one of: final_answer, waiting_for_user, no_active_request, unknown.",
-    "Set shouldNudge=true only when the latest user request appears unfinished, blocked by no external user input, or the assistant was still actively working.",
-    "Set shouldNudge=false with reasonCode=final_answer when the assistant clearly completed the request.",
+    "Set reasonCode=final_answer only when finalConfidence is greater than 90.",
+    "Set shouldNudge=false with reasonCode=final_answer when finalConfidence is greater than 90.",
+    "Set shouldNudge=true only when finalConfidence is 90 or lower and the latest user request appears unfinished, blocked by no external user input, or the assistant was still actively working.",
     "Set shouldNudge=false with reasonCode=waiting_for_user when the assistant asked the user a necessary question.",
     "Set shouldNudge=false with reasonCode=no_active_request when there is no user request to continue.",
     "When shouldNudge=true, statusNudgeMessage must be a concise imperative message for the agent to continue the in-flight task and report new evidence.",
@@ -525,13 +530,15 @@ function parseSelfNudgeDecision(raw: string): SelfNudgeDecision {
     return {
       shouldNudge: true,
       statusNudgeMessage: normalizeNudgeBody(raw),
+      finalConfidence: 0,
       reason: "model_returned_non_json",
     };
   }
   if (!isPlainObject(parsed)) {
-    return { shouldNudge: false, statusNudgeMessage: null, reason: "model_returned_non_object" };
+    return { shouldNudge: false, statusNudgeMessage: null, finalConfidence: 0, reason: "model_returned_non_object" };
   }
-  const shouldNudge = parsed.shouldNudge === true;
+  const finalConfidence = parseFinalConfidence(parsed.finalConfidence);
+  const shouldNudge = parsed.shouldNudge === true && finalConfidence <= 90;
   const statusNudgeMessage =
     typeof parsed.statusNudgeMessage === "string" && parsed.statusNudgeMessage.trim().length > 0
       ? parsed.statusNudgeMessage.trim()
@@ -541,9 +548,27 @@ function parseSelfNudgeDecision(raw: string): SelfNudgeDecision {
   return {
     shouldNudge,
     statusNudgeMessage: shouldNudge ? normalizeNudgeBody(statusNudgeMessage) : null,
+    finalConfidence,
     ...(reasonCode ? { reasonCode } : {}),
     reason,
   };
+}
+
+function parseFinalConfidence(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return clampFinalConfidence(value);
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) {
+      return clampFinalConfidence(parsed);
+    }
+  }
+  return 0;
+}
+
+function clampFinalConfidence(value: number): number {
+  return Math.max(0, Math.min(100, Math.trunc(value)));
 }
 
 function parseSelfNudgeReasonCode(value: unknown): SelfNudgeDecision["reasonCode"] | undefined {
@@ -556,10 +581,7 @@ function parseSelfNudgeReasonCode(value: unknown): SelfNudgeDecision["reasonCode
 }
 
 function isFinalAnswerDecision(decision: SelfNudgeDecision): boolean {
-  if (decision.reasonCode === "final_answer") return true;
-  if (decision.reasonCode) return false;
-  const reason = decision.reason?.toLowerCase() ?? "";
-  return /\b(final|complete|completed|done|finished|answered)\b/.test(reason);
+  return decision.finalConfidence > 90;
 }
 
 function isClosedDecision(decision: SelfNudgeDecision): boolean {
@@ -674,9 +696,17 @@ function parseStoredDecision(value: unknown): SelfNudgeDecision | null {
   return {
     shouldNudge,
     statusNudgeMessage,
+    finalConfidence: parseStoredFinalConfidence(value),
     ...(reasonCode ? { reasonCode } : {}),
     reason,
   };
+}
+
+function parseStoredFinalConfidence(value: Record<string, unknown>): number {
+  const parsed = parseFinalConfidence(value.finalConfidence);
+  if (parsed > 0 || "finalConfidence" in value) return parsed;
+  const reasonCode = parseSelfNudgeReasonCode(value.reasonCode);
+  return reasonCode === "final_answer" ? 100 : 0;
 }
 
 function extractJsonObject(raw: string): string {
