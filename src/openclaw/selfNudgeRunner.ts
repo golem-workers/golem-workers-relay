@@ -47,6 +47,28 @@ export type SelfNudgeDecision = {
 
 type RunnerLike = Pick<ChatRunner, "runChatTask">;
 
+export type SelfNudgeProcessedRecord = {
+  sessionKey: string;
+  userFingerprint: string;
+  latestUserTimestampMs: number | null;
+  latestUserLineIndex: number;
+  decision: SelfNudgeDecision;
+  analyzedAtMs: number;
+  finalNoticeSentAtMs: number | null;
+};
+
+export type SelfNudgeProcessedStore = {
+  get: (input: { sessionKey: string; userFingerprint: string }) => Promise<SelfNudgeProcessedRecord | null>;
+  markAnalyzed: (
+    input: Omit<SelfNudgeProcessedRecord, "finalNoticeSentAtMs"> & { finalNoticeSentAtMs?: number | null }
+  ) => Promise<void>;
+  markFinalNoticeSent: (input: {
+    sessionKey: string;
+    userFingerprint: string;
+    sentAtMs: number;
+  }) => Promise<void>;
+};
+
 export type SelfNudgeState = {
   sessionKey: string | null;
   latestUserFingerprint: string | null;
@@ -70,6 +92,7 @@ export function createSelfNudgeRunner(input: {
   systemTaskTimeoutMs: number;
   pollIntervalMs?: number;
   fetchImpl?: typeof fetch;
+  processedStore?: SelfNudgeProcessedStore;
   notifyFinalDecision?: (input: {
     transcript: FreshestSessionTranscript;
     decision: SelfNudgeDecision;
@@ -87,6 +110,11 @@ export function createSelfNudgeRunner(input: {
     lastFinalNoticeFingerprint: null,
   };
   const pollIntervalMs = Math.max(1_000, Math.trunc(input.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS));
+  const processedStore =
+    input.processedStore ??
+    createFileSelfNudgeProcessedStore({
+      stateDir: input.stateDir ?? resolveOpenclawStateDir(),
+    });
 
   const schedule = (delayMs: number): void => {
     if (stopped) return;
@@ -127,6 +155,7 @@ export function createSelfNudgeRunner(input: {
         nowMs,
         runner: input.runner,
         systemTaskTimeoutMs: input.systemTaskTimeoutMs,
+        processedStore,
         notifyFinalDecision: input.notifyFinalDecision,
         decide: (decisionInput) =>
           decideSelfNudgeWithOpenRouter({
@@ -163,6 +192,7 @@ export async function evaluateSelfNudgeTick(input: {
   nowMs: number;
   runner: RunnerLike;
   systemTaskTimeoutMs: number;
+  processedStore?: SelfNudgeProcessedStore;
   notifyFinalDecision?: (input: {
     transcript: FreshestSessionTranscript;
     decision: SelfNudgeDecision;
@@ -198,9 +228,26 @@ export async function evaluateSelfNudgeTick(input: {
     return { nudged: false, nextDelayMs: waitMs - elapsedMs };
   }
 
+  const existingRecord = await input.processedStore?.get({
+    sessionKey: input.transcript.sessionKey,
+    userFingerprint,
+  });
+  if (existingRecord && isClosedDecision(existingRecord.decision)) {
+    input.state.lastFinalNoticeFingerprint = existingRecord.finalNoticeSentAtMs ? userFingerprint : null;
+    return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
+  }
+
   const decision = await input.decide({
     settings: input.settings,
     transcript: input.transcript,
+  });
+  await input.processedStore?.markAnalyzed({
+    sessionKey: input.transcript.sessionKey,
+    userFingerprint,
+    latestUserTimestampMs: latestUser.timestampMs ?? null,
+    latestUserLineIndex: latestUser.lineIndex,
+    decision,
+    analyzedAtMs: input.nowMs,
   });
   if (!decision.shouldNudge) {
     if (
@@ -215,6 +262,11 @@ export async function evaluateSelfNudgeTick(input: {
         nowMs: input.nowMs,
       });
       input.state.lastFinalNoticeFingerprint = userFingerprint;
+      await input.processedStore?.markFinalNoticeSent({
+        sessionKey: input.transcript.sessionKey,
+        userFingerprint,
+        sentAtMs: input.nowMs,
+      });
     }
     return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
   }
@@ -498,6 +550,123 @@ function isFinalAnswerDecision(decision: SelfNudgeDecision): boolean {
   if (decision.reasonCode) return false;
   const reason = decision.reason?.toLowerCase() ?? "";
   return /\b(final|complete|completed|done|finished|answered)\b/.test(reason);
+}
+
+function isClosedDecision(decision: SelfNudgeDecision): boolean {
+  return !decision.shouldNudge;
+}
+
+export function createFileSelfNudgeProcessedStore(input: {
+  stateDir: string;
+  filePath?: string;
+  maxRecords?: number;
+}): SelfNudgeProcessedStore {
+  const filePath =
+    input.filePath ?? path.join(input.stateDir, "agents", "main", "golem-workers", "relay-self-nudge-index.json");
+  const maxRecords = Math.max(100, Math.trunc(input.maxRecords ?? 5_000));
+  let cache: { records: Record<string, SelfNudgeProcessedRecord> } | null = null;
+
+  const load = async (): Promise<{ records: Record<string, SelfNudgeProcessedRecord> }> => {
+    if (cache) return cache;
+    const raw = await fs.readFile(filePath, "utf8").catch(() => "");
+    if (!raw.trim()) {
+      cache = { records: {} };
+      return cache;
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      cache = { records: parseProcessedRecords(parsed) };
+    } catch {
+      cache = { records: {} };
+    }
+    return cache;
+  };
+
+  const save = async (store: { records: Record<string, SelfNudgeProcessedRecord> }): Promise<void> => {
+    const entries = Object.entries(store.records).sort(([, a], [, b]) => b.analyzedAtMs - a.analyzedAtMs);
+    store.records = Object.fromEntries(entries.slice(0, maxRecords));
+    await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.writeFile(tempPath, `${JSON.stringify({ version: 1, records: store.records }, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await fs.rename(tempPath, filePath);
+  };
+
+  return {
+    get: async ({ sessionKey, userFingerprint }) => {
+      const store = await load();
+      return store.records[processedRecordKey(sessionKey, userFingerprint)] ?? null;
+    },
+    markAnalyzed: async (record) => {
+      const store = await load();
+      const key = processedRecordKey(record.sessionKey, record.userFingerprint);
+      store.records[key] = {
+        ...record,
+        finalNoticeSentAtMs: record.finalNoticeSentAtMs ?? store.records[key]?.finalNoticeSentAtMs ?? null,
+      };
+      await save(store);
+    },
+    markFinalNoticeSent: async ({ sessionKey, userFingerprint, sentAtMs }) => {
+      const store = await load();
+      const key = processedRecordKey(sessionKey, userFingerprint);
+      const existing = store.records[key];
+      if (!existing) return;
+      store.records[key] = { ...existing, finalNoticeSentAtMs: sentAtMs };
+      await save(store);
+    },
+  };
+}
+
+function processedRecordKey(sessionKey: string, userFingerprint: string): string {
+  return createHash("sha256").update(`${sessionKey}\n${userFingerprint}`).digest("hex");
+}
+
+function parseProcessedRecords(value: unknown): Record<string, SelfNudgeProcessedRecord> {
+  const rawRecords = isPlainObject(value) && isPlainObject(value.records) ? value.records : {};
+  const records: Record<string, SelfNudgeProcessedRecord> = {};
+  for (const [key, rawRecord] of Object.entries(rawRecords)) {
+    if (!isPlainObject(rawRecord)) continue;
+    const sessionKey = typeof rawRecord.sessionKey === "string" ? rawRecord.sessionKey : "";
+    const userFingerprint = typeof rawRecord.userFingerprint === "string" ? rawRecord.userFingerprint : "";
+    const decision = parseStoredDecision(rawRecord.decision);
+    const analyzedAtMs = typeof rawRecord.analyzedAtMs === "number" ? rawRecord.analyzedAtMs : null;
+    const latestUserLineIndex =
+      typeof rawRecord.latestUserLineIndex === "number" ? rawRecord.latestUserLineIndex : null;
+    if (!sessionKey || !userFingerprint || !decision || analyzedAtMs == null || latestUserLineIndex == null) {
+      continue;
+    }
+    records[key] = {
+      sessionKey,
+      userFingerprint,
+      latestUserTimestampMs:
+        typeof rawRecord.latestUserTimestampMs === "number" ? rawRecord.latestUserTimestampMs : null,
+      latestUserLineIndex,
+      decision,
+      analyzedAtMs,
+      finalNoticeSentAtMs:
+        typeof rawRecord.finalNoticeSentAtMs === "number" ? rawRecord.finalNoticeSentAtMs : null,
+    };
+  }
+  return records;
+}
+
+function parseStoredDecision(value: unknown): SelfNudgeDecision | null {
+  if (!isPlainObject(value)) return null;
+  const shouldNudge = value.shouldNudge === true;
+  const statusNudgeMessage =
+    typeof value.statusNudgeMessage === "string" && value.statusNudgeMessage.trim()
+      ? value.statusNudgeMessage.trim()
+      : null;
+  const reason = typeof value.reason === "string" ? value.reason : undefined;
+  const reasonCode = parseSelfNudgeReasonCode(value.reasonCode);
+  return {
+    shouldNudge,
+    statusNudgeMessage,
+    ...(reasonCode ? { reasonCode } : {}),
+    reason,
+  };
 }
 
 function extractJsonObject(raw: string): string {

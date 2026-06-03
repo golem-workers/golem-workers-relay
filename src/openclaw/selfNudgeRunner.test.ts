@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   buildOpenRouterProxyChatCompletionsUrl,
   computeSelfNudgeWaitMs,
+  createFileSelfNudgeProcessedStore,
   createSelfNudgeRunner,
   evaluateSelfNudgeTick,
   formatStatusNudgeMessage,
@@ -389,6 +390,64 @@ describe("selfNudgeRunner", () => {
     });
 
     expect(notifyFinalDecision).not.toHaveBeenCalled();
+  });
+
+  it("persists final decisions so restart does not send delayed final notices for old messages", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-index-"));
+    const firstStore = createFileSelfNudgeProcessedStore({ stateDir });
+    const settings: RelaySelfNudgeSettings = {
+      ...enabledSettings,
+      finalNoticeEnabled: true,
+    };
+    const transcript = makeTranscript({
+      mtimeMs: 10_000,
+      messages: [
+        { role: "user", text: "please do x", lineIndex: 0 },
+        { role: "assistant", text: "Done.", lineIndex: 1 },
+      ],
+    });
+
+    await evaluateSelfNudgeTick({
+      settings,
+      transcript,
+      state: makeState(),
+      nowMs: 11_000,
+      runner: { runChatTask: vi.fn() },
+      systemTaskTimeoutMs: 60_000,
+      processedStore: firstStore,
+      notifyFinalDecision: vi.fn().mockResolvedValue(undefined),
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: false,
+        statusNudgeMessage: null,
+        reasonCode: "final_answer",
+        reason: "assistant completed the request",
+      }),
+    });
+
+    const afterRestartNotice = vi.fn().mockResolvedValue(undefined);
+    const afterRestartDecision = vi.fn().mockResolvedValue({
+      shouldNudge: false,
+      statusNudgeMessage: null,
+      reasonCode: "final_answer",
+    });
+    const result = await evaluateSelfNudgeTick({
+      settings,
+      transcript: makeTranscript({
+        ...transcript,
+        mtimeMs: 20_000,
+      }),
+      state: makeState(),
+      nowMs: 21_000,
+      runner: { runChatTask: vi.fn() },
+      systemTaskTimeoutMs: 60_000,
+      processedStore: createFileSelfNudgeProcessedStore({ stateDir }),
+      notifyFinalDecision: afterRestartNotice,
+      decide: afterRestartDecision,
+    });
+
+    expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
+    expect(afterRestartDecision).not.toHaveBeenCalled();
+    expect(afterRestartNotice).not.toHaveBeenCalled();
   });
 
   it("does not double-prefix status nudge messages", () => {
