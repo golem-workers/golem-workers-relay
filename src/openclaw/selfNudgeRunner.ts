@@ -83,6 +83,16 @@ export type SelfNudgeRunner = {
   tick: (nowMs?: number) => Promise<void>;
 };
 
+export function buildFinalDecisionNoticeText(input: {
+  transcript: FreshestSessionTranscript;
+  nowMs: number;
+}): string {
+  const finalMessage = findFinalAssistantMessage(input.transcript) ?? input.transcript.latestUserMessage;
+  const preview = makeFinalNoticePreview(finalMessage?.text ?? "");
+  const timeText = formatNoticeTime(finalMessage?.timestampMs ?? input.nowMs);
+  return `FINAL: message "${preview}" from ${timeText} is final`;
+}
+
 export function createSelfNudgeRunner(input: {
   settings: RelaySelfNudgeSettings;
   stateDir?: string;
@@ -715,6 +725,38 @@ function findLatestUserMessage(messages: TranscriptMessage[]): TranscriptMessage
     if (messages[i]?.role === "user") return messages[i];
   }
   return null;
+}
+
+function findFinalAssistantMessage(transcript: FreshestSessionTranscript): TranscriptMessage | null {
+  const latestUserLineIndex = transcript.latestUserMessage?.lineIndex ?? -1;
+  for (let index = transcript.messages.length - 1; index >= 0; index -= 1) {
+    const message = transcript.messages[index];
+    if (message?.role === "assistant" && message.lineIndex > latestUserLineIndex) {
+      return message;
+    }
+  }
+  for (let index = transcript.messages.length - 1; index >= 0; index -= 1) {
+    const message = transcript.messages[index];
+    if (message?.role === "assistant") {
+      return message;
+    }
+  }
+  return null;
+}
+
+function makeFinalNoticePreview(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  const preview = normalized.slice(0, 10);
+  return normalized.length > preview.length ? `${preview}...` : preview;
+}
+
+function formatNoticeTime(timestampMs: number): string {
+  const date = new Date(timestampMs);
+  if (!Number.isFinite(date.getTime())) return "unknown";
+  const hours = String(date.getUTCHours()).padStart(2, "0");
+  const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
 }
 
 function fingerprintMessage(message: TranscriptMessage): string {

@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const { executeTelegramTransportActionViaBackendMock, executeWhatsAppPersonalMessageSendMock } = vi.hoisted(() => ({
   executeTelegramTransportActionViaBackendMock: vi.fn(),
@@ -99,6 +102,123 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
     expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("tg-direct-1");
     expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
+  });
+
+  it("delivers a visible compaction lifecycle notice when a chat turn adds a compaction marker", async () => {
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-compaction-notice-"));
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    try {
+      const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+      await fs.mkdir(sessionsDir, { recursive: true });
+      const sessionFile = path.join(sessionsDir, "session.jsonl");
+      await fs.writeFile(
+        path.join(sessionsDir, "sessions.json"),
+        `${JSON.stringify({
+          "agent:main:tg:123:srv_1": {
+            sessionFile: "session.jsonl",
+          },
+        })}\n`
+      );
+      await fs.writeFile(
+        sessionFile,
+        `${JSON.stringify({
+          type: "message",
+          timestamp: "2026-06-03T06:20:00.000Z",
+          message: { role: "user", content: "ping" },
+        })}\n`
+      );
+      executeTelegramTransportActionViaBackendMock
+        .mockResolvedValueOnce({ transportMessageId: "tg-final-1" })
+        .mockResolvedValueOnce({ transportMessageId: "tg-compaction-1" });
+      const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+      const runChatTask = vi.fn().mockImplementation(async () => {
+        await fs.appendFile(
+          sessionFile,
+          `${JSON.stringify({
+            type: "message",
+            timestamp: "2026-06-03T06:21:00.000Z",
+            message: {
+              role: "system",
+              content: "Session was just compacted. Run your Session Startup sequence.",
+            },
+          })}\n`
+        );
+        return {
+          result: {
+            outcome: "reply",
+            reply: {
+              runId: "run_compaction_1",
+              message: { role: "assistant", content: "done" },
+            },
+          },
+          openclawMeta: { method: "chat.send", runId: "run_compaction_1" },
+        };
+      });
+      const processor = createMessageProcessor({
+        cfg: {
+          relayInstanceId: "relay_1",
+          taskTimeoutMs: 5_000,
+          chatBatchDebounceMs: 0,
+          devLogEnabled: false,
+          devLogTextMaxLen: 200,
+        },
+        gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+        runner: { runChatTask } as never,
+        backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
+      });
+
+      await processor({
+        messageId: "msg_compaction_1",
+        input: {
+          kind: "chat",
+          sessionKey: "tg:123:srv_1",
+          messageText: "ping",
+          context: {
+            channel: "telegram",
+            deliverySystem: "relay_channel_v2",
+            telegram: {
+              chatId: "123",
+              messageId: "55",
+            },
+          },
+        },
+      });
+
+      expect(executeTelegramTransportActionViaBackendMock).toHaveBeenCalledTimes(2);
+      const noticeSend = executeTelegramTransportActionViaBackendMock.mock.calls[1]?.[0] as
+        | { action?: { payload?: { text?: string } } }
+        | undefined;
+      expect(noticeSend?.action?.payload?.text).toContain("Context was compacted");
+      expect(submitInboundMessage).toHaveBeenCalledTimes(2);
+      const noticeCallback = submitInboundMessage.mock.calls[1]?.[0] as
+        | {
+            body?: {
+              relayMessageId?: string;
+              outcome?: string;
+              reply?: { message?: { content?: string } };
+              openclawMeta?: {
+                transportDelivered?: boolean;
+                transportMessageId?: string;
+              };
+            };
+          }
+        | undefined;
+      expect(noticeCallback?.body?.relayMessageId).toContain(":compaction:");
+      expect(noticeCallback?.body?.outcome).toBe("reply");
+      expect(noticeCallback?.body?.reply?.message?.content).toContain("Context was compacted");
+      expect(noticeCallback?.body?.openclawMeta?.transportDelivered).toBe(true);
+      expect(noticeCallback?.body?.openclawMeta?.transportMessageId).toBe("tg-compaction-1");
+    } finally {
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
+      executeTelegramTransportActionViaBackendMock.mockReset();
+      executeWhatsAppPersonalMessageSendMock.mockReset();
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
   });
 
   it("passes group telegram origin route to chat runner", async () => {

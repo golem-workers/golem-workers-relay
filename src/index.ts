@@ -26,7 +26,7 @@ import {
   startRunwayProxyServer,
 } from "./openrouter/proxyServer.js";
 import { createGatewayEventForwarder } from "./openclaw/gatewayEventForwarder.js";
-import { createSelfNudgeRunner } from "./openclaw/selfNudgeRunner.js";
+import { buildFinalDecisionNoticeText, createSelfNudgeRunner } from "./openclaw/selfNudgeRunner.js";
 import { createOpenclawConnectionStatusReporter } from "./openclaw/connectionStatusReporter.js";
 import { closeHttpServer, startRelayChannelDataPlaneServer } from "./relayChannel/startDataPlaneServer.js";
 import { startRelayChannelControlPlane } from "./relayChannel/startControlPlaneServer.js";
@@ -599,7 +599,7 @@ async function main(): Promise<void> {
                     kind: "system_notification",
                     notificationId,
                     userId,
-                    text: cfg.selfNudge.finalNoticeText,
+                    text: buildFinalDecisionNoticeText({ transcript, nowMs }),
                     eventKey: "relay.self_nudge.final_answer",
                     code: "relay:self_nudge:final_answer",
                     severity: "info",

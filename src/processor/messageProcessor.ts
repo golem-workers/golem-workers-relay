@@ -5,6 +5,12 @@ import { type BackendClient } from "../backend/backendClient.js";
 import { type InboundPushMessage, type RelayInboundMessageRequest } from "../backend/types.js";
 import { logger } from "../logger.js";
 import { type ChatRunner, type ChatSendOriginRoute } from "../openclaw/chatRunner.js";
+import {
+  captureCompactionNoticeScanStart,
+  markCompactionNoticeCandidatesDelivered,
+  readNewCompactionNoticeCandidates,
+  type CompactionNoticeScanStart,
+} from "../openclaw/compactionNoticeScanner.js";
 import { type GatewayClient } from "../openclaw/gatewayClient.js";
 import { makeTextPreview } from "../common/utils/text.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
@@ -638,6 +644,25 @@ async function processSingleMessage(input: {
           correlationMessageId: msg.messageId,
           sessionKey: msg.input.sessionKey,
         });
+        const chatSessionKey = msg.input.sessionKey;
+        const compactionNoticeScanStart = (() => {
+          try {
+            return captureCompactionNoticeScanStart({ sessionKey: chatSessionKey });
+          } catch (error) {
+            logger.warn(
+              {
+                event: "compaction_notice",
+                stage: "scan_start_failed",
+                backendMessageId: msg.messageId,
+                relayMessageId,
+                sessionKey: chatSessionKey,
+                err: error instanceof Error ? error.message : String(error),
+              },
+              "Failed to capture compaction notice scan start"
+            );
+            return { sessionFile: null, lineCount: 0 } satisfies CompactionNoticeScanStart;
+          }
+        })();
         const runnerPromise = runner.runChatTask({
           taskId: msg.messageId,
           sessionKey: msg.input.sessionKey,
@@ -755,6 +780,18 @@ async function processSingleMessage(input: {
             },
           });
         }
+        await maybeDeliverCompactionLifecycleNotice({
+          backend,
+          context: msg.input.context,
+          sessionKey: msg.input.sessionKey,
+          backendMessageId: msg.messageId,
+          relayMessageId,
+          relayInstanceId: cfg.relayInstanceId,
+          deliverySystem,
+          openclawRunId,
+          openclawMeta,
+          scanStart: compactionNoticeScanStart,
+        });
         } catch (error) {
           taskTimeout.clear();
           if (error instanceof RelayProcessingError) {
@@ -1155,6 +1192,129 @@ function buildChatSendOriginRoute(input: {
   }
 
   return null;
+}
+
+async function maybeDeliverCompactionLifecycleNotice(input: {
+  backend: BackendClient;
+  context: unknown;
+  sessionKey: string;
+  backendMessageId: string;
+  relayMessageId: string;
+  relayInstanceId: string;
+  deliverySystem: DeliverySystem;
+  openclawRunId: string | null | undefined;
+  openclawMeta: unknown;
+  scanStart: CompactionNoticeScanStart;
+}): Promise<void> {
+  let candidates: Awaited<ReturnType<typeof readNewCompactionNoticeCandidates>>;
+  try {
+    candidates = await readNewCompactionNoticeCandidates({
+      sessionKey: input.sessionKey,
+      scanStart: input.scanStart,
+      maxCandidates: 10,
+    });
+  } catch (error) {
+    logger.warn(
+      {
+        event: "compaction_notice",
+        stage: "scan_failed",
+        backendMessageId: input.backendMessageId,
+        relayMessageId: input.relayMessageId,
+        sessionKey: input.sessionKey,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      "Failed to scan transcript for compaction notice markers"
+    );
+    return;
+  }
+  if (candidates.length === 0) return;
+
+  const latest = candidates[candidates.length - 1];
+  if (!latest) return;
+  const noticeRelayMessageId = `${input.relayMessageId}:compaction:${latest.fingerprint.slice(0, 12)}`;
+  const replyPayload: Extract<RelayInboundMessageRequest, { outcome: "reply" }>["reply"] = {
+    ...(input.openclawRunId ? { runId: input.openclawRunId } : {}),
+    message: {
+      role: "assistant",
+      content:
+        "Context was compacted. I saved the current task state to memory and will continue, but older details may be incomplete.",
+    },
+  };
+
+  try {
+    const directTransportMeta = await maybeDeliverRelayChannelReplyDirectly({
+      backend: input.backend,
+      context: input.context,
+      sessionKey: input.sessionKey,
+      reply: replyPayload,
+      backendMessageId: input.backendMessageId,
+      relayMessageId: noticeRelayMessageId,
+    });
+    if (!directTransportMeta) {
+      logger.info(
+        {
+          event: "compaction_notice",
+          stage: "skipped_no_transport",
+          backendMessageId: input.backendMessageId,
+          relayMessageId: noticeRelayMessageId,
+          sessionKey: input.sessionKey,
+        },
+        "Skipping compaction lifecycle notice because no direct transport route is available"
+      );
+      return;
+    }
+    const finishedAtMs = Date.now();
+    await input.backend.submitInboundMessage({
+      body: {
+        relayInstanceId: input.relayInstanceId,
+        relayMessageId: noticeRelayMessageId,
+        finishedAtMs,
+        outcome: "reply",
+        reply: replyPayload,
+        openclawMeta: buildOpenclawMetaWithTrace(
+          normalizeOpenclawMeta(input.openclawMeta),
+          {
+            backendMessageId: input.backendMessageId,
+            relayMessageId: noticeRelayMessageId,
+            relayInstanceId: input.relayInstanceId,
+            ...(input.openclawRunId ? { openclawRunId: input.openclawRunId } : {}),
+          },
+          {
+            deliverySystem: input.deliverySystem,
+            sessionKey: input.sessionKey,
+            ...directTransportMeta,
+          }
+        ),
+      },
+    });
+    await markCompactionNoticeCandidatesDelivered({
+      candidates,
+      deliveredAtMs: finishedAtMs,
+    });
+    logger.info(
+      {
+        event: "compaction_notice",
+        stage: "delivered",
+        backendMessageId: input.backendMessageId,
+        relayMessageId: noticeRelayMessageId,
+        sessionKey: input.sessionKey,
+        candidateCount: candidates.length,
+      },
+      "Delivered compaction lifecycle notice"
+    );
+  } catch (error) {
+    logger.warn(
+      {
+        event: "compaction_notice",
+        stage: "delivery_failed",
+        backendMessageId: input.backendMessageId,
+        relayMessageId: noticeRelayMessageId,
+        sessionKey: input.sessionKey,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      "Failed to deliver compaction lifecycle notice"
+    );
+  }
 }
 
 async function maybeDeliverRelayChannelReplyDirectly(input: {

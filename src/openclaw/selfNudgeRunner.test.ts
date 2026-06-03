@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  buildFinalDecisionNoticeText,
   buildOpenRouterProxyChatCompletionsUrl,
   computeSelfNudgeWaitMs,
   createFileSelfNudgeProcessedStore,
@@ -360,6 +361,31 @@ describe("selfNudgeRunner", () => {
     const [notice] = notifyFinalDecision.mock.calls[0] as [FinalDecisionNotice];
     expect(notice.nowMs).toBe(11_000);
     expect(notice.decision.reasonCode).toBe("final_answer");
+  });
+
+  it("formats final notices with the final assistant preview and time", () => {
+    const text = buildFinalDecisionNoticeText({
+      transcript: makeTranscript({
+        messages: [
+          { role: "user", text: "please do x", lineIndex: 0, timestampMs: Date.UTC(2026, 5, 3, 11, 10) },
+          {
+            role: "assistant",
+            text: "Finished the deployment and checks.",
+            lineIndex: 1,
+            timestampMs: Date.UTC(2026, 5, 3, 11, 11),
+          },
+        ],
+        latestUserMessage: {
+          role: "user",
+          text: "please do x",
+          lineIndex: 0,
+          timestampMs: Date.UTC(2026, 5, 3, 11, 10),
+        },
+      }),
+      nowMs: Date.UTC(2026, 5, 3, 11, 12),
+    });
+
+    expect(text).toBe('FINAL: message "Finished t..." from 11:11 is final');
   });
 
   it("does not send final notices for waiting-on-user decisions", async () => {
