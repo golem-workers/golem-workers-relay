@@ -13,6 +13,7 @@ const DEFAULT_POLL_INTERVAL_MS = 10_000;
 const DISABLED_POLL_INTERVAL_MS = 30_000;
 const MIN_BASE_TIMEOUT_MS = 1_000;
 const MAX_MESSAGE_TEXT_LEN = 4_000;
+const MAX_SELF_NUDGE_LATEST_USER_AGE_MS = 24 * 60 * 60 * 1000;
 
 export type RelaySelfNudgeSettings = {
   enabled: boolean;
@@ -47,6 +48,9 @@ export type SelfNudgeDecision = {
 };
 
 type RunnerLike = Pick<ChatRunner, "runChatTask">;
+type GatewayLike = {
+  request: (method: string, params?: unknown, options?: { timeoutMs?: number }) => Promise<unknown>;
+};
 
 export type SelfNudgeProcessedRecord = {
   sessionKey: string;
@@ -104,6 +108,7 @@ export function createSelfNudgeRunner(input: {
   systemTaskTimeoutMs: number;
   pollIntervalMs?: number;
   fetchImpl?: typeof fetch;
+  gateway?: GatewayLike;
   processedStore?: SelfNudgeProcessedStore;
   notifyFinalDecision?: (input: {
     transcript: FreshestSessionTranscript;
@@ -152,10 +157,24 @@ export function createSelfNudgeRunner(input: {
         schedule(DISABLED_POLL_INTERVAL_MS);
         return;
       }
-      const transcript = await readFreshestSessionTranscript({
-        stateDir: input.stateDir ?? resolveOpenclawStateDir(),
-        analyzedRecentMessageCount: settings.analyzedRecentMessageCount,
-      });
+      const stateDir = input.stateDir ?? resolveOpenclawStateDir();
+      const transcript =
+        (input.gateway
+          ? await readFreshestOpenclawRuntimeTranscript({
+              gateway: input.gateway,
+              analyzedRecentMessageCount: settings.analyzedRecentMessageCount,
+            }).catch((error) => {
+              logger.warn(
+                { err: error instanceof Error ? error.message : String(error) },
+                "Relay self-nudge runtime transcript read failed; falling back to local session files"
+              );
+              return null;
+            })
+          : null) ??
+        (await readFreshestSessionTranscript({
+          stateDir,
+          analyzedRecentMessageCount: settings.analyzedRecentMessageCount,
+        }));
       if (!transcript) {
         schedule(pollIntervalMs);
         return;
@@ -217,6 +236,10 @@ export async function evaluateSelfNudgeTick(input: {
 }): Promise<{ nudged: boolean; nextDelayMs: number }> {
   const latestUser = input.transcript.latestUserMessage;
   if (!latestUser) {
+    resetState(input.state);
+    return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
+  }
+  if (isStaleLatestUserMessage(latestUser, input.nowMs)) {
     resetState(input.state);
     return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
   }
@@ -380,6 +403,46 @@ export async function readFreshestSessionTranscript(input: {
   return transcripts[0] ?? null;
 }
 
+export async function readFreshestOpenclawRuntimeTranscript(input: {
+  gateway: GatewayLike;
+  analyzedRecentMessageCount: number;
+}): Promise<FreshestSessionTranscript | null> {
+  const sessionsPayload = await input.gateway.request(
+    "sessions.list",
+    {
+      agentId: "main",
+      active: 24 * 60,
+      limit: 50,
+    },
+    { timeoutMs: 5_000 }
+  );
+  const candidates = readRuntimeSessionCandidates(sessionsPayload);
+  for (const candidate of candidates) {
+    const historyPayload = await readRuntimeChatHistory(input.gateway, candidate.gatewaySessionKey, {
+      limit: Math.max(1, input.analyzedRecentMessageCount + 1),
+    });
+    const messages = readRuntimeHistoryMessages(historyPayload);
+    const latestUserMessage = findLatestUserMessage(messages);
+    if (!latestUserMessage) continue;
+    if (
+      classifySessionActivity({
+        sessionKey: candidate.sessionKey,
+        latestUserText: latestUserMessage.text,
+      }) !== "external_user_chat"
+    ) {
+      continue;
+    }
+    return {
+      sessionKey: candidate.sessionKey,
+      sessionFile: `gateway://chat.history/${candidate.gatewaySessionKey}`,
+      mtimeMs: candidate.updatedAtMs,
+      messages: messages.slice(-Math.max(1, input.analyzedRecentMessageCount + 1)),
+      latestUserMessage,
+    };
+  }
+  return null;
+}
+
 function compareSessionTranscriptsForNudge(
   a: FreshestSessionTranscript,
   b: FreshestSessionTranscript
@@ -387,6 +450,87 @@ function compareSessionTranscriptsForNudge(
   const aLatestUserMs = a.latestUserMessage?.timestampMs ?? a.mtimeMs;
   const bLatestUserMs = b.latestUserMessage?.timestampMs ?? b.mtimeMs;
   return bLatestUserMs - aLatestUserMs || b.mtimeMs - a.mtimeMs;
+}
+
+type RuntimeSessionCandidate = {
+  gatewaySessionKey: string;
+  sessionKey: string;
+  updatedAtMs: number;
+};
+
+function readRuntimeSessionCandidates(payload: unknown): RuntimeSessionCandidate[] {
+  const sessions = isPlainObject(payload) && Array.isArray(payload.sessions) ? payload.sessions : [];
+  return sessions
+    .flatMap((session): RuntimeSessionCandidate[] => {
+      if (!isPlainObject(session)) return [];
+      const gatewaySessionKey = readString(session.key);
+      if (!gatewaySessionKey) return [];
+      const sessionKey = normalizeSessionKey(gatewaySessionKey);
+      if (!isUserFacingRuntimeSessionKey(sessionKey)) return [];
+      const updatedAtMs = readTimestampMs(session.updatedAt) ?? readTimestampMs(session.lastUserMessageAt);
+      if (updatedAtMs == null) return [];
+      return [{ gatewaySessionKey, sessionKey, updatedAtMs }];
+    })
+    .sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+}
+
+async function readRuntimeChatHistory(
+  gateway: GatewayLike,
+  gatewaySessionKey: string,
+  input: { limit: number }
+): Promise<unknown> {
+  try {
+    return await gateway.request(
+      "chat.history",
+      {
+        sessionKey: gatewaySessionKey,
+        limit: input.limit,
+        maxChars: MAX_MESSAGE_TEXT_LEN,
+      },
+      { timeoutMs: 5_000 }
+    );
+  } catch (error) {
+    const normalizedSessionKey = normalizeSessionKey(gatewaySessionKey);
+    if (normalizedSessionKey === gatewaySessionKey) throw error;
+    return gateway.request(
+      "chat.history",
+      {
+        sessionKey: normalizedSessionKey,
+        limit: input.limit,
+        maxChars: MAX_MESSAGE_TEXT_LEN,
+      },
+      { timeoutMs: 5_000 }
+    );
+  }
+}
+
+function readRuntimeHistoryMessages(payload: unknown): TranscriptMessage[] {
+  const messages = isPlainObject(payload) && Array.isArray(payload.messages) ? payload.messages : [];
+  return messages.flatMap((message, index): TranscriptMessage[] => {
+    if (!isPlainObject(message)) return [];
+    const role = message.role === "user" || message.role === "assistant" ? message.role : null;
+    if (!role) return [];
+    const text = extractTextFromMessage(message).trim();
+    if (!text) return [];
+    const timestampMs = readTimestampMs(message.createdAt) ?? readTimestampMs(message.timestamp);
+    return [
+      typeof timestampMs === "number"
+        ? { role, text, lineIndex: index, timestampMs }
+        : { role, text, lineIndex: index },
+    ];
+  });
+}
+
+function isUserFacingRuntimeSessionKey(sessionKey: string): boolean {
+  if (!sessionKey || sessionKey === "main" || sessionKey === "global" || sessionKey === "unknown") return false;
+  if (sessionKey.startsWith("agent:")) return false;
+  if (!sessionKey.includes(":")) return false;
+  return true;
+}
+
+function isStaleLatestUserMessage(message: TranscriptMessage, nowMs: number): boolean {
+  if (typeof message.timestampMs !== "number") return false;
+  return nowMs - message.timestampMs > MAX_SELF_NUDGE_LATEST_USER_AGE_MS;
 }
 
 export function computeSelfNudgeWaitMs(baseTimeoutMs: number, consecutiveNudges: number): number {
@@ -502,6 +646,17 @@ function parseTimestampMs(value: unknown): number | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function readString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function readTimestampMs(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return parseTimestampMs(value);
 }
 
 function buildSelfNudgeSystemPrompt(): string {

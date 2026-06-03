@@ -10,6 +10,7 @@ import {
   createSelfNudgeRunner,
   evaluateSelfNudgeTick,
   formatStatusNudgeMessage,
+  readFreshestOpenclawRuntimeTranscript,
   readFreshestSessionTranscript,
   type FreshestSessionTranscript,
   type RelaySelfNudgeSettings,
@@ -167,6 +168,45 @@ describe("selfNudgeRunner", () => {
 
     expect(transcript?.sessionKey).toBe("tg:-5297593928:cmp9kwhbf0175209zotr1q9le");
     expect(transcript?.latestUserMessage?.text).toBe("Complete the runtime scenario checks.");
+  });
+
+  it("uses OpenClaw runtime sessions and chat history across transports", async () => {
+    const gateway = {
+      request: vi.fn(async (method: string, params?: unknown) => {
+        if (method === "sessions.list") {
+          return {
+            sessions: [
+              { key: "main", updatedAt: 8_000 },
+              { key: "healthcheck-2026-06-03", updatedAt: 7_000 },
+              { key: "agent:main:tg:100:server-a", updatedAt: 4_000 },
+              { key: "agent:main:webchat:conversation-1", updatedAt: 6_000 },
+            ],
+          };
+        }
+        if (method === "chat.history") {
+          expect(params).toMatchObject({ sessionKey: "agent:main:webchat:conversation-1" });
+          return {
+            messages: [
+              { role: "assistant", createdAt: 5_900, content: "ready" },
+              { role: "user", createdAt: 6_000, content: "newer webchat request" },
+            ],
+          };
+        }
+        throw new Error(`unexpected gateway method ${method}`);
+      }),
+    };
+
+    const transcript = await readFreshestOpenclawRuntimeTranscript({
+      gateway,
+      analyzedRecentMessageCount: 1,
+    });
+
+    expect(transcript?.sessionKey).toBe("webchat:conversation-1");
+    expect(transcript?.sessionFile).toBe("gateway://chat.history/agent:main:webchat:conversation-1");
+    expect(transcript?.messages).toEqual([
+      { role: "assistant", text: "ready", lineIndex: 0, timestampMs: 5_900 },
+      { role: "user", text: "newer webchat request", lineIndex: 1, timestampMs: 6_000 },
+    ]);
   });
 
   it("waits for T * (X + 1), sends a marked self-nudge, then increases backoff", async () => {
@@ -519,6 +559,56 @@ describe("selfNudgeRunner", () => {
     expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
     expect(afterRestartDecision).not.toHaveBeenCalled();
     expect(afterRestartNotice).not.toHaveBeenCalled();
+  });
+
+  it("does not send delayed final notices for stale user messages from old sessions", async () => {
+    const notifyFinalDecision = vi.fn().mockResolvedValue(undefined);
+    const decide = vi.fn().mockResolvedValue({
+      shouldNudge: false,
+      statusNudgeMessage: null,
+      finalConfidence: 100,
+      reasonCode: "final_answer",
+    });
+
+    const result = await evaluateSelfNudgeTick({
+      settings: {
+        ...enabledSettings,
+        finalNoticeEnabled: true,
+      },
+      transcript: makeTranscript({
+        mtimeMs: Date.UTC(2026, 5, 3, 16, 40),
+        messages: [
+          {
+            role: "user",
+            text: "please do old work",
+            lineIndex: 0,
+            timestampMs: Date.UTC(2026, 4, 21, 15, 20),
+          },
+          {
+            role: "assistant",
+            text: "Status: done.",
+            lineIndex: 1,
+            timestampMs: Date.UTC(2026, 4, 21, 15, 21),
+          },
+        ],
+        latestUserMessage: {
+          role: "user",
+          text: "please do old work",
+          lineIndex: 0,
+          timestampMs: Date.UTC(2026, 4, 21, 15, 20),
+        },
+      }),
+      state: makeState(),
+      nowMs: Date.UTC(2026, 5, 3, 16, 43),
+      runner: { runChatTask: vi.fn() },
+      systemTaskTimeoutMs: 60_000,
+      notifyFinalDecision,
+      decide,
+    });
+
+    expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
+    expect(decide).not.toHaveBeenCalled();
+    expect(notifyFinalDecision).not.toHaveBeenCalled();
   });
 
   it("does not double-prefix status nudge messages", () => {

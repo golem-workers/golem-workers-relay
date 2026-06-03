@@ -582,6 +582,7 @@ async function main(): Promise<void> {
       ? createSelfNudgeRunner({
           settings: cfg.selfNudge,
           runner,
+          gateway,
           openrouterProxyPort: cfg.openrouterProxy.port,
           openrouterProxyPathPrefix: cfg.openrouterProxy.pathPrefix,
           systemTaskTimeoutMs: cfg.systemTaskTimeoutMs,
