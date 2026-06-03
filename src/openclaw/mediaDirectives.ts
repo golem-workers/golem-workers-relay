@@ -258,6 +258,10 @@ export async function resolveRelayMediaFile(params: {
     if (!(absReal === stateReal || absReal.startsWith(statePrefix))) {
       throw new Error("Media directive absolute path is outside stateDir");
     }
+    if (absReal === workspaceReal || absReal.startsWith(workspacePrefix)) {
+      const relToWorkspace = path.relative(workspaceReal, absReal).replace(/\\/g, "/");
+      return { absPath: absReal, relPath: relToWorkspace || path.basename(absReal) };
+    }
     const relToState = path.relative(stateReal, absReal).replace(/\\/g, "/");
     return { absPath: absReal, relPath: relToState || path.basename(absReal) };
   }
@@ -644,4 +648,3 @@ export async function collectTranscriptMedia(params: {
     sizeBytes: artifact.sizeBytes,
   }));
 }
-

@@ -158,6 +158,27 @@ describe("collectTranscriptMedia", () => {
     expect(report.usedLegacyMediaDirectives).toBe(true);
   });
 
+  it("stores absolute workspace MEDIA paths as workspace-relative artifact paths", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-media-absolute-workspace-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    const workspaceRoot = path.join(stateDir, "workspace");
+    await fs.mkdir(path.join(workspaceRoot, "proofs"), { recursive: true });
+    const proofPath = path.join(workspaceRoot, "proofs", "absolute.md");
+    await fs.writeFile(proofPath, "# absolute", "utf8");
+
+    const report = await collectTranscriptArtifacts({
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: `Files ready\nMEDIA:${proofPath}` }],
+      },
+    });
+
+    expect(report.artifacts).toHaveLength(1);
+    expect(report.artifacts[0]?.path).toBe("proofs/absolute.md");
+    expect(report.unresolved).toEqual([]);
+  });
+
   it("uses the larger default artifact limit so proof files above 5MB still resolve", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-media-large-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
@@ -180,4 +201,3 @@ describe("collectTranscriptMedia", () => {
     expect(report.unresolved).toEqual([]);
   });
 });
-
