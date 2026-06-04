@@ -172,7 +172,7 @@ describe("selfNudgeRunner", () => {
 
   it("uses OpenClaw runtime sessions and chat history across transports", async () => {
     const gateway = {
-      request: vi.fn(async (method: string, params?: unknown) => {
+      request: vi.fn((method: string, params?: unknown) => {
         if (method === "sessions.list") {
           return {
             sessions: [
