@@ -956,7 +956,14 @@ if (!installDir) {
     installDir =
       fs.readdirSync(projectRoot)
         .filter((name) => name.startsWith("openclaw-codex-"))
-        .map((name) => resolveInstallDir(path.join(projectRoot, name)))
+        .flatMap((name) => {
+          const projectDir = path.join(projectRoot, name)
+          return [
+            projectDir,
+            path.join(projectDir, "node_modules", "@openclaw", "codex"),
+          ]
+        })
+        .map(resolveInstallDir)
         .find(Boolean) ?? null
   }
 }
