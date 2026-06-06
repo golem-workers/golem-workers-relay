@@ -388,12 +388,7 @@ export async function readFreshestSessionTranscript(input: {
     const transcriptMessages = await readTranscriptMessages(candidate.sessionFile);
     const latestUserMessage = findLatestUserMessage(transcriptMessages);
     if (!latestUserMessage) continue;
-    if (
-      classifySessionActivity({
-        sessionKey: candidate.sessionKey,
-        latestUserText: latestUserMessage.text,
-      }) !== "external_user_chat"
-    ) {
+    if (!canUseTranscriptForSelfNudge(candidate.sessionKey, latestUserMessage.text)) {
       continue;
     }
     transcripts.push({
@@ -414,7 +409,6 @@ export async function readFreshestOpenclawRuntimeTranscript(input: {
     "sessions.list",
     {
       agentId: "main",
-      active: 24 * 60,
       limit: 50,
     },
     { timeoutMs: 5_000 }
@@ -427,12 +421,7 @@ export async function readFreshestOpenclawRuntimeTranscript(input: {
     const messages = readRuntimeHistoryMessages(historyPayload);
     const latestUserMessage = findLatestUserMessage(messages);
     if (!latestUserMessage) continue;
-    if (
-      classifySessionActivity({
-        sessionKey: candidate.sessionKey,
-        latestUserText: latestUserMessage.text,
-      }) !== "external_user_chat"
-    ) {
+    if (!canUseTranscriptForSelfNudge(candidate.sessionKey, latestUserMessage.text)) {
       continue;
     }
     return {
@@ -444,6 +433,15 @@ export async function readFreshestOpenclawRuntimeTranscript(input: {
     };
   }
   return null;
+}
+
+function canUseTranscriptForSelfNudge(sessionKey: string, latestUserText: string): boolean {
+  const classification = classifySessionActivity({
+    sessionKey,
+    latestUserText,
+  });
+  if (classification === "external_user_chat") return true;
+  return classification === "status_nudge" && isUserFacingRuntimeSessionKey(sessionKey);
 }
 
 function compareSessionTranscriptsForNudge(

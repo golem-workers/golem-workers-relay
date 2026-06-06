@@ -180,10 +180,76 @@ describe("selfNudgeRunner", () => {
     expect(transcript?.latestUserMessage?.text).toBe("Complete the runtime scenario checks.");
   });
 
+  it("keeps user-facing status nudge sessions eligible for follow-up nudges", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-"));
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const nudgeSessionFile = path.join(sessionsDir, "nudge.jsonl");
+    await fs.writeFile(
+      nudgeSessionFile,
+      [
+        JSON.stringify({
+          type: "message",
+          message: {
+            role: "user",
+            timestamp: 4_000,
+            content: "continue doing tracker tasks",
+          },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: {
+            role: "assistant",
+            timestamp: 4_100,
+            content: "Closed the first batch. Next is #150.",
+          },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: {
+            role: "user",
+            timestamp: 4_200,
+            content: "[STATUS_NUDGE]\nProceed with #150 and report progress.",
+          },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: {
+            role: "assistant",
+            timestamp: 4_300,
+            content: "Commit for #150 is ready. Closing the issue now.",
+          },
+        }),
+      ].join("\n")
+    );
+    await fs.writeFile(
+      path.join(sessionsDir, "sessions.json"),
+      JSON.stringify({
+        "agent:main:tg:-5297593928:cmp9kwhbf0175209zotr1q9le": { sessionFile: "nudge.jsonl" },
+      }),
+      "utf8"
+    );
+
+    const transcript = await readFreshestSessionTranscript({
+      stateDir,
+      analyzedRecentMessageCount: 3,
+    });
+
+    expect(transcript?.sessionKey).toBe("tg:-5297593928:cmp9kwhbf0175209zotr1q9le");
+    expect(transcript?.latestUserMessage?.text).toBe("[STATUS_NUDGE]\nProceed with #150 and report progress.");
+    expect(transcript?.messages.map((message) => message.text)).toEqual([
+      "continue doing tracker tasks",
+      "Closed the first batch. Next is #150.",
+      "[STATUS_NUDGE]\nProceed with #150 and report progress.",
+      "Commit for #150 is ready. Closing the issue now.",
+    ]);
+  });
+
   it("uses OpenClaw runtime sessions and chat history across transports", async () => {
     const gateway = {
       request: vi.fn((method: string, params?: unknown) => {
         if (method === "sessions.list") {
+          expect(params).toEqual({ agentId: "main", limit: 50 });
           return {
             sessions: [
               { key: "main", updatedAt: 8_000 },
@@ -217,6 +283,39 @@ describe("selfNudgeRunner", () => {
       { role: "assistant", text: "ready", lineIndex: 0, timestampMs: 5_900 },
       { role: "user", text: "newer webchat request", lineIndex: 1, timestampMs: 6_000 },
     ]);
+  });
+
+  it("keeps runtime status nudge sessions eligible for follow-up nudges", async () => {
+    const gateway = {
+      request: vi.fn((method: string, params?: unknown) => {
+        if (method === "sessions.list") {
+          expect(params).toEqual({ agentId: "main", limit: 50 });
+          return {
+            sessions: [{ key: "agent:main:tg:-5297593928:server-a", updatedAt: 4_300 }],
+          };
+        }
+        if (method === "chat.history") {
+          expect(params).toMatchObject({ sessionKey: "agent:main:tg:-5297593928:server-a" });
+          return {
+            messages: [
+              { role: "user", createdAt: 4_000, content: "continue tasks" },
+              { role: "assistant", createdAt: 4_100, content: "Next item is #150." },
+              { role: "user", createdAt: 4_200, content: "[STATUS_NUDGE]\nProceed with #150." },
+              { role: "assistant", createdAt: 4_300, content: "Working on #150." },
+            ],
+          };
+        }
+        throw new Error(`unexpected gateway method ${method}`);
+      }),
+    };
+
+    const transcript = await readFreshestOpenclawRuntimeTranscript({
+      gateway,
+      analyzedRecentMessageCount: 3,
+    });
+
+    expect(transcript?.sessionKey).toBe("tg:-5297593928:server-a");
+    expect(transcript?.latestUserMessage?.text).toBe("[STATUS_NUDGE]\nProceed with #150.");
   });
 
   it("waits for T * (X + 1), sends a marked self-nudge, then increases backoff", async () => {
