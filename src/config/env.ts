@@ -81,6 +81,7 @@ const envSchema = z.object({
   RELAY_SELF_NUDGE_ENABLED: envBooleanSchema.optional(),
   RELAY_SELF_NUDGE_ANALYZED_RECENT_MESSAGE_COUNT: z.coerce.number().int().min(0).max(50).optional(),
   RELAY_SELF_NUDGE_BASE_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(2_147_483_647).optional(),
+  RELAY_SELF_NUDGE_TASK_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(2_147_483_647).optional(),
   RELAY_SELF_NUDGE_MODEL: z.string().min(1).optional(),
   RELAY_SELF_NUDGE_FINAL_NOTICE_ENABLED: envBooleanSchema.optional(),
   RELAY_SELF_NUDGE_FINAL_NOTICE_TEXT: z.string().min(1).max(500).optional(),
@@ -118,6 +119,7 @@ export type RelayConfig = {
   relayInstanceId: string;
   taskTimeoutMs: number;
   systemTaskTimeoutMs: number;
+  selfNudgeTaskTimeoutMs: number;
   chatBatchDebounceMs: number;
   lowDiskAlertEnabled: boolean;
   lowDiskAlertThresholdPercent: number;
@@ -247,6 +249,8 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     relayInstanceId,
     taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 12 * 60 * 60_000,
     systemTaskTimeoutMs: parsed.RELAY_SYSTEM_TASK_TIMEOUT_MS ?? 120_000,
+    selfNudgeTaskTimeoutMs:
+      parsed.RELAY_SELF_NUDGE_TASK_TIMEOUT_MS ?? parsed.RELAY_TASK_TIMEOUT_MS ?? 12 * 60 * 60_000,
     chatBatchDebounceMs: parsed.RELAY_CHAT_BATCH_DEBOUNCE_MS ?? 500,
     lowDiskAlertEnabled: parsed.RELAY_LOW_DISK_ALERT_ENABLED ?? true,
     lowDiskAlertThresholdPercent: parsed.RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT ?? 80,
@@ -400,6 +404,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     relayInstanceId: "test-relay",
     taskTimeoutMs: 5000,
     systemTaskTimeoutMs: 120_000,
+    selfNudgeTaskTimeoutMs: 5000,
     chatBatchDebounceMs: 500,
     lowDiskAlertEnabled: true,
     lowDiskAlertThresholdPercent: 80,

@@ -52,6 +52,7 @@ describe("loadRelayConfig", () => {
       BACKEND_BASE_URL: "https://example.com",
     });
     expect(def.taskTimeoutMs).toBe(43_200_000);
+    expect(def.selfNudgeTaskTimeoutMs).toBe(43_200_000);
 
     const custom = loadRelayConfig({
       RELAY_TOKEN: "t",
@@ -59,6 +60,7 @@ describe("loadRelayConfig", () => {
       RELAY_TASK_TIMEOUT_MS: "45000",
     });
     expect(custom.taskTimeoutMs).toBe(45_000);
+    expect(custom.selfNudgeTaskTimeoutMs).toBe(45_000);
   });
 
   it("processes relay messages concurrently by default and allows override", () => {
@@ -182,10 +184,12 @@ describe("loadRelayConfig", () => {
       RELAY_SELF_NUDGE_ENABLED: "1",
       RELAY_SELF_NUDGE_ANALYZED_RECENT_MESSAGE_COUNT: "2",
       RELAY_SELF_NUDGE_BASE_TIMEOUT_MS: "600000",
+      RELAY_SELF_NUDGE_TASK_TIMEOUT_MS: "7200000",
       RELAY_SELF_NUDGE_MODEL: "openrouter/google/gemini-2.5-flash",
       RELAY_SELF_NUDGE_FINAL_NOTICE_ENABLED: "1",
       RELAY_SELF_NUDGE_FINAL_NOTICE_TEXT: "Final reply detected.",
     });
+    expect(custom.selfNudgeTaskTimeoutMs).toBe(7_200_000);
     expect(custom.selfNudge).toEqual({
       enabled: true,
       analyzedRecentMessageCount: 2,

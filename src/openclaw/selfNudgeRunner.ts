@@ -4,7 +4,6 @@ import path from "node:path";
 import { logger } from "../logger.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 import { classifySessionActivity } from "../conversation/activityIndex.js";
-import type { ChatRunner, ChatSendOriginRoute } from "./chatRunner.js";
 
 export const STATUS_NUDGE_MARKER = "[STATUS_NUDGE]";
 
@@ -49,10 +48,17 @@ export type SelfNudgeDecision = {
   reason?: string;
 };
 
-type RunnerLike = Pick<ChatRunner, "runChatTask">;
 type GatewayLike = {
   request: (method: string, params?: unknown, options?: { timeoutMs?: number }) => Promise<unknown>;
 };
+
+export type SelfNudgeMessageSender = (input: {
+  transcript: FreshestSessionTranscript;
+  decision: SelfNudgeDecision;
+  messageText: string;
+  taskId: string;
+  nowMs: number;
+}) => Promise<void>;
 
 export type SelfNudgeProcessedRecord = {
   sessionKey: string;
@@ -104,10 +110,9 @@ export function buildFinalDecisionNoticeText(input: {
 export function createSelfNudgeRunner(input: {
   settings: RelaySelfNudgeSettings;
   stateDir?: string;
-  runner: RunnerLike;
+  sendNudgeMessage: SelfNudgeMessageSender;
   openrouterProxyPort: number;
   openrouterProxyPathPrefix: string;
-  systemTaskTimeoutMs: number;
   pollIntervalMs?: number;
   fetchImpl?: typeof fetch;
   gateway?: GatewayLike;
@@ -192,8 +197,7 @@ export function createSelfNudgeRunner(input: {
         transcript,
         state,
         nowMs,
-        runner: input.runner,
-        systemTaskTimeoutMs: input.systemTaskTimeoutMs,
+        sendNudgeMessage: input.sendNudgeMessage,
         processedStore,
         notifyFinalDecision: input.notifyFinalDecision,
         notifyNudgeDecision: input.notifyNudgeDecision,
@@ -230,8 +234,7 @@ export async function evaluateSelfNudgeTick(input: {
   transcript: FreshestSessionTranscript;
   state: SelfNudgeState;
   nowMs: number;
-  runner: RunnerLike;
-  systemTaskTimeoutMs: number;
+  sendNudgeMessage: SelfNudgeMessageSender;
   processedStore?: SelfNudgeProcessedStore;
   notifyFinalDecision?: (input: {
     transcript: FreshestSessionTranscript;
@@ -331,13 +334,13 @@ export async function evaluateSelfNudgeTick(input: {
       nowMs: input.nowMs,
     });
   }
-  await input.runner.runChatTask({
-    taskId: `self_nudge_${randomUUID()}`,
-    sessionKey: input.transcript.sessionKey,
+  const taskId = `self_nudge_${randomUUID()}`;
+  await input.sendNudgeMessage({
+    transcript: input.transcript,
+    decision,
     messageText,
-    deliverySystem: "relay_channel_v2",
-    originRoute: buildSelfNudgeOriginRoute(input.transcript.sessionKey),
-    timeoutMs: input.systemTaskTimeoutMs,
+    taskId,
+    nowMs: input.nowMs,
   });
   input.state.consecutiveNudges += 1;
   input.state.lastNudgeAtMs = input.nowMs;
@@ -345,30 +348,6 @@ export async function evaluateSelfNudgeTick(input: {
     nudged: true,
     nextDelayMs: computeSelfNudgeWaitMs(input.settings.baseTimeoutMs, input.state.consecutiveNudges),
   };
-}
-
-function buildSelfNudgeOriginRoute(sessionKey: string): ChatSendOriginRoute | null {
-  if (sessionKey.startsWith("tg:")) {
-    const chatId = sessionKey.slice("tg:".length).split(":")[0]?.trim();
-    return chatId
-      ? {
-          originatingChannel: "relay-channel",
-          originatingTo: `telegram:${chatId}`,
-        }
-      : null;
-  }
-
-  if (sessionKey.startsWith("whatsapp-personal:")) {
-    const chatId = sessionKey.slice("whatsapp-personal:".length).split(":")[0]?.trim();
-    return chatId
-      ? {
-          originatingChannel: "relay-channel",
-          originatingTo: `whatsapp_personal:${chatId}`,
-        }
-      : null;
-  }
-
-  return null;
 }
 
 export async function readFreshestSessionTranscript(input: {

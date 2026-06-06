@@ -23,6 +23,7 @@ type MessageProcessorInput = {
     relayInstanceId: string;
     taskTimeoutMs: number;
     systemTaskTimeoutMs?: number;
+    selfNudgeTaskTimeoutMs?: number;
     chatBatchDebounceMs: number;
     lowDiskAlertEnabled?: boolean;
     lowDiskAlertThresholdPercent?: number;
@@ -62,7 +63,7 @@ class RelayProcessingError extends Error {
   }
 }
 
-type RelayTaskKind = "user_chat" | "system_reminder" | "other";
+type RelayTaskKind = "user_chat" | "system_reminder" | "status_nudge" | "other";
 
 export type ActiveRelayTaskSnapshot = {
   messageId: string;
@@ -129,7 +130,8 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
   const chatBatchDebounceMs = Math.max(0, Math.trunc(cfg.chatBatchDebounceMs));
 
   return async (msg: InboundPushMessage): Promise<void> => {
-    if (msg.input.kind !== "chat" || chatBatchDebounceMs === 0) {
+    const taskKind = classifyRelayTask(msg);
+    if (msg.input.kind !== "chat" || taskKind !== "user_chat" || chatBatchDebounceMs === 0) {
       await processSingleMessage({ cfg, gateway, runner, backend, msg, readDiskUsage, taskControl, transportDeliveryTracker });
       return;
     }
@@ -185,7 +187,10 @@ function classifyRelayTask(msg: InboundPushMessage): RelayTaskKind {
     return "other";
   }
   const contextKind = readContextKind(msg.input.context);
-  if (contextKind === "relay_stale_timeout_reminder" || contextKind === "relay_status_nudge") {
+  if (contextKind === "relay_status_nudge") {
+    return "status_nudge";
+  }
+  if (contextKind === "relay_stale_timeout_reminder") {
     return "system_reminder";
   }
   return "user_chat";
@@ -195,7 +200,11 @@ function getEffectiveTaskTimeoutMs(input: {
   taskKind: RelayTaskKind;
   taskTimeoutMs: number;
   systemTaskTimeoutMs?: number;
+  selfNudgeTaskTimeoutMs?: number;
 }): number {
+  if (input.taskKind === "status_nudge") {
+    return Math.max(1, Math.trunc(input.selfNudgeTaskTimeoutMs ?? input.taskTimeoutMs));
+  }
   if (input.taskKind === "system_reminder") {
     return Math.max(1, Math.trunc(input.systemTaskTimeoutMs ?? Math.min(input.taskTimeoutMs, 120_000)));
   }
@@ -306,6 +315,7 @@ async function flushChatBatch(input: {
     relayInstanceId: string;
     taskTimeoutMs: number;
     systemTaskTimeoutMs?: number;
+    selfNudgeTaskTimeoutMs?: number;
     chatBatchDebounceMs: number;
     lowDiskAlertEnabled?: boolean;
     lowDiskAlertThresholdPercent?: number;
@@ -407,6 +417,7 @@ async function submitBatchedNoReply(input: {
     relayInstanceId: string;
     taskTimeoutMs: number;
     systemTaskTimeoutMs?: number;
+    selfNudgeTaskTimeoutMs?: number;
     chatBatchDebounceMs: number;
     devLogEnabled: boolean;
     devLogTextMaxLen: number;
@@ -463,6 +474,7 @@ async function processSingleMessage(input: {
     relayInstanceId: string;
     taskTimeoutMs: number;
     systemTaskTimeoutMs?: number;
+    selfNudgeTaskTimeoutMs?: number;
     chatBatchDebounceMs: number;
     lowDiskAlertEnabled?: boolean;
     lowDiskAlertThresholdPercent?: number;
@@ -486,6 +498,7 @@ async function processSingleMessage(input: {
     taskKind,
     taskTimeoutMs: cfg.taskTimeoutMs,
     systemTaskTimeoutMs: cfg.systemTaskTimeoutMs,
+    selfNudgeTaskTimeoutMs: cfg.selfNudgeTaskTimeoutMs,
   });
   const watchdogDelayMs = Math.min(effectiveTaskTimeoutMs, 30_000);
   const watchdog = setTimeout(() => {
@@ -632,9 +645,12 @@ async function processSingleMessage(input: {
           buildError: () => {
             timedOut = true;
             return new RelayProcessingError({
-              code: taskKind === "system_reminder" ? "RELAY_SYSTEM_TASK_TIMEOUT" : "RELAY_TASK_TIMEOUT",
+              code:
+                taskKind === "system_reminder" || taskKind === "status_nudge"
+                  ? "RELAY_SYSTEM_TASK_TIMEOUT"
+                  : "RELAY_TASK_TIMEOUT",
               message:
-                taskKind === "system_reminder"
+                taskKind === "system_reminder" || taskKind === "status_nudge"
                   ? "Relay system task timed out and was released to avoid blocking user messages"
                   : "Relay task timed out and was released to avoid blocking the message queue",
             });

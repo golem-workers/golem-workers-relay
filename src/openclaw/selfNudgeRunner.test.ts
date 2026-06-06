@@ -15,6 +15,7 @@ import {
   type FreshestSessionTranscript,
   type RelaySelfNudgeSettings,
   type SelfNudgeDecision,
+  type SelfNudgeMessageSender,
   type SelfNudgeState,
 } from "./selfNudgeRunner.js";
 
@@ -28,6 +29,10 @@ const enabledSettings: RelaySelfNudgeSettings = {
   finalNoticeEnabled: false,
   finalNoticeText: "Final message.",
 };
+
+function makeSendNudgeMessageMock() {
+  return vi.fn<SelfNudgeMessageSender>().mockResolvedValue(undefined);
+}
 
 type FinalDecisionNotice = {
   transcript: FreshestSessionTranscript;
@@ -64,12 +69,15 @@ describe("selfNudgeRunner", () => {
         analyzedRecentMessageCount: 3,
         baseTimeoutMs: 12_000,
         model: "openrouter/google/gemini-2.5-flash",
+        debugMessagesEnabled: false,
+        nudgeNoticeEnabled: false,
+        finalNoticeEnabled: false,
+        finalNoticeText: "Final answer detected.",
       },
       stateDir: await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-")),
-      runner: { runChatTask: vi.fn() },
+      sendNudgeMessage: makeSendNudgeMessageMock(),
       openrouterProxyPort: 18080,
       openrouterProxyPathPrefix: "/provider-proxy/openrouter",
-      systemTaskTimeoutMs: 1_000,
       pollIntervalMs: 1_000,
     });
 
@@ -212,10 +220,7 @@ describe("selfNudgeRunner", () => {
   });
 
   it("waits for T * (X + 1), sends a marked self-nudge, then increases backoff", async () => {
-    const runChatTask = vi.fn().mockResolvedValue({
-      result: { outcome: "no_reply", noReply: { runId: "run_1" } },
-      openclawMeta: { method: "chat.send" },
-    });
+    const sendNudgeMessage = makeSendNudgeMessageMock();
     const state = makeState();
 
     const early = await evaluateSelfNudgeTick({
@@ -223,20 +228,18 @@ describe("selfNudgeRunner", () => {
       transcript: makeTranscript({ mtimeMs: 10_000 }),
       state,
       nowMs: 10_500,
-      runner: { runChatTask },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage,
       decide: vi.fn(),
     });
     expect(early).toEqual({ nudged: false, nextDelayMs: 500 });
-    expect(runChatTask).not.toHaveBeenCalled();
+    expect(sendNudgeMessage).not.toHaveBeenCalled();
 
     const sent = await evaluateSelfNudgeTick({
       settings: enabledSettings,
       transcript: makeTranscript({ mtimeMs: 10_000 }),
       state,
       nowMs: 11_000,
-      runner: { runChatTask },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage,
       decide: vi.fn().mockResolvedValue({
         shouldNudge: true,
         statusNudgeMessage: "Continue with the migration and report the next concrete step.",
@@ -245,22 +248,16 @@ describe("selfNudgeRunner", () => {
     });
 
     expect(sent).toEqual({ nudged: true, nextDelayMs: 2_000 });
-    expect(runChatTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionKey: "s1",
-        deliverySystem: "relay_channel_v2",
-        timeoutMs: 60_000,
-        messageText: "[STATUS_NUDGE]\nContinue with the migration and report the next concrete step.",
-      })
+    const sentNudge = sendNudgeMessage.mock.calls[0]?.[0];
+    expect(sentNudge?.transcript.sessionKey).toBe("s1");
+    expect(sentNudge?.messageText).toBe(
+      "[STATUS_NUDGE]\nContinue with the migration and report the next concrete step."
     );
     expect(computeSelfNudgeWaitMs(1_000, state.consecutiveNudges)).toBe(2_000);
   });
 
   it("sends a user-visible debug notice with the status nudge message when enabled", async () => {
-    const runChatTask = vi.fn().mockResolvedValue({
-      result: { outcome: "no_reply", noReply: { runId: "run_1" } },
-      openclawMeta: { method: "chat.send" },
-    });
+    const sendNudgeMessage = makeSendNudgeMessageMock();
     const notifyNudgeDecision = vi.fn().mockResolvedValue(undefined);
 
     await evaluateSelfNudgeTick({
@@ -272,8 +269,7 @@ describe("selfNudgeRunner", () => {
       transcript: makeTranscript({ mtimeMs: 10_000 }),
       state: makeState(),
       nowMs: 11_000,
-      runner: { runChatTask },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage,
       notifyNudgeDecision,
       decide: vi.fn().mockResolvedValue({
         shouldNudge: true,
@@ -289,11 +285,8 @@ describe("selfNudgeRunner", () => {
     );
   });
 
-  it("keeps self-nudge replies on the original telegram route", async () => {
-    const runChatTask = vi.fn().mockResolvedValue({
-      result: { outcome: "no_reply", noReply: { runId: "run_1" } },
-      openclawMeta: { method: "chat.send" },
-    });
+  it("passes status nudges to a user-owned conversation sender", async () => {
+    const sendNudgeMessage = makeSendNudgeMessageMock();
 
     await evaluateSelfNudgeTick({
       settings: enabledSettings,
@@ -303,8 +296,7 @@ describe("selfNudgeRunner", () => {
       }),
       state: makeState(),
       nowMs: 11_000,
-      runner: { runChatTask },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage,
       decide: vi.fn().mockResolvedValue({
         shouldNudge: true,
         statusNudgeMessage: "Continue.",
@@ -312,30 +304,43 @@ describe("selfNudgeRunner", () => {
       }),
     });
 
-    expect(runChatTask).toHaveBeenCalledWith(
-      expect.objectContaining({
+    const sentNudge = sendNudgeMessage.mock.calls[0]?.[0];
+    expect(sentNudge?.transcript.sessionKey).toBe("tg:-5297593928:cmp9kwhbf0175209zotr1q9le");
+    expect(sentNudge?.messageText).toBe("[STATUS_NUDGE]\nContinue.");
+  });
+
+  it("keeps self-nudge turns on the original telegram session", async () => {
+    const sendNudgeMessage = makeSendNudgeMessageMock();
+
+    await evaluateSelfNudgeTick({
+      settings: enabledSettings,
+      transcript: makeTranscript({
         sessionKey: "tg:-5297593928:cmp9kwhbf0175209zotr1q9le",
-        originRoute: {
-          originatingChannel: "relay-channel",
-          originatingTo: "telegram:-5297593928",
-        },
-      })
-    );
+        mtimeMs: 10_000,
+      }),
+      state: makeState(),
+      nowMs: 11_000,
+      sendNudgeMessage,
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: true,
+        statusNudgeMessage: "Continue.",
+        finalConfidence: 0,
+      }),
+    });
+
+    const sentNudge = sendNudgeMessage.mock.calls[0]?.[0];
+    expect(sentNudge?.transcript.sessionKey).toBe("tg:-5297593928:cmp9kwhbf0175209zotr1q9le");
   });
 
   it("resets consecutive nudge backoff when a new user message appears", async () => {
-    const runChatTask = vi.fn().mockResolvedValue({
-      result: { outcome: "no_reply", noReply: { runId: "run_1" } },
-      openclawMeta: { method: "chat.send" },
-    });
+    const sendNudgeMessage = makeSendNudgeMessageMock();
     const state = makeState();
     await evaluateSelfNudgeTick({
       settings: enabledSettings,
       transcript: makeTranscript({ mtimeMs: 10_000 }),
       state,
       nowMs: 11_000,
-      runner: { runChatTask },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage,
       decide: vi.fn().mockResolvedValue({
         shouldNudge: true,
         statusNudgeMessage: "Continue.",
@@ -353,8 +358,7 @@ describe("selfNudgeRunner", () => {
       }),
       state,
       nowMs: 20_500,
-      runner: { runChatTask },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage,
       decide: vi.fn(),
     });
 
@@ -363,7 +367,7 @@ describe("selfNudgeRunner", () => {
   });
 
   it("does nothing when the model decides no nudge is needed", async () => {
-    const runChatTask = vi.fn();
+    const sendNudgeMessage = makeSendNudgeMessageMock();
     const state = makeState();
 
     const result = await evaluateSelfNudgeTick({
@@ -377,13 +381,12 @@ describe("selfNudgeRunner", () => {
       }),
       state,
       nowMs: 11_000,
-      runner: { runChatTask },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage,
       decide: vi.fn().mockResolvedValue({ shouldNudge: false, statusNudgeMessage: null, finalConfidence: 0 }),
     });
 
     expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
-    expect(runChatTask).not.toHaveBeenCalled();
+    expect(sendNudgeMessage).not.toHaveBeenCalled();
   });
 
   it("optionally notifies once when the model decides the latest request is final", async () => {
@@ -412,8 +415,7 @@ describe("selfNudgeRunner", () => {
       }),
       state,
       nowMs: 11_000,
-      runner: { runChatTask: vi.fn() },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage: makeSendNudgeMessageMock(),
       notifyFinalDecision,
       decide: decision,
     });
@@ -428,8 +430,7 @@ describe("selfNudgeRunner", () => {
       }),
       state,
       nowMs: 13_000,
-      runner: { runChatTask: vi.fn() },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage: makeSendNudgeMessageMock(),
       notifyFinalDecision,
       decide: decision,
     });
@@ -460,8 +461,7 @@ describe("selfNudgeRunner", () => {
       }),
       state: makeState(),
       nowMs: 11_000,
-      runner: { runChatTask: vi.fn() },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage: makeSendNudgeMessageMock(),
       notifyFinalDecision,
       decide: vi.fn().mockResolvedValue({
         shouldNudge: false,
@@ -522,8 +522,7 @@ describe("selfNudgeRunner", () => {
       }),
       state: makeState(),
       nowMs: 11_000,
-      runner: { runChatTask: vi.fn() },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage: makeSendNudgeMessageMock(),
       notifyFinalDecision,
       decide: vi.fn().mockResolvedValue({
         shouldNudge: false,
@@ -556,8 +555,7 @@ describe("selfNudgeRunner", () => {
       transcript,
       state: makeState(),
       nowMs: 11_000,
-      runner: { runChatTask: vi.fn() },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage: makeSendNudgeMessageMock(),
       processedStore: firstStore,
       notifyFinalDecision: vi.fn().mockResolvedValue(undefined),
       decide: vi.fn().mockResolvedValue({
@@ -584,8 +582,7 @@ describe("selfNudgeRunner", () => {
       }),
       state: makeState(),
       nowMs: 21_000,
-      runner: { runChatTask: vi.fn() },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage: makeSendNudgeMessageMock(),
       processedStore: createFileSelfNudgeProcessedStore({ stateDir }),
       notifyFinalDecision: afterRestartNotice,
       decide: afterRestartDecision,
@@ -635,8 +632,7 @@ describe("selfNudgeRunner", () => {
       }),
       state: makeState(),
       nowMs: Date.UTC(2026, 5, 3, 16, 43),
-      runner: { runChatTask: vi.fn() },
-      systemTaskTimeoutMs: 60_000,
+      sendNudgeMessage: makeSendNudgeMessageMock(),
       notifyFinalDecision,
       decide,
     });

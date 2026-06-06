@@ -51,7 +51,7 @@ describe("createMessageProcessor", () => {
       cfg: {
         relayInstanceId: "relay_1",
         taskTimeoutMs: 5_000,
-        chatBatchDebounceMs: 0,
+        chatBatchDebounceMs: 500,
         devLogEnabled: false,
         devLogTextMaxLen: 200,
       },
@@ -859,6 +859,73 @@ describe("createMessageProcessor", () => {
       body: {
         outcome: "error",
         error: { code: "RELAY_SYSTEM_TASK_TIMEOUT" },
+      },
+    });
+    expect(taskControl.getActiveTasks()).toEqual([]);
+  });
+
+  it("processes status nudges as user-owned conversation turns with their own timeout", async () => {
+    executeTelegramTransportActionViaBackendMock.mockResolvedValueOnce({
+      transportMessageId: "tg-status-nudge-1",
+    });
+    const taskControl = createRelayTaskControl();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const runChatTask = vi.fn().mockResolvedValue({
+      result: {
+        outcome: "reply",
+        reply: {
+          runId: "run_status_nudge_1",
+          message: { role: "assistant", content: "Коммит готов." },
+        },
+      },
+      openclawMeta: { method: "chat.send", runId: "run_status_nudge_1" },
+    });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 1_000,
+        systemTaskTimeoutMs: 5,
+        selfNudgeTaskTimeoutMs: 2_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: { runChatTask } as never,
+      backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
+      taskControl,
+    });
+
+    await processor({
+      messageId: "self_nudge_1",
+      input: {
+        kind: "chat",
+        sessionKey: "tg:123:srv_1",
+        messageText: "[STATUS_NUDGE]\nContinue.",
+        context: { kind: "relay_status_nudge", source: "relay.self_nudge" },
+      },
+    });
+
+    expect(runChatTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "self_nudge_1",
+        sessionKey: "tg:123:srv_1",
+        timeoutMs: 2_000,
+        originRoute: {
+          originatingChannel: "relay-channel",
+          originatingTo: "telegram:123",
+        },
+      })
+    );
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        outcome: "reply",
+        reply: { message: { content: "Коммит готов." } },
+        openclawMeta: {
+          deliverySystem: "relay_channel_v2",
+          sessionKey: "tg:123:srv_1",
+          transportDelivered: true,
+        },
       },
     });
     expect(taskControl.getActiveTasks()).toEqual([]);

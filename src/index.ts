@@ -262,6 +262,7 @@ async function main(): Promise<void> {
       relayInstanceId: cfg.relayInstanceId,
       taskTimeoutMs: cfg.taskTimeoutMs,
       systemTaskTimeoutMs: cfg.systemTaskTimeoutMs,
+      selfNudgeTaskTimeoutMs: cfg.selfNudgeTaskTimeoutMs,
       chatBatchDebounceMs: cfg.chatBatchDebounceMs,
       lowDiskAlertEnabled: cfg.lowDiskAlertEnabled,
       lowDiskAlertThresholdPercent: cfg.lowDiskAlertThresholdPercent,
@@ -370,7 +371,9 @@ async function main(): Promise<void> {
             });
           }
           const abortedSystemReminder = taskControl.abortActive(
-            (task) => task.taskKind === "system_reminder" && task.sessionKey === sessionKey,
+            (task) =>
+              (task.taskKind === "system_reminder" || task.taskKind === "status_nudge") &&
+              task.sessionKey === sessionKey,
             "newer_user_message"
           );
           if (abortedSystemReminder) {
@@ -581,11 +584,55 @@ async function main(): Promise<void> {
     cfg.relayChannel.enabled && cfg.openrouterProxy.enabled
       ? createSelfNudgeRunner({
           settings: cfg.selfNudge,
-          runner,
           gateway,
           openrouterProxyPort: cfg.openrouterProxy.port,
           openrouterProxyPathPrefix: cfg.openrouterProxy.pathPrefix,
-          systemTaskTimeoutMs: cfg.systemTaskTimeoutMs,
+          sendNudgeMessage: ({ transcript, decision, messageText, taskId, nowMs }) => {
+            const route =
+              activityIndex.snapshot().find((record) => record.sessionKey === transcript.sessionKey) ??
+              activityIndex.findBestUserVisibleRoute({ now: nowMs });
+            const message: InboundPushMessage = {
+              messageId: taskId,
+              sentAtMs: nowMs,
+              input: {
+                kind: "chat",
+                sessionKey: transcript.sessionKey,
+                messageText,
+                context: {
+                  kind: "relay_status_nudge",
+                  source: "relay.self_nudge",
+                  relayInstanceId: cfg.relayInstanceId,
+                  sessionKey: transcript.sessionKey,
+                  routeSessionKey: route?.sessionKey ?? transcript.sessionKey,
+                  channel: route?.channel ?? inferConversationChannel(transcript.sessionKey),
+                  transportTarget:
+                    route?.transportTarget ??
+                    inferTransportTarget({
+                      sessionKey: transcript.sessionKey,
+                      channel: route?.channel,
+                    }),
+                  finalConfidence: decision.finalConfidence,
+                  reasonCode: decision.reasonCode ?? null,
+                  reason: decision.reason ?? null,
+                },
+              },
+            };
+            queue.enqueue(message);
+            const queueState = queue.getState();
+            logger.info(
+              {
+                event: "relay_self_nudge",
+                stage: "enqueued_user_owned_turn",
+                backendMessageId: taskId,
+                sessionKey: transcript.sessionKey,
+                routeSessionKey: route?.sessionKey ?? transcript.sessionKey,
+                queueLength: queueState.queueLength,
+                inFlight: queueState.inFlight,
+              },
+              "Relay self-nudge enqueued a user-owned conversation turn"
+            );
+            return Promise.resolve();
+          },
           notifyNudgeDecision: cfg.selfNudge.nudgeNoticeEnabled
             ? async ({ transcript, decision, messageText, nowMs }) => {
                 const route =
