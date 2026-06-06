@@ -29,6 +29,7 @@ const envSchema = z.object({
   RELAY_CHAT_BATCH_DEBOUNCE_MS: z.coerce.number().int().min(0).max(120_000).optional(),
   RELAY_LOW_DISK_ALERT_ENABLED: envBooleanSchema.optional(),
   RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT: z.coerce.number().min(1).max(100).optional(),
+  DEBUG_NUDGE: envBooleanSchema.optional(),
   RELAY_DIAGNOSTIC_NOTIFIER_ENABLED: envBooleanSchema.optional(),
   RELAY_DIAGNOSTIC_NOTIFIER_INTERVAL_MS: z.coerce.number().int().min(10_000).max(86_400_000).optional(),
   RELAY_DIAGNOSTIC_NOTIFIER_LOOKBACK_MS: z.coerce.number().int().min(10_000).max(86_400_000).optional(),
@@ -191,6 +192,8 @@ export type RelayConfig = {
     analyzedRecentMessageCount: number;
     baseTimeoutMs: number;
     model: string | null;
+    debugMessagesEnabled: boolean;
+    nudgeNoticeEnabled: boolean;
     finalNoticeEnabled: boolean;
     finalNoticeText: string;
   };
@@ -233,6 +236,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
   const devLogGatewayFrames = false;
 
   const diagnosticNotifierIntervalMs = parsed.RELAY_DIAGNOSTIC_NOTIFIER_INTERVAL_MS ?? 300_000;
+  const debugNudgeEnabled = parsed.DEBUG_NUDGE ?? false;
   const relayInstanceId =
     parsed.RELAY_INSTANCE_ID ||
     `${os.hostname()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
@@ -247,7 +251,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     lowDiskAlertEnabled: parsed.RELAY_LOW_DISK_ALERT_ENABLED ?? true,
     lowDiskAlertThresholdPercent: parsed.RELAY_LOW_DISK_ALERT_THRESHOLD_PERCENT ?? 80,
     diagnosticNotifier: {
-      enabled: parsed.RELAY_DIAGNOSTIC_NOTIFIER_ENABLED ?? false,
+      enabled: debugNudgeEnabled || (parsed.RELAY_DIAGNOSTIC_NOTIFIER_ENABLED ?? false),
       intervalMs: diagnosticNotifierIntervalMs,
       lookbackMs: parsed.RELAY_DIAGNOSTIC_NOTIFIER_LOOKBACK_MS ?? diagnosticNotifierIntervalMs,
       throttleMs: parsed.RELAY_DIAGNOSTIC_NOTIFIER_THROTTLE_MS ?? 600_000,
@@ -345,7 +349,9 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
       analyzedRecentMessageCount: parsed.RELAY_SELF_NUDGE_ANALYZED_RECENT_MESSAGE_COUNT ?? 0,
       baseTimeoutMs: parsed.RELAY_SELF_NUDGE_BASE_TIMEOUT_MS ?? 300_000,
       model: parsed.RELAY_SELF_NUDGE_MODEL?.trim() || null,
-      finalNoticeEnabled: parsed.RELAY_SELF_NUDGE_FINAL_NOTICE_ENABLED ?? false,
+      debugMessagesEnabled: debugNudgeEnabled,
+      nudgeNoticeEnabled: debugNudgeEnabled,
+      finalNoticeEnabled: debugNudgeEnabled || (parsed.RELAY_SELF_NUDGE_FINAL_NOTICE_ENABLED ?? false),
       finalNoticeText: parsed.RELAY_SELF_NUDGE_FINAL_NOTICE_TEXT?.trim() || "Final message.",
     },
     devLogEnabled,
@@ -468,6 +474,8 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
       analyzedRecentMessageCount: 0,
       baseTimeoutMs: 300_000,
       model: null,
+      debugMessagesEnabled: false,
+      nudgeNoticeEnabled: false,
       finalNoticeEnabled: false,
       finalNoticeText: "Final message.",
     },

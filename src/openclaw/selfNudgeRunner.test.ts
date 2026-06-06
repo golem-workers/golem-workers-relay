@@ -23,6 +23,8 @@ const enabledSettings: RelaySelfNudgeSettings = {
   analyzedRecentMessageCount: 1,
   baseTimeoutMs: 1_000,
   model: "openrouter/google/gemini-test",
+  debugMessagesEnabled: false,
+  nudgeNoticeEnabled: false,
   finalNoticeEnabled: false,
   finalNoticeText: "Final message.",
 };
@@ -252,6 +254,39 @@ describe("selfNudgeRunner", () => {
       })
     );
     expect(computeSelfNudgeWaitMs(1_000, state.consecutiveNudges)).toBe(2_000);
+  });
+
+  it("sends a user-visible debug notice with the status nudge message when enabled", async () => {
+    const runChatTask = vi.fn().mockResolvedValue({
+      result: { outcome: "no_reply", noReply: { runId: "run_1" } },
+      openclawMeta: { method: "chat.send" },
+    });
+    const notifyNudgeDecision = vi.fn().mockResolvedValue(undefined);
+
+    await evaluateSelfNudgeTick({
+      settings: {
+        ...enabledSettings,
+        debugMessagesEnabled: true,
+        nudgeNoticeEnabled: true,
+      },
+      transcript: makeTranscript({ mtimeMs: 10_000 }),
+      state: makeState(),
+      nowMs: 11_000,
+      runner: { runChatTask },
+      systemTaskTimeoutMs: 60_000,
+      notifyNudgeDecision,
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: true,
+        statusNudgeMessage: "Continue with the migration.",
+        finalConfidence: 10,
+      }),
+    });
+
+    expect(notifyNudgeDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageText: "[STATUS_NUDGE]\nContinue with the migration.",
+      })
+    );
   });
 
   it("keeps self-nudge replies on the original telegram route", async () => {

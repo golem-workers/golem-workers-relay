@@ -20,6 +20,8 @@ export type RelaySelfNudgeSettings = {
   analyzedRecentMessageCount: number;
   baseTimeoutMs: number;
   model: string | null;
+  debugMessagesEnabled: boolean;
+  nudgeNoticeEnabled: boolean;
   finalNoticeEnabled: boolean;
   finalNoticeText: string;
 };
@@ -115,6 +117,12 @@ export function createSelfNudgeRunner(input: {
     decision: SelfNudgeDecision;
     nowMs: number;
   }) => Promise<void>;
+  notifyNudgeDecision?: (input: {
+    transcript: FreshestSessionTranscript;
+    decision: SelfNudgeDecision;
+    messageText: string;
+    nowMs: number;
+  }) => Promise<void>;
 }): SelfNudgeRunner {
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
@@ -188,6 +196,7 @@ export function createSelfNudgeRunner(input: {
         systemTaskTimeoutMs: input.systemTaskTimeoutMs,
         processedStore,
         notifyFinalDecision: input.notifyFinalDecision,
+        notifyNudgeDecision: input.notifyNudgeDecision,
         decide: (decisionInput) =>
           decideSelfNudgeWithOpenRouter({
             ...decisionInput,
@@ -227,6 +236,12 @@ export async function evaluateSelfNudgeTick(input: {
   notifyFinalDecision?: (input: {
     transcript: FreshestSessionTranscript;
     decision: SelfNudgeDecision;
+    nowMs: number;
+  }) => Promise<void>;
+  notifyNudgeDecision?: (input: {
+    transcript: FreshestSessionTranscript;
+    decision: SelfNudgeDecision;
+    messageText: string;
     nowMs: number;
   }) => Promise<void>;
   decide: (input: {
@@ -307,10 +322,19 @@ export async function evaluateSelfNudgeTick(input: {
   }
 
   const body = normalizeNudgeBody(decision.statusNudgeMessage);
+  const messageText = formatStatusNudgeMessage(body);
+  if (input.settings.nudgeNoticeEnabled && input.notifyNudgeDecision) {
+    await input.notifyNudgeDecision({
+      transcript: input.transcript,
+      decision,
+      messageText,
+      nowMs: input.nowMs,
+    });
+  }
   await input.runner.runChatTask({
     taskId: `self_nudge_${randomUUID()}`,
     sessionKey: input.transcript.sessionKey,
-    messageText: formatStatusNudgeMessage(body),
+    messageText,
     deliverySystem: "relay_channel_v2",
     originRoute: buildSelfNudgeOriginRoute(input.transcript.sessionKey),
     timeoutMs: input.systemTaskTimeoutMs,

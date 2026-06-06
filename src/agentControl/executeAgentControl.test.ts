@@ -125,6 +125,7 @@ describe("executeAgentControl relay self nudge settings", () => {
           analyzedRecentMessageCount: 2,
           baseTimeoutMs: 600_000,
           model: "openrouter/google/gemini-2.5-flash",
+          debugMessagesEnabled: true,
         },
       },
       configPath,
@@ -146,6 +147,7 @@ describe("executeAgentControl relay self nudge settings", () => {
     await expect(fs.readFile(envPath, "utf8")).resolves.toContain(
       "RELAY_SELF_NUDGE_MODEL=openrouter/google/gemini-2.5-flash"
     );
+    await expect(fs.readFile(envPath, "utf8")).resolves.toContain("DEBUG_NUDGE=1");
     const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
       golemWorkers?: unknown;
       channels: Record<string, { nudge?: unknown }>;

@@ -22,6 +22,7 @@ const selfNudgeSettingsSchema = z.object({
   analyzedRecentMessageCount: z.number().int().min(0).max(50),
   baseTimeoutMs: z.number().int().min(1_000).max(2_147_483_647),
   model: z.string().min(1).nullable(),
+  debugMessagesEnabled: z.boolean().optional(),
 });
 
 export const agentControlActionSchema = z.discriminatedUnion("kind", [

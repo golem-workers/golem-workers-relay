@@ -170,6 +170,8 @@ describe("loadRelayConfig", () => {
       analyzedRecentMessageCount: 0,
       baseTimeoutMs: 300_000,
       model: null,
+      debugMessagesEnabled: false,
+      nudgeNoticeEnabled: false,
       finalNoticeEnabled: false,
       finalNoticeText: "Final message.",
     });
@@ -189,9 +191,24 @@ describe("loadRelayConfig", () => {
       analyzedRecentMessageCount: 2,
       baseTimeoutMs: 600_000,
       model: "openrouter/google/gemini-2.5-flash",
+      debugMessagesEnabled: false,
+      nudgeNoticeEnabled: false,
       finalNoticeEnabled: true,
       finalNoticeText: "Final reply detected.",
     });
+  });
+
+  it("uses DEBUG_NUDGE to enable nudge-related debug messages", () => {
+    const cfg = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+      DEBUG_NUDGE: "1",
+    });
+
+    expect(cfg.diagnosticNotifier.enabled).toBe(true);
+    expect(cfg.selfNudge.debugMessagesEnabled).toBe(true);
+    expect(cfg.selfNudge.nudgeNoticeEnabled).toBe(true);
+    expect(cfg.selfNudge.finalNoticeEnabled).toBe(true);
   });
 
   it("uses a 10x gateway tick timeout multiplier by default and allows override", () => {

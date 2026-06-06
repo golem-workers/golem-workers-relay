@@ -586,6 +586,50 @@ async function main(): Promise<void> {
           openrouterProxyPort: cfg.openrouterProxy.port,
           openrouterProxyPathPrefix: cfg.openrouterProxy.pathPrefix,
           systemTaskTimeoutMs: cfg.systemTaskTimeoutMs,
+          notifyNudgeDecision: cfg.selfNudge.nudgeNoticeEnabled
+            ? async ({ transcript, decision, messageText, nowMs }) => {
+                const route =
+                  activityIndex.snapshot().find((record) => record.sessionKey === transcript.sessionKey) ??
+                  activityIndex.findBestUserVisibleRoute({ now: nowMs });
+                const userId = route?.userId ?? "relay-self-nudge-debug";
+                const notificationId = `relay-self-nudge-debug:${cfg.relayInstanceId}:${randomUUID()}`;
+                const message: InboundPushMessage = {
+                  messageId: `system-notification:${notificationId}`,
+                  sentAtMs: nowMs,
+                  input: {
+                    kind: "system_notification",
+                    notificationId,
+                    userId,
+                    text: messageText,
+                    eventKey: "relay.self_nudge.status_nudge",
+                    code: "relay:self_nudge:status_nudge",
+                    severity: "info",
+                    rawTaskResult: {
+                      relayInstanceId: cfg.relayInstanceId,
+                      sessionKey: transcript.sessionKey,
+                      finalConfidence: decision.finalConfidence,
+                      reasonCode: decision.reasonCode ?? null,
+                      reason: decision.reason ?? null,
+                    },
+                  },
+                };
+                const result = await deliverSystemNotificationFromRelay({
+                  backend,
+                  activityIndex,
+                  message,
+                });
+                logger.info(
+                  {
+                    event: "relay_self_nudge_debug_notice",
+                    status: result.status,
+                    selectedChannel: result.selectedChannel,
+                    sessionKey: result.sessionKey,
+                    error: result.error,
+                  },
+                  "Relay self-nudge debug notice processed"
+                );
+              }
+            : undefined,
           notifyFinalDecision: cfg.selfNudge.finalNoticeEnabled
             ? async ({ transcript, decision, nowMs }) => {
                 const route =

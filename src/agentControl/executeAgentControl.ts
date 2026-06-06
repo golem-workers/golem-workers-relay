@@ -291,6 +291,7 @@ async function setRelaySelfNudgeSettings(input: {
     analyzedRecentMessageCount: number;
     baseTimeoutMs: number;
     model: string | null;
+    debugMessagesEnabled?: boolean;
   };
 }): Promise<AgentControlResult> {
   const { settings } = input;
@@ -304,6 +305,7 @@ async function setRelaySelfNudgeSettings(input: {
     RELAY_SELF_NUDGE_ANALYZED_RECENT_MESSAGE_COUNT: String(settings.analyzedRecentMessageCount),
     RELAY_SELF_NUDGE_BASE_TIMEOUT_MS: String(settings.baseTimeoutMs),
     RELAY_SELF_NUDGE_MODEL: settings.model,
+    DEBUG_NUDGE: settings.debugMessagesEnabled ? "1" : "0",
   });
   await atomicWriteUtf8(envPath, next);
   await removeLegacySelfNudgeFromOpenclawConfig(input.configPath);
