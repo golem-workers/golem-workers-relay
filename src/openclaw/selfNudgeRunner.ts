@@ -13,6 +13,7 @@ const DISABLED_POLL_INTERVAL_MS = 30_000;
 const MIN_BASE_TIMEOUT_MS = 1_000;
 const MAX_MESSAGE_TEXT_LEN = 4_000;
 const MAX_SELF_NUDGE_LATEST_USER_AGE_MS = 24 * 60 * 60 * 1000;
+const RUNTIME_HISTORY_SCAN_LIMIT = 100;
 
 export type RelaySelfNudgeSettings = {
   enabled: boolean;
@@ -30,6 +31,7 @@ export type TranscriptMessage = {
   text: string;
   lineIndex: number;
   timestampMs?: number;
+  isLatestUserRequest?: boolean;
 };
 
 export type FreshestSessionTranscript = {
@@ -386,15 +388,22 @@ export async function readFreshestSessionTranscript(input: {
   const transcripts: FreshestSessionTranscript[] = [];
   for (const candidate of candidates) {
     const transcriptMessages = await readTranscriptMessages(candidate.sessionFile);
-    const latestUserMessage = findLatestUserMessage(transcriptMessages);
-    if (!latestUserMessage) continue;
-    if (!canUseTranscriptForSelfNudge(candidate.sessionKey, latestUserMessage.text)) {
+    const latestRawUserMessage = findLatestUserMessage(transcriptMessages);
+    if (!latestRawUserMessage) continue;
+    if (!canUseTranscriptForSelfNudge(candidate.sessionKey, latestRawUserMessage.text)) {
+      continue;
+    }
+    const analysis = buildSelfNudgeAnalysisTranscript({
+      messages: transcriptMessages,
+      analyzedRecentMessageCount: input.analyzedRecentMessageCount,
+    });
+    if (!analysis) {
       continue;
     }
     transcripts.push({
       ...candidate,
-      messages: transcriptMessages.slice(-Math.max(1, input.analyzedRecentMessageCount + 1)),
-      latestUserMessage,
+      messages: analysis.messages,
+      latestUserMessage: analysis.latestUserMessage,
     });
   }
   transcripts.sort(compareSessionTranscriptsForNudge);
@@ -416,23 +425,52 @@ export async function readFreshestOpenclawRuntimeTranscript(input: {
   const candidates = readRuntimeSessionCandidates(sessionsPayload);
   for (const candidate of candidates) {
     const historyPayload = await readRuntimeChatHistory(input.gateway, candidate.gatewaySessionKey, {
-      limit: Math.max(1, input.analyzedRecentMessageCount + 1),
+      limit: computeRuntimeHistoryScanLimit(input.analyzedRecentMessageCount),
     });
     const messages = readRuntimeHistoryMessages(historyPayload);
-    const latestUserMessage = findLatestUserMessage(messages);
-    if (!latestUserMessage) continue;
-    if (!canUseTranscriptForSelfNudge(candidate.sessionKey, latestUserMessage.text)) {
+    const latestRawUserMessage = findLatestUserMessage(messages);
+    if (!latestRawUserMessage) continue;
+    if (!canUseTranscriptForSelfNudge(candidate.sessionKey, latestRawUserMessage.text)) {
       continue;
     }
+    const analysis = buildSelfNudgeAnalysisTranscript({
+      messages,
+      analyzedRecentMessageCount: input.analyzedRecentMessageCount,
+    });
+    if (!analysis) continue;
     return {
       sessionKey: candidate.sessionKey,
       sessionFile: `gateway://chat.history/${candidate.gatewaySessionKey}`,
       mtimeMs: candidate.updatedAtMs,
-      messages: messages.slice(-Math.max(1, input.analyzedRecentMessageCount + 1)),
-      latestUserMessage,
+      messages: analysis.messages,
+      latestUserMessage: analysis.latestUserMessage,
     };
   }
   return null;
+}
+
+export function buildSelfNudgeAnalysisTranscript(input: {
+  messages: TranscriptMessage[];
+  analyzedRecentMessageCount: number;
+}): Pick<FreshestSessionTranscript, "messages" | "latestUserMessage"> | null {
+  const latestUserMessage = findLatestUserRequestMessage(input.messages);
+  if (!latestUserMessage) return null;
+  const assistantMessagesAfterLatestUser = input.messages.filter(
+    (message) => message.role === "assistant" && message.lineIndex > latestUserMessage.lineIndex
+  );
+  const maxAssistantMessages = Math.max(0, Math.trunc(input.analyzedRecentMessageCount));
+  const selectedAssistantMessages =
+    maxAssistantMessages > 0 ? assistantMessagesAfterLatestUser.slice(-maxAssistantMessages) : [];
+  const latestUserRequest = { ...latestUserMessage, isLatestUserRequest: true as const };
+  return {
+    latestUserMessage: latestUserRequest,
+    messages: [latestUserRequest, ...selectedAssistantMessages],
+  };
+}
+
+function computeRuntimeHistoryScanLimit(analyzedRecentMessageCount: number): number {
+  const requested = Math.max(0, Math.trunc(analyzedRecentMessageCount));
+  return Math.max(RUNTIME_HISTORY_SCAN_LIMIT, requested + 1);
 }
 
 function canUseTranscriptForSelfNudge(sessionKey: string, latestUserText: string): boolean {
@@ -579,6 +617,7 @@ async function decideSelfNudgeWithOpenRouter(input: {
               latestMessages: input.transcript.messages.map((message) => ({
                 role: message.role,
                 text: truncateText(message.text, MAX_MESSAGE_TEXT_LEN),
+                ...(message.isLatestUserRequest ? { isLatestUserRequest: true } : {}),
               })),
             }),
           },
@@ -664,6 +703,8 @@ function buildSelfNudgeSystemPrompt(): string {
   return [
     "You decide whether an OpenClaw agent should receive a self-nudge to continue active work.",
     "Inspect only the provided OpenClaw session transcript messages.",
+    "The message with isLatestUserRequest=true is the latest real user request and is always the task to judge.",
+    "Assistant messages are limited to the configured recent agent messages after that user request; ignore older work not shown.",
     "Return strict JSON with keys: shouldNudge, statusNudgeMessage, finalConfidence, reasonCode, reason.",
     "Set finalConfidence to an integer from 0 to 100: your confidence that the latest user request has a final assistant answer.",
     "Use finalConfidence=100 only when you are completely certain the assistant finished the latest request.",
@@ -671,9 +712,10 @@ function buildSelfNudgeSystemPrompt(): string {
     "Set reasonCode=final_answer only when finalConfidence is greater than 90.",
     "Set shouldNudge=false with reasonCode=final_answer when finalConfidence is greater than 90.",
     "Set shouldNudge=true only when finalConfidence is 90 or lower and the latest user request appears unfinished, blocked by no external user input, or the assistant was still actively working.",
+    "A partial progress update is not final when the user asked for all tasks or a complete outcome and the assistant says some work remains.",
     "Set shouldNudge=false with reasonCode=waiting_for_user when the assistant asked the user a necessary question.",
     "Set shouldNudge=false with reasonCode=no_active_request when there is no user request to continue.",
-    "When shouldNudge=true, statusNudgeMessage must be a concise imperative message for the agent to continue the in-flight task and report new evidence.",
+    "When shouldNudge=true, statusNudgeMessage must clearly name the unfinished part relative to the latest user request, then ask the agent to continue and report new evidence.",
     "Do not include the [STATUS_NUDGE] marker; the relay adds it.",
   ].join("\n");
 }
@@ -911,6 +953,18 @@ function findLatestUserMessage(messages: TranscriptMessage[]): TranscriptMessage
     if (messages[i]?.role === "user") return messages[i];
   }
   return null;
+}
+
+function findLatestUserRequestMessage(messages: TranscriptMessage[]): TranscriptMessage | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role === "user" && !isStatusNudgeMessage(message.text)) return message;
+  }
+  return null;
+}
+
+function isStatusNudgeMessage(text: string): boolean {
+  return text.trimStart().startsWith(STATUS_NUDGE_MARKER);
 }
 
 function findFinalAssistantMessage(transcript: FreshestSessionTranscript): TranscriptMessage | null {

@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   buildFinalDecisionNoticeText,
   buildOpenRouterProxyChatCompletionsUrl,
+  buildSelfNudgeAnalysisTranscript,
   computeSelfNudgeWaitMs,
   createFileSelfNudgeProcessedStore,
   createSelfNudgeRunner,
@@ -84,7 +85,7 @@ describe("selfNudgeRunner", () => {
     await expect(runner.tick()).resolves.toBeUndefined();
   });
 
-  it("selects the OpenClaw session with the newest user message and returns the latest 1 + N messages", async () => {
+  it("selects the OpenClaw session with the newest user request and returns that request plus N later assistant messages", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-"));
     const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
@@ -126,10 +127,42 @@ describe("selfNudgeRunner", () => {
 
     expect(transcript?.sessionKey).toBe("active");
     expect(transcript?.messages).toEqual([
-      { role: "assistant", text: "working", lineIndex: 1, timestampMs: 4_100 },
-      { role: "user", text: "latest", lineIndex: 2, timestampMs: 4_200 },
+      { role: "user", text: "latest", lineIndex: 2, timestampMs: 4_200, isLatestUserRequest: true },
     ]);
-    expect(transcript?.latestUserMessage).toEqual({ role: "user", text: "latest", lineIndex: 2, timestampMs: 4_200 });
+    expect(transcript?.latestUserMessage).toEqual({
+      role: "user",
+      text: "latest",
+      lineIndex: 2,
+      timestampMs: 4_200,
+      isLatestUserRequest: true,
+    });
+  });
+
+  it("excludes messages before the latest real user request and keeps only configured assistant replies after it", () => {
+    const analysis = buildSelfNudgeAnalysisTranscript({
+      analyzedRecentMessageCount: 2,
+      messages: [
+        { role: "user", text: "old request", lineIndex: 0 },
+        { role: "assistant", text: "old answer", lineIndex: 1 },
+        { role: "user", text: "do all tasks", lineIndex: 2 },
+        { role: "assistant", text: "task 1 done", lineIndex: 3 },
+        { role: "user", text: "[STATUS_NUDGE]\nContinue.", lineIndex: 4 },
+        { role: "assistant", text: "task 2 done, task 3 remains", lineIndex: 5 },
+        { role: "assistant", text: "still checking task 3", lineIndex: 6 },
+      ],
+    });
+
+    expect(analysis?.latestUserMessage).toEqual({
+      role: "user",
+      text: "do all tasks",
+      lineIndex: 2,
+      isLatestUserRequest: true,
+    });
+    expect(analysis?.messages).toEqual([
+      { role: "user", text: "do all tasks", lineIndex: 2, isLatestUserRequest: true },
+      { role: "assistant", text: "task 2 done, task 3 remains", lineIndex: 5 },
+      { role: "assistant", text: "still checking task 3", lineIndex: 6 },
+    ]);
   });
 
   it("ignores internal maintenance sessions when choosing a nudge transcript", async () => {
@@ -236,13 +269,13 @@ describe("selfNudgeRunner", () => {
     });
 
     expect(transcript?.sessionKey).toBe("tg:-5297593928:cmp9kwhbf0175209zotr1q9le");
-    expect(transcript?.latestUserMessage?.text).toBe("[STATUS_NUDGE]\nProceed with #150 and report progress.");
+    expect(transcript?.latestUserMessage?.text).toBe("continue doing tracker tasks");
     expect(transcript?.messages.map((message) => message.text)).toEqual([
       "continue doing tracker tasks",
       "Closed the first batch. Next is #150.",
-      "[STATUS_NUDGE]\nProceed with #150 and report progress.",
       "Commit for #150 is ready. Closing the issue now.",
     ]);
+    expect(transcript?.messages[0]?.isLatestUserRequest).toBe(true);
   });
 
   it("uses OpenClaw runtime sessions and chat history across transports", async () => {
@@ -260,7 +293,7 @@ describe("selfNudgeRunner", () => {
           };
         }
         if (method === "chat.history") {
-          expect(params).toMatchObject({ sessionKey: "agent:main:webchat:conversation-1" });
+          expect(params).toMatchObject({ sessionKey: "agent:main:webchat:conversation-1", limit: 100 });
           return {
             messages: [
               { role: "assistant", createdAt: 5_900, content: "ready" },
@@ -280,8 +313,7 @@ describe("selfNudgeRunner", () => {
     expect(transcript?.sessionKey).toBe("webchat:conversation-1");
     expect(transcript?.sessionFile).toBe("gateway://chat.history/agent:main:webchat:conversation-1");
     expect(transcript?.messages).toEqual([
-      { role: "assistant", text: "ready", lineIndex: 0, timestampMs: 5_900 },
-      { role: "user", text: "newer webchat request", lineIndex: 1, timestampMs: 6_000 },
+      { role: "user", text: "newer webchat request", lineIndex: 1, timestampMs: 6_000, isLatestUserRequest: true },
     ]);
   });
 
@@ -315,7 +347,88 @@ describe("selfNudgeRunner", () => {
     });
 
     expect(transcript?.sessionKey).toBe("tg:-5297593928:server-a");
-    expect(transcript?.latestUserMessage?.text).toBe("[STATUS_NUDGE]\nProceed with #150.");
+    expect(transcript?.latestUserMessage?.text).toBe("continue tasks");
+    expect(transcript?.messages.map((message) => message.text)).toEqual([
+      "continue tasks",
+      "Next item is #150.",
+      "Working on #150.",
+    ]);
+    expect(transcript?.messages[0]?.isLatestUserRequest).toBe(true);
+  });
+
+  it("marks the latest real user request in the analyzer payload without duplicating status nudges", async () => {
+    const fetchImpl = vi.fn((_url: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      const payload = JSON.parse(body) as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      const analyzerInput = JSON.parse(payload.messages[1]?.content ?? "{}") as {
+        latestMessages: Array<Record<string, unknown>>;
+      };
+      expect(analyzerInput.latestMessages).toEqual([
+        { role: "user", text: "finish every release task", isLatestUserRequest: true },
+        { role: "assistant", text: "Two tasks are done, one release task remains." },
+      ]);
+      return Promise.resolve(new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  shouldNudge: true,
+                  statusNudgeMessage:
+                    "Continue the remaining release task from the user's request and report new evidence.",
+                  finalConfidence: 30,
+                  reasonCode: "unknown",
+                  reason: "assistant reported remaining work",
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      ));
+    });
+    const gateway = {
+      request: vi.fn((method: string, params?: unknown) => {
+        if (method === "sessions.list") {
+          return {
+            sessions: [{ key: "agent:main:tg:-5297593928:server-a", updatedAt: 8_000 }],
+          };
+        }
+        if (method === "chat.history") {
+          expect(params).toMatchObject({ sessionKey: "agent:main:tg:-5297593928:server-a", limit: 100 });
+          return {
+            messages: [
+              { role: "user", createdAt: 1_000, content: "old request" },
+              { role: "assistant", createdAt: 2_000, content: "old answer" },
+              { role: "user", createdAt: 3_000, content: "finish every release task" },
+              { role: "assistant", createdAt: 4_000, content: "First release task is done." },
+              { role: "user", createdAt: 5_000, content: "[STATUS_NUDGE]\nContinue the release." },
+              { role: "assistant", createdAt: 6_000, content: "Two tasks are done, one release task remains." },
+            ],
+          };
+        }
+        throw new Error(`unexpected gateway method ${method}`);
+      }),
+    };
+    const runner = createSelfNudgeRunner({
+      settings: {
+        ...enabledSettings,
+        analyzedRecentMessageCount: 1,
+      },
+      stateDir: await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-payload-")),
+      sendNudgeMessage: makeSendNudgeMessageMock(),
+      openrouterProxyPort: 18080,
+      openrouterProxyPathPrefix: "/provider-proxy/openrouter",
+      fetchImpl,
+      gateway,
+    });
+
+    await runner.tick(9_000);
+    runner.stop();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("waits for T * (X + 1), sends a marked self-nudge, then increases backoff", async () => {
