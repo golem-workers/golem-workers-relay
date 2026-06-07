@@ -91,8 +91,13 @@ export function createGatewayEventForwarder(input: {
   backend: BackendClient;
   forwardFinalOnly: boolean;
   getChatRunTrace: (runId: string) => ChatRunTrace | null;
+  onChatActivity?: (input: {
+    sessionKey: string;
+    userFacingText?: string | null;
+    atMs: number;
+  }) => void | Promise<void>;
 }): GatewayEventForwarder {
-  const { relayInstanceId, backend, forwardFinalOnly, getChatRunTrace } = input;
+  const { relayInstanceId, backend, forwardFinalOnly, getChatRunTrace, onChatActivity } = input;
   const runStatesByRunId = new Map<string, RunForwardState>();
 
   const clearDebounceTimer = (state: RunForwardState): void => {
@@ -453,6 +458,26 @@ export function createGatewayEventForwarder(input: {
     const parsed = chatEventSchema.safeParse(evt.payload);
     if (!parsed.success) return;
     const chatEvent = parsed.data;
+    const userFacingText = extractPlainAssistantText(chatEvent.message);
+    if (userFacingText) {
+      void Promise.resolve(
+        onChatActivity?.({
+          sessionKey: chatEvent.sessionKey,
+          userFacingText,
+          atMs: Date.now(),
+        })
+      ).catch((err) => {
+        logger.warn(
+          {
+            relayInstanceId,
+            runId: chatEvent.runId,
+            sessionKey: chatEvent.sessionKey,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          "Failed to record OpenClaw chat activity"
+        );
+      });
+    }
     const runTrace = getChatRunTrace(chatEvent.runId);
     let runState = runStatesByRunId.get(chatEvent.runId) ?? null;
     if (!runState) {
@@ -468,7 +493,7 @@ export function createGatewayEventForwarder(input: {
     runState.highestSeqSeen = Math.max(runState.highestSeqSeen, chatEvent.seq);
 
     if (isTerminalChatState(chatEvent.state)) {
-      const terminalText = extractPlainAssistantText(chatEvent.message);
+      const terminalText = userFacingText;
       const terminalTextPreview = terminalText?.slice(0, UNCORRELATED_DELTA_PREVIEW_CHARS) ?? null;
       runState.terminalSeen = true;
       runState.terminalState = chatEvent.state;
@@ -505,7 +530,7 @@ export function createGatewayEventForwarder(input: {
       sessionKey: chatEvent.sessionKey,
       seq: chatEvent.seq,
       state: "delta",
-      userFacingText: extractPlainAssistantText(chatEvent.message),
+      userFacingText,
       frameSeq: evt.seq ?? chatEvent.seq,
       stateVersion: evt.stateVersion ?? null,
       receivedOrder: runState.nextReceivedOrder++,

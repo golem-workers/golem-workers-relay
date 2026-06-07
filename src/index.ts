@@ -188,6 +188,20 @@ async function main(): Promise<void> {
     backend,
     forwardFinalOnly: cfg.openclawForwardFinalOnly,
     getChatRunTrace: (runId) => chatRunner?.getRunTrace(runId) ?? null,
+    onChatActivity: async ({ sessionKey, userFacingText, atMs }) => {
+      const channel = inferConversationChannel(sessionKey);
+      if (channel !== "telegram" && channel !== "whatsapp_personal") {
+        return;
+      }
+      await activityIndex.recordOutbound({
+        sessionKey,
+        channel,
+        transportTarget: inferTransportTarget({ sessionKey, channel }),
+        serverId: readServerIdFromTransportSessionKey(sessionKey),
+        text: userFacingText ?? undefined,
+        at: atMs,
+      });
+    },
   });
   let devicePairingAutoApprover:
     | ReturnType<typeof createDevicePairingAutoApprover>
@@ -867,6 +881,16 @@ function readConversationChannel(value: unknown): ReturnType<typeof inferConvers
     return value;
   }
   return null;
+}
+
+function readServerIdFromTransportSessionKey(sessionKey: string): string | undefined {
+  if (sessionKey.startsWith("tg:")) {
+    return sessionKey.slice("tg:".length).split(":")[1]?.trim() || undefined;
+  }
+  if (sessionKey.startsWith("whatsapp-personal:")) {
+    return sessionKey.slice("whatsapp-personal:".length).split(":")[1]?.trim() || undefined;
+  }
+  return undefined;
 }
 
 function readString(value: unknown): string | null {

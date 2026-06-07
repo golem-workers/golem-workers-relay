@@ -7,6 +7,42 @@ describe("createGatewayEventForwarder", () => {
     vi.restoreAllMocks();
   });
 
+  it("reports user-facing chat activity for route seeding", async () => {
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const onChatActivity = vi.fn();
+    const forward = createGatewayEventForwarder({
+      relayInstanceId: "relay_1",
+      backend: { submitInboundMessage } as never,
+      forwardFinalOnly: true,
+      getChatRunTrace: () => null,
+      onChatActivity,
+    });
+
+    await forward({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run_direct",
+        sessionKey: "tg:449985919:server_1",
+        seq: 1,
+        state: "final",
+        message: { text: "hello from direct telegram" },
+      },
+    });
+
+    expect(onChatActivity).toHaveBeenCalledTimes(1);
+    const activity = onChatActivity.mock.calls[0]?.[0] as
+      | {
+          sessionKey?: string;
+          userFacingText?: string | null;
+          atMs?: unknown;
+        }
+      | undefined;
+    expect(activity?.sessionKey).toBe("tg:449985919:server_1");
+    expect(activity?.userFacingText).toBe("hello from direct telegram");
+    expect(typeof activity?.atMs).toBe("number");
+  });
+
   it("forwards raw gateway events when final-only mode is disabled", async () => {
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
     const forward = createGatewayEventForwarder({
