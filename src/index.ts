@@ -502,6 +502,7 @@ async function main(): Promise<void> {
         backend,
         activityIndex,
         message,
+        gateway,
       }),
   });
   const openrouterProxyServer = cfg.openrouterProxy.enabled
@@ -678,6 +679,7 @@ async function main(): Promise<void> {
                   backend,
                   activityIndex,
                   message,
+                  gateway,
                 });
                 logger.info(
                   {
@@ -722,6 +724,7 @@ async function main(): Promise<void> {
                   backend,
                   activityIndex,
                   message,
+                  gateway,
                 });
                 logger.info(
                   {
