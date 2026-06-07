@@ -87,6 +87,12 @@ describe("activity helpers", () => {
     expect(classifySessionActivity({ sessionKey: "tg:1:server", latestUserText: "hi" })).toBe(
       "external_user_chat"
     );
+    expect(
+      classifySessionActivity({
+        sessionKey: "telegram:group:-100",
+        latestUserText: "Pre-compaction memory flush. Store durable memories only in memory/2026-06-07.md",
+      })
+    ).toBe("maintenance");
   });
 
   it("infers channel and target from session keys", () => {

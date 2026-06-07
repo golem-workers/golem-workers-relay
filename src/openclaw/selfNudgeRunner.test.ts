@@ -279,6 +279,26 @@ describe("selfNudgeRunner", () => {
   });
 
   it("uses OpenClaw runtime sessions and chat history across transports", async () => {
+    const historyBySession = new Map<string, unknown>([
+      [
+        "agent:main:tg:100:server-a",
+        {
+          messages: [
+            { role: "assistant", createdAt: 3_900, content: "ready" },
+            { role: "user", createdAt: 4_000, content: "older telegram request" },
+          ],
+        },
+      ],
+      [
+        "agent:main:webchat:conversation-1",
+        {
+          messages: [
+            { role: "assistant", createdAt: 5_900, content: "ready" },
+            { role: "user", createdAt: 6_000, content: "newer webchat request" },
+          ],
+        },
+      ],
+    ]);
     const gateway = {
       request: vi.fn((method: string, params?: unknown) => {
         if (method === "sessions.list") {
@@ -293,13 +313,10 @@ describe("selfNudgeRunner", () => {
           };
         }
         if (method === "chat.history") {
-          expect(params).toMatchObject({ sessionKey: "agent:main:webchat:conversation-1", limit: 100 });
-          return {
-            messages: [
-              { role: "assistant", createdAt: 5_900, content: "ready" },
-              { role: "user", createdAt: 6_000, content: "newer webchat request" },
-            ],
-          };
+          expect(params).toMatchObject({ limit: 100 });
+          const sessionKey = (params as { sessionKey?: string } | undefined)?.sessionKey;
+          const payload = sessionKey ? historyBySession.get(sessionKey) : null;
+          if (payload) return payload;
         }
         throw new Error(`unexpected gateway method ${method}`);
       }),
@@ -354,6 +371,57 @@ describe("selfNudgeRunner", () => {
       "Working on #150.",
     ]);
     expect(transcript?.messages[0]?.isLatestUserRequest).toBe(true);
+  });
+
+  it("chooses runtime sessions by latest real user request instead of session updatedAt", async () => {
+    const historyBySession = new Map<string, unknown>([
+      [
+        "agent:main:telegram:group:-old",
+        {
+          messages: [
+            { role: "user", createdAt: 1_000, content: "old user task" },
+            { role: "assistant", createdAt: 8_000, content: "Still working on old task." },
+            { role: "user", createdAt: 9_000, content: "[STATUS_NUDGE]\nContinue old task." },
+            { role: "assistant", createdAt: 9_100, content: "Continuing old task." },
+          ],
+        },
+      ],
+      [
+        "agent:main:telegram:group:-current",
+        {
+          messages: [
+            { role: "user", createdAt: 7_000, content: "new user task" },
+            { role: "assistant", createdAt: 7_500, content: "I am working on the new task." },
+          ],
+        },
+      ],
+    ]);
+    const gateway = {
+      request: vi.fn((method: string, params?: unknown) => {
+        if (method === "sessions.list") {
+          return {
+            sessions: [
+              { key: "agent:main:telegram:group:-old", updatedAt: 9_100 },
+              { key: "agent:main:telegram:group:-current", updatedAt: 7_500 },
+            ],
+          };
+        }
+        if (method === "chat.history") {
+          const sessionKey = (params as { sessionKey?: string } | undefined)?.sessionKey;
+          const payload = sessionKey ? historyBySession.get(sessionKey) : null;
+          if (payload) return payload;
+        }
+        throw new Error(`unexpected gateway method ${method}`);
+      }),
+    };
+
+    const transcript = await readFreshestOpenclawRuntimeTranscript({
+      gateway,
+      analyzedRecentMessageCount: 3,
+    });
+
+    expect(transcript?.sessionKey).toBe("telegram:group:-current");
+    expect(transcript?.latestUserMessage?.text).toBe("new user task");
   });
 
   it("marks the latest real user request in the analyzer payload without duplicating status nudges", async () => {

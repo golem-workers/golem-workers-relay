@@ -423,6 +423,7 @@ export async function readFreshestOpenclawRuntimeTranscript(input: {
     { timeoutMs: 5_000 }
   );
   const candidates = readRuntimeSessionCandidates(sessionsPayload);
+  const transcripts: FreshestSessionTranscript[] = [];
   for (const candidate of candidates) {
     const historyPayload = await readRuntimeChatHistory(input.gateway, candidate.gatewaySessionKey, {
       limit: computeRuntimeHistoryScanLimit(input.analyzedRecentMessageCount),
@@ -438,15 +439,16 @@ export async function readFreshestOpenclawRuntimeTranscript(input: {
       analyzedRecentMessageCount: input.analyzedRecentMessageCount,
     });
     if (!analysis) continue;
-    return {
+    transcripts.push({
       sessionKey: candidate.sessionKey,
       sessionFile: `gateway://chat.history/${candidate.gatewaySessionKey}`,
       mtimeMs: candidate.updatedAtMs,
       messages: analysis.messages,
       latestUserMessage: analysis.latestUserMessage,
-    };
+    });
   }
-  return null;
+  transcripts.sort(compareSessionTranscriptsForNudge);
+  return transcripts[0] ?? null;
 }
 
 export function buildSelfNudgeAnalysisTranscript(input: {

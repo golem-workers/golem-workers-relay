@@ -146,7 +146,6 @@ export function classifySessionActivity(input: {
   const text = input.latestUserText?.trim().toLowerCase() ?? "";
   if (text.includes("[status_nudge]")) return "status_nudge";
   if (
-    input.sessionKey === "main" &&
     (text.includes("heartbeat_ok") ||
       text.includes("read heartbeat.md") ||
       text.includes("pre-compaction memory flush") ||
