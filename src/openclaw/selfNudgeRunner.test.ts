@@ -381,6 +381,44 @@ describe("selfNudgeRunner", () => {
     ]);
   });
 
+  it("uses edited runtime messages as session activity for self-nudge timing", async () => {
+    const gateway = {
+      request: vi.fn((method: string, params?: unknown) => {
+        if (method === "sessions.list") {
+          return {
+            sessions: [{ key: "agent:main:tg:-5297593928:server-a", updatedAt: 10_000 }],
+          };
+        }
+        if (method === "chat.history") {
+          expect(params).toMatchObject({ sessionKey: "agent:main:tg:-5297593928:server-a" });
+          return {
+            messages: [
+              { role: "user", createdAt: 10_000, content: "release everything" },
+              {
+                role: "assistant",
+                createdAt: 10_100,
+                updatedAt: 14_500,
+                content: "Edited status: tests are still running.",
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected gateway method ${method}`);
+      }),
+    };
+
+    const transcript = await readFreshestOpenclawRuntimeTranscript({
+      gateway,
+      analyzedRecentMessageCount: 1,
+    });
+
+    expect(transcript?.mtimeMs).toBe(14_500);
+    expect(transcript?.messages).toEqual([
+      { role: "user", text: "release everything", lineIndex: 0, timestampMs: 10_000, isLatestUserRequest: true },
+      { role: "assistant", text: "Edited status: tests are still running.", lineIndex: 1, timestampMs: 14_500 },
+    ]);
+  });
+
   it("keeps runtime status nudge sessions eligible for follow-up nudges", async () => {
     const gateway = {
       request: vi.fn((method: string, params?: unknown) => {
@@ -581,6 +619,35 @@ describe("selfNudgeRunner", () => {
       "[STATUS_NUDGE]\nContinue with the migration and report the next concrete step."
     );
     expect(computeSelfNudgeWaitMs(1_000, state.consecutiveNudges)).toBe(2_000);
+  });
+
+  it("does not nudge while a recent edited status update is inside the wait window", async () => {
+    const sendNudgeMessage = makeSendNudgeMessageMock();
+    const decide = vi.fn().mockResolvedValue({
+      shouldNudge: true,
+      statusNudgeMessage: "Continue.",
+      finalConfidence: 10,
+    });
+
+    const result = await evaluateSelfNudgeTick({
+      settings: enabledSettings,
+      transcript: makeTranscript({
+        mtimeMs: 14_500,
+        messages: [
+          { role: "user", text: "release everything", lineIndex: 0, timestampMs: 10_000 },
+          { role: "assistant", text: "Edited status: tests are still running.", lineIndex: 1, timestampMs: 14_500 },
+        ],
+        latestUserMessage: { role: "user", text: "release everything", lineIndex: 0, timestampMs: 10_000 },
+      }),
+      state: makeState(),
+      nowMs: 15_000,
+      sendNudgeMessage,
+      decide,
+    });
+
+    expect(result).toEqual({ nudged: false, nextDelayMs: 500 });
+    expect(decide).not.toHaveBeenCalled();
+    expect(sendNudgeMessage).not.toHaveBeenCalled();
   });
 
   it("does not repeat the same persisted nudge when the analysis transcript is unchanged", async () => {

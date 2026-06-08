@@ -459,10 +459,13 @@ export async function readFreshestOpenclawRuntimeTranscript(input: {
       analyzedRecentMessageCount: input.analyzedRecentMessageCount,
     });
     if (!analysis) continue;
+    const activityMs = Math.max(candidate.updatedAtMs, ...analysis.messages.flatMap((message) =>
+      typeof message.timestampMs === "number" ? [message.timestampMs] : []
+    ));
     transcripts.push({
       sessionKey: candidate.sessionKey,
       sessionFile: `gateway://chat.history/${candidate.gatewaySessionKey}`,
-      mtimeMs: candidate.updatedAtMs,
+      mtimeMs: activityMs,
       messages: analysis.messages,
       latestUserMessage: analysis.latestUserMessage,
     });
@@ -573,7 +576,7 @@ function readRuntimeHistoryMessages(payload: unknown): TranscriptMessage[] {
     if (!role) return [];
     const text = extractTextFromMessage(message).trim();
     if (!text) return [];
-    const timestampMs = readTimestampMs(message.createdAt) ?? readTimestampMs(message.timestamp);
+    const timestampMs = readFreshestMessageTimestampMs(message);
     return [
       typeof timestampMs === "number"
         ? { role, text, lineIndex: index, timestampMs }
@@ -719,6 +722,18 @@ function readString(value: unknown): string | null {
 function readTimestampMs(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   return parseTimestampMs(value);
+}
+
+function readFreshestMessageTimestampMs(message: Record<string, unknown>): number | undefined {
+  const timestamps = [
+    readTimestampMs(message.createdAt),
+    readTimestampMs(message.timestamp),
+    readTimestampMs(message.updatedAt),
+    readTimestampMs(message.editedAt),
+    readTimestampMs(message.editDate),
+  ].filter((value): value is number => typeof value === "number");
+  if (timestamps.length === 0) return undefined;
+  return Math.max(...timestamps);
 }
 
 function buildSelfNudgeSystemPrompt(): string {
