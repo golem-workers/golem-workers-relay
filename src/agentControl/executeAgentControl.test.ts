@@ -504,13 +504,19 @@ describe("executeAgentControl Codex login", () => {
     });
     expect(startResult.kind).toBe("codex.login.start");
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
-
-    const statusResult = await executeAgentControl({
+    let statusResult = await executeAgentControl({
       action: { kind: "codex.login.status" },
       configPath,
       gateway: noopGateway,
     });
+    for (let attempt = 0; attempt < 20 && statusResult.state !== "connected"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      statusResult = await executeAgentControl({
+        action: { kind: "codex.login.status" },
+        configPath,
+        gateway: noopGateway,
+      });
+    }
 
     expect(statusResult).toEqual({
       kind: "codex.login.status",
@@ -520,7 +526,7 @@ describe("executeAgentControl Codex login", () => {
       userCode: null,
       expiresAtMs: null,
       pollAfterMs: null,
-      profileId: "openai-codex:user@example.com",
+      profileId: "openai:user@example.com",
       email: "user@example.com",
       accountId: "acct-123",
       lastError: null,
@@ -533,9 +539,9 @@ describe("executeAgentControl Codex login", () => {
       profiles: Record<string, Record<string, unknown>>;
     };
     expect(authProfiles.version).toBe(1);
-    expect(authProfiles.profiles["openai-codex:user@example.com"]).toMatchObject({
+    expect(authProfiles.profiles["openai:user@example.com"]).toMatchObject({
       type: "oauth",
-      provider: "openai-codex",
+      provider: "openai",
       refresh: "refresh-token-123",
       email: "user@example.com",
       accountId: "acct-123",
@@ -548,9 +554,9 @@ describe("executeAgentControl Codex login", () => {
       profiles: Record<string, Record<string, unknown>>;
     };
     expect(agentAuthProfiles.version).toBe(1);
-    expect(agentAuthProfiles.profiles["openai-codex:user@example.com"]).toMatchObject({
+    expect(agentAuthProfiles.profiles["openai:user@example.com"]).toMatchObject({
       type: "oauth",
-      provider: "openai-codex",
+      provider: "openai",
       refresh: "refresh-token-123",
       email: "user@example.com",
       accountId: "acct-123",
@@ -568,13 +574,13 @@ describe("executeAgentControl Codex login", () => {
         };
       };
     };
-    expect(config.auth?.profiles?.["openai-codex:user@example.com"]).toEqual({
-      provider: "openai-codex",
+    expect(config.auth?.profiles?.["openai:user@example.com"]).toEqual({
+      provider: "openai",
       mode: "oauth",
       email: "user@example.com",
     });
-    expect(config.auth?.order?.["openai-codex"]).toEqual(["openai-codex:user@example.com"]);
-    expect(config.agents?.defaults?.models?.["openai-codex/gpt-5.5"]).toEqual({});
+    expect(config.auth?.order?.openai).toEqual(["openai:user@example.com"]);
+    expect(config.agents?.defaults?.models?.["openai/gpt-5.5"]).toEqual({ agentRuntime: { id: "codex" } });
   });
 
   it("reports connected Codex status when the OAuth profile only exists in the agent auth store", async () => {
@@ -903,13 +909,13 @@ describe("executeAgentControl model set", () => {
       contextTokens: 272000,
       thinkingDefault: "high",
     });
-    expect(config.agents?.defaults?.model?.primary).toBe("codex/gpt-5.3-codex");
+    expect(config.agents?.defaults?.model?.primary).toBe("openai/gpt-5.3-codex");
     expect(config.agents?.defaults?.model?.fallbacks).toEqual([
-      "codex/gpt-5.4",
+      "openai/gpt-5.4",
       "openrouter/google/gemini-3-flash-preview",
     ]);
-    expect(config.agents?.defaults?.models?.["codex/gpt-5.3-codex"]).toEqual({});
-    expect(config.agents?.defaults?.models?.["codex/gpt-5.4"]).toEqual({});
+    expect(config.agents?.defaults?.models?.["openai/gpt-5.3-codex"]).toEqual({ agentRuntime: { id: "codex" } });
+    expect(config.agents?.defaults?.models?.["openai/gpt-5.4"]).toEqual({ agentRuntime: { id: "codex" } });
     expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3-flash-preview"]).toEqual({});
   });
 
@@ -1080,9 +1086,9 @@ describe("executeAgentControl model set", () => {
       contextTokens: 400000,
       thinkingDefault: "medium",
     });
-    expect(config.agents?.defaults?.model?.primary).toBe("codex/gpt-5.5");
-    expect(config.agents?.defaults?.model?.fallbacks).toEqual(["codex/gpt-5.4"]);
-    expect(config.agents?.defaults?.models?.["codex/gpt-5.5"]).toEqual({});
-    expect(config.agents?.defaults?.models?.["codex/gpt-5.4"]).toEqual({});
+    expect(config.agents?.defaults?.model?.primary).toBe("openai/gpt-5.5");
+    expect(config.agents?.defaults?.model?.fallbacks).toEqual(["openai/gpt-5.4"]);
+    expect(config.agents?.defaults?.models?.["openai/gpt-5.5"]).toEqual({ agentRuntime: { id: "codex" } });
+    expect(config.agents?.defaults?.models?.["openai/gpt-5.4"]).toEqual({ agentRuntime: { id: "codex" } });
   });
 });

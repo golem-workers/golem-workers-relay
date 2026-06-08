@@ -4,7 +4,7 @@ import JSON5 from "json5";
 
 const OPENAI_AUTH_BASE_URL = "https://auth.openai.com";
 const OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const OPENAI_CODEX_DEFAULT_MODEL = "openai-codex/gpt-5.5";
+const OPENAI_CODEX_DEFAULT_MODEL = "openai/gpt-5.5";
 const OPENAI_CODEX_DEVICE_CALLBACK_URL = `${OPENAI_AUTH_BASE_URL}/deviceauth/callback`;
 const OPENAI_CODEX_DEVICE_CODE_TIMEOUT_MS = 15 * 60_000;
 const OPENAI_CODEX_DEVICE_CODE_DEFAULT_INTERVAL_MS = 5_000;
@@ -46,7 +46,7 @@ type CodexJwtPayload = {
 
 type OAuthCredential = {
   type: "oauth";
-  provider: "openai-codex";
+  provider: "openai" | "openai-codex";
   access: string;
   refresh: string;
   expires: number;
@@ -307,12 +307,12 @@ async function persistCodexCredentials(input: {
   creds: DeviceCodeCredentials;
 }): Promise<{ profileId: string; email: string | null; accountId: string | null }> {
   const identity = resolveCodexAuthIdentity(input.creds.access);
-  const profileId = buildAuthProfileId("openai-codex", identity.profileName);
+  const profileId = buildAuthProfileId("openai", identity.profileName);
   for (const authStorePath of resolveCodexAuthStorePaths(input.configPath)) {
     const authStore = await readAuthProfilesStore(authStorePath);
     authStore.profiles[profileId] = {
       type: "oauth",
-      provider: "openai-codex",
+      provider: "openai",
       access: input.creds.access,
       refresh: input.creds.refresh,
       expires: input.creds.expires,
@@ -338,14 +338,14 @@ async function persistCodexCredentials(input: {
       profiles: {
         ...currentProfiles,
         [profileId]: {
-          provider: "openai-codex",
+          provider: "openai",
           mode: "oauth",
           ...(identity.email ? { email: identity.email } : {}),
         },
       },
       order: {
         ...currentOrder,
-        "openai-codex": mergeProviderOrder(currentOrder["openai-codex"], profileId),
+        openai: mergeProviderOrder(currentOrder.openai, profileId),
       },
     },
     agents: {
@@ -354,7 +354,12 @@ async function persistCodexCredentials(input: {
         ...currentDefaults,
         models: {
           ...currentModels,
-          [OPENAI_CODEX_DEFAULT_MODEL]: currentModels[OPENAI_CODEX_DEFAULT_MODEL] ?? {},
+          [OPENAI_CODEX_DEFAULT_MODEL]: {
+            ...(isRecord(currentModels[OPENAI_CODEX_DEFAULT_MODEL])
+              ? currentModels[OPENAI_CODEX_DEFAULT_MODEL]
+              : {}),
+            agentRuntime: { id: "codex" },
+          },
         },
       },
     },
@@ -520,7 +525,7 @@ async function readPersistedCodexStatus(
       if (!isRecord(credential)) {
         continue;
       }
-      if (credential.type !== "oauth" || credential.provider !== "openai-codex") {
+      if (credential.type !== "oauth" || (credential.provider !== "openai" && credential.provider !== "openai-codex")) {
         continue;
       }
       entriesByProfileId.set(profileId, credential);

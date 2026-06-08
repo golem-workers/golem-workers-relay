@@ -673,13 +673,13 @@ async function setModel(input: {
   const agentsCfg = ensureRecord(nextConfig, "agents");
   const defaultsCfg = ensureRecord(agentsCfg, "defaults");
   const modelCfg = ensureRecord(defaultsCfg, "model");
-  const storedPrimaryModel = input.model.trim();
-  const storedFallbacks = fallbacks;
-  modelCfg.primary = storedPrimaryModel;
-  modelCfg.fallbacks = storedFallbacks;
-  ensureModelRegistryEntry(defaultsCfg, storedPrimaryModel);
+  const storedPrimaryModel = mapStoredModelRef(input.model);
+  const storedFallbacks = fallbacks.map(mapStoredModelRef);
+  modelCfg.primary = storedPrimaryModel.modelRef;
+  modelCfg.fallbacks = storedFallbacks.map((fallback) => fallback.modelRef);
+  ensureModelRegistryEntry(defaultsCfg, storedPrimaryModel.modelRef, storedPrimaryModel.agentRuntimeId);
   for (const fallbackModel of storedFallbacks) {
-    ensureModelRegistryEntry(defaultsCfg, fallbackModel);
+    ensureModelRegistryEntry(defaultsCfg, fallbackModel.modelRef, fallbackModel.agentRuntimeId);
   }
   if (typeof input.contextTokens === "number" && Number.isFinite(input.contextTokens) && input.contextTokens > 0) {
     defaultsCfg.contextTokens = Math.floor(input.contextTokens);
@@ -722,25 +722,56 @@ function getPurposeConfigKey(purpose: ModelAssignmentPurpose): string {
   }
 }
 
-function mapStoredModelRef(modelRef: string): string {
-  return modelRef.trim();
+function mapStoredModelRef(modelRef: string): { modelRef: string; agentRuntimeId: string | null } {
+  const trimmed = modelRef.trim();
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("openai-codex/")) {
+    return {
+      modelRef: `openai/${trimmed.slice("openai-codex/".length)}`,
+      agentRuntimeId: "codex",
+    };
+  }
+  if (lower.startsWith("codex/")) {
+    return {
+      modelRef: `openai/${trimmed.slice("codex/".length)}`,
+      agentRuntimeId: "codex",
+    };
+  }
+  return { modelRef: trimmed, agentRuntimeId: null };
 }
 
-function mapPublicModelRef(modelRef: string | null | undefined): string | null {
+function mapPublicModelRef(
+  modelRef: string | null | undefined,
+  defaultsCfg?: Record<string, unknown> | null,
+): string | null {
   const trimmed = String(modelRef ?? "").trim();
   if (!trimmed) return null;
   if (trimmed.toLowerCase().startsWith("openai-codex/")) {
     return `codex/${trimmed.slice("openai-codex/".length)}`;
   }
+  const modelsCfg = ensureOptionalRecord(defaultsCfg?.models);
+  const modelCfg = ensureOptionalRecord(modelsCfg?.[trimmed]);
+  const agentRuntime = ensureOptionalRecord(modelCfg?.agentRuntime);
+  if (agentRuntime?.id === "codex" && trimmed.toLowerCase().startsWith("openai/")) {
+    return `codex/${trimmed.slice("openai/".length)}`;
+  }
   return trimmed;
 }
 
-function ensureModelRegistryEntry(defaultsCfg: Record<string, unknown>, modelRef: string | null): void {
+function ensureModelRegistryEntry(
+  defaultsCfg: Record<string, unknown>,
+  modelRef: string | null,
+  agentRuntimeId?: string | null,
+): void {
   const trimmed = String(modelRef ?? "").trim();
   if (!trimmed) return;
   const modelsCfg = ensureRecord(defaultsCfg, "models");
   const existingModel = modelsCfg[trimmed];
-  modelsCfg[trimmed] = isRecord(existingModel) ? existingModel : {};
+  const nextModel = isRecord(existingModel) ? existingModel : {};
+  if (agentRuntimeId) {
+    nextModel.agentRuntime = { id: agentRuntimeId };
+  }
+  modelsCfg[trimmed] = nextModel;
 }
 
 async function readModelAssignments(configPath: string): Promise<AgentControlResult> {
@@ -763,8 +794,8 @@ async function readModelAssignments(configPath: string): Promise<AgentControlRes
     return {
       kind: "assignment" as const,
       purpose,
-      primary: mapPublicModelRef(typeof entry?.primary === "string" ? entry.primary : null),
-      fallback: mapPublicModelRef(fallbackValues[0] ?? null),
+      primary: mapPublicModelRef(typeof entry?.primary === "string" ? entry.primary : null, defaultsCfg),
+      fallback: mapPublicModelRef(fallbackValues[0] ?? null, defaultsCfg),
     };
   });
   return {
@@ -792,11 +823,11 @@ async function setModelAssignment(input: {
   const modelCfg = ensureRecord(defaultsCfg, getPurposeConfigKey(input.purpose));
   const storedPrimaryModel = mapStoredModelRef(input.primary);
   const storedFallback = input.fallback ? mapStoredModelRef(input.fallback) : null;
-  modelCfg.primary = storedPrimaryModel;
-  modelCfg.fallbacks = storedFallback ? [storedFallback] : [];
-  ensureModelRegistryEntry(defaultsCfg, storedPrimaryModel);
+  modelCfg.primary = storedPrimaryModel.modelRef;
+  modelCfg.fallbacks = storedFallback ? [storedFallback.modelRef] : [];
+  ensureModelRegistryEntry(defaultsCfg, storedPrimaryModel.modelRef, storedPrimaryModel.agentRuntimeId);
   if (storedFallback) {
-    ensureModelRegistryEntry(defaultsCfg, storedFallback);
+    ensureModelRegistryEntry(defaultsCfg, storedFallback.modelRef, storedFallback.agentRuntimeId);
   }
   if (input.purpose === "main" && typeof input.contextTokens === "number" && Number.isFinite(input.contextTokens) && input.contextTokens > 0) {
     defaultsCfg.contextTokens = Math.floor(input.contextTokens);
