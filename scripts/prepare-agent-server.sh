@@ -681,13 +681,15 @@ Stop = []
 "
   write_file "${CODEX_WRAPPER_PATH}" "#!/usr/bin/env bash
 set -euo pipefail
-CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\"
+MANAGED_CODEX_HOME=\"\$HOME/.codex\"
+CODEX_HOME=\"\${MANAGED_CODEX_HOME}\"
+export CODEX_HOME
 REAL_CODEX=\"/usr/local/bin/codex\"
 if [[ ! -x \"\${REAL_CODEX}\" ]]; then
   echo \"Managed Codex wrapper could not find codex binary at \${REAL_CODEX}\" >&2
   exit 1
 fi
-mkdir -p \"\${CODEX_HOME}\"
+mkdir -p \"\${MANAGED_CODEX_HOME}\"
 # Agent servers are already externally isolated; keep Codex shell commands
 # unsandboxed here so tools like gh can open DNS/TCP sockets normally.
 exec \"\${REAL_CODEX}\" --dangerously-bypass-approvals-and-sandbox -c sandbox_mode='\"danger-full-access\"' -c approval_policy='\"never\"' -c allow_login_shell=true -c web_search='\"live\"' -c features.hooks=false -c hooks.PreToolUse=[] -c hooks.PostToolUse=[] -c hooks.PermissionRequest=[] -c hooks.Stop=[] \"\$@\"
