@@ -665,11 +665,11 @@ describe("selfNudgeRunner", () => {
     expect(finalNotice).toHaveBeenCalledTimes(1);
   });
 
-  it("treats Status 100 complete as a deterministic final status without asking the model", async () => {
+  it("still asks the model to judge assistant replies that claim Status 100 complete", async () => {
     const sendNudgeMessage = makeSendNudgeMessageMock();
     const decide = vi.fn().mockResolvedValue({
       shouldNudge: true,
-      statusNudgeMessage: "Keep going.",
+      statusNudgeMessage: "The assistant claimed completion, but the original request still needs verification.",
       finalConfidence: 10,
     });
     const notifyFinalDecision = vi.fn<(input: FinalDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
@@ -694,18 +694,24 @@ describe("selfNudgeRunner", () => {
       decide,
     });
 
-    expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
-    expect(decide).not.toHaveBeenCalled();
-    expect(sendNudgeMessage).not.toHaveBeenCalled();
-    expect(notifyFinalDecision).toHaveBeenCalledTimes(1);
-    const [notice] = notifyFinalDecision.mock.calls[0] as [FinalDecisionNotice];
-    expect(notice.decision).toEqual({
-      shouldNudge: false,
-      statusNudgeMessage: null,
-      finalConfidence: 100,
-      reasonCode: "final_answer",
-      reason: "assistant reported Status: 100% complete",
-    });
+    expect(result).toEqual({ nudged: true, nextDelayMs: 2_000 });
+    expect(decide).toHaveBeenCalledTimes(1);
+    const [decisionInput] = decide.mock.calls[0] as [{ transcript: FreshestSessionTranscript }];
+    expect(decisionInput.transcript.messages).toEqual([
+      { role: "user", text: "please finish this task", lineIndex: 0 },
+      {
+        role: "assistant",
+        text: "Everything requested is done.\n\nStatus: 100% complete",
+        lineIndex: 1,
+      },
+    ]);
+    expect(sendNudgeMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageText:
+          "[STATUS_NUDGE]\nThe assistant claimed completion, but the original request still needs verification.",
+      })
+    );
+    expect(notifyFinalDecision).not.toHaveBeenCalled();
   });
 
   it("sends a user-visible debug notice with the status nudge message when enabled", async () => {
