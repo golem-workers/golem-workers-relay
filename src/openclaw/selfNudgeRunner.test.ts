@@ -574,6 +574,97 @@ describe("selfNudgeRunner", () => {
     expect(computeSelfNudgeWaitMs(1_000, state.consecutiveNudges)).toBe(2_000);
   });
 
+  it("does not repeat the same persisted nudge when the analysis transcript is unchanged", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-once-"));
+    const processedStore = createFileSelfNudgeProcessedStore({ stateDir });
+    const transcript = makeTranscript({ mtimeMs: 10_000 });
+    const firstSender = makeSendNudgeMessageMock();
+
+    await evaluateSelfNudgeTick({
+      settings: enabledSettings,
+      transcript,
+      state: makeState(),
+      nowMs: 11_000,
+      sendNudgeMessage: firstSender,
+      processedStore,
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: true,
+        statusNudgeMessage: "Continue with the migration.",
+        finalConfidence: 10,
+      }),
+    });
+
+    const secondSender = makeSendNudgeMessageMock();
+    const secondDecision = vi.fn().mockResolvedValue({
+      shouldNudge: true,
+      statusNudgeMessage: "Continue with the migration again.",
+      finalConfidence: 10,
+    });
+    const second = await evaluateSelfNudgeTick({
+      settings: enabledSettings,
+      transcript: makeTranscript({ ...transcript, mtimeMs: 30_000 }),
+      state: makeState(),
+      nowMs: 31_000,
+      sendNudgeMessage: secondSender,
+      processedStore: createFileSelfNudgeProcessedStore({ stateDir }),
+      decide: secondDecision,
+    });
+
+    expect(firstSender).toHaveBeenCalledTimes(1);
+    expect(second).toEqual({ nudged: false, nextDelayMs: 1_000 });
+    expect(secondDecision).not.toHaveBeenCalled();
+    expect(secondSender).not.toHaveBeenCalled();
+  });
+
+  it("rechecks a previously nudged request when assistant messages change", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-recheck-"));
+    const processedStore = createFileSelfNudgeProcessedStore({ stateDir });
+    const transcript = makeTranscript({ mtimeMs: 10_000 });
+
+    await evaluateSelfNudgeTick({
+      settings: { ...enabledSettings, finalNoticeEnabled: true },
+      transcript,
+      state: makeState(),
+      nowMs: 11_000,
+      sendNudgeMessage: makeSendNudgeMessageMock(),
+      processedStore,
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: true,
+        statusNudgeMessage: "Continue with the migration.",
+        finalConfidence: 10,
+      }),
+    });
+
+    const finalNotice = vi.fn().mockResolvedValue(undefined);
+    const finalDecision = vi.fn().mockResolvedValue({
+      shouldNudge: false,
+      statusNudgeMessage: null,
+      finalConfidence: 100,
+      reasonCode: "final_answer",
+    });
+    const result = await evaluateSelfNudgeTick({
+      settings: { ...enabledSettings, finalNoticeEnabled: true },
+      transcript: makeTranscript({
+        ...transcript,
+        mtimeMs: 30_000,
+        messages: [
+          { role: "user", text: "please finish this task", lineIndex: 0 },
+          { role: "assistant", text: "Done.", lineIndex: 2 },
+        ],
+      }),
+      state: makeState(),
+      nowMs: 31_000,
+      sendNudgeMessage: makeSendNudgeMessageMock(),
+      processedStore: createFileSelfNudgeProcessedStore({ stateDir }),
+      notifyFinalDecision: finalNotice,
+      decide: finalDecision,
+    });
+
+    expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
+    expect(finalDecision).toHaveBeenCalledTimes(1);
+    expect(finalNotice).toHaveBeenCalledTimes(1);
+  });
+
   it("sends a user-visible debug notice with the status nudge message when enabled", async () => {
     const sendNudgeMessage = makeSendNudgeMessageMock();
     const notifyNudgeDecision = vi.fn().mockResolvedValue(undefined);

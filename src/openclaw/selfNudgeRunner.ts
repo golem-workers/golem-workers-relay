@@ -65,6 +65,7 @@ export type SelfNudgeMessageSender = (input: {
 export type SelfNudgeProcessedRecord = {
   sessionKey: string;
   userFingerprint: string;
+  analysisFingerprint?: string | null;
   latestUserTimestampMs: number | null;
   latestUserLineIndex: number;
   decision: SelfNudgeDecision;
@@ -289,6 +290,15 @@ export async function evaluateSelfNudgeTick(input: {
     return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
   }
 
+  const analysisFingerprint = fingerprintAnalysisMessages(input.transcript.messages);
+  if (
+    existingRecord &&
+    existingRecord.decision.shouldNudge &&
+    existingRecord.analysisFingerprint === analysisFingerprint
+  ) {
+    return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
+  }
+
   const decision = await input.decide({
     settings: input.settings,
     transcript: input.transcript,
@@ -296,6 +306,7 @@ export async function evaluateSelfNudgeTick(input: {
   await input.processedStore?.markAnalyzed({
     sessionKey: input.transcript.sessionKey,
     userFingerprint,
+    analysisFingerprint,
     latestUserTimestampMs: latestUser.timestampMs ?? null,
     latestUserLineIndex: latestUser.lineIndex,
     decision,
@@ -869,6 +880,8 @@ function parseProcessedRecords(value: unknown): Record<string, SelfNudgeProcesse
     records[key] = {
       sessionKey,
       userFingerprint,
+      analysisFingerprint:
+        typeof rawRecord.analysisFingerprint === "string" ? rawRecord.analysisFingerprint : null,
       latestUserTimestampMs:
         typeof rawRecord.latestUserTimestampMs === "number" ? rawRecord.latestUserTimestampMs : null,
       latestUserLineIndex,
@@ -1001,6 +1014,22 @@ function formatNoticeTime(timestampMs: number): string {
 function fingerprintMessage(message: TranscriptMessage): string {
   return createHash("sha256")
     .update(`${message.lineIndex}\n${message.role}\n${message.text}`)
+    .digest("hex");
+}
+
+function fingerprintAnalysisMessages(messages: TranscriptMessage[]): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        messages.map((message) => ({
+          role: message.role,
+          text: message.text,
+          lineIndex: message.lineIndex,
+          timestampMs: message.timestampMs ?? null,
+          isLatestUserRequest: message.isLatestUserRequest === true,
+        }))
+      )
+    )
     .digest("hex");
 }
 
