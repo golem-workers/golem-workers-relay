@@ -172,24 +172,21 @@ export function createSelfNudgeRunner(input: {
         schedule(DISABLED_POLL_INTERVAL_MS);
         return;
       }
-      const stateDir = input.stateDir ?? resolveOpenclawStateDir();
-      const transcript =
-        (input.gateway
-          ? await readFreshestOpenclawRuntimeTranscript({
-              gateway: input.gateway,
-              analyzedRecentMessageCount: settings.analyzedRecentMessageCount,
-            }).catch((error) => {
-              logger.warn(
-                { err: error instanceof Error ? error.message : String(error) },
-                "Relay self-nudge runtime transcript read failed; falling back to local session files"
-              );
-              return null;
-            })
-          : null) ??
-        (await readFreshestSessionTranscript({
-          stateDir,
-          analyzedRecentMessageCount: settings.analyzedRecentMessageCount,
-        }));
+      if (!input.gateway) {
+        logger.warn("Relay self-nudge skipped because OpenClaw gateway is unavailable");
+        schedule(pollIntervalMs);
+        return;
+      }
+      const transcript = await readFreshestOpenclawRuntimeTranscript({
+        gateway: input.gateway,
+        analyzedRecentMessageCount: settings.analyzedRecentMessageCount,
+      }).catch((error) => {
+        logger.warn(
+          { err: error instanceof Error ? error.message : String(error) },
+          "Relay self-nudge runtime transcript read failed"
+        );
+        return null;
+      });
       if (!transcript) {
         schedule(pollIntervalMs);
         return;

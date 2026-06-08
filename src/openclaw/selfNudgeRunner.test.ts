@@ -85,6 +85,44 @@ describe("selfNudgeRunner", () => {
     await expect(runner.tick()).resolves.toBeUndefined();
   });
 
+  it("does not fall back to session files when OpenClaw gateway is unavailable", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-"));
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "active.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      JSON.stringify({
+        type: "message",
+        message: { role: "user", timestamp: 4_000, content: "finish this direct request" },
+      })
+    );
+    await fs.writeFile(
+      path.join(sessionsDir, "sessions.json"),
+      JSON.stringify({
+        "agent:main:telegram:direct:449985919": { sessionFile },
+      }),
+      "utf8"
+    );
+    const sendNudgeMessage = makeSendNudgeMessageMock();
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error("should not call model"));
+    const runner = createSelfNudgeRunner({
+      settings: enabledSettings,
+      stateDir,
+      sendNudgeMessage,
+      openrouterProxyPort: 18080,
+      openrouterProxyPathPrefix: "/provider-proxy/openrouter",
+      pollIntervalMs: 1_000,
+      fetchImpl,
+    });
+
+    await runner.tick(5_000);
+    runner.stop();
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(sendNudgeMessage).not.toHaveBeenCalled();
+  });
+
   it("selects the OpenClaw session with the newest user request and returns that request plus N later assistant messages", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-"));
     const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
