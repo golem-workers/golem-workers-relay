@@ -299,6 +299,44 @@ export async function evaluateSelfNudgeTick(input: {
     return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
   }
 
+  const statusCompleteMessage = findStatusCompleteAssistantMessage(input.transcript);
+  if (statusCompleteMessage) {
+    const decision: SelfNudgeDecision = {
+      shouldNudge: false,
+      statusNudgeMessage: null,
+      finalConfidence: 100,
+      reasonCode: "final_answer",
+      reason: "assistant reported Status: 100% complete",
+    };
+    await input.processedStore?.markAnalyzed({
+      sessionKey: input.transcript.sessionKey,
+      userFingerprint,
+      analysisFingerprint,
+      latestUserTimestampMs: latestUser.timestampMs ?? null,
+      latestUserLineIndex: latestUser.lineIndex,
+      decision,
+      analyzedAtMs: input.nowMs,
+    });
+    if (
+      input.settings.finalNoticeEnabled &&
+      input.notifyFinalDecision &&
+      input.state.lastFinalNoticeFingerprint !== userFingerprint
+    ) {
+      await input.notifyFinalDecision({
+        transcript: input.transcript,
+        decision,
+        nowMs: input.nowMs,
+      });
+      input.state.lastFinalNoticeFingerprint = userFingerprint;
+      await input.processedStore?.markFinalNoticeSent({
+        sessionKey: input.transcript.sessionKey,
+        userFingerprint,
+        sentAtMs: input.nowMs,
+      });
+    }
+    return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
+  }
+
   const decision = await input.decide({
     settings: input.settings,
     transcript: input.transcript,
@@ -994,6 +1032,20 @@ function findFinalAssistantMessage(transcript: FreshestSessionTranscript): Trans
     }
   }
   return null;
+}
+
+function findStatusCompleteAssistantMessage(transcript: FreshestSessionTranscript): TranscriptMessage | null {
+  const message = findFinalAssistantMessage(transcript);
+  return message && hasStatusCompleteFinalLine(message.text) ? message : null;
+}
+
+function hasStatusCompleteFinalLine(text: string): boolean {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const lastLine = lines.at(-1) ?? "";
+  return /^Status:\s*100%\s+complete\.?$/i.test(lastLine);
 }
 
 function makeFinalNoticePreview(text: string): string {

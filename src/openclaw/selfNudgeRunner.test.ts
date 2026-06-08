@@ -665,6 +665,49 @@ describe("selfNudgeRunner", () => {
     expect(finalNotice).toHaveBeenCalledTimes(1);
   });
 
+  it("treats Status 100 complete as a deterministic final status without asking the model", async () => {
+    const sendNudgeMessage = makeSendNudgeMessageMock();
+    const decide = vi.fn().mockResolvedValue({
+      shouldNudge: true,
+      statusNudgeMessage: "Keep going.",
+      finalConfidence: 10,
+    });
+    const notifyFinalDecision = vi.fn<(input: FinalDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
+
+    const result = await evaluateSelfNudgeTick({
+      settings: { ...enabledSettings, finalNoticeEnabled: true },
+      transcript: makeTranscript({
+        mtimeMs: 10_000,
+        messages: [
+          { role: "user", text: "please finish this task", lineIndex: 0 },
+          {
+            role: "assistant",
+            text: "Everything requested is done.\n\nStatus: 100% complete",
+            lineIndex: 1,
+          },
+        ],
+      }),
+      state: makeState(),
+      nowMs: 11_000,
+      sendNudgeMessage,
+      notifyFinalDecision,
+      decide,
+    });
+
+    expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
+    expect(decide).not.toHaveBeenCalled();
+    expect(sendNudgeMessage).not.toHaveBeenCalled();
+    expect(notifyFinalDecision).toHaveBeenCalledTimes(1);
+    const [notice] = notifyFinalDecision.mock.calls[0] as [FinalDecisionNotice];
+    expect(notice.decision).toEqual({
+      shouldNudge: false,
+      statusNudgeMessage: null,
+      finalConfidence: 100,
+      reasonCode: "final_answer",
+      reason: "assistant reported Status: 100% complete",
+    });
+  });
+
   it("sends a user-visible debug notice with the status nudge message when enabled", async () => {
     const sendNudgeMessage = makeSendNudgeMessageMock();
     const notifyNudgeDecision = vi.fn().mockResolvedValue(undefined);
