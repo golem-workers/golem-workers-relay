@@ -63,9 +63,7 @@ describe("deliverSystemNotificationFromRelay", () => {
   it("falls back to direct OpenClaw Telegram runtime sessions when the activity index is empty", async () => {
     const index = new ConversationActivityIndex({ filePath: await tempIndexPath() });
     const now = Date.now();
-    const sendTelegramTransportAction = vi.fn().mockResolvedValue({
-      transportMessageId: "tg-system-1",
-    });
+    const sendTelegramTransportAction = vi.fn();
     const deliverSystemNotification = vi.fn().mockResolvedValue({
       accepted: true,
       backendMessageId: "system-notification:notif_1:tg:7278830001:openclaw-direct",
@@ -97,6 +95,12 @@ describe("deliverSystemNotificationFromRelay", () => {
             ],
           });
         }
+        if (method === "cron.add") {
+          return Promise.resolve({ id: "cron-system-1" });
+        }
+        if (method === "cron.run") {
+          return Promise.resolve({ ok: true, runId: "run-system-1" });
+        }
         return Promise.resolve({});
       }),
     };
@@ -112,32 +116,101 @@ describe("deliverSystemNotificationFromRelay", () => {
       status: "delivered",
       selectedChannel: "telegram",
       sessionKey: "tg:7278830001:openclaw-direct",
-      transportMessageId: "tg-system-1",
     });
-    expect(sendTelegramTransportAction).toHaveBeenCalledWith({
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-      action: expect.objectContaining({
-        kind: "message.send",
-        transportTarget: {
-          channel: "telegram",
-          chatId: "7278830001",
-        },
+    expect(sendTelegramTransportAction).not.toHaveBeenCalled();
+    expect(gateway.request).toHaveBeenCalledWith(
+      "cron.add",
+      expect.objectContaining({
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        deleteAfterRun: true,
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-        openclawContext: expect.objectContaining({
-          sessionKey: "tg:7278830001:openclaw-direct",
+        payload: expect.objectContaining({
+          kind: "agentTurn",
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          message: expect.stringContaining("Credits are exhausted"),
         }),
-        payload: { text: "Credits are exhausted" },
+        delivery: {
+          mode: "announce",
+          channel: "telegram",
+          to: "telegram:7278830001",
+          bestEffort: false,
+        },
       }),
-    });
+      { timeoutMs: 10_000 }
+    );
+    expect(gateway.request).toHaveBeenCalledWith(
+      "cron.run",
+      { jobId: "cron-system-1", mode: "force" },
+      { timeoutMs: 10_000 }
+    );
     expect(deliverSystemNotification).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionKey: "tg:7278830001:openclaw-direct",
         channel: "telegram",
-        transportMessageId: "tg-system-1",
       })
     );
     expect(index.findBestUserVisibleRoute({ userId: "user_1" })?.sessionKey).toBe(
       "tg:7278830001:openclaw-direct"
+    );
+  });
+
+  it("uses OpenClaw cron announce for known direct Telegram OpenClaw routes", async () => {
+    const index = new ConversationActivityIndex({ filePath: await tempIndexPath() });
+    await index.recordTranscript({
+      sessionKey: "tg:7278830001:openclaw-direct",
+      channel: "telegram",
+      transportTarget: { chatId: "7278830001" },
+      text: "hello from direct telegram",
+      userId: "user_1",
+      lastUserMessageAt: Date.now(),
+      at: Date.now(),
+    });
+    const sendTelegramTransportAction = vi.fn();
+    const deliverSystemNotification = vi.fn().mockResolvedValue({
+      accepted: true,
+      backendMessageId: "system-notification:notif_1:tg:7278830001:openclaw-direct",
+    });
+    const backend = {
+      sendTelegramTransportAction,
+      deliverSystemNotification,
+    } as unknown as BackendClient;
+    const gateway = {
+      request: vi.fn((method: string) => {
+        if (method === "cron.add") {
+          return Promise.resolve({ id: "cron-system-1" });
+        }
+        if (method === "cron.run") {
+          return Promise.resolve({ ok: true, runId: "run-system-1" });
+        }
+        return Promise.resolve({});
+      }),
+    };
+
+    const result = await deliverSystemNotificationFromRelay({
+      backend,
+      activityIndex: index,
+      message: systemNotificationMessage(),
+      gateway,
+    });
+
+    expect(result).toEqual({
+      status: "delivered",
+      selectedChannel: "telegram",
+      sessionKey: "tg:7278830001:openclaw-direct",
+    });
+    expect(sendTelegramTransportAction).not.toHaveBeenCalled();
+    expect(gateway.request).toHaveBeenCalledWith(
+      "cron.add",
+      expect.objectContaining({
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        delivery: expect.objectContaining({
+          mode: "announce",
+          channel: "telegram",
+          to: "telegram:7278830001",
+        }),
+      }),
+      { timeoutMs: 10_000 }
     );
   });
 });

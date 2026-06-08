@@ -45,7 +45,31 @@ export async function deliverSystemNotificationFromRelay(input: {
 
   try {
     let transportMessageId: string | undefined;
-    if (route.channel === "telegram") {
+    if (isDirectOpenclawTelegramRoute(route)) {
+      if (!input.gateway) {
+        return {
+          status: "failed",
+          selectedChannel: route.channel,
+          sessionKey: route.sessionKey,
+          error: "OPENCLAW_GATEWAY_MISSING",
+        };
+      }
+      const chatId = route.transportTarget?.chatId;
+      if (!chatId) {
+        return {
+          status: "failed",
+          selectedChannel: route.channel,
+          sessionKey: route.sessionKey,
+          error: "TELEGRAM_CHAT_ID_MISSING",
+        };
+      }
+      await scheduleDirectOpenclawTelegramAnnouncement({
+        gateway: input.gateway,
+        notificationId: task.notificationId,
+        text: task.text,
+        chatId,
+      });
+    } else if (route.channel === "telegram") {
       const chatId = route.transportTarget?.chatId;
       if (!chatId) {
         return {
@@ -115,6 +139,51 @@ export async function deliverSystemNotificationFromRelay(input: {
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function isDirectOpenclawTelegramRoute(route: ConversationActivityRecord): boolean {
+  return route.channel === "telegram" && route.sessionKey.endsWith(":openclaw-direct");
+}
+
+async function scheduleDirectOpenclawTelegramAnnouncement(input: {
+  gateway: GatewayLike;
+  notificationId: string;
+  text: string;
+  chatId: string;
+}): Promise<void> {
+  const addResult = await input.gateway.request(
+    "cron.add",
+    {
+      name: `system-notification-${input.notificationId}`,
+      schedule: { kind: "at", at: new Date(Date.now() + 1_000).toISOString() },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      deleteAfterRun: true,
+      payload: {
+        kind: "agentTurn",
+        message: `Deliver this system notification as your final visible response. Reply with exactly the notification text and nothing else:\n\n${input.text}`,
+        timeoutSeconds: 120,
+      },
+      delivery: {
+        mode: "announce",
+        channel: "telegram",
+        to: `telegram:${input.chatId}`,
+        bestEffort: false,
+      },
+      failureAlert: false,
+    },
+    { timeoutMs: 10_000 }
+  );
+  const jobId = readCronJobId(addResult);
+  if (!jobId) {
+    throw new Error("OPENCLAW_CRON_JOB_ID_MISSING");
+  }
+  await input.gateway.request("cron.run", { jobId, mode: "force" }, { timeoutMs: 10_000 });
+}
+
+function readCronJobId(payload: unknown): string | null {
+  if (!isPlainObject(payload)) return null;
+  return readString(payload.id) ?? readString(payload.jobId);
 }
 
 async function resolveDirectOpenclawTelegramRoute(input: {
