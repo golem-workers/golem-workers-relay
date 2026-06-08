@@ -287,7 +287,10 @@ export async function evaluateSelfNudgeTick(input: {
   }
 
   const waitMs = computeSelfNudgeWaitMs(input.settings.baseTimeoutMs, input.state.consecutiveNudges);
-  const anchorMs = input.state.lastNudgeAtMs ?? input.transcript.mtimeMs;
+  const latestAssistantActivityMs = findLatestAssistantActivityAfterLatestUser(input.transcript);
+  const transcriptActivityMs =
+    latestAssistantActivityMs == null ? input.transcript.mtimeMs : Math.max(input.transcript.mtimeMs, latestAssistantActivityMs);
+  const anchorMs = input.state.lastNudgeAtMs ?? transcriptActivityMs;
   const elapsedMs = input.nowMs - anchorMs;
   if (elapsedMs < waitMs) {
     return { nudged: false, nextDelayMs: waitMs - elapsedMs };
@@ -496,6 +499,23 @@ export function buildSelfNudgeAnalysisTranscript(input: {
 function computeRuntimeHistoryScanLimit(analyzedRecentMessageCount: number): number {
   const requested = Math.max(0, Math.trunc(analyzedRecentMessageCount));
   return Math.max(RUNTIME_HISTORY_SCAN_LIMIT, requested + 1);
+}
+
+function findLatestAssistantActivityAfterLatestUser(transcript: FreshestSessionTranscript): number | null {
+  const latestUserLineIndex = transcript.latestUserMessage?.lineIndex;
+  if (latestUserLineIndex == null) return null;
+  let latestTimestampMs: number | null = null;
+  for (const message of transcript.messages) {
+    if (
+      message.role !== "assistant" ||
+      message.lineIndex <= latestUserLineIndex ||
+      typeof message.timestampMs !== "number"
+    ) {
+      continue;
+    }
+    latestTimestampMs = latestTimestampMs == null ? message.timestampMs : Math.max(latestTimestampMs, message.timestampMs);
+  }
+  return latestTimestampMs;
 }
 
 function canUseTranscriptForSelfNudge(sessionKey: string, latestUserText: string): boolean {

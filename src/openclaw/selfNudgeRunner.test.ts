@@ -650,6 +650,40 @@ describe("selfNudgeRunner", () => {
     expect(sendNudgeMessage).not.toHaveBeenCalled();
   });
 
+  it("uses a fresh assistant message timestamp as activity even when transcript mtime is stale", async () => {
+    const sendNudgeMessage = makeSendNudgeMessageMock();
+    const decide = vi.fn().mockResolvedValue({
+      shouldNudge: true,
+      statusNudgeMessage: "Continue.",
+      finalConfidence: 70,
+    });
+
+    const result = await evaluateSelfNudgeTick({
+      settings: { ...enabledSettings, baseTimeoutMs: 300_000 },
+      transcript: makeTranscript({
+        mtimeMs: 10_000,
+        messages: [
+          { role: "user", text: "debug the prod agent", lineIndex: 0, timestampMs: 0 },
+          {
+            role: "assistant",
+            text: "Proxy is fixed; now running the embedded smoke test.",
+            lineIndex: 1,
+            timestampMs: 118_000,
+          },
+        ],
+        latestUserMessage: { role: "user", text: "debug the prod agent", lineIndex: 0, timestampMs: 0 },
+      }),
+      state: makeState(),
+      nowMs: 120_000,
+      sendNudgeMessage,
+      decide,
+    });
+
+    expect(result).toEqual({ nudged: false, nextDelayMs: 298_000 });
+    expect(decide).not.toHaveBeenCalled();
+    expect(sendNudgeMessage).not.toHaveBeenCalled();
+  });
+
   it("does not repeat the same persisted nudge when the analysis transcript is unchanged", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-once-"));
     const processedStore = createFileSelfNudgeProcessedStore({ stateDir });
