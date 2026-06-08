@@ -110,6 +110,18 @@ export function buildFinalDecisionNoticeText(input: {
   return `FINAL(${input.decision.finalConfidence}%): message "${preview}" from ${timeText} is final`;
 }
 
+export function buildNudgeDecisionNoticeText(input: {
+  transcript: FreshestSessionTranscript;
+  decision: SelfNudgeDecision;
+  messageText: string;
+  nowMs: number;
+}): string {
+  const userPreview = makeNoticePreview(input.transcript.latestUserMessage?.text ?? "");
+  const assistantPreview = makeNoticePreview(findFinalAssistantMessage(input.transcript)?.text ?? "");
+  const assistantText = assistantPreview ? ` assistant "${assistantPreview}"` : "";
+  return `NUDGE(${input.decision.finalConfidence}% final): latest user "${userPreview}"${assistantText}\n${input.messageText}`;
+}
+
 export function createSelfNudgeRunner(input: {
   settings: RelaySelfNudgeSettings;
   stateDir?: string;
@@ -998,9 +1010,13 @@ function findFinalAssistantMessage(transcript: FreshestSessionTranscript): Trans
 }
 
 function makeFinalNoticePreview(text: string): string {
+  return makeNoticePreview(text, 10);
+}
+
+function makeNoticePreview(text: string, maxLength = 48): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) return "";
-  const preview = normalized.slice(0, 10);
+  const preview = normalized.slice(0, maxLength);
   return normalized.length > preview.length ? `${preview}...` : preview;
 }
 

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   buildFinalDecisionNoticeText,
+  buildNudgeDecisionNoticeText,
   buildOpenRouterProxyChatCompletionsUrl,
   buildSelfNudgeAnalysisTranscript,
   computeSelfNudgeWaitMs,
@@ -38,6 +39,14 @@ function makeSendNudgeMessageMock() {
 type FinalDecisionNotice = {
   transcript: FreshestSessionTranscript;
   decision: SelfNudgeDecision;
+  nowMs: number;
+};
+
+type NudgeDecisionNotice = {
+  transcript: FreshestSessionTranscript;
+  decision: SelfNudgeDecision;
+  messageText: string;
+  taskId: string;
   nowMs: number;
 };
 
@@ -714,9 +723,9 @@ describe("selfNudgeRunner", () => {
     expect(notifyFinalDecision).not.toHaveBeenCalled();
   });
 
-  it("sends a user-visible debug notice with the status nudge message when enabled", async () => {
+  it("sends a user-visible debug notice with confidence and the status nudge message when enabled", async () => {
     const sendNudgeMessage = makeSendNudgeMessageMock();
-    const notifyNudgeDecision = vi.fn().mockResolvedValue(undefined);
+    const notifyNudgeDecision = vi.fn<(input: NudgeDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
 
     await evaluateSelfNudgeTick({
       settings: {
@@ -732,15 +741,14 @@ describe("selfNudgeRunner", () => {
       decide: vi.fn().mockResolvedValue({
         shouldNudge: true,
         statusNudgeMessage: "Continue with the migration.",
-        finalConfidence: 10,
+        finalConfidence: 37,
       }),
     });
 
-    expect(notifyNudgeDecision).toHaveBeenCalledWith(
-      expect.objectContaining({
-        messageText: "[STATUS_NUDGE]\nContinue with the migration.",
-      })
-    );
+    expect(notifyNudgeDecision).toHaveBeenCalledTimes(1);
+    const notice = notifyNudgeDecision.mock.calls[0]?.[0];
+    expect(notice?.messageText).toBe("[STATUS_NUDGE]\nContinue with the migration.");
+    expect(notice?.decision.finalConfidence).toBe(37);
   });
 
   it("passes status nudges to a user-owned conversation sender", async () => {
@@ -961,6 +969,41 @@ describe("selfNudgeRunner", () => {
     });
 
     expect(text).toBe('FINAL(97%): message "Finished t..." from 11:11 is final');
+  });
+
+  it("formats nudge debug notices with final confidence and decision context", () => {
+    const text = buildNudgeDecisionNoticeText({
+      transcript: makeTranscript({
+        messages: [
+          {
+            role: "user",
+            text: "Please deploy the release and confirm all checks are green.",
+            lineIndex: 0,
+          },
+          {
+            role: "assistant",
+            text: "I pushed the change, but deployment remains.",
+            lineIndex: 1,
+          },
+        ],
+        latestUserMessage: {
+          role: "user",
+          text: "Please deploy the release and confirm all checks are green.",
+          lineIndex: 0,
+        },
+      }),
+      decision: {
+        shouldNudge: true,
+        statusNudgeMessage: "Continue deployment.",
+        finalConfidence: 42,
+      },
+      messageText: "[STATUS_NUDGE]\nContinue deployment.",
+      nowMs: Date.UTC(2026, 5, 3, 11, 12),
+    });
+
+    expect(text).toBe(
+      'NUDGE(42% final): latest user "Please deploy the release and confirm all checks..." assistant "I pushed the change, but deployment remains."\n[STATUS_NUDGE]\nContinue deployment.'
+    );
   });
 
   it("does not send final notices for waiting-on-user decisions", async () => {
