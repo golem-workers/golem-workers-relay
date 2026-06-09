@@ -95,11 +95,8 @@ describe("deliverSystemNotificationFromRelay", () => {
             ],
           });
         }
-        if (method === "cron.add") {
-          return Promise.resolve({ id: "cron-system-1" });
-        }
-        if (method === "cron.run") {
-          return Promise.resolve({ ok: true, runId: "run-system-1" });
+        if (method === "send") {
+          return Promise.resolve({ messageId: "tg-msg-1" });
         }
         return Promise.resolve({});
       }),
@@ -116,38 +113,27 @@ describe("deliverSystemNotificationFromRelay", () => {
       status: "delivered",
       selectedChannel: "telegram",
       sessionKey: "tg:7278830001:openclaw-direct",
+      transportMessageId: "tg-msg-1",
     });
     expect(sendTelegramTransportAction).not.toHaveBeenCalled();
     expect(gateway.request).toHaveBeenCalledWith(
-      "cron.add",
+      "send",
       expect.objectContaining({
-        sessionTarget: "isolated",
-        wakeMode: "now",
-        deleteAfterRun: true,
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-        payload: expect.objectContaining({
-          kind: "agentTurn",
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-          message: expect.stringContaining("Credits are exhausted"),
-        }),
-        delivery: {
-          mode: "announce",
-          channel: "telegram",
-          to: "telegram:7278830001",
-          bestEffort: false,
-        },
+        channel: "telegram",
+        to: "telegram:7278830001",
+        message: "Credits are exhausted",
+        sessionKey: "tg:7278830001:openclaw-direct",
+        idempotencyKey: "system-notification:notif_1",
       }),
       { timeoutMs: 10_000 }
     );
-    expect(gateway.request).toHaveBeenCalledWith(
-      "cron.run",
-      { jobId: "cron-system-1", mode: "force" },
-      { timeoutMs: 10_000 }
-    );
+    expect(gateway.request).not.toHaveBeenCalledWith("cron.add", expect.anything(), expect.anything());
+    expect(gateway.request).not.toHaveBeenCalledWith("cron.run", expect.anything(), expect.anything());
     expect(deliverSystemNotification).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionKey: "tg:7278830001:openclaw-direct",
         channel: "telegram",
+        transportMessageId: "tg-msg-1",
       })
     );
     expect(index.findBestUserVisibleRoute({ userId: "user_1" })?.sessionKey).toBe(
@@ -155,7 +141,7 @@ describe("deliverSystemNotificationFromRelay", () => {
     );
   });
 
-  it("uses OpenClaw cron announce for known direct Telegram OpenClaw routes", async () => {
+  it("uses raw OpenClaw send for known direct Telegram OpenClaw routes", async () => {
     const index = new ConversationActivityIndex({ filePath: await tempIndexPath() });
     await index.recordTranscript({
       sessionKey: "tg:7278830001:openclaw-direct",
@@ -177,11 +163,8 @@ describe("deliverSystemNotificationFromRelay", () => {
     } as unknown as BackendClient;
     const gateway = {
       request: vi.fn((method: string) => {
-        if (method === "cron.add") {
-          return Promise.resolve({ id: "cron-system-1" });
-        }
-        if (method === "cron.run") {
-          return Promise.resolve({ ok: true, runId: "run-system-1" });
+        if (method === "send") {
+          return Promise.resolve({ messageId: "tg-msg-1" });
         }
         return Promise.resolve({});
       }),
@@ -198,17 +181,17 @@ describe("deliverSystemNotificationFromRelay", () => {
       status: "delivered",
       selectedChannel: "telegram",
       sessionKey: "tg:7278830001:openclaw-direct",
+      transportMessageId: "tg-msg-1",
     });
     expect(sendTelegramTransportAction).not.toHaveBeenCalled();
     expect(gateway.request).toHaveBeenCalledWith(
-      "cron.add",
+      "send",
       expect.objectContaining({
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-        delivery: expect.objectContaining({
-          mode: "announce",
-          channel: "telegram",
-          to: "telegram:7278830001",
-        }),
+        channel: "telegram",
+        to: "telegram:7278830001",
+        message: "Credits are exhausted",
+        sessionKey: "tg:7278830001:openclaw-direct",
+        idempotencyKey: "system-notification:notif_1",
       }),
       { timeoutMs: 10_000 }
     );

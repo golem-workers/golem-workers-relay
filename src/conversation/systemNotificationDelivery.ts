@@ -63,11 +63,12 @@ export async function deliverSystemNotificationFromRelay(input: {
           error: "TELEGRAM_CHAT_ID_MISSING",
         };
       }
-      await scheduleDirectOpenclawTelegramAnnouncement({
+      transportMessageId = await sendDirectOpenclawTelegramNotification({
         gateway: input.gateway,
         notificationId: task.notificationId,
         text: task.text,
         chatId,
+        sessionKey: route.sessionKey,
       });
     } else if (route.channel === "telegram") {
       const chatId = route.transportTarget?.chatId;
@@ -145,45 +146,30 @@ function isDirectOpenclawTelegramRoute(route: ConversationActivityRecord): boole
   return route.channel === "telegram" && route.sessionKey.endsWith(":openclaw-direct");
 }
 
-async function scheduleDirectOpenclawTelegramAnnouncement(input: {
+async function sendDirectOpenclawTelegramNotification(input: {
   gateway: GatewayLike;
   notificationId: string;
   text: string;
   chatId: string;
-}): Promise<void> {
-  const addResult = await input.gateway.request(
-    "cron.add",
+  sessionKey: string;
+}): Promise<string | undefined> {
+  const sendResult = await input.gateway.request(
+    "send",
     {
-      name: `system-notification-${input.notificationId}`,
-      schedule: { kind: "at", at: new Date(Date.now() + 1_000).toISOString() },
-      sessionTarget: "isolated",
-      wakeMode: "now",
-      deleteAfterRun: true,
-      payload: {
-        kind: "agentTurn",
-        message: `Deliver this system notification as your final visible response. Reply with exactly the notification text and nothing else:\n\n${input.text}`,
-        timeoutSeconds: 120,
-      },
-      delivery: {
-        mode: "announce",
-        channel: "telegram",
-        to: `telegram:${input.chatId}`,
-        bestEffort: false,
-      },
-      failureAlert: false,
+      channel: "telegram",
+      to: `telegram:${input.chatId}`,
+      message: input.text,
+      sessionKey: input.sessionKey,
+      idempotencyKey: `system-notification:${input.notificationId}`,
     },
     { timeoutMs: 10_000 }
   );
-  const jobId = readCronJobId(addResult);
-  if (!jobId) {
-    throw new Error("OPENCLAW_CRON_JOB_ID_MISSING");
-  }
-  await input.gateway.request("cron.run", { jobId, mode: "force" }, { timeoutMs: 10_000 });
+  return readGatewaySendTransportMessageId(sendResult);
 }
 
-function readCronJobId(payload: unknown): string | null {
-  if (!isPlainObject(payload)) return null;
-  return readString(payload.id) ?? readString(payload.jobId);
+function readGatewaySendTransportMessageId(payload: unknown): string | undefined {
+  if (!isPlainObject(payload)) return undefined;
+  return readString(payload.messageId) ?? readString(payload.transportMessageId) ?? undefined;
 }
 
 async function resolveDirectOpenclawTelegramRoute(input: {
