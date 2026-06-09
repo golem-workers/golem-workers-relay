@@ -458,6 +458,56 @@ describe("selfNudgeRunner", () => {
     expect(transcript?.messages[0]?.isLatestUserRequest).toBe(true);
   });
 
+  it("excludes relay-owned assistant notices from runtime analysis history", async () => {
+    const gateway = {
+      request: vi.fn((method: string, params?: unknown) => {
+        if (method === "sessions.list") {
+          return {
+            sessions: [{ key: "agent:main:tg:-5297593928:server-a", updatedAt: 10_000 }],
+          };
+        }
+        if (method === "chat.history") {
+          expect(params).toMatchObject({ sessionKey: "agent:main:tg:-5297593928:server-a" });
+          return {
+            messages: [
+              { role: "user", createdAt: 4_000, content: "complete the prod verification" },
+              { role: "assistant", createdAt: 4_100, content: "I am checking prod now." },
+              {
+                role: "assistant",
+                createdAt: 4_500,
+                idempotencyKey: "system-notification:credits.exhausted",
+                content: "Credits are exhausted",
+              },
+              {
+                role: "assistant",
+                createdAt: 5_000,
+                content: 'FINAL(100%): message "I am chec..." from 04:10 is final',
+              },
+              {
+                role: "assistant",
+                createdAt: 6_000,
+                content:
+                  'NUDGE(40% final): latest user "complete the prod verification" assistant "I am checking prod now."\n[STATUS_NUDGE]\nContinue.',
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected gateway method ${method}`);
+      }),
+    };
+
+    const transcript = await readFreshestOpenclawRuntimeTranscript({
+      gateway,
+      analyzedRecentMessageCount: 3,
+    });
+
+    expect(transcript?.mtimeMs).toBe(4_100);
+    expect(transcript?.messages.map((message) => message.text)).toEqual([
+      "complete the prod verification",
+      "I am checking prod now.",
+    ]);
+  });
+
   it("chooses runtime sessions by latest real user request instead of session updatedAt", async () => {
     const historyBySession = new Map<string, unknown>([
       [
@@ -1070,6 +1120,43 @@ describe("selfNudgeRunner", () => {
     });
 
     expect(text).toBe('FINAL(97%): message "Finished t..." from 11:11 is final');
+  });
+
+  it("does not use a previous relay final notice as the final assistant preview", () => {
+    const text = buildFinalDecisionNoticeText({
+      transcript: makeTranscript({
+        messages: [
+          { role: "user", text: "please do x", lineIndex: 0, timestampMs: Date.UTC(2026, 5, 3, 11, 10) },
+          {
+            role: "assistant",
+            text: "Finished the deployment and checks.",
+            lineIndex: 1,
+            timestampMs: Date.UTC(2026, 5, 3, 11, 11),
+          },
+          {
+            role: "assistant",
+            text: 'FINAL(100%): message "Finished t..." from 11:11 is final',
+            lineIndex: 2,
+            timestampMs: Date.UTC(2026, 5, 3, 11, 12),
+          },
+        ],
+        latestUserMessage: {
+          role: "user",
+          text: "please do x",
+          lineIndex: 0,
+          timestampMs: Date.UTC(2026, 5, 3, 11, 10),
+        },
+      }),
+      decision: {
+        shouldNudge: false,
+        statusNudgeMessage: null,
+        finalConfidence: 100,
+        reasonCode: "final_answer",
+      },
+      nowMs: Date.UTC(2026, 5, 3, 11, 13),
+    });
+
+    expect(text).toBe('FINAL(100%): message "Finished t..." from 11:11 is final');
   });
 
   it("formats nudge debug notices with final confidence and decision context", () => {

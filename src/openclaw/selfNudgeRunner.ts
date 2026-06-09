@@ -425,6 +425,7 @@ export async function readFreshestSessionTranscript(input: {
     }
     transcripts.push({
       ...candidate,
+      mtimeMs: computeAnalysisActivityMs(candidate.mtimeMs, analysis.messages),
       messages: analysis.messages,
       latestUserMessage: analysis.latestUserMessage,
     });
@@ -462,9 +463,7 @@ export async function readFreshestOpenclawRuntimeTranscript(input: {
       analyzedRecentMessageCount: input.analyzedRecentMessageCount,
     });
     if (!analysis) continue;
-    const activityMs = Math.max(candidate.updatedAtMs, ...analysis.messages.flatMap((message) =>
-      typeof message.timestampMs === "number" ? [message.timestampMs] : []
-    ));
+    const activityMs = computeAnalysisActivityMs(candidate.updatedAtMs, analysis.messages);
     transcripts.push({
       sessionKey: candidate.sessionKey,
       sessionFile: `gateway://chat.history/${candidate.gatewaySessionKey}`,
@@ -484,7 +483,10 @@ export function buildSelfNudgeAnalysisTranscript(input: {
   const latestUserMessage = findLatestUserRequestMessage(input.messages);
   if (!latestUserMessage) return null;
   const assistantMessagesAfterLatestUser = input.messages.filter(
-    (message) => message.role === "assistant" && message.lineIndex > latestUserMessage.lineIndex
+    (message) =>
+      message.role === "assistant" &&
+      message.lineIndex > latestUserMessage.lineIndex &&
+      !isRelaySelfNudgeNoticeMessage(message.text)
   );
   const maxAssistantMessages = Math.max(0, Math.trunc(input.analyzedRecentMessageCount));
   const selectedAssistantMessages =
@@ -494,6 +496,12 @@ export function buildSelfNudgeAnalysisTranscript(input: {
     latestUserMessage: latestUserRequest,
     messages: [latestUserRequest, ...selectedAssistantMessages],
   };
+}
+
+function computeAnalysisActivityMs(fallbackMs: number, messages: TranscriptMessage[]): number {
+  const timestamps = messages.flatMap((message) => (typeof message.timestampMs === "number" ? [message.timestampMs] : []));
+  if (timestamps.length === 0) return fallbackMs;
+  return Math.max(...timestamps);
 }
 
 function computeRuntimeHistoryScanLimit(analyzedRecentMessageCount: number): number {
@@ -509,6 +517,7 @@ function findLatestAssistantActivityAfterLatestUser(transcript: FreshestSessionT
     if (
       message.role !== "assistant" ||
       message.lineIndex <= latestUserLineIndex ||
+      isRelaySelfNudgeNoticeMessage(message.text) ||
       typeof message.timestampMs !== "number"
     ) {
       continue;
@@ -594,6 +603,7 @@ function readRuntimeHistoryMessages(payload: unknown): TranscriptMessage[] {
     if (!isPlainObject(message)) return [];
     const role = message.role === "user" || message.role === "assistant" ? message.role : null;
     if (!role) return [];
+    if (role === "assistant" && isRelayOwnedRuntimeHistoryMessage(message)) return [];
     const text = extractTextFromMessage(message).trim();
     if (!text) return [];
     const timestampMs = readFreshestMessageTimestampMs(message);
@@ -1031,17 +1041,37 @@ function findFinalAssistantMessage(transcript: FreshestSessionTranscript): Trans
   const latestUserLineIndex = transcript.latestUserMessage?.lineIndex ?? -1;
   for (let index = transcript.messages.length - 1; index >= 0; index -= 1) {
     const message = transcript.messages[index];
-    if (message?.role === "assistant" && message.lineIndex > latestUserLineIndex) {
+    if (
+      message?.role === "assistant" &&
+      message.lineIndex > latestUserLineIndex &&
+      !isRelaySelfNudgeNoticeMessage(message.text)
+    ) {
       return message;
     }
   }
   for (let index = transcript.messages.length - 1; index >= 0; index -= 1) {
     const message = transcript.messages[index];
-    if (message?.role === "assistant") {
+    if (message?.role === "assistant" && !isRelaySelfNudgeNoticeMessage(message.text)) {
       return message;
     }
   }
   return null;
+}
+
+function isRelaySelfNudgeNoticeMessage(text: string): boolean {
+  const normalized = text.trimStart();
+  return /^FINAL\(\d+%\):\s/.test(normalized) || /^NUDGE\(\d+% final\):\s/.test(normalized);
+}
+
+function isRelayOwnedRuntimeHistoryMessage(message: Record<string, unknown>): boolean {
+  const text = extractTextFromMessage(message).trim();
+  if (text && isRelaySelfNudgeNoticeMessage(text)) return true;
+
+  const metadata = isPlainObject(message.__openclaw) ? message.__openclaw : {};
+  const identifiers = [message.id, message.idempotencyKey, metadata.id, metadata.messageId].flatMap((value) =>
+    typeof value === "string" ? [value.trim()] : []
+  );
+  return identifiers.some((value) => value.startsWith("system-notification:"));
 }
 
 function makeFinalNoticePreview(text: string): string {
