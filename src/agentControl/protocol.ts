@@ -17,6 +17,15 @@ const thinkingDefaultSchema = z
   .optional();
 const modelFallbacksSchema = z.array(z.string().min(1));
 const modelRefStringSchema = z.string().min(1).nullable();
+const codexAuthModeStatusSchema = z.object({
+  available: z.boolean(),
+  active: z.boolean(),
+  message: z.string().min(1),
+});
+const codexAuthModesSchema = z.object({
+  openaiLogin: codexAuthModeStatusSchema,
+  apiKey: codexAuthModeStatusSchema,
+});
 const selfNudgeSettingsSchema = z.object({
   enabled: z.boolean(),
   analyzedRecentMessageCount: z.number().int().min(0).max(50),
@@ -93,6 +102,10 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("codex.login.status"),
+  }),
+  z.object({
+    kind: z.literal("codex.auth.set"),
+    mode: z.enum(["openai_login", "api_key"]),
   }),
   z.object({
     kind: z.literal("github.auth.configure"),
@@ -226,6 +239,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     email: z.string().min(1).nullable(),
     accountId: z.string().min(1).nullable(),
     lastError: z.string().min(1).nullable(),
+    authModes: codexAuthModesSchema.optional(),
   }),
   z.object({
     kind: z.literal("codex.login.status"),
@@ -239,6 +253,13 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     email: z.string().min(1).nullable(),
     accountId: z.string().min(1).nullable(),
     lastError: z.string().min(1).nullable(),
+    authModes: codexAuthModesSchema.optional(),
+  }),
+  z.object({
+    kind: z.literal("codex.auth.set"),
+    mode: z.enum(["openai_login", "api_key"]),
+    applied: z.literal(true),
+    authModes: codexAuthModesSchema.optional(),
   }),
   z.object({
     kind: z.literal("github.auth.configure"),

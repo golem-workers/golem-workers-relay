@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import JSON5 from "json5";
 
@@ -13,6 +14,18 @@ const AUTH_PROFILES_FILE = "auth-profiles.json";
 const MAIN_AGENT_ID = "main";
 
 type CodexLoginState = "not_logged_in" | "pending" | "connected" | "failed" | "unavailable";
+type CodexAuthMode = "openai_login" | "api_key";
+
+type CodexAuthModeStatus = {
+  available: boolean;
+  active: boolean;
+  message: string;
+};
+
+type CodexAuthModes = {
+  openaiLogin: CodexAuthModeStatus;
+  apiKey: CodexAuthModeStatus;
+};
 
 export type CodexLoginActionResult = {
   kind: "codex.login.start" | "codex.login.status";
@@ -26,6 +39,14 @@ export type CodexLoginActionResult = {
   email: string | null;
   accountId: string | null;
   lastError: string | null;
+  authModes: CodexAuthModes;
+};
+
+export type CodexAuthSetActionResult = {
+  kind: "codex.auth.set";
+  mode: CodexAuthMode;
+  applied: true;
+  authModes: CodexAuthModes;
 };
 
 type CodexJwtPayload = {
@@ -73,6 +94,11 @@ type PendingCodexLogin = {
   lastError: string | null;
   ready: Promise<void>;
   resolveReady: () => void;
+};
+
+type CodexCliAuthJson = {
+  auth_mode?: unknown;
+  OPENAI_API_KEY?: unknown;
 };
 
 type RequestedDeviceCode = {
@@ -295,6 +321,50 @@ function resolveCodexAuthStorePaths(configPath: string): string[] {
   ];
 }
 
+function resolveCodexCliAuthPath(): string {
+  return path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "auth.json");
+}
+
+async function readCodexCliAuthJson(): Promise<CodexCliAuthJson> {
+  try {
+    const raw = await fs.readFile(resolveCodexCliAuthPath(), "utf8");
+    const parsed: unknown = JSON5.parse(raw);
+    return isRecord(parsed) ? parsed : {};
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return {};
+    }
+    throw error;
+  }
+}
+
+async function writeCodexCliAuthJson(auth: CodexCliAuthJson): Promise<void> {
+  await writeJsonFile(resolveCodexCliAuthPath(), auth);
+}
+
+async function resolveCodexAuthModes(params: {
+  loginAvailable: boolean;
+  loginMessage: string;
+}): Promise<CodexAuthModes> {
+  const authJson = await readCodexCliAuthJson();
+  const authMode = normalizeString(authJson.auth_mode)?.toLowerCase() ?? null;
+  const apiKeyAvailable = Boolean(normalizeString(authJson.OPENAI_API_KEY) || normalizeString(process.env.OPENAI_API_KEY));
+  return {
+    openaiLogin: {
+      available: params.loginAvailable,
+      active: params.loginAvailable && authMode === "chatgpt",
+      message: params.loginMessage,
+    },
+    apiKey: {
+      available: apiKeyAvailable,
+      active: apiKeyAvailable && authMode === "apikey",
+      message: apiKeyAvailable
+        ? "Codex API access is available on this agent."
+        : "Codex API access is not configured on this agent.",
+    },
+  };
+}
+
 function mergeProviderOrder(existing: unknown, profileId: string): string[] {
   const normalized = Array.isArray(existing)
     ? existing.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
@@ -497,7 +567,7 @@ async function exchangeDeviceAuthorization(params: {
 function buildResult(
   kind: "codex.login.start" | "codex.login.status",
   state: CodexLoginState,
-  params: Partial<Omit<CodexLoginActionResult, "kind" | "state">> & { message: string },
+  params: Partial<Omit<CodexLoginActionResult, "kind" | "state">> & { message: string; authModes: CodexAuthModes },
 ): CodexLoginActionResult {
   return {
     kind,
@@ -511,6 +581,7 @@ function buildResult(
     email: params.email ?? null,
     accountId: params.accountId ?? null,
     lastError: params.lastError ?? null,
+    authModes: params.authModes,
   };
 }
 
@@ -533,8 +604,13 @@ async function readPersistedCodexStatus(
   }
   const entries = Array.from(entriesByProfileId.entries());
   if (entries.length === 0) {
+    const authModes = await resolveCodexAuthModes({
+      loginAvailable: false,
+      loginMessage: "OpenAI login is not connected on this agent.",
+    });
     return buildResult(kind, "not_logged_in", {
       message: "Codex is not connected on this agent yet.",
+      authModes,
     });
   }
   const now = Date.now();
@@ -548,6 +624,10 @@ async function readPersistedCodexStatus(
   const accountId = normalizeString(credential.accountId);
   const expires = typeof credential.expires === "number" ? credential.expires : null;
   if (liveEntries.length === 0) {
+    const authModes = await resolveCodexAuthModes({
+      loginAvailable: false,
+      loginMessage: "Saved OpenAI login expired. Start a new device login.",
+    });
     return buildResult(kind, "failed", {
       message: "Saved Codex login expired. Start a new device login.",
       profileId,
@@ -555,41 +635,64 @@ async function readPersistedCodexStatus(
       accountId,
       expiresAtMs: expires,
       lastError: "expired_oauth_token",
+      authModes,
     });
   }
+  const loginMessage = email ? `Connected as ${email}.` : "OpenAI login is connected on this agent.";
+  const authModes = await resolveCodexAuthModes({
+    loginAvailable: true,
+    loginMessage,
+  });
   return buildResult(kind, "connected", {
     message: email ? `Connected as ${email}.` : "Codex is connected on this agent.",
     profileId,
     email,
     accountId,
     expiresAtMs: expires,
+    authModes,
   });
 }
 
-function snapshotPendingSession(
+async function snapshotPendingSession(
   kind: "codex.login.start" | "codex.login.status",
   session: PendingCodexLogin,
-): CodexLoginActionResult {
+): Promise<CodexLoginActionResult> {
   if (session.state === "connected") {
+    const loginMessage = session.email ? `Connected as ${session.email}.` : "OpenAI login is connected on this agent.";
+    const authModes = await resolveCodexAuthModes({
+      loginAvailable: true,
+      loginMessage,
+    });
     return buildResult(kind, "connected", {
       message: session.message,
       profileId: session.profileId,
       email: session.email,
       accountId: session.accountId,
+      authModes,
     });
   }
   if (session.state === "failed") {
+    const authModes = await resolveCodexAuthModes({
+      loginAvailable: false,
+      loginMessage: "OpenAI login is not connected on this agent.",
+    });
     return buildResult(kind, "failed", {
       message: session.message,
       lastError: session.lastError,
+      authModes,
     });
   }
+  const authModes = await resolveCodexAuthModes({
+    loginAvailable: false,
+    loginMessage: "OpenAI login is pending on this agent.",
+  });
   return buildResult(kind, "pending", {
     message: session.message,
     verificationUrl: session.verificationUrl,
     userCode: session.userCode,
     expiresAtMs: session.expiresAtMs,
     pollAfterMs: session.pollAfterMs,
+    authModes,
   });
 }
 
@@ -662,23 +765,54 @@ export async function startCodexLogin(configPath: string): Promise<CodexLoginAct
   if (existing?.state === "pending") {
     await existing.ready;
     if (existing.state === "pending") {
-      return snapshotPendingSession("codex.login.start", existing);
+      return await snapshotPendingSession("codex.login.start", existing);
     }
-    return snapshotPendingSession("codex.login.start", existing);
+    return await snapshotPendingSession("codex.login.start", existing);
   }
   const session = startPendingCodexLogin(configPath);
   await session.ready;
   if (session.state === "pending") {
-    return snapshotPendingSession("codex.login.start", session);
+    return await snapshotPendingSession("codex.login.start", session);
   }
-  return snapshotPendingSession("codex.login.start", session);
+  return await snapshotPendingSession("codex.login.start", session);
 }
 
 export async function getCodexLoginStatus(configPath: string): Promise<CodexLoginActionResult> {
   if (pendingCodexLogin) {
-    return snapshotPendingSession("codex.login.status", pendingCodexLogin);
+    return await snapshotPendingSession("codex.login.status", pendingCodexLogin);
   }
   return await readPersistedCodexStatus("codex.login.status", configPath);
+}
+
+export async function setCodexAuthMode(configPath: string, mode: CodexAuthMode): Promise<CodexAuthSetActionResult> {
+  const status = await getCodexLoginStatus(configPath);
+  const authJson = await readCodexCliAuthJson();
+  if (mode === "openai_login") {
+    if (!status.authModes.openaiLogin.available) {
+      throw new Error(status.authModes.openaiLogin.message);
+    }
+    await writeCodexCliAuthJson({
+      ...authJson,
+      auth_mode: "chatgpt",
+    });
+  } else {
+    const apiKey = normalizeString(authJson.OPENAI_API_KEY) || normalizeString(process.env.OPENAI_API_KEY);
+    if (!apiKey) {
+      throw new Error(status.authModes.apiKey.message);
+    }
+    await writeCodexCliAuthJson({
+      ...authJson,
+      auth_mode: "apikey",
+      OPENAI_API_KEY: apiKey,
+    });
+  }
+  const nextStatus = await readPersistedCodexStatus("codex.login.status", configPath);
+  return {
+    kind: "codex.auth.set",
+    mode,
+    applied: true,
+    authModes: nextStatus.authModes,
+  };
 }
 
 export async function hasConnectedCodexLogin(configPath: string): Promise<boolean> {

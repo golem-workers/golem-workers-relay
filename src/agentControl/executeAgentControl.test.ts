@@ -433,7 +433,7 @@ describe("executeAgentControl Codex login", () => {
       gateway: noopGateway,
     });
 
-    expect(startResult).toEqual({
+    expect(startResult).toMatchObject({
       kind: "codex.login.start",
       state: "pending",
       message: "Open the verification page and enter the device code.",
@@ -518,7 +518,7 @@ describe("executeAgentControl Codex login", () => {
       });
     }
 
-    expect(statusResult).toEqual({
+    expect(statusResult).toMatchObject({
       kind: "codex.login.status",
       state: "connected",
       message: "Connected as user@example.com.",
@@ -617,7 +617,7 @@ describe("executeAgentControl Codex login", () => {
       gateway: noopGateway,
     });
 
-    expect(statusResult).toEqual({
+    expect(statusResult).toMatchObject({
       kind: "codex.login.status",
       state: "connected",
       message: "Connected as user@example.com.",
