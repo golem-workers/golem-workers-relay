@@ -1282,6 +1282,88 @@ describe("selfNudgeRunner", () => {
     expect(afterRestartNotice).not.toHaveBeenCalled();
   });
 
+  it("dedupes final notices when runtime history line indexes shift", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-runtime-index-"));
+    const store = createFileSelfNudgeProcessedStore({ stateDir });
+    const settings: RelaySelfNudgeSettings = {
+      ...enabledSettings,
+      finalNoticeEnabled: true,
+    };
+    const userTimestampMs = Date.UTC(2026, 5, 9, 6, 58, 24);
+    const firstTranscript = makeTranscript({
+      mtimeMs: userTimestampMs + 1_000,
+      messages: [
+        {
+          role: "user",
+          text: "как дела?",
+          lineIndex: 96,
+          timestampMs: userTimestampMs,
+        },
+        {
+          role: "assistant",
+          text: "Нормально. Релиз завершен.",
+          lineIndex: 97,
+          timestampMs: userTimestampMs + 1_000,
+        },
+      ],
+      latestUserMessage: {
+        role: "user",
+        text: "как дела?",
+        lineIndex: 96,
+        timestampMs: userTimestampMs,
+      },
+    });
+
+    await evaluateSelfNudgeTick({
+      settings,
+      transcript: firstTranscript,
+      state: makeState(),
+      nowMs: userTimestampMs + 10 * 60_000,
+      sendNudgeMessage: makeSendNudgeMessageMock(),
+      processedStore: store,
+      notifyFinalDecision: vi.fn().mockResolvedValue(undefined),
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: false,
+        statusNudgeMessage: null,
+        finalConfidence: 100,
+        reasonCode: "final_answer",
+      }),
+    });
+
+    const shiftedDecision = vi.fn().mockResolvedValue({
+      shouldNudge: false,
+      statusNudgeMessage: null,
+      finalConfidence: 100,
+      reasonCode: "final_answer",
+    });
+    const shiftedNotice = vi.fn().mockResolvedValue(undefined);
+    const result = await evaluateSelfNudgeTick({
+      settings,
+      transcript: {
+        ...firstTranscript,
+        mtimeMs: userTimestampMs + 11 * 60_000,
+        messages: firstTranscript.messages.map((message) => ({
+          ...message,
+          lineIndex: message.lineIndex - 2,
+        })),
+        latestUserMessage: {
+          ...firstTranscript.latestUserMessage!,
+          lineIndex: 94,
+        },
+      },
+      state: makeState(),
+      nowMs: userTimestampMs + 20 * 60_000,
+      sendNudgeMessage: makeSendNudgeMessageMock(),
+      processedStore: createFileSelfNudgeProcessedStore({ stateDir }),
+      notifyFinalDecision: shiftedNotice,
+      decide: shiftedDecision,
+    });
+
+    expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
+    expect(shiftedDecision).not.toHaveBeenCalled();
+    expect(shiftedNotice).not.toHaveBeenCalled();
+  });
+
   it("does not send delayed final notices for stale user messages from old sessions", async () => {
     const notifyFinalDecision = vi.fn().mockResolvedValue(undefined);
     const decide = vi.fn().mockResolvedValue({

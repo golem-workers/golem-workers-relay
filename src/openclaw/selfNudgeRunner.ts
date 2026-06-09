@@ -1094,8 +1094,10 @@ function formatNoticeTime(timestampMs: number): string {
 }
 
 function fingerprintMessage(message: TranscriptMessage): string {
+  const stablePosition =
+    typeof message.timestampMs === "number" ? `ts:${message.timestampMs}` : `line:${message.lineIndex}`;
   return createHash("sha256")
-    .update(`${message.lineIndex}\n${message.role}\n${message.text}`)
+    .update(`${stablePosition}\n${message.role}\n${message.text}`)
     .digest("hex");
 }
 
