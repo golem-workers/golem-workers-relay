@@ -569,6 +569,7 @@ describe("selfNudgeRunner", () => {
       expect(systemPrompt).not.toContain("greater than 90");
       expect(systemPrompt).not.toContain("90 or lower");
       expect(systemPrompt).not.toContain(">90");
+      expect(systemPrompt).not.toMatch(/\bPR\b|pull request|release not run|deployment not run/i);
       const analyzerInput = JSON.parse(payload.messages[1]?.content ?? "{}") as {
         latestMessages: Array<Record<string, unknown>>;
       };
@@ -878,7 +879,7 @@ describe("selfNudgeRunner", () => {
     expect(notifyFinalDecision).not.toHaveBeenCalled();
   });
 
-  it("overrides overconfident final decisions when the assistant reports an open PR and no release/deploy", async () => {
+  it("nudges when the model classifies a progress update as unfinished", async () => {
     const sendNudgeMessage = makeSendNudgeMessageMock();
     const notifyFinalDecision = vi.fn<(input: FinalDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
 
@@ -910,21 +911,22 @@ describe("selfNudgeRunner", () => {
       sendNudgeMessage,
       notifyFinalDecision,
       decide: vi.fn().mockResolvedValue({
-        shouldNudge: false,
-        statusNudgeMessage: null,
-        finalConfidence: 100,
-        reasonCode: "final_answer",
-        reason: "model overclassified an open PR status as final",
+        shouldNudge: true,
+        statusNudgeMessage:
+          "Continue #117: the latest update only reports a ready PR and says release/deploy were not run. Report new evidence.",
+        finalConfidence: 70,
+        reasonCode: "unknown",
+        reason: "latest assistant message reports a partial outcome",
       }),
     });
 
     expect(result).toEqual({ nudged: true, nextDelayMs: 2_000 });
     expect(notifyFinalDecision).not.toHaveBeenCalled();
     const sentNudge = sendNudgeMessage.mock.calls[0]?.[0];
-    expect(sentNudge?.decision.finalConfidence).toBe(90);
+    expect(sentNudge?.decision.finalConfidence).toBe(70);
     expect(sentNudge?.decision.reasonCode).toBe("unknown");
-    expect(sentNudge?.decision.reason).toContain("deterministic_unfinished_work_guard");
-    expect(sentNudge?.messageText).toContain("unfinished work");
+    expect(sentNudge?.decision.reason).toContain("partial outcome");
+    expect(sentNudge?.messageText).toContain("ready PR");
   });
 
   it("sends a user-visible debug notice with confidence and the status nudge message when enabled", async () => {
