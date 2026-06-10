@@ -412,16 +412,15 @@ export async function readFreshestSessionTranscript(input: {
   const transcripts: FreshestSessionTranscript[] = [];
   for (const candidate of candidates) {
     const transcriptMessages = await readTranscriptMessages(candidate.sessionFile);
-    const latestRawUserMessage = findLatestUserMessage(transcriptMessages);
-    if (!latestRawUserMessage) continue;
-    if (!canUseTranscriptForSelfNudge(candidate.sessionKey, latestRawUserMessage.text)) {
-      continue;
-    }
     const analysis = buildSelfNudgeAnalysisTranscript({
       messages: transcriptMessages,
       analyzedRecentMessageCount: input.analyzedRecentMessageCount,
     });
     if (!analysis) {
+      continue;
+    }
+    const latestUserMessage = analysis.latestUserMessage;
+    if (!latestUserMessage || !canUseTranscriptForSelfNudge(candidate.sessionKey, latestUserMessage.text)) {
       continue;
     }
     transcripts.push({
@@ -454,16 +453,15 @@ export async function readFreshestOpenclawRuntimeTranscript(input: {
       limit: computeRuntimeHistoryScanLimit(input.analyzedRecentMessageCount),
     });
     const messages = readRuntimeHistoryMessages(historyPayload);
-    const latestRawUserMessage = findLatestUserMessage(messages);
-    if (!latestRawUserMessage) continue;
-    if (!canUseTranscriptForSelfNudge(candidate.sessionKey, latestRawUserMessage.text)) {
-      continue;
-    }
     const analysis = buildSelfNudgeAnalysisTranscript({
       messages,
       analyzedRecentMessageCount: input.analyzedRecentMessageCount,
     });
     if (!analysis) continue;
+    const latestUserMessage = analysis.latestUserMessage;
+    if (!latestUserMessage || !canUseTranscriptForSelfNudge(candidate.sessionKey, latestUserMessage.text)) {
+      continue;
+    }
     const activityMs = computeAnalysisActivityMs(candidate.updatedAtMs, analysis.messages);
     transcripts.push({
       sessionKey: candidate.sessionKey,
@@ -1017,23 +1015,25 @@ function extractTextFromMessage(message: Record<string, unknown>): string {
   return "";
 }
 
-function findLatestUserMessage(messages: TranscriptMessage[]): TranscriptMessage | null {
+function findLatestUserRequestMessage(messages: TranscriptMessage[]): TranscriptMessage | null {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i]?.role === "user") return messages[i];
+    const message = messages[i];
+    if (message?.role === "user" && !isIgnoredSelfNudgeUserMessage(message.text)) return message;
   }
   return null;
 }
 
-function findLatestUserRequestMessage(messages: TranscriptMessage[]): TranscriptMessage | null {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (message?.role === "user" && !isStatusNudgeMessage(message.text)) return message;
-  }
-  return null;
+function isIgnoredSelfNudgeUserMessage(text: string): boolean {
+  const normalized = text.trimStart();
+  return isStatusNudgeMessage(normalized) || isPreCompactionMemoryFlushMessage(normalized);
 }
 
 function isStatusNudgeMessage(text: string): boolean {
   return text.trimStart().startsWith(STATUS_NUDGE_MARKER);
+}
+
+function isPreCompactionMemoryFlushMessage(text: string): boolean {
+  return /^Pre-compaction memory flush\./i.test(text) && /Store durable memories only in memory\//i.test(text);
 }
 
 function findFinalAssistantMessage(transcript: FreshestSessionTranscript): TranscriptMessage | null {

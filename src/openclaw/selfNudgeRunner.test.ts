@@ -325,6 +325,71 @@ describe("selfNudgeRunner", () => {
     expect(transcript?.messages[0]?.isLatestUserRequest).toBe(true);
   });
 
+  it("ignores pre-compaction memory flush turns when choosing the latest user request", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-"));
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sacra.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({
+          type: "message",
+          message: {
+            role: "user",
+            timestamp: 4_000,
+            content: "выполняй все задачи с тасктрекера пока их не сделаешь",
+          },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: {
+            role: "assistant",
+            timestamp: 4_100,
+            content: "Продолжаю с первой открытой задачей.",
+          },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: {
+            role: "user",
+            timestamp: 4_200,
+            content:
+              "Pre-compaction memory flush. Store durable memories only in memory/2026-06-10.md (create memory/ if needed). If nothing to store, reply with NO_REPLY.",
+          },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: {
+            role: "assistant",
+            timestamp: 4_300,
+            content: "NO_REPLY",
+          },
+        }),
+      ].join("\n")
+    );
+    await fs.writeFile(
+      path.join(sessionsDir, "sessions.json"),
+      JSON.stringify({
+        "agent:main:tg:-5297593928:cmp9kwhbf0175209zotr1q9le": { sessionFile: "sacra.jsonl" },
+      }),
+      "utf8"
+    );
+
+    const transcript = await readFreshestSessionTranscript({
+      stateDir,
+      analyzedRecentMessageCount: 3,
+    });
+
+    expect(transcript?.sessionKey).toBe("tg:-5297593928:cmp9kwhbf0175209zotr1q9le");
+    expect(transcript?.latestUserMessage?.text).toBe("выполняй все задачи с тасктрекера пока их не сделаешь");
+    expect(transcript?.messages.map((message) => message.text)).toEqual([
+      "выполняй все задачи с тасктрекера пока их не сделаешь",
+      "Продолжаю с первой открытой задачей.",
+      "NO_REPLY",
+    ]);
+  });
+
   it("uses OpenClaw runtime sessions and chat history across transports", async () => {
     const historyBySession = new Map<string, unknown>([
       [
