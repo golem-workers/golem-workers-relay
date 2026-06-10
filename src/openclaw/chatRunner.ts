@@ -809,6 +809,12 @@ export class ChatRunner {
         timeoutMs: number;
       }) => Promise<string>;
       onRunCompleted?: (runId: string, reason: string) => void;
+      onRunStarted?: (input: {
+        taskId: string;
+        runId: string;
+        sessionKey: string;
+        requestMessage: unknown;
+      }) => void | Promise<void>;
     }
   ) {
     this.devLogEnabled = opts?.devLogEnabled ?? false;
@@ -828,9 +834,16 @@ export class ChatRunner {
     };
     this.transcribeAudio = opts?.transcribeAudio ?? transcribeAudioWithOpenAi;
     this.onRunCompleted = opts?.onRunCompleted;
+    this.onRunStarted = opts?.onRunStarted;
   }
 
   private readonly onRunCompleted?: (runId: string, reason: string) => void;
+  private readonly onRunStarted?: (input: {
+    taskId: string;
+    runId: string;
+    sessionKey: string;
+    requestMessage: unknown;
+  }) => void | Promise<void>;
 
   handleGatewayConnectionStateChange(state: {
     connected: boolean;
@@ -1090,6 +1103,12 @@ export class ChatRunner {
         }
         this.registerRunTrace(runId, { sessionKey: input.sessionKey, backendMessageId: input.taskId });
         this.activeRunByTaskId.set(input.taskId, { runId, sessionKey: input.sessionKey });
+        await this.onRunStarted?.({
+          taskId: input.taskId,
+          runId,
+          sessionKey: input.sessionKey,
+          requestMessage: attemptMessage,
+        });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         const classification = classifyRetryableGatewayError(msg);
@@ -1773,6 +1792,60 @@ export class ChatRunner {
     } finally {
       this.activeRunByTaskId.delete(input.taskId);
     }
+  }
+
+  async recoverChatTaskFromTranscript(input: {
+    taskId: string;
+    runId: string;
+    sessionKey: string;
+    requestMessage: unknown;
+    deliverySystem?: DeliverySystem;
+    timeoutMs: number;
+  }): Promise<{ result: ChatRunResult; openclawMeta: OpenclawChatMeta }> {
+    const startedAtMs = Date.now();
+    const requestText = extractTextFromMessage(input.requestMessage);
+    if (!requestText) {
+      return {
+        result: {
+          outcome: "error",
+          error: {
+            code: "RESTART_RECOVERY_UNAVAILABLE",
+            message: `Relay restart recovery could not inspect request text for run ${input.runId}`,
+            runId: input.runId,
+          },
+        },
+        openclawMeta: { method: "chat.restart_recovery", runId: input.runId },
+      };
+    }
+    const transcriptMessage = await waitForAssistantMessageFromSessionTranscript({
+      sessionKey: input.sessionKey,
+      requestMessage: input.requestMessage as GatewayChatMessage,
+      timeoutMs: Math.max(1, Math.trunc(input.timeoutMs)),
+    }).catch(() => undefined);
+    if (transcriptMessage === undefined) {
+      return {
+        result: {
+          outcome: "error",
+          error: {
+            code: "RESTART_RECOVERY_INCOMPLETE",
+            message: `Relay restarted while OpenClaw run ${input.runId} was in flight and no terminal transcript reply was found during startup reconciliation.`,
+            runId: input.runId,
+          },
+        },
+        openclawMeta: { method: "chat.restart_recovery", runId: input.runId },
+      };
+    }
+    return await buildReplyRunResult({
+      taskId: input.taskId,
+      runId: input.runId,
+      sessionKey: input.sessionKey,
+      deliverySystem: input.deliverySystem ?? "relay_channel_v2",
+      finalMessage: transcriptMessage,
+      transcriptFinalMessage: transcriptMessage,
+      openclawEvents: [],
+      startedAtMs,
+      devLogEnabled: this.devLogEnabled,
+    });
   }
 
   async startNewSessionForAll(): Promise<{ reset: true; sessionsRotated: number; sessionsFailed: number }> {

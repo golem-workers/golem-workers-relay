@@ -17,6 +17,7 @@ import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 import { executeTelegramTransportActionViaBackend } from "../relayChannel/telegramBackendTransport.js";
 import { type RelayChannelTransportDeliveryTracker } from "../relayChannel/transportDeliveryTracker.js";
 import { executeWhatsAppPersonalMessageSend } from "../relayChannel/whatsappPersonalTransport.js";
+import type { DurableInFlightChatTask, InFlightTaskStore } from "./inFlightTaskStore.js";
 
 type MessageProcessorInput = {
   cfg: {
@@ -36,6 +37,7 @@ type MessageProcessorInput = {
   readDiskUsage?: (path: string) => Promise<DiskUsageSnapshot>;
   taskControl?: RelayTaskControl;
   transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
+  inFlightTaskStore?: InFlightTaskStore;
 };
 
 type DiskUsageSnapshot = {
@@ -132,7 +134,17 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
   return async (msg: InboundPushMessage): Promise<void> => {
     const taskKind = classifyRelayTask(msg);
     if (msg.input.kind !== "chat" || taskKind !== "user_chat" || chatBatchDebounceMs === 0) {
-      await processSingleMessage({ cfg, gateway, runner, backend, msg, readDiskUsage, taskControl, transportDeliveryTracker });
+      await processSingleMessage({
+        cfg,
+        gateway,
+        runner,
+        backend,
+        msg,
+        readDiskUsage,
+        taskControl,
+        transportDeliveryTracker,
+        inFlightTaskStore: input.inFlightTaskStore,
+      });
       return;
     }
     await enqueueChatBatch({
@@ -141,10 +153,41 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
       debounceMs: chatBatchDebounceMs,
       chatBatchesBySession,
       flush: async (items) => {
-        await flushChatBatch({ cfg, gateway, runner, backend, items, readDiskUsage, taskControl, transportDeliveryTracker });
+        await flushChatBatch({
+          cfg,
+          gateway,
+          runner,
+          backend,
+          items,
+          readDiskUsage,
+          taskControl,
+          transportDeliveryTracker,
+          inFlightTaskStore: input.inFlightTaskStore,
+        });
       },
     });
   };
+}
+
+export async function reconcileDurableInFlightChatTasks(input: {
+  cfg: {
+    relayInstanceId: string;
+    restartRecoveryTimeoutMs?: number;
+  };
+  runner: ChatRunner;
+  backend: BackendClient;
+  inFlightTaskStore: InFlightTaskStore;
+  transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
+}): Promise<void> {
+  const records = await input.inFlightTaskStore.list();
+  const timeoutMs = Math.max(1, Math.trunc(input.cfg.restartRecoveryTimeoutMs ?? 30_000));
+  for (const record of records) {
+    await reconcileDurableInFlightChatTask({
+      ...input,
+      record,
+      timeoutMs,
+    });
+  }
 }
 
 type Deferred = {
@@ -329,6 +372,7 @@ async function flushChatBatch(input: {
   readDiskUsage: (path: string) => Promise<DiskUsageSnapshot>;
   taskControl: RelayTaskControl;
   transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
+  inFlightTaskStore?: InFlightTaskStore;
 }): Promise<void> {
   if (input.items.length === 0) return;
   if (input.items.length === 1) {
@@ -343,6 +387,7 @@ async function flushChatBatch(input: {
         readDiskUsage: input.readDiskUsage,
         taskControl: input.taskControl,
         transportDeliveryTracker: input.transportDeliveryTracker,
+        inFlightTaskStore: input.inFlightTaskStore,
       });
       only.deferred.resolve();
     } catch (error) {
@@ -380,6 +425,7 @@ async function flushChatBatch(input: {
       readDiskUsage: input.readDiskUsage,
       taskControl: input.taskControl,
       transportDeliveryTracker: input.transportDeliveryTracker,
+      inFlightTaskStore: input.inFlightTaskStore,
     });
     target.deferred.resolve();
   } catch (error) {
@@ -469,6 +515,143 @@ function createDeferred(): Deferred {
   return { resolve, reject, promise };
 }
 
+async function reconcileDurableInFlightChatTask(input: {
+  cfg: {
+    relayInstanceId: string;
+  };
+  runner: ChatRunner;
+  backend: BackendClient;
+  inFlightTaskStore: InFlightTaskStore;
+  transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
+  record: DurableInFlightChatTask;
+  timeoutMs: number;
+}): Promise<void> {
+  const { record } = input;
+  logger.warn(
+    {
+      event: "relay_restart_recovery",
+      stage: "reconcile_started",
+      backendMessageId: record.backendMessageId,
+      relayMessageId: record.relayMessageId,
+      openclawRunId: record.runId ?? null,
+      sessionKey: record.sessionKey,
+      ageMs: Math.max(0, Date.now() - record.startedAtMs),
+    },
+    "Reconciling durable in-flight chat task after relay restart"
+  );
+
+  const recovered =
+    record.runId && record.requestMessage !== undefined
+      ? await input.runner.recoverChatTaskFromTranscript({
+          taskId: record.backendMessageId,
+          runId: record.runId,
+          sessionKey: record.sessionKey,
+          requestMessage: record.requestMessage,
+          deliverySystem: "relay_channel_v2",
+          timeoutMs: input.timeoutMs,
+        })
+      : {
+          result: {
+            outcome: "error" as const,
+            error: {
+              code: "RESTART_RECOVERY_MISSING_RUN",
+              message: `Relay restarted before OpenClaw run metadata was durably recorded for backend message ${record.backendMessageId}.`,
+              ...(record.runId ? { runId: record.runId } : {}),
+            },
+          },
+          openclawMeta: {
+            method: "chat.restart_recovery",
+            ...(record.runId ? { runId: record.runId } : {}),
+          },
+        };
+
+  const finishedAtMs = Date.now();
+  if (recovered.result.outcome === "reply") {
+    const replyPayload = await buildReplyPayload(recovered.result.reply);
+    const directTransportMeta = await maybeDeliverRelayChannelReplyDirectly({
+      backend: input.backend,
+      context: record.context,
+      sessionKey: record.sessionKey,
+      reply: replyPayload,
+      backendMessageId: record.backendMessageId,
+      relayMessageId: record.relayMessageId,
+      transportDeliveryTracker: input.transportDeliveryTracker,
+    });
+    await input.backend.submitInboundMessage({
+      body: {
+        relayInstanceId: record.relayInstanceId || input.cfg.relayInstanceId,
+        relayMessageId: record.relayMessageId,
+        finishedAtMs,
+        outcome: "reply",
+        reply: replyPayload,
+        openclawMeta: buildOpenclawMetaWithTrace(
+          normalizeOpenclawMeta(recovered.openclawMeta),
+          {
+            backendMessageId: record.backendMessageId,
+            relayMessageId: record.relayMessageId,
+            relayInstanceId: record.relayInstanceId || input.cfg.relayInstanceId,
+            openclawRunId: recovered.result.reply.runId,
+          },
+          { deliverySystem: "relay_channel_v2", sessionKey: record.sessionKey, ...directTransportMeta }
+        ),
+      },
+    });
+  } else if (recovered.result.outcome === "no_reply") {
+    await input.backend.submitInboundMessage({
+      body: {
+        relayInstanceId: record.relayInstanceId || input.cfg.relayInstanceId,
+        relayMessageId: record.relayMessageId,
+        finishedAtMs,
+        outcome: "no_reply",
+        noReply: recovered.result.noReply ?? { reason: "restart_recovery_no_reply" },
+        openclawMeta: buildOpenclawMetaWithTrace(
+          normalizeOpenclawMeta(recovered.openclawMeta),
+          {
+            backendMessageId: record.backendMessageId,
+            relayMessageId: record.relayMessageId,
+            relayInstanceId: record.relayInstanceId || input.cfg.relayInstanceId,
+            openclawRunId: recovered.result.noReply?.runId,
+          },
+          { deliverySystem: "relay_channel_v2", sessionKey: record.sessionKey }
+        ),
+      },
+    });
+  } else {
+    await input.backend.submitInboundMessage({
+      body: {
+        relayInstanceId: record.relayInstanceId || input.cfg.relayInstanceId,
+        relayMessageId: record.relayMessageId,
+        finishedAtMs,
+        outcome: "error",
+        error: recovered.result.error,
+        openclawMeta: buildOpenclawMetaWithTrace(
+          normalizeOpenclawMeta(recovered.openclawMeta),
+          {
+            backendMessageId: record.backendMessageId,
+            relayMessageId: record.relayMessageId,
+            relayInstanceId: record.relayInstanceId || input.cfg.relayInstanceId,
+            openclawRunId: recovered.result.error.runId,
+          },
+          { deliverySystem: "relay_channel_v2", sessionKey: record.sessionKey }
+        ),
+      },
+    });
+  }
+  await input.inFlightTaskStore.remove(record.backendMessageId);
+  logger.warn(
+    {
+      event: "relay_restart_recovery",
+      stage: "reconcile_finished",
+      backendMessageId: record.backendMessageId,
+      relayMessageId: record.relayMessageId,
+      openclawRunId: record.runId ?? null,
+      sessionKey: record.sessionKey,
+      outcome: recovered.result.outcome,
+    },
+    "Reconciled durable in-flight chat task after relay restart"
+  );
+}
+
 async function processSingleMessage(input: {
   cfg: {
     relayInstanceId: string;
@@ -488,10 +671,12 @@ async function processSingleMessage(input: {
   readDiskUsage: (path: string) => Promise<DiskUsageSnapshot>;
   taskControl: RelayTaskControl;
   transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
+  inFlightTaskStore?: InFlightTaskStore;
 }): Promise<void> {
   const { cfg, gateway, runner, backend, msg } = input;
   const startedAt = Date.now();
   const relayMessageId = `relay_${randomUUID()}`;
+  let storedInFlightBackendMessageId: string | null = null;
   const messageMeta = buildInboundMessageLogMeta(msg, { textMaxLen: cfg.devLogTextMaxLen });
   const taskKind = classifyRelayTask(msg);
   const effectiveTaskTimeoutMs = getEffectiveTaskTimeoutMs({
@@ -615,6 +800,37 @@ async function processSingleMessage(input: {
     } else if (msg.input.kind === "system_notification") {
       throw new Error("system_notification tasks must be handled synchronously by relay ingress");
     } else {
+      const chatInput = msg.input;
+      if (input.inFlightTaskStore) {
+        storedInFlightBackendMessageId = msg.messageId;
+        await input.inFlightTaskStore
+          .upsert({
+            schemaVersion: 1,
+            backendMessageId: msg.messageId,
+            relayMessageId,
+            relayInstanceId: cfg.relayInstanceId,
+            sessionKey: chatInput.sessionKey,
+            messageText: chatInput.messageText,
+            ...(chatInput.media ? { media: chatInput.media } : {}),
+            ...(chatInput.context !== undefined ? { context: chatInput.context } : {}),
+            startedAtMs: startedAt,
+            updatedAtMs: Date.now(),
+          })
+          .catch((error) => {
+            storedInFlightBackendMessageId = null;
+            logger.warn(
+              {
+                event: "relay_restart_recovery",
+                stage: "record_task_failed",
+                backendMessageId: msg.messageId,
+                relayMessageId,
+                sessionKey: chatInput.sessionKey,
+                error: error instanceof Error ? error.message : String(error),
+              },
+              "Failed to durably record in-flight chat task"
+            );
+          });
+      }
       const deliverySystem = readDeliverySystemFromTaskContext(msg.input.context);
       const abortController = createAbortPromise();
       const unregisterActiveTask = input.taskControl.register({
@@ -864,6 +1080,10 @@ async function processSingleMessage(input: {
       },
       "Message flow transition"
     );
+    if (storedInFlightBackendMessageId && input.inFlightTaskStore) {
+      await input.inFlightTaskStore.remove(storedInFlightBackendMessageId);
+      storedInFlightBackendMessageId = null;
+    }
   } catch (err) {
     const finishedAtMs = Date.now();
     const normalizedError = normalizeRelayProcessingError(err);
@@ -903,6 +1123,10 @@ async function processSingleMessage(input: {
           ),
         },
       });
+      if (storedInFlightBackendMessageId && input.inFlightTaskStore) {
+        await input.inFlightTaskStore.remove(storedInFlightBackendMessageId);
+        storedInFlightBackendMessageId = null;
+      }
     } catch (submitErr) {
       logger.warn(
         {

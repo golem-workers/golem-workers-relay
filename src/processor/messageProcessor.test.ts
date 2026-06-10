@@ -15,9 +15,14 @@ vi.mock("../relayChannel/whatsappPersonalTransport.js", () => ({
   executeWhatsAppPersonalMessageSend: executeWhatsAppPersonalMessageSendMock,
 }));
 
-import { createMessageProcessor, createRelayTaskControl } from "./messageProcessor.js";
+import {
+  createMessageProcessor,
+  createRelayTaskControl,
+  reconcileDurableInFlightChatTasks,
+} from "./messageProcessor.js";
 import type { InboundPushMessage } from "../backend/types.js";
 import { createRelayChannelTransportDeliveryTracker } from "../relayChannel/transportDeliveryTracker.js";
+import { createInFlightTaskStore } from "./inFlightTaskStore.js";
 
 describe("createMessageProcessor", () => {
   beforeEach(() => {
@@ -128,6 +133,101 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
     expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("tg-direct-1");
     expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
+  });
+
+  it("reconciles a durable in-flight task after restart without resending chat.send", async () => {
+    executeTelegramTransportActionViaBackendMock.mockResolvedValueOnce({
+      transportMessageId: "tg-recovered-1",
+    });
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-restart-recovery-"));
+    const store = createInFlightTaskStore({ stateDir });
+    await store.upsert({
+      schemaVersion: 1,
+      backendMessageId: "msg_restart_1",
+      relayMessageId: "relay_restart_1",
+      relayInstanceId: "relay_1",
+      sessionKey: "tg:123:srv_1",
+      messageText: "ping before restart",
+      context: {
+        channel: "telegram",
+        deliverySystem: "relay_channel_v2",
+        telegram: {
+          chatId: "123",
+          messageId: "55",
+        },
+      },
+      runId: "run_restart_1",
+      requestMessage: "ping before restart",
+      startedAtMs: Date.now() - 1000,
+      updatedAtMs: Date.now() - 500,
+    });
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const recoverChatTaskFromTranscript = vi.fn().mockResolvedValue({
+      result: {
+        outcome: "reply",
+        reply: {
+          runId: "run_restart_1",
+          message: { role: "assistant", content: "recovered reply" },
+        },
+      },
+      openclawMeta: { method: "chat.restart_recovery", runId: "run_restart_1" },
+    });
+    const runChatTask = vi.fn();
+
+    await reconcileDurableInFlightChatTasks({
+      cfg: {
+        relayInstanceId: "relay_1",
+        restartRecoveryTimeoutMs: 10,
+      },
+      runner: { recoverChatTaskFromTranscript, runChatTask } as never,
+      backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
+      inFlightTaskStore: store,
+    });
+
+    expect(runChatTask).not.toHaveBeenCalled();
+    expect(recoverChatTaskFromTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "msg_restart_1",
+        runId: "run_restart_1",
+        sessionKey: "tg:123:srv_1",
+        requestMessage: "ping before restart",
+      })
+    );
+    expect(executeTelegramTransportActionViaBackendMock).toHaveBeenCalledTimes(1);
+    expect(readTelegramTransportActionCall(0)?.idempotencyKey).toBe("msg_restart_1:final:text:0");
+    const submitted = submitInboundMessage.mock.calls[0]?.[0] as
+      | {
+          body?: {
+            relayInstanceId?: string;
+            relayMessageId?: string;
+            outcome?: string;
+            reply?: { runId?: string; message?: unknown };
+            openclawMeta?: {
+              sessionKey?: string;
+              transportDelivered?: boolean;
+              transportMessageId?: string;
+              trace?: { backendMessageId?: string; openclawRunId?: string };
+            };
+          };
+        }
+      | undefined;
+    expect(submitted?.body?.relayInstanceId).toBe("relay_1");
+    expect(submitted?.body?.relayMessageId).toBe("relay_restart_1");
+    expect(submitted?.body?.outcome).toBe("reply");
+    expect(submitted?.body?.reply).toMatchObject({
+      runId: "run_restart_1",
+      message: { role: "assistant", content: "recovered reply" },
+    });
+    expect(submitted?.body?.openclawMeta).toMatchObject({
+      sessionKey: "tg:123:srv_1",
+      transportDelivered: true,
+      transportMessageId: "tg-recovered-1",
+      trace: {
+        backendMessageId: "msg_restart_1",
+        openclawRunId: "run_restart_1",
+      },
+    });
+    await expect(store.list()).resolves.toEqual([]);
   });
 
   it("splits long relay_channel_v2 telegram text into ordered idempotent sends", async () => {

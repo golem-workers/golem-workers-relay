@@ -10,7 +10,12 @@ import { ChatRunner } from "./openclaw/chatRunner.js";
 import { transcribeAudioWithOpenAi } from "./openclaw/openaiTranscription.js";
 import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
 import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inMemoryTaskQueue.js";
-import { createMessageProcessor, createRelayTaskControl } from "./processor/messageProcessor.js";
+import {
+  createMessageProcessor,
+  createRelayTaskControl,
+  reconcileDurableInFlightChatTasks,
+} from "./processor/messageProcessor.js";
+import { createInFlightTaskStore } from "./processor/inFlightTaskStore.js";
 import { createDevicePairingAutoApprover } from "./openclaw/devicePairingAutoApprover.js";
 import { createNodePairingAutoApprover } from "./openclaw/nodePairingAutoApprover.js";
 import { createExecApprovalAutoApprover } from "./openclaw/execApprovalAutoApprover.js";
@@ -111,6 +116,7 @@ async function main(): Promise<void> {
     relayToken: cfg.relayToken,
     devLogEnabled: cfg.devLogEnabled,
   });
+  const inFlightTaskStore = createInFlightTaskStore();
   const activityIndex = createConversationActivityIndex();
   await activityIndex.load();
 
@@ -257,6 +263,27 @@ async function main(): Promise<void> {
     onRunCompleted: (runId, reason) => {
       forwardGatewayEvent.closeRun(runId, reason);
     },
+    onRunStarted: async ({ taskId, runId, requestMessage }) => {
+      await inFlightTaskStore
+        .updateRun({
+          backendMessageId: taskId,
+          runId,
+          requestMessage,
+          updatedAtMs: Date.now(),
+        })
+        .catch((error) => {
+          logger.warn(
+            {
+              event: "relay_restart_recovery",
+              stage: "record_run_failed",
+              backendMessageId: taskId,
+              openclawRunId: runId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            "Failed to durably record in-flight OpenClaw run"
+          );
+        });
+    },
     transcription: {
       baseUrl: cfg.stt.baseUrl,
       relayToken: cfg.relayToken,
@@ -292,6 +319,27 @@ async function main(): Promise<void> {
     backend,
     taskControl,
     transportDeliveryTracker,
+    inFlightTaskStore,
+  });
+
+  void reconcileDurableInFlightChatTasks({
+    cfg: {
+      relayInstanceId: cfg.relayInstanceId,
+      restartRecoveryTimeoutMs: 30_000,
+    },
+    runner,
+    backend,
+    inFlightTaskStore,
+    transportDeliveryTracker,
+  }).catch((error) => {
+    logger.warn(
+      {
+        event: "relay_restart_recovery",
+        stage: "reconcile_failed",
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "Relay restart recovery failed"
+    );
   });
 
   const queue = new InMemoryTaskQueue<InboundPushMessage>({
