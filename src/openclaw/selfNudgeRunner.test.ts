@@ -565,6 +565,10 @@ describe("selfNudgeRunner", () => {
       const payload = JSON.parse(body) as {
         messages: Array<{ role: string; content: string }>;
       };
+      const systemPrompt = payload.messages[0]?.content ?? "";
+      expect(systemPrompt).not.toContain("greater than 90");
+      expect(systemPrompt).not.toContain("90 or lower");
+      expect(systemPrompt).not.toContain(">90");
       const analyzerInput = JSON.parse(payload.messages[1]?.content ?? "{}") as {
         latestMessages: Array<Record<string, unknown>>;
       };
@@ -874,6 +878,55 @@ describe("selfNudgeRunner", () => {
     expect(notifyFinalDecision).not.toHaveBeenCalled();
   });
 
+  it("overrides overconfident final decisions when the assistant reports an open PR and no release/deploy", async () => {
+    const sendNudgeMessage = makeSendNudgeMessageMock();
+    const notifyFinalDecision = vi.fn<(input: FinalDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
+
+    const result = await evaluateSelfNudgeTick({
+      settings: { ...enabledSettings, finalNoticeEnabled: true },
+      transcript: makeTranscript({
+        mtimeMs: 10_000,
+        messages: [
+          {
+            role: "user",
+            text: "Продолжай #117 safety guardrails до результата.",
+            lineIndex: 0,
+          },
+          {
+            role: "assistant",
+            text:
+              "PR #119 сейчас open, mergeable, GitHub checks green. Релизов/деплоев не запускал.",
+            lineIndex: 1,
+          },
+        ],
+        latestUserMessage: {
+          role: "user",
+          text: "Продолжай #117 safety guardrails до результата.",
+          lineIndex: 0,
+        },
+      }),
+      state: makeState(),
+      nowMs: 11_000,
+      sendNudgeMessage,
+      notifyFinalDecision,
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: false,
+        statusNudgeMessage: null,
+        finalConfidence: 100,
+        reasonCode: "final_answer",
+        reason: "model overclassified an open PR status as final",
+      }),
+    });
+
+    expect(result).toEqual({ nudged: true, nextDelayMs: 2_000 });
+    expect(notifyFinalDecision).not.toHaveBeenCalled();
+    const sentNudge = sendNudgeMessage.mock.calls[0]?.[0];
+    expect(sentNudge?.decision.finalConfidence).toBe(90);
+    expect(sentNudge?.decision.reasonCode).toBe("unknown");
+    expect(sentNudge?.decision.reason).toContain("deterministic_unfinished_work_guard");
+    expect(sentNudge?.messageText).toContain("unfinished work");
+  });
+
   it("sends a user-visible debug notice with confidence and the status nudge message when enabled", async () => {
     const sendNudgeMessage = makeSendNudgeMessageMock();
     const notifyNudgeDecision = vi.fn<(input: NudgeDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
@@ -1119,7 +1172,7 @@ describe("selfNudgeRunner", () => {
       nowMs: Date.UTC(2026, 5, 3, 11, 12),
     });
 
-    expect(text).toBe('FINAL(97%): message "Finished t..." from 11:11 is final');
+    expect(text).toBe('TURN_FINAL: message "Finished t..." from 11:11 is final');
   });
 
   it("does not use a previous relay final notice as the final assistant preview", () => {
@@ -1156,7 +1209,7 @@ describe("selfNudgeRunner", () => {
       nowMs: Date.UTC(2026, 5, 3, 11, 13),
     });
 
-    expect(text).toBe('FINAL(100%): message "Finished t..." from 11:11 is final');
+    expect(text).toBe('TURN_FINAL: message "Finished t..." from 11:11 is final');
   });
 
   it("formats nudge debug notices with final confidence and decision context", () => {

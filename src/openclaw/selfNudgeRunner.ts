@@ -14,6 +14,7 @@ const MIN_BASE_TIMEOUT_MS = 1_000;
 const MAX_MESSAGE_TEXT_LEN = 4_000;
 const MAX_SELF_NUDGE_LATEST_USER_AGE_MS = 24 * 60 * 60 * 1000;
 const RUNTIME_HISTORY_SCAN_LIMIT = 100;
+const FINAL_ANSWER_CONFIDENCE_THRESHOLD = 90;
 
 export type RelaySelfNudgeSettings = {
   enabled: boolean;
@@ -107,7 +108,7 @@ export function buildFinalDecisionNoticeText(input: {
   const finalMessage = findFinalAssistantMessage(input.transcript) ?? input.transcript.latestUserMessage;
   const preview = makeFinalNoticePreview(finalMessage?.text ?? "");
   const timeText = formatNoticeTime(finalMessage?.timestampMs ?? input.nowMs);
-  return `FINAL(${input.decision.finalConfidence}%): message "${preview}" from ${timeText} is final`;
+  return `TURN_FINAL: message "${preview}" from ${timeText} is final`;
 }
 
 export function buildNudgeDecisionNoticeText(input: {
@@ -314,8 +315,12 @@ export async function evaluateSelfNudgeTick(input: {
     return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
   }
 
-  const decision = await input.decide({
+  const modelDecision = await input.decide({
     settings: input.settings,
+    transcript: input.transcript,
+  });
+  const decision = applyDeterministicSelfNudgeGuards({
+    decision: modelDecision,
     transcript: input.transcript,
   });
   await input.processedStore?.markAnalyzed({
@@ -776,10 +781,11 @@ function buildSelfNudgeSystemPrompt(): string {
     "Set finalConfidence to an integer from 0 to 100: your confidence that the latest user request has a final assistant answer.",
     "Use finalConfidence=100 only when you are completely certain the assistant finished the latest request.",
     "Set reasonCode to one of: final_answer, waiting_for_user, no_active_request, unknown.",
-    "Set reasonCode=final_answer only when finalConfidence is greater than 90.",
-    "Set shouldNudge=false with reasonCode=final_answer when finalConfidence is greater than 90.",
-    "Set shouldNudge=true only when finalConfidence is 90 or lower and the latest user request appears unfinished, blocked by no external user input, or the assistant was still actively working.",
+    "Set reasonCode=final_answer only when the assistant's latest answer fully completed the latest user request.",
+    "Set shouldNudge=false with reasonCode=final_answer only when the latest user request is fully complete.",
+    "Set shouldNudge=true when the latest user request appears unfinished, blocked by no external user input, or the assistant was still actively working.",
     "A partial progress update is not final when the user asked for all tasks or a complete outcome and the assistant says some work remains.",
+    "If the assistant reports an open pull request, unmerged work, unpushed work, checks still running, pending review, release not run, deployment not run, cleanup still pending, or any other remaining work, do not classify the request as fully complete.",
     "A final status line such as 'Status: 100% complete' is evidence to consider, but it is not authoritative; verify it against the latest real user request and the assistant's full answer.",
     "Set shouldNudge=false with reasonCode=waiting_for_user when the assistant asked the user a necessary question.",
     "Set shouldNudge=false with reasonCode=no_active_request when there is no user request to continue.",
@@ -804,7 +810,7 @@ function parseSelfNudgeDecision(raw: string): SelfNudgeDecision {
     return { shouldNudge: false, statusNudgeMessage: null, finalConfidence: 0, reason: "model_returned_non_object" };
   }
   const finalConfidence = parseFinalConfidence(parsed.finalConfidence);
-  const shouldNudge = parsed.shouldNudge === true && finalConfidence <= 90;
+  const shouldNudge = parsed.shouldNudge === true && finalConfidence <= FINAL_ANSWER_CONFIDENCE_THRESHOLD;
   const statusNudgeMessage =
     typeof parsed.statusNudgeMessage === "string" && parsed.statusNudgeMessage.trim().length > 0
       ? parsed.statusNudgeMessage.trim()
@@ -818,6 +824,84 @@ function parseSelfNudgeDecision(raw: string): SelfNudgeDecision {
     ...(reasonCode ? { reasonCode } : {}),
     reason,
   };
+}
+
+function applyDeterministicSelfNudgeGuards(input: {
+  decision: SelfNudgeDecision;
+  transcript: FreshestSessionTranscript;
+}): SelfNudgeDecision {
+  if (!hasExplicitUnfinishedWorkAfterLatestUser(input.transcript)) {
+    return input.decision;
+  }
+  if (input.decision.reasonCode === "waiting_for_user" || input.decision.reasonCode === "no_active_request") {
+    return input.decision;
+  }
+  return {
+    ...input.decision,
+    shouldNudge: true,
+    statusNudgeMessage:
+      input.decision.statusNudgeMessage ??
+      "Continue the latest user request: the last assistant update still reports unfinished work. Report new evidence.",
+    finalConfidence: Math.min(input.decision.finalConfidence, FINAL_ANSWER_CONFIDENCE_THRESHOLD),
+    reasonCode: "unknown",
+    reason: appendDecisionReason(input.decision.reason, "deterministic_unfinished_work_guard"),
+  };
+}
+
+function appendDecisionReason(reason: string | undefined, suffix: string): string {
+  const trimmed = reason?.trim();
+  return trimmed ? `${trimmed}; ${suffix}` : suffix;
+}
+
+function hasExplicitUnfinishedWorkAfterLatestUser(transcript: FreshestSessionTranscript): boolean {
+  const latestUserLineIndex = transcript.latestUserMessage?.lineIndex ?? -1;
+  return transcript.messages.some((message) => {
+    if (
+      message.role !== "assistant" ||
+      message.lineIndex <= latestUserLineIndex ||
+      isRelaySelfNudgeNoticeMessage(message.text)
+    ) {
+      return false;
+    }
+    return containsExplicitUnfinishedWorkMarker(message.text);
+  });
+}
+
+function containsExplicitUnfinishedWorkMarker(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return [
+    /\bpr\s*#?\d*\s*(?:is\s*)?(?:currently\s*)?open\b/,
+    /\bpull request\s*(?:is\s*)?(?:currently\s*)?open\b/,
+    /\bmergeable\b/,
+    /\bnot\s+merged\b/,
+    /\bunmerged\b/,
+    /\bnot\s+pushed\b/,
+    /\bnot\s+push(?:ed)?\b/,
+    /\bchecks?\s+(?:are\s+)?(?:still\s+)?(?:running|pending)\b/,
+    /\bci\s+(?:is\s+)?(?:still\s+)?(?:running|pending)\b/,
+    /\bawaiting\s+(?:review|approval|merge)\b/,
+    /\bwaiting\s+for\s+(?:review|approval|merge)\b/,
+    /\breview\s+pending\b/,
+    /\brelease(?:s)?\/deploy(?:s)?\s+(?:not|was not|were not|has not|have not)\s+(?:run|started|launched)\b/,
+    /\brelease(?:s)?\s+(?:not|was not|were not|has not|have not)\s+(?:run|started|launched)\b/,
+    /\bdeploy(?:ment|s)?\s+(?:not|was not|were not|has not|have not)\s+(?:run|started|launched|done)\b/,
+    /\brelease(?:s)?\s+and\s+deploy(?:s)?\s+(?:not|were not|have not)\s+(?:run|started|launched)\b/,
+    /\bdeployment\s+remains\b/,
+    /\brelease\s+remains\b/,
+    /\bwork\s+remains\b/,
+    /\bstill\s+(?:needs?|running|pending|waiting|working)\b/,
+    /\bremaining\s+(?:work|task|tasks|step|steps)\b/,
+    /\bcleanup\s+(?:is\s+)?(?:still\s+)?(?:pending|remaining|not done)\b/,
+    /\bpr\s*#?\d*\s*(?:сейчас\s*)?(?:open|открыт|открыта|открытый)\b/,
+    /\bне\s+(?:смёржен|смержен|замёржен|замержен|merged)\b/,
+    /\bне\s+(?:запушен|запушено|запушил|push(?:ed)?)\b/,
+    /\bпроверки\s+(?:ещ[её]\s+)?(?:идут|pending|running)\b/,
+    /\bожида(?:ет|ют|ется)\s+(?:review|ревью|апрув|merge|мерж)\b/,
+    /\bрелиз(?:ов|ы|а)?\/депло(?:ев|и|я)?\s+не\s+(?:запускал|запускались|запущены|делал|сделаны)\b/,
+    /\bрелиз(?:ов|ы|а)?\s+не\s+(?:запускал|запускались|запущены|делал|сделаны)\b/,
+    /\bдепло(?:ев|и|я)?\s+не\s+(?:запускал|запускались|запущены|делал|сделаны)\b/,
+    /\bостал(?:ась|ось|ись)\s+(?:работа|задача|задачи|шаг|шаги)\b/,
+  ].some((pattern) => pattern.test(normalized));
 }
 
 function parseFinalConfidence(value: unknown): number {
@@ -847,7 +931,7 @@ function parseSelfNudgeReasonCode(value: unknown): SelfNudgeDecision["reasonCode
 }
 
 function isFinalAnswerDecision(decision: SelfNudgeDecision): boolean {
-  return decision.finalConfidence > 90;
+  return decision.finalConfidence > FINAL_ANSWER_CONFIDENCE_THRESHOLD;
 }
 
 function isClosedDecision(decision: SelfNudgeDecision): boolean {
@@ -1060,7 +1144,11 @@ function findFinalAssistantMessage(transcript: FreshestSessionTranscript): Trans
 
 function isRelaySelfNudgeNoticeMessage(text: string): boolean {
   const normalized = text.trimStart();
-  return /^FINAL\(\d+%\):\s/.test(normalized) || /^NUDGE\(\d+% final\):\s/.test(normalized);
+  return (
+    /^TURN_FINAL:\s/.test(normalized) ||
+    /^FINAL\(\d+%\):\s/.test(normalized) ||
+    /^NUDGE\(\d+% final\):\s/.test(normalized)
+  );
 }
 
 function isRelayOwnedRuntimeHistoryMessage(message: Record<string, unknown>): boolean {
