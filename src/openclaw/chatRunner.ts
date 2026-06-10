@@ -518,14 +518,45 @@ async function readLatestAssistantMessageFromSessionTranscript(input: {
       : null);
   if (!sessionState) return undefined;
 
-  const rawTranscript = await fs.readFile(sessionState.sessionFile, "utf8").catch(() => "");
+  const transcriptMessage = await readLatestAssistantMessageFromResolvedSessionTranscript({
+    sessionState,
+    requestText,
+  });
+  if (transcriptMessage !== undefined) {
+    return transcriptMessage;
+  }
+
+  if (input.sessionState) {
+    const currentSessionsMap = await readSessionsMapFromState();
+    const currentSessionState = currentSessionsMap
+      ? resolveSessionTranscriptStateFromMap({
+          sessionsMap: currentSessionsMap,
+          sessionKey: input.sessionKey,
+        })
+      : null;
+    if (currentSessionState && currentSessionState.sessionFile !== input.sessionState.sessionFile) {
+      return await readLatestAssistantMessageFromResolvedSessionTranscript({
+        sessionState: currentSessionState,
+        requestText,
+      });
+    }
+  }
+
+  return undefined;
+}
+
+async function readLatestAssistantMessageFromResolvedSessionTranscript(input: {
+  sessionState: ResolvedSessionTranscriptState;
+  requestText: string;
+}): Promise<unknown> {
+  const rawTranscript = await fs.readFile(input.sessionState.sessionFile, "utf8").catch(() => "");
   if (!rawTranscript.trim()) return undefined;
 
   const transcriptLines = rawTranscript
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0);
   const transcriptMessages = transcriptLines
-    .slice(Math.max(0, Math.trunc(input.sessionState?.baselineLineCount ?? 0)))
+    .slice(Math.max(0, Math.trunc(input.sessionState.baselineLineCount ?? 0)))
     .map((line) => {
       try {
         return JSON.parse(line) as unknown;
@@ -540,7 +571,7 @@ async function readLatestAssistantMessageFromSessionTranscript(input: {
     const candidate = transcriptMessages[i]?.message;
     if (readMessageRole(candidate) !== "user") continue;
     const candidateText = extractTextFromMessage(candidate);
-    if (candidateText && matchesTranscriptUserMessage(candidateText, requestText)) {
+    if (candidateText && matchesTranscriptUserMessage(candidateText, input.requestText)) {
       matchingUserIndex = i;
       break;
     }
@@ -809,17 +840,33 @@ export class ChatRunner {
     if (state.connected || this.waitersByRunId.size === 0) {
       return;
     }
+    const rejectableRunIds = Array.from(this.waitersByRunId.entries())
+      .filter(([, waiter]) => !waiter.transcriptPoll)
+      .map(([runId]) => runId);
+    if (rejectableRunIds.length === 0) {
+      if (this.devLogEnabled) {
+        logger.warn(
+          {
+            activeRuns: Array.from(this.waitersByRunId.keys()),
+            reason: state.reason,
+            observedAtMs: state.observedAtMs,
+          },
+          "Retaining transcript-backed chat waiters after gateway disconnect"
+        );
+      }
+      return;
+    }
     if (this.devLogEnabled) {
       logger.warn(
         {
-          activeRuns: Array.from(this.waitersByRunId.keys()),
+          activeRuns: rejectableRunIds,
           reason: state.reason,
           observedAtMs: state.observedAtMs,
         },
-        "Rejecting active chat waiters after gateway disconnect"
+        "Rejecting non-transcript chat waiters after gateway disconnect"
       );
     }
-    for (const runId of Array.from(this.waitersByRunId.keys())) {
+    for (const runId of rejectableRunIds) {
       this.rejectRunWaiter(runId, new GatewayRunDisconnectedError(runId, state.reason));
     }
   }

@@ -845,6 +845,10 @@ async function processSingleMessage(input: {
           throw error;
         }
       } finally {
+        input.transportDeliveryTracker?.clear({
+          correlationMessageId: msg.messageId,
+          sessionKey: msg.input.sessionKey,
+        });
         unregisterActiveTask();
       }
     }
@@ -1163,6 +1167,35 @@ function stripNativeMediaDirectives(text: string): string {
     .trim();
 }
 
+const TELEGRAM_TEXT_CHUNK_MAX_CHARS = 3900;
+const TELEGRAM_MEDIA_CAPTION_MAX_CHARS = 1000;
+
+function splitTextForTransport(input: string, maxChars: number): string[] {
+  const text = input.trim();
+  if (!text) {
+    return [];
+  }
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > maxChars) {
+    const softBreak = Math.max(
+      remaining.lastIndexOf("\n\n", maxChars),
+      remaining.lastIndexOf("\n", maxChars),
+      remaining.lastIndexOf(" ", maxChars)
+    );
+    const splitAt = softBreak > Math.floor(maxChars * 0.6) ? softBreak : maxChars;
+    const chunk = remaining.slice(0, splitAt).trim();
+    if (chunk) {
+      chunks.push(chunk);
+    }
+    remaining = remaining.slice(splitAt).trim();
+  }
+  if (remaining) {
+    chunks.push(remaining);
+  }
+  return chunks;
+}
+
 function readOptionalTransportMessageId(
   target: { messageId?: string; chatId: string } | null | undefined
 ): string | null {
@@ -1404,37 +1437,49 @@ async function maybeDeliverRelayChannelReplyDirectly(input: {
     const whatsAppReplyToMessageId = readOptionalTransportMessageId(whatsAppPersonal);
 
     if (media.length === 0) {
-      const sent = telegram
-        ? await executeTelegramTransportActionViaBackend({
+      if (telegram) {
+        const chunks = splitTextForTransport(remainingText, TELEGRAM_TEXT_CHUNK_MAX_CHARS);
+        for (let index = 0; index < chunks.length; index += 1) {
+          const sent = await executeTelegramTransportActionViaBackend({
             backend: input.backend,
             action: {
+              idempotencyKey: `${input.backendMessageId}:final:text:${index}`,
               kind: "message.send",
               transportTarget: { channel: "telegram", chatId: telegram.chatId },
-              reply: { replyToTransportMessageId: telegramReplyToMessageId },
+              reply: { replyToTransportMessageId: index === 0 ? telegramReplyToMessageId : null },
               openclawContext: {
                 backendMessageId: input.backendMessageId,
                 correlationMessageId: input.backendMessageId,
                 sessionKey: input.sessionKey,
                 runId: input.reply.runId,
               },
-              payload: { text: remainingText },
-            },
-          })
-        : await executeWhatsAppPersonalMessageSend({
-            backend: input.backend,
-            action: {
-              transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
-              reply: { replyToTransportMessageId: whatsAppReplyToMessageId },
-              payload: { text: remainingText },
+              payload: { text: chunks[index] },
             },
           });
-      firstTransportMessageId = sent.transportMessageId;
+          firstTransportMessageId ??= sent.transportMessageId;
+        }
+      } else {
+        const sent = await executeWhatsAppPersonalMessageSend({
+          backend: input.backend,
+          action: {
+            transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
+            reply: { replyToTransportMessageId: whatsAppReplyToMessageId },
+            payload: { text: remainingText },
+          },
+        });
+        firstTransportMessageId = sent.transportMessageId;
+      }
     } else {
       for (const item of media) {
+        const telegramMediaText =
+          telegram && remainingText
+            ? splitTextForTransport(remainingText, TELEGRAM_MEDIA_CAPTION_MAX_CHARS)[0]
+            : remainingText;
         const sent = telegram
           ? await executeTelegramTransportActionViaBackend({
               backend: input.backend,
               action: {
+                idempotencyKey: `${input.backendMessageId}:final:media:${media.indexOf(item)}`,
                 kind: "message.send",
                 transportTarget: { channel: "telegram", chatId: telegram.chatId },
                 reply: { replyToTransportMessageId: firstTransportMessageId ? null : telegramReplyToMessageId },
@@ -1445,7 +1490,7 @@ async function maybeDeliverRelayChannelReplyDirectly(input: {
                   runId: input.reply.runId,
                 },
                 payload: {
-                  ...(remainingText ? { text: remainingText } : {}),
+                  ...(telegramMediaText ? { text: telegramMediaText } : {}),
                   mediaUrl: item.path,
                   fileName: item.fileName,
                   contentType: item.contentType,
@@ -1468,35 +1513,42 @@ async function maybeDeliverRelayChannelReplyDirectly(input: {
               },
             });
         firstTransportMessageId ??= sent.transportMessageId;
-        remainingText = "";
+        remainingText = telegramMediaText ? remainingText.slice(telegramMediaText.length).trim() : "";
       }
 
       if (remainingText) {
-        const sent = telegram
-          ? await executeTelegramTransportActionViaBackend({
+        if (telegram) {
+          const chunks = splitTextForTransport(remainingText, TELEGRAM_TEXT_CHUNK_MAX_CHARS);
+          for (let index = 0; index < chunks.length; index += 1) {
+            const sent = await executeTelegramTransportActionViaBackend({
               backend: input.backend,
               action: {
+                idempotencyKey: `${input.backendMessageId}:final:text-after-media:${index}`,
                 kind: "message.send",
                 transportTarget: { channel: "telegram", chatId: telegram.chatId },
-                reply: { replyToTransportMessageId: telegramReplyToMessageId },
+                reply: { replyToTransportMessageId: null },
                 openclawContext: {
                   backendMessageId: input.backendMessageId,
                   correlationMessageId: input.backendMessageId,
                   sessionKey: input.sessionKey,
                   runId: input.reply.runId,
                 },
-                payload: { text: remainingText },
-              },
-            })
-          : await executeWhatsAppPersonalMessageSend({
-              backend: input.backend,
-              action: {
-                transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
-                reply: { replyToTransportMessageId: whatsAppReplyToMessageId },
-                payload: { text: remainingText },
+                payload: { text: chunks[index] },
               },
             });
-        firstTransportMessageId ??= sent.transportMessageId;
+            firstTransportMessageId ??= sent.transportMessageId;
+          }
+        } else {
+          const sent = await executeWhatsAppPersonalMessageSend({
+            backend: input.backend,
+            action: {
+              transportTarget: { channel: "whatsapp_personal", chatId: whatsAppPersonal!.chatId },
+                reply: { replyToTransportMessageId: whatsAppReplyToMessageId },
+              payload: { text: remainingText },
+            },
+          });
+          firstTransportMessageId ??= sent.transportMessageId;
+        }
       }
     }
 

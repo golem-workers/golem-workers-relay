@@ -22,14 +22,24 @@ export type RelayChannelTransportDeliveryTracker = {
 export function createRelayChannelTransportDeliveryTracker(): RelayChannelTransportDeliveryTracker {
   const deliveriesByCorrelationId = new Map<string, RelayChannelTransportDeliveryReceipt>();
   const deliveriesBySessionKey = new Map<string, RelayChannelTransportDeliveryReceipt>();
-  const activeCorrelationIdBySessionKey = new Map<string, string>();
+  const activeCorrelationIdsBySessionKey = new Map<string, Set<string>>();
+
+  const getSoleActiveCorrelationId = (sessionKey: string): string | undefined => {
+    const active = activeCorrelationIdsBySessionKey.get(sessionKey);
+    if (!active || active.size !== 1) {
+      return undefined;
+    }
+    return active.values().next().value;
+  };
 
   return {
     begin(input) {
       const correlationMessageId = input.correlationMessageId.trim();
       const sessionKey = input.sessionKey?.trim();
       if (correlationMessageId && sessionKey) {
-        activeCorrelationIdBySessionKey.set(sessionKey, correlationMessageId);
+        const active = activeCorrelationIdsBySessionKey.get(sessionKey) ?? new Set<string>();
+        active.add(correlationMessageId);
+        activeCorrelationIdsBySessionKey.set(sessionKey, active);
       }
     },
     recordSdkDelivery(input) {
@@ -38,25 +48,26 @@ export function createRelayChannelTransportDeliveryTracker(): RelayChannelTransp
         ...(input.transportMessageId ? { transportMessageId: input.transportMessageId } : {}),
       };
       const sessionKey = input.sessionKey?.trim();
-      const activeCorrelationMessageId = sessionKey
-        ? activeCorrelationIdBySessionKey.get(sessionKey)
-        : undefined;
-      const activeEntries = [...activeCorrelationIdBySessionKey.entries()];
+      const activeCorrelationMessageId = sessionKey ? getSoleActiveCorrelationId(sessionKey) : undefined;
+      const activeEntries = [...activeCorrelationIdsBySessionKey.entries()].filter(([, active]) => active.size === 1);
       const soleActiveEntry =
         input.allowUnscopedActiveFallback === true &&
         !input.correlationMessageId?.trim() &&
         !sessionKey &&
         activeEntries.length === 1
-          ? activeEntries[0]
+          ? ([activeEntries[0]?.[0], activeEntries[0]?.[1].values().next().value] as const)
           : null;
-      const correlationMessageId =
-        input.correlationMessageId?.trim() || activeCorrelationMessageId || soleActiveEntry?.[1];
+      const explicitCorrelationMessageId = input.correlationMessageId?.trim();
+      const correlationMessageId = explicitCorrelationMessageId || activeCorrelationMessageId || soleActiveEntry?.[1];
       const effectiveSessionKey = sessionKey || soleActiveEntry?.[0];
       if (correlationMessageId) {
-        deliveriesByCorrelationId.set(correlationMessageId, receipt);
-      }
-      if (effectiveSessionKey && correlationMessageId) {
-        deliveriesBySessionKey.set(effectiveSessionKey, receipt);
+        const isFallbackCorrelation = !explicitCorrelationMessageId;
+        if (!isFallbackCorrelation || !deliveriesByCorrelationId.has(correlationMessageId)) {
+          deliveriesByCorrelationId.set(correlationMessageId, receipt);
+          if (effectiveSessionKey) {
+            deliveriesBySessionKey.set(effectiveSessionKey, receipt);
+          }
+        }
       }
     },
     getSdkDelivery(input) {
@@ -78,7 +89,15 @@ export function createRelayChannelTransportDeliveryTracker(): RelayChannelTransp
       const sessionKey = input.sessionKey?.trim();
       if (sessionKey) {
         deliveriesBySessionKey.delete(sessionKey);
-        activeCorrelationIdBySessionKey.delete(sessionKey);
+        if (correlationMessageId) {
+          const active = activeCorrelationIdsBySessionKey.get(sessionKey);
+          active?.delete(correlationMessageId);
+          if (!active || active.size === 0) {
+            activeCorrelationIdsBySessionKey.delete(sessionKey);
+          }
+        } else {
+          activeCorrelationIdsBySessionKey.delete(sessionKey);
+        }
       }
     },
   };

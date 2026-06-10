@@ -2625,6 +2625,135 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("recovers a transcript-only reply after OpenClaw rotates the relay-backed session file", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-rotated-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+
+    const sessionKey = "tg:-5292069601:server";
+    const oldSessionFile = path.join(sessionsDir, "old-session.jsonl");
+    const newSessionFile = path.join(sessionsDir, "new-session.jsonl");
+    await fs.writeFile(
+      path.join(sessionsDir, "sessions.json"),
+      JSON.stringify({
+        [`agent:main:${sessionKey}`]: {
+          sessionId: "old-session",
+          updatedAt: Date.now(),
+          sessionFile: oldSessionFile,
+        },
+      }),
+      "utf8"
+    );
+    await fs.writeFile(
+      oldSessionFile,
+      [
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", content: "old request" },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "assistant", content: [{ type: "text", text: "old reply" }] },
+        }),
+      ].join("\n") + "\n",
+      "utf8"
+    );
+
+    let sentMessage: unknown = null;
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          sentMessage = ((frame.params ?? {}) as Record<string, unknown>).message;
+          const runId = "run_transcript_rotated";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            void (async () => {
+              await fs.writeFile(
+                path.join(sessionsDir, "sessions.json"),
+                JSON.stringify({
+                  [`agent:main:${sessionKey}`]: {
+                    sessionId: "new-session",
+                    updatedAt: Date.now(),
+                    sessionFile: newSessionFile,
+                  },
+                }),
+                "utf8"
+              );
+              await fs.writeFile(
+                newSessionFile,
+                [
+                  JSON.stringify({
+                    type: "message",
+                    message:
+                      typeof sentMessage === "string" ? { role: "user", content: sentMessage } : sentMessage,
+                  }),
+                  JSON.stringify({
+                    type: "message",
+                    message: {
+                      role: "assistant",
+                      content: [{ type: "text", text: "Recovered from rotated session file" }],
+                    },
+                  }),
+                ].join("\n") + "\n",
+                "utf8"
+              );
+            })();
+          }, 50);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client);
+
+    await client.start();
+    const startedAtMs = Date.now();
+    const { result } = await runner.runChatTask({
+      taskId: "task_transcript_rotated",
+      sessionKey,
+      messageText: "new request",
+      timeoutMs: 5_000,
+    });
+    const elapsedMs = Date.now() - startedAtMs;
+    expect(result.outcome).toBe("reply");
+    if (result.outcome !== "reply") throw new Error("expected reply");
+    expect(result.reply.message).toEqual({
+      role: "assistant",
+      content: [{ type: "text", text: "Recovered from rotated session file" }],
+    });
+    expect(elapsedMs).toBeLessThan(2_000);
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("matches late transcript replies for multipart telegram group prompts without a terminal event", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-multipart-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
@@ -3221,6 +3350,80 @@ describe("ChatRunner", () => {
     await expect(pending).rejects.toThrow(
       "Gateway connection lost while waiting for run run_disconnect_1: Gateway websocket closed (4001): gateway restart"
     );
+    expect((runner as unknown as { waitersByRunId: Map<string, unknown> }).waitersByRunId.size).toBe(0);
+  });
+
+  it("keeps transcript-backed waiters alive across a gateway disconnect", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-disconnect-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+
+    const sessionKey = "tg:123:server";
+    const sessionId = "sess-transcript-disconnect";
+    const sessionFile = path.join(sessionsDir, `${sessionId}.jsonl`);
+    await fs.writeFile(
+      path.join(sessionsDir, "sessions.json"),
+      JSON.stringify({
+        [`agent:main:${sessionKey}`]: {
+          sessionId,
+          updatedAt: Date.now(),
+          sessionFile,
+        },
+      }),
+      "utf8"
+    );
+    await fs.writeFile(sessionFile, "", "utf8");
+
+    const runner = new ChatRunner({ request: vi.fn() } as unknown as GatewayClient);
+    const waitForFinal = (
+      runner as unknown as {
+        waitForFinal: (
+          runId: string,
+          timeoutMs: number,
+          opts: {
+            sessionKey: string;
+            requestMessage: string;
+            transcriptPollIntervalMs: number;
+          }
+        ) => Promise<unknown>;
+      }
+    ).waitForFinal.bind(runner);
+
+    const pending = waitForFinal("run_disconnect_transcript_1", 2_000, {
+      sessionKey,
+      requestMessage: "recover after reconnect",
+      transcriptPollIntervalMs: 100,
+    });
+    runner.handleGatewayConnectionStateChange({
+      connected: false,
+      reason: "Gateway websocket closed (4001): gateway restart",
+      observedAtMs: Date.now(),
+    });
+
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({ type: "message", message: { role: "user", content: "recover after reconnect" } }),
+        JSON.stringify({
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Recovered while the gateway reconnected" }],
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8"
+    );
+
+    await expect(pending).resolves.toMatchObject({
+      state: "transcript",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Recovered while the gateway reconnected" }],
+      },
+    });
     expect((runner as unknown as { waitersByRunId: Map<string, unknown> }).waitersByRunId.size).toBe(0);
   });
 

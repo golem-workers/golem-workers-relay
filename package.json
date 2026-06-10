@@ -11,6 +11,7 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "test": "vitest run",
+    "test:transport": "vitest run src/openclaw/chatRunner.test.ts src/relayChannel/transportDeliveryTracker.test.ts src/relayChannel/transportStateMachineFuzz.test.ts src/relayChannel/controlPlane.integration.test.ts src/relayChannel/telegramTransport.test.ts src/processor/messageProcessor.test.ts src/push/pushServer.test.ts",
     "test:e2e": "vitest run -c vitest.e2e.config.ts --reporter=verbose",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts",

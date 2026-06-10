@@ -90,6 +90,83 @@ describe("transportDeliveryTracker", () => {
     expect(tracker.getSdkDelivery({ correlationMessageId: "msg_2" })).toBeNull();
   });
 
+  it("does not guess session-scoped SDK delivery when multiple messages are active in the same session", () => {
+    const tracker = createRelayChannelTransportDeliveryTracker();
+    tracker.begin({
+      correlationMessageId: "msg_1",
+      sessionKey: "tg:123:srv_1",
+    });
+    tracker.begin({
+      correlationMessageId: "msg_2",
+      sessionKey: "tg:123:srv_1",
+    });
+
+    tracker.recordSdkDelivery({
+      sessionKey: "tg:123:srv_1",
+      transportChannelId: "telegram",
+      transportMessageId: "tg-ambiguous",
+      allowUnscopedActiveFallback: true,
+    });
+
+    expect(tracker.getSdkDelivery({ correlationMessageId: "msg_1" })).toBeNull();
+    expect(tracker.getSdkDelivery({ correlationMessageId: "msg_2" })).toBeNull();
+    expect(tracker.getSdkDelivery({ sessionKey: "tg:123:srv_1" })).toBeNull();
+  });
+
+  it("still records explicitly correlated delivery when multiple messages are active in the same session", () => {
+    const tracker = createRelayChannelTransportDeliveryTracker();
+    tracker.begin({
+      correlationMessageId: "msg_1",
+      sessionKey: "tg:123:srv_1",
+    });
+    tracker.begin({
+      correlationMessageId: "msg_2",
+      sessionKey: "tg:123:srv_1",
+    });
+
+    tracker.recordSdkDelivery({
+      correlationMessageId: "msg_1",
+      sessionKey: "tg:123:srv_1",
+      transportChannelId: "telegram",
+      transportMessageId: "tg-explicit",
+    });
+
+    expect(tracker.getSdkDelivery({ correlationMessageId: "msg_1" })).toEqual({
+      transportChannelId: "telegram",
+      transportMessageId: "tg-explicit",
+    });
+    expect(tracker.getSdkDelivery({ correlationMessageId: "msg_2" })).toBeNull();
+  });
+
+  it("does not let fallback session delivery overwrite an explicit correlation receipt", () => {
+    const tracker = createRelayChannelTransportDeliveryTracker();
+    tracker.begin({
+      correlationMessageId: "msg_1",
+      sessionKey: "tg:123:srv_1",
+    });
+    tracker.recordSdkDelivery({
+      correlationMessageId: "msg_1",
+      sessionKey: "tg:123:srv_1",
+      transportChannelId: "telegram",
+      transportMessageId: "tg-explicit",
+    });
+    tracker.recordSdkDelivery({
+      sessionKey: "tg:123:srv_1",
+      transportChannelId: "telegram",
+      transportMessageId: "tg-fallback-late",
+      allowUnscopedActiveFallback: true,
+    });
+
+    expect(tracker.getSdkDelivery({ correlationMessageId: "msg_1" })).toEqual({
+      transportChannelId: "telegram",
+      transportMessageId: "tg-explicit",
+    });
+    expect(tracker.getSdkDelivery({ sessionKey: "tg:123:srv_1" })).toEqual({
+      transportChannelId: "telegram",
+      transportMessageId: "tg-explicit",
+    });
+  });
+
   it("ignores unscoped SDK deliveries unless active fallback is explicitly allowed", () => {
     const tracker = createRelayChannelTransportDeliveryTracker();
     tracker.begin({

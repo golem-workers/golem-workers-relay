@@ -24,6 +24,32 @@ describe("createMessageProcessor", () => {
     vi.clearAllMocks();
   });
 
+  async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (predicate()) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error(message);
+  }
+
+  type TelegramTransportActionForTest = {
+    idempotencyKey?: string;
+    reply?: unknown;
+    payload?: {
+      text?: string;
+      mediaUrl?: string;
+    };
+  };
+
+  function readTelegramTransportActionCall(index: number): TelegramTransportActionForTest | undefined {
+    const call = executeTelegramTransportActionViaBackendMock.mock.calls[index] as
+      | [{ action?: TelegramTransportActionForTest }]
+      | undefined;
+    return call?.[0].action;
+  }
+
   it("delivers relay_channel_v2 telegram replies via backend when SDK did not send", async () => {
     executeTelegramTransportActionViaBackendMock.mockResolvedValueOnce({
       transportMessageId: "tg-direct-1",
@@ -102,6 +128,134 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
     expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("tg-direct-1");
     expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
+  });
+
+  it("splits long relay_channel_v2 telegram text into ordered idempotent sends", async () => {
+    executeTelegramTransportActionViaBackendMock
+      .mockResolvedValueOnce({ transportMessageId: "tg-long-1" })
+      .mockResolvedValueOnce({ transportMessageId: "tg-long-2" });
+    const longText = `${"a".repeat(3900)}\n${"b".repeat(120)}`;
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockResolvedValue({
+          result: {
+            outcome: "reply",
+            reply: {
+              runId: "run_long_1",
+              message: { role: "assistant", content: longText },
+            },
+          },
+          openclawMeta: { method: "chat.send", runId: "run_long_1" },
+        }),
+      } as never,
+      backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
+    });
+
+    await processor({
+      messageId: "msg_long_1",
+      input: {
+        kind: "chat",
+        sessionKey: "tg:123:srv_1",
+        messageText: "ping",
+        context: {
+          channel: "telegram",
+          deliverySystem: "relay_channel_v2",
+          telegram: {
+            chatId: "123",
+            messageId: "55",
+          },
+        },
+      },
+    });
+
+    expect(executeTelegramTransportActionViaBackendMock).toHaveBeenCalledTimes(2);
+    const firstAction = readTelegramTransportActionCall(0);
+    const secondAction = readTelegramTransportActionCall(1);
+    expect(firstAction?.idempotencyKey).toBe("msg_long_1:final:text:0");
+    expect(secondAction?.idempotencyKey).toBe("msg_long_1:final:text:1");
+    expect(firstAction?.reply).toEqual({ replyToTransportMessageId: "55" });
+    expect(secondAction?.reply).toEqual({ replyToTransportMessageId: null });
+    expect(firstAction?.payload?.text?.length).toBeLessThanOrEqual(3900);
+    expect(secondAction?.payload?.text).toContain("b");
+    const callback = submitInboundMessage.mock.calls[0]?.[0] as
+      | { body?: { openclawMeta?: { transportMessageId?: string; transportDelivered?: boolean } } }
+      | undefined;
+    expect(callback?.body?.openclawMeta?.transportMessageId).toBe("tg-long-1");
+    expect(callback?.body?.openclawMeta?.transportDelivered).toBe(true);
+  });
+
+  it("keeps long telegram media captions below transport limits and sends remaining text after media", async () => {
+    executeTelegramTransportActionViaBackendMock
+      .mockResolvedValueOnce({ transportMessageId: "tg-media-1" })
+      .mockResolvedValueOnce({ transportMessageId: "tg-media-2" });
+    const longText = `${"caption ".repeat(160)}tail`;
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockResolvedValue({
+          result: {
+            outcome: "reply",
+            reply: {
+              runId: "run_media_caption_1",
+              message: { role: "assistant", content: longText },
+              media: [
+                {
+                  path: "files/report.pdf",
+                  fileName: "report.pdf",
+                  contentType: "application/pdf",
+                  sizeBytes: 123,
+                },
+              ],
+            },
+          },
+          openclawMeta: { method: "chat.send", runId: "run_media_caption_1" },
+        }),
+      } as never,
+      backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
+    });
+
+    await processor({
+      messageId: "msg_media_caption_1",
+      input: {
+        kind: "chat",
+        sessionKey: "tg:123:srv_1",
+        messageText: "ping",
+        context: {
+          channel: "telegram",
+          deliverySystem: "relay_channel_v2",
+          telegram: {
+            chatId: "123",
+            messageId: "55",
+          },
+        },
+      },
+    });
+
+    expect(executeTelegramTransportActionViaBackendMock).toHaveBeenCalledTimes(2);
+    const mediaAction = readTelegramTransportActionCall(0);
+    const textAction = readTelegramTransportActionCall(1);
+    expect(mediaAction?.idempotencyKey).toBe("msg_media_caption_1:final:media:0");
+    expect(mediaAction?.payload?.mediaUrl).toBe("files/report.pdf");
+    expect(mediaAction?.payload?.text?.length).toBeLessThanOrEqual(1000);
+    expect(textAction?.idempotencyKey).toBe("msg_media_caption_1:final:text-after-media:0");
+    expect(textAction?.payload?.text).toContain("tail");
   });
 
   it("delivers a visible compaction lifecycle notice when a chat turn adds a compaction marker", async () => {
@@ -408,6 +562,146 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
     expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("tg-sdk-session-1");
     expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
+  });
+
+  it("clears active SDK delivery correlation after no_reply outcomes", async () => {
+    const transportDeliveryTracker = createRelayChannelTransportDeliveryTracker();
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: {
+        runChatTask: vi.fn().mockResolvedValue({
+          result: {
+            outcome: "no_reply",
+            noReply: { reason: "no_message", runId: "run_no_reply_1" },
+          },
+          openclawMeta: { method: "chat.send", runId: "run_no_reply_1" },
+        }),
+      } as never,
+      backend: { submitInboundMessage } as never,
+      transportDeliveryTracker,
+    });
+
+    await processor({
+      messageId: "msg_no_reply_1",
+      input: {
+        kind: "chat",
+        sessionKey: "tg:123:srv_1",
+        messageText: "ping",
+        context: {
+          channel: "telegram",
+          deliverySystem: "relay_channel_v2",
+          telegram: {
+            chatId: "123",
+            messageId: "55",
+          },
+        },
+      },
+    });
+
+    transportDeliveryTracker.recordSdkDelivery({
+      sessionKey: "tg:123:srv_1",
+      transportChannelId: "telegram",
+      transportMessageId: "tg-stale",
+      allowUnscopedActiveFallback: true,
+    });
+
+    expect(transportDeliveryTracker.getSdkDelivery({ correlationMessageId: "msg_no_reply_1" })).toBeNull();
+    expect(transportDeliveryTracker.getSdkDelivery({ sessionKey: "tg:123:srv_1" })).toBeNull();
+  });
+
+  it("keeps concurrent same-session terminal callbacks correlated when completion order is reversed", async () => {
+    const pending = new Map<
+      string,
+      {
+        resolve: (value: unknown) => void;
+        promise: Promise<unknown>;
+      }
+    >();
+    const runChatTask = vi.fn().mockImplementation((input: { taskId: string }) => {
+      let resolve!: (value: unknown) => void;
+      const promise = new Promise((r) => {
+        resolve = r;
+      });
+      pending.set(input.taskId, { resolve, promise });
+      return promise;
+    });
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const processor = createMessageProcessor({
+      cfg: {
+        relayInstanceId: "relay_1",
+        taskTimeoutMs: 5_000,
+        chatBatchDebounceMs: 0,
+        devLogEnabled: false,
+        devLogTextMaxLen: 200,
+      },
+      gateway: { start: vi.fn(), getHello: vi.fn() } as never,
+      runner: { runChatTask } as never,
+      backend: { submitInboundMessage } as never,
+      transportDeliveryTracker: createRelayChannelTransportDeliveryTracker(),
+    });
+
+    const first = processor({
+      messageId: "msg_order_1",
+      input: {
+        kind: "chat",
+        sessionKey: "s-order",
+        messageText: "first",
+      },
+    });
+    const second = processor({
+      messageId: "msg_order_2",
+      input: {
+        kind: "chat",
+        sessionKey: "s-order",
+        messageText: "second",
+      },
+    });
+
+    await waitForCondition(() => pending.size === 2, "expected both same-session tasks to be in flight");
+    pending.get("msg_order_2")?.resolve({
+      result: {
+        outcome: "reply",
+        reply: { runId: "run_order_2", message: { role: "assistant", content: "second reply" } },
+      },
+      openclawMeta: { method: "chat.send", runId: "run_order_2" },
+    });
+    pending.get("msg_order_1")?.resolve({
+      result: {
+        outcome: "reply",
+        reply: { runId: "run_order_1", message: { role: "assistant", content: "first reply" } },
+      },
+      openclawMeta: { method: "chat.send", runId: "run_order_1" },
+    });
+
+    await Promise.all([first, second]);
+
+    const callbacks = submitInboundMessage.mock.calls.map((call): unknown => {
+      const payload = call[0] as { body?: unknown } | undefined;
+      return payload?.body;
+    });
+    const replyByBackendMessageId = new Map<string, string>();
+    for (const callback of callbacks) {
+      if (!callback || typeof callback !== "object") continue;
+      const body = callback as {
+        reply?: { message?: { content?: unknown } };
+        openclawMeta?: { trace?: { backendMessageId?: unknown } };
+      };
+      const backendMessageId = body.openclawMeta?.trace?.backendMessageId;
+      const content = body.reply?.message?.content;
+      if (typeof backendMessageId === "string" && typeof content === "string") {
+        replyByBackendMessageId.set(backendMessageId, content);
+      }
+    }
+    expect(replyByBackendMessageId.get("msg_order_1")).toBe("first reply");
+    expect(replyByBackendMessageId.get("msg_order_2")).toBe("second reply");
   });
 
   it("delivers relay_channel_v2 WhatsApp Personal replies via backend when SDK did not send", async () => {
