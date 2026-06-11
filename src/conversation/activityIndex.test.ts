@@ -71,6 +71,102 @@ describe("ConversationActivityIndex", () => {
     expect(route?.channel).toBe("whatsapp_personal");
     expect(route?.transportTarget?.chatId).toBe("abc");
   });
+
+  it("records correlated visible finality evidence separately from route freshness", async () => {
+    const filePath = await tempIndexPath();
+    const index = new ConversationActivityIndex({ filePath });
+
+    await index.recordInbound({
+      sessionKey: "tg:100:server-a",
+      text: "please finish",
+      at: 1000,
+    });
+    await index.recordVisibleDelivery({
+      sessionKey: "tg:100:server-a",
+      sourceRequestId: "adm_1",
+      correlationMessageId: "adm_1",
+      relayMessageId: "relay_1",
+      runId: "run_1",
+      visibleMessageId: "tg_out_1",
+      transportMessageId: "2864",
+      deliveryKind: "final",
+      visibleText: "Done.",
+      deliveredAt: 2000,
+      recordedAt: 2100,
+    });
+
+    const finality = index.findLatestVisibleFinality({
+      sessionKey: "tg:100:server-a",
+      sourceRequestId: "adm_1",
+    });
+
+    expect(finality).toMatchObject({
+      sessionKey: "tg:100:server-a",
+      sourceRequestId: "adm_1",
+      correlationMessageId: "adm_1",
+      relayMessageId: "relay_1",
+      runId: "run_1",
+      visibleMessageId: "tg_out_1",
+      transportMessageId: "2864",
+      deliveryKind: "final",
+      visibleText: "Done.",
+    });
+  });
+
+  it("does not treat tool, block, or debug deliveries as visible finality", async () => {
+    const filePath = await tempIndexPath();
+    const index = new ConversationActivityIndex({ filePath });
+
+    await index.recordVisibleDelivery({
+      sessionKey: "agent:main:telegram:direct:449985919",
+      channel: "direct_openclaw",
+      sourceRequestId: "telegram:449985919:2855",
+      correlationMessageId: "telegram:449985919:2855",
+      visibleMessageId: "relay_notice_1",
+      deliveryKind: "block",
+      visibleText: 'TURN_FINAL: message "Sent the a..." from 04:45 is final',
+      deliveredAt: 3000,
+    });
+    await index.recordVisibleDelivery({
+      sessionKey: "agent:main:telegram:direct:449985919",
+      channel: "direct_openclaw",
+      sourceRequestId: "telegram:449985919:2855",
+      correlationMessageId: "telegram:449985919:2855",
+      visibleMessageId: "tool_1",
+      deliveryKind: "tool",
+      visibleText: "Checking...",
+      deliveredAt: 4000,
+    });
+
+    expect(
+      index.findLatestVisibleFinality({
+        sessionKey: "agent:main:telegram:direct:449985919",
+        sourceRequestId: "telegram:449985919:2855",
+      })
+    ).toBeNull();
+  });
+
+  it("treats delivered terminal fallbacks as visible finality", async () => {
+    const filePath = await tempIndexPath();
+    const index = new ConversationActivityIndex({ filePath });
+
+    await index.recordVisibleDelivery({
+      sessionKey: "webchat:dialog-1",
+      channel: "webchat",
+      sourceRequestId: "adm_2",
+      visibleMessageId: "adm_error_1",
+      deliveryKind: "terminal_error",
+      visibleText: "The agent connection was interrupted. Please send the request again.",
+      deliveredAt: 5000,
+    });
+
+    expect(
+      index.findLatestVisibleFinality({
+        sessionKey: "webchat:dialog-1",
+        sourceRequestId: "adm_2",
+      })?.deliveryKind
+    ).toBe("terminal_error");
+  });
 });
 
 describe("activity helpers", () => {

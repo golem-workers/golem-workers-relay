@@ -27,6 +27,31 @@ export type ConversationTransportTarget = {
   dialogId?: string;
 };
 
+export type ConversationVisibleDeliveryKind =
+  | "final"
+  | "tool"
+  | "block"
+  | "terminal_error"
+  | "terminal_no_reply";
+
+export type ConversationVisibleDeliveryEvidence = {
+  evidenceId: string;
+  sessionKey: string;
+  channel: ConversationChannel;
+  transportTarget?: ConversationTransportTarget;
+  sourceRequestId?: string;
+  relayMessageId?: string;
+  runId?: string;
+  correlationMessageId?: string;
+  visibleMessageId?: string;
+  transportMessageId?: string;
+  deliveryKind: ConversationVisibleDeliveryKind;
+  visibleText?: string;
+  mediaSummary?: string;
+  deliveredAt: number;
+  recordedAt: number;
+};
+
 export type ConversationActivityRecord = {
   sessionKey: string;
   channel: ConversationChannel;
@@ -41,6 +66,7 @@ export type ConversationActivityRecord = {
   classification: ConversationActivityClassification;
   canReceiveSystemNotifications: boolean;
   canReceiveStatusNudge: boolean;
+  visibleDeliveries?: ConversationVisibleDeliveryEvidence[];
   updatedAt: number;
 };
 
@@ -80,6 +106,44 @@ const activityRecordSchema = z
     ]),
     canReceiveSystemNotifications: z.boolean(),
     canReceiveStatusNudge: z.boolean(),
+    visibleDeliveries: z
+      .array(
+        z
+          .object({
+            evidenceId: z.string().min(1),
+            sessionKey: z.string().min(1),
+            channel: z.enum([
+              "telegram",
+              "whatsapp",
+              "whatsapp_personal",
+              "api",
+              "webchat",
+              "direct_openclaw",
+              "unknown",
+            ]),
+            transportTarget: z
+              .object({
+                chatId: z.string().min(1).optional(),
+                conversationId: z.string().min(1).optional(),
+                threadId: z.string().min(1).optional(),
+                dialogId: z.string().min(1).optional(),
+              })
+              .optional(),
+            sourceRequestId: z.string().min(1).optional(),
+            relayMessageId: z.string().min(1).optional(),
+            runId: z.string().min(1).optional(),
+            correlationMessageId: z.string().min(1).optional(),
+            visibleMessageId: z.string().min(1).optional(),
+            transportMessageId: z.string().min(1).optional(),
+            deliveryKind: z.enum(["final", "tool", "block", "terminal_error", "terminal_no_reply"]),
+            visibleText: z.string().min(1).optional(),
+            mediaSummary: z.string().min(1).optional(),
+            deliveredAt: z.number().int().nonnegative(),
+            recordedAt: z.number().int().nonnegative(),
+          })
+          .strict()
+      )
+      .optional(),
     updatedAt: z.number().int().nonnegative(),
   })
   .strict();
@@ -99,6 +163,21 @@ type RecordInputBase = {
   serverId?: string;
   at?: number;
   text?: string;
+};
+
+type VisibleDeliveryInput = RecordInputBase & {
+  evidenceId?: string;
+  sourceRequestId?: string;
+  relayMessageId?: string;
+  runId?: string;
+  correlationMessageId?: string;
+  visibleMessageId?: string;
+  transportMessageId?: string;
+  deliveryKind: ConversationVisibleDeliveryKind;
+  visibleText?: string;
+  mediaSummary?: string;
+  deliveredAt?: number;
+  recordedAt?: number;
 };
 
 export function inferConversationChannel(sessionKey: string): ConversationChannel {
@@ -246,6 +325,42 @@ export class ConversationActivityIndex {
     return record;
   }
 
+  async recordVisibleDelivery(input: VisibleDeliveryInput): Promise<ConversationActivityRecord> {
+    const recordedAt = input.recordedAt ?? input.at ?? Date.now();
+    const deliveredAt = input.deliveredAt ?? input.at ?? recordedAt;
+    const channel = input.channel ?? inferConversationChannel(input.sessionKey);
+    const transportTarget =
+      input.transportTarget ?? inferTransportTarget({ sessionKey: input.sessionKey, channel });
+    const evidence: ConversationVisibleDeliveryEvidence = {
+      evidenceId: input.evidenceId ?? buildVisibleDeliveryEvidenceId(input),
+      sessionKey: input.sessionKey,
+      channel,
+      ...(transportTarget ? { transportTarget } : {}),
+      ...(input.sourceRequestId ? { sourceRequestId: input.sourceRequestId } : {}),
+      ...(input.relayMessageId ? { relayMessageId: input.relayMessageId } : {}),
+      ...(input.runId ? { runId: input.runId } : {}),
+      ...(input.correlationMessageId ? { correlationMessageId: input.correlationMessageId } : {}),
+      ...(input.visibleMessageId ? { visibleMessageId: input.visibleMessageId } : {}),
+      ...(input.transportMessageId ? { transportMessageId: input.transportMessageId } : {}),
+      deliveryKind: input.deliveryKind,
+      ...(input.visibleText ? { visibleText: input.visibleText } : {}),
+      ...(input.mediaSummary ? { mediaSummary: input.mediaSummary } : {}),
+      deliveredAt,
+      recordedAt,
+    };
+    const record = this.mergeRecord({
+      ...input,
+      channel,
+      transportTarget,
+      lastOutboundAt: deliveredAt,
+      lastAssistantMessageAt: deliveredAt,
+      updatedAt: recordedAt,
+      visibleDelivery: evidence,
+    });
+    await this.save();
+    return record;
+  }
+
   async recordTranscript(input: RecordInputBase & {
     lastUserMessageAt?: number;
     lastAssistantMessageAt?: number;
@@ -294,6 +409,25 @@ export class ConversationActivityIndex {
     return candidates[0] ?? null;
   }
 
+  findLatestVisibleFinality(input: {
+    sessionKey: string;
+    sourceRequestId?: string;
+    correlationMessageId?: string;
+    afterMs?: number;
+  }): ConversationVisibleDeliveryEvidence | null {
+    const record = this.records.get(input.sessionKey);
+    if (!record?.visibleDeliveries?.length) return null;
+    const candidates = record.visibleDeliveries.filter((delivery) => {
+      if (!isVisibleFinalityKind(delivery.deliveryKind)) return false;
+      if (input.sourceRequestId && delivery.sourceRequestId !== input.sourceRequestId) return false;
+      if (input.correlationMessageId && delivery.correlationMessageId !== input.correlationMessageId) return false;
+      if (input.afterMs != null && delivery.deliveredAt < input.afterMs) return false;
+      return true;
+    });
+    candidates.sort((a, b) => b.deliveredAt - a.deliveredAt || b.recordedAt - a.recordedAt);
+    return candidates[0] ?? null;
+  }
+
   private mergeRecord(
     input: RecordInputBase & {
       channel: ConversationChannel;
@@ -303,6 +437,7 @@ export class ConversationActivityIndex {
       lastInboundAt?: number;
       lastOutboundAt?: number;
       updatedAt?: number;
+      visibleDelivery?: ConversationVisibleDeliveryEvidence;
     }
   ): ConversationActivityRecord {
     const previous = this.records.get(input.sessionKey);
@@ -327,6 +462,7 @@ export class ConversationActivityIndex {
       classification,
       canReceiveSystemNotifications: classification === "external_user_chat",
       canReceiveStatusNudge: classification === "external_user_chat",
+      visibleDeliveries: mergeVisibleDeliveries(previous?.visibleDeliveries, input.visibleDelivery),
       updatedAt: Math.max(previous?.updatedAt ?? 0, updatedAt),
     };
     this.records.set(record.sessionKey, record);
@@ -354,6 +490,35 @@ function compareRouteFreshness(a: ConversationActivityRecord, b: ConversationAct
 
 function compareNudgeFreshness(a: ConversationActivityRecord, b: ConversationActivityRecord): number {
   return (nudgeFreshness(b) ?? 0) - (nudgeFreshness(a) ?? 0);
+}
+
+function isVisibleFinalityKind(kind: ConversationVisibleDeliveryKind): boolean {
+  return kind === "final" || kind === "terminal_error" || kind === "terminal_no_reply";
+}
+
+function buildVisibleDeliveryEvidenceId(input: VisibleDeliveryInput): string {
+  const parts = [
+    input.sessionKey,
+    input.sourceRequestId,
+    input.correlationMessageId,
+    input.transportMessageId,
+    input.visibleMessageId,
+    input.deliveryKind,
+    String(input.deliveredAt ?? input.at ?? input.recordedAt ?? Date.now()),
+  ].filter((part): part is string => typeof part === "string" && part.length > 0);
+  return parts.join(":");
+}
+
+function mergeVisibleDeliveries(
+  existing: ConversationVisibleDeliveryEvidence[] | undefined,
+  next: ConversationVisibleDeliveryEvidence | undefined
+): ConversationVisibleDeliveryEvidence[] | undefined {
+  if (!next) return existing;
+  const byId = new Map((existing ?? []).map((delivery) => [delivery.evidenceId, delivery]));
+  byId.set(next.evidenceId, next);
+  return [...byId.values()]
+    .sort((a, b) => b.deliveredAt - a.deliveredAt || b.recordedAt - a.recordedAt)
+    .slice(0, 50);
 }
 
 function readTransportTargetFromContext(context: unknown): ConversationTransportTarget | undefined {

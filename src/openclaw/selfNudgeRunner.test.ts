@@ -895,6 +895,83 @@ describe("selfNudgeRunner", () => {
     expect(finalNotice).toHaveBeenCalledTimes(1);
   });
 
+  it("does not close a turn on private final text without visible finality evidence", async () => {
+    const sendNudgeMessage = makeSendNudgeMessageMock();
+    const notifyFinalDecision = vi.fn<(input: FinalDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
+
+    const result = await evaluateSelfNudgeTick({
+      settings: { ...enabledSettings, finalNoticeEnabled: true },
+      transcript: makeTranscript({
+        mtimeMs: 10_000,
+        messages: [
+          { role: "user", text: "send the answer in telegram", lineIndex: 0, timestampMs: 9_000 },
+          { role: "assistant", text: "Done. Visible reply sent.", lineIndex: 1, timestampMs: 10_000 },
+        ],
+        latestUserMessage: { role: "user", text: "send the answer in telegram", lineIndex: 0, timestampMs: 9_000 },
+      }),
+      state: makeState(),
+      nowMs: 11_000,
+      sendNudgeMessage,
+      notifyFinalDecision,
+      findVisibleFinality: vi.fn().mockResolvedValue(null),
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: false,
+        statusNudgeMessage: null,
+        finalConfidence: 100,
+        reasonCode: "final_answer",
+      }),
+    });
+
+    expect(result).toEqual({ nudged: true, nextDelayMs: 2_000 });
+    expect(sendNudgeMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageText:
+          "[STATUS_NUDGE]\nContinue the current user-visible reply. A private final answer exists, but no visible delivery evidence was found for the source conversation.",
+      })
+    );
+    expect(notifyFinalDecision).not.toHaveBeenCalled();
+  });
+
+  it("allows final closure when visible finality evidence exists", async () => {
+    const sendNudgeMessage = makeSendNudgeMessageMock();
+    const notifyFinalDecision = vi.fn<(input: FinalDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
+
+    const result = await evaluateSelfNudgeTick({
+      settings: { ...enabledSettings, finalNoticeEnabled: true },
+      transcript: makeTranscript({
+        mtimeMs: 10_000,
+        messages: [
+          { role: "user", text: "send the answer in telegram", lineIndex: 0, timestampMs: 9_000 },
+          { role: "assistant", text: "Private final text.", lineIndex: 1, timestampMs: 10_000 },
+        ],
+        latestUserMessage: { role: "user", text: "send the answer in telegram", lineIndex: 0, timestampMs: 9_000 },
+      }),
+      state: makeState(),
+      nowMs: 11_000,
+      sendNudgeMessage,
+      notifyFinalDecision,
+      findVisibleFinality: vi.fn().mockResolvedValue({
+        visibleText: "Visible Telegram answer.",
+        deliveredAtMs: 10_500,
+        deliveryKind: "final",
+      }),
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: false,
+        statusNudgeMessage: null,
+        finalConfidence: 100,
+        reasonCode: "final_answer",
+      }),
+    });
+
+    expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
+    expect(sendNudgeMessage).not.toHaveBeenCalled();
+    expect(notifyFinalDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleFinality: expect.objectContaining({ visibleText: "Visible Telegram answer." }),
+      })
+    );
+  });
+
   it("still asks the model to judge assistant replies that claim Status 100 complete", async () => {
     const sendNudgeMessage = makeSendNudgeMessageMock();
     const decide = vi.fn().mockResolvedValue({
@@ -1240,6 +1317,42 @@ describe("selfNudgeRunner", () => {
     });
 
     expect(text).toBe('TURN_FINAL: message "Finished t..." from 11:11 is final');
+  });
+
+  it("formats final notices from visible delivery evidence when it differs from private final text", () => {
+    const text = buildFinalDecisionNoticeText({
+      transcript: makeTranscript({
+        messages: [
+          { role: "user", text: "please do x", lineIndex: 0, timestampMs: Date.UTC(2026, 5, 3, 11, 10) },
+          {
+            role: "assistant",
+            text: "Private final text.",
+            lineIndex: 1,
+            timestampMs: Date.UTC(2026, 5, 3, 11, 11),
+          },
+        ],
+        latestUserMessage: {
+          role: "user",
+          text: "please do x",
+          lineIndex: 0,
+          timestampMs: Date.UTC(2026, 5, 3, 11, 10),
+        },
+      }),
+      decision: {
+        shouldNudge: false,
+        statusNudgeMessage: null,
+        finalConfidence: 97,
+        reasonCode: "final_answer",
+      },
+      visibleFinality: {
+        visibleText: "Visible Telegram answer.",
+        deliveredAtMs: Date.UTC(2026, 5, 3, 11, 13),
+        deliveryKind: "final",
+      },
+      nowMs: Date.UTC(2026, 5, 3, 11, 14),
+    });
+
+    expect(text).toBe('TURN_FINAL: message "Visible Te..." from 11:13 is final');
   });
 
   it("does not use a previous relay final notice as the final assistant preview", () => {

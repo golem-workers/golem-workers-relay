@@ -51,6 +51,12 @@ export type SelfNudgeDecision = {
   reason?: string;
 };
 
+export type SelfNudgeVisibleFinalityEvidence = {
+  visibleText?: string;
+  deliveredAtMs?: number;
+  deliveryKind?: "final" | "terminal_error" | "terminal_no_reply";
+};
+
 type GatewayLike = {
   request: (method: string, params?: unknown, options?: { timeoutMs?: number }) => Promise<unknown>;
 };
@@ -104,10 +110,11 @@ export function buildFinalDecisionNoticeText(input: {
   transcript: FreshestSessionTranscript;
   decision: SelfNudgeDecision;
   nowMs: number;
+  visibleFinality?: SelfNudgeVisibleFinalityEvidence | null;
 }): string {
   const finalMessage = findFinalAssistantMessage(input.transcript) ?? input.transcript.latestUserMessage;
-  const preview = makeFinalNoticePreview(finalMessage?.text ?? "");
-  const timeText = formatNoticeTime(finalMessage?.timestampMs ?? input.nowMs);
+  const preview = makeFinalNoticePreview(input.visibleFinality?.visibleText ?? finalMessage?.text ?? "");
+  const timeText = formatNoticeTime(input.visibleFinality?.deliveredAtMs ?? finalMessage?.timestampMs ?? input.nowMs);
   return `TURN_FINAL: message "${preview}" from ${timeText} is final`;
 }
 
@@ -137,6 +144,7 @@ export function createSelfNudgeRunner(input: {
     transcript: FreshestSessionTranscript;
     decision: SelfNudgeDecision;
     nowMs: number;
+    visibleFinality?: SelfNudgeVisibleFinalityEvidence | null;
   }) => Promise<void>;
   notifyNudgeDecision?: (input: {
     transcript: FreshestSessionTranscript;
@@ -144,6 +152,10 @@ export function createSelfNudgeRunner(input: {
     messageText: string;
     nowMs: number;
   }) => Promise<void>;
+  findVisibleFinality?: (input: {
+    transcript: FreshestSessionTranscript;
+    decision: SelfNudgeDecision;
+  }) => Promise<SelfNudgeVisibleFinalityEvidence | null> | SelfNudgeVisibleFinalityEvidence | null;
 }): SelfNudgeRunner {
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
@@ -214,6 +226,7 @@ export function createSelfNudgeRunner(input: {
         processedStore,
         notifyFinalDecision: input.notifyFinalDecision,
         notifyNudgeDecision: input.notifyNudgeDecision,
+        findVisibleFinality: input.findVisibleFinality,
         decide: (decisionInput) =>
           decideSelfNudgeWithOpenRouter({
             ...decisionInput,
@@ -253,6 +266,7 @@ export async function evaluateSelfNudgeTick(input: {
     transcript: FreshestSessionTranscript;
     decision: SelfNudgeDecision;
     nowMs: number;
+    visibleFinality?: SelfNudgeVisibleFinalityEvidence | null;
   }) => Promise<void>;
   notifyNudgeDecision?: (input: {
     transcript: FreshestSessionTranscript;
@@ -264,6 +278,10 @@ export async function evaluateSelfNudgeTick(input: {
     settings: RelaySelfNudgeSettings;
     transcript: FreshestSessionTranscript;
   }) => Promise<SelfNudgeDecision>;
+  findVisibleFinality?: (input: {
+    transcript: FreshestSessionTranscript;
+    decision: SelfNudgeDecision;
+  }) => Promise<SelfNudgeVisibleFinalityEvidence | null> | SelfNudgeVisibleFinalityEvidence | null;
 }): Promise<{ nudged: boolean; nextDelayMs: number }> {
   const latestUser = input.transcript.latestUserMessage;
   if (!latestUser) {
@@ -315,10 +333,27 @@ export async function evaluateSelfNudgeTick(input: {
     return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
   }
 
-  const decision = await input.decide({
+  let decision = await input.decide({
     settings: input.settings,
     transcript: input.transcript,
   });
+  let visibleFinality: SelfNudgeVisibleFinalityEvidence | null = null;
+  if (isFinalAnswerDecision(decision) && input.findVisibleFinality) {
+    visibleFinality = await input.findVisibleFinality({
+      transcript: input.transcript,
+      decision,
+    });
+    if (!visibleFinality) {
+      decision = {
+        shouldNudge: true,
+        statusNudgeMessage:
+          "Continue the current user-visible reply. A private final answer exists, but no visible delivery evidence was found for the source conversation.",
+        finalConfidence: 0,
+        reasonCode: "unknown",
+        reason: "private_final_without_visible_delivery",
+      };
+    }
+  }
   await input.processedStore?.markAnalyzed({
     sessionKey: input.transcript.sessionKey,
     userFingerprint,
@@ -339,6 +374,7 @@ export async function evaluateSelfNudgeTick(input: {
         transcript: input.transcript,
         decision,
         nowMs: input.nowMs,
+        visibleFinality,
       });
       input.state.lastFinalNoticeFingerprint = userFingerprint;
       await input.processedStore?.markFinalNoticeSent({
