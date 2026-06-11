@@ -700,6 +700,29 @@ async function main(): Promise<void> {
             );
             return Promise.resolve();
           },
+          findVisibleFinality: ({ transcript }) => {
+            const route =
+              activityIndex.snapshot().find((record) => record.sessionKey === transcript.sessionKey) ??
+              activityIndex.findBestUserVisibleRoute();
+            const finality = route
+              ? activityIndex.findLatestVisibleFinality({
+                  sessionKey: route.sessionKey,
+                  afterMs: transcript.latestUserMessage?.timestampMs,
+                })
+              : null;
+            return finality
+              ? {
+                  visibleText: finality.visibleText ?? finality.mediaSummary,
+                  deliveredAtMs: finality.deliveredAt,
+                  deliveryKind:
+                    finality.deliveryKind === "final" ||
+                    finality.deliveryKind === "terminal_error" ||
+                    finality.deliveryKind === "terminal_no_reply"
+                      ? finality.deliveryKind
+                      : undefined,
+                }
+              : null;
+          },
           notifyNudgeDecision: cfg.selfNudge.nudgeNoticeEnabled
             ? async ({ transcript, decision, messageText, nowMs }) => {
                 const route =
@@ -746,7 +769,7 @@ async function main(): Promise<void> {
               }
             : undefined,
           notifyFinalDecision: cfg.selfNudge.finalNoticeEnabled
-            ? async ({ transcript, decision, nowMs }) => {
+            ? async ({ transcript, decision, nowMs, visibleFinality }) => {
                 const route =
                   activityIndex.snapshot().find((record) => record.sessionKey === transcript.sessionKey) ??
                   activityIndex.findBestUserVisibleRoute({ now: nowMs });
@@ -759,7 +782,7 @@ async function main(): Promise<void> {
                     kind: "system_notification",
                     notificationId,
                     userId,
-                    text: buildFinalDecisionNoticeText({ transcript, decision, nowMs }),
+                    text: buildFinalDecisionNoticeText({ transcript, decision, nowMs, visibleFinality }),
                     eventKey: "relay.self_nudge.final_answer",
                     code: "relay:self_nudge:final_answer",
                     severity: "info",
@@ -908,6 +931,27 @@ async function recordTransportEventActivity(input: {
         transportTarget,
         at: input.message.sentAtMs ?? Date.now(),
       });
+      const deliveryKind = readVisibleDeliveryKind(payload.deliveryKind);
+      if (deliveryKind && (payload.status === "sent" || payload.status === "delivered")) {
+        const deliveredAt = input.message.sentAtMs ?? Date.now();
+        await input.activityIndex.recordVisibleDelivery({
+          evidenceId: readString(payload.evidenceId) ?? readString(payload.eventId) ?? readString(payload.actionId) ?? undefined,
+          sessionKey,
+          channel,
+          transportTarget,
+          sourceRequestId: readString(payload.sourceRequestId) ?? readString(payload.backendMessageId) ?? undefined,
+          relayMessageId: input.message.messageId,
+          runId: readString(payload.runId) ?? undefined,
+          correlationMessageId: readString(payload.correlationMessageId) ?? undefined,
+          visibleMessageId: readString(payload.visibleMessageId) ?? readString(payload.actionId) ?? undefined,
+          transportMessageId: readString(payload.transportMessageId) ?? undefined,
+          deliveryKind,
+          visibleText: readString(payload.visibleText) ?? readString(payload.text) ?? undefined,
+          mediaSummary: readString(payload.mediaSummary) ?? undefined,
+          deliveredAt,
+          recordedAt: Date.now(),
+        });
+      }
     }
   } catch (error) {
     logger.warn(
@@ -921,6 +965,19 @@ async function recordTransportEventActivity(input: {
       "Failed to record conversation transport activity"
     );
   }
+}
+
+function readVisibleDeliveryKind(value: unknown) {
+  if (
+    value === "final" ||
+    value === "tool" ||
+    value === "block" ||
+    value === "terminal_error" ||
+    value === "terminal_no_reply"
+  ) {
+    return value;
+  }
+  return null;
 }
 
 function readConversationChannel(value: unknown): ReturnType<typeof inferConversationChannel> | null {
