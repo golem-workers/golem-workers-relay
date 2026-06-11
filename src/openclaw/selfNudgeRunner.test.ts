@@ -1014,9 +1014,10 @@ describe("selfNudgeRunner", () => {
 
     expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
     expect(sendNudgeMessage).not.toHaveBeenCalled();
+    const expectedVisibleFinality = expect.objectContaining({ visibleText: "Visible Telegram answer." }) as unknown;
     expect(notifyFinalDecision).toHaveBeenCalledWith(
       expect.objectContaining({
-        visibleFinality: expect.objectContaining({ visibleText: "Visible Telegram answer." }),
+        visibleFinality: expectedVisibleFinality,
       })
     );
   });
