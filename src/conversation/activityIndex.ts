@@ -182,6 +182,7 @@ type VisibleDeliveryInput = RecordInputBase & {
 
 export function inferConversationChannel(sessionKey: string): ConversationChannel {
   if (sessionKey.startsWith("tg:")) return "telegram";
+  if (sessionKey.startsWith("telegram:")) return "telegram";
   if (sessionKey.startsWith("whatsapp-personal:")) return "whatsapp_personal";
   if (sessionKey.startsWith("whatsapp:")) return "whatsapp";
   if (sessionKey.startsWith("webchat:")) return "webchat";
@@ -200,7 +201,7 @@ export function inferTransportTarget(input: {
 
   const channel = input.channel ?? inferConversationChannel(input.sessionKey);
   if (channel === "telegram") {
-    const chatId = input.sessionKey.startsWith("tg:") ? input.sessionKey.slice(3).split(":")[0] : "";
+    const chatId = readTelegramChatIdFromSessionKey(input.sessionKey);
     return chatId ? { chatId } : undefined;
   }
   if (channel === "whatsapp_personal") {
@@ -542,6 +543,13 @@ function readTransportTargetFromContext(context: unknown): ConversationTransport
     }
   }
   return undefined;
+}
+
+function readTelegramChatIdFromSessionKey(sessionKey: string): string {
+  if (sessionKey.startsWith("tg:")) return sessionKey.slice(3).split(":")[0] ?? "";
+  if (sessionKey.startsWith("telegram:direct:")) return sessionKey.slice("telegram:direct:".length).split(":")[0] ?? "";
+  if (sessionKey.startsWith("telegram:group:")) return sessionKey.slice("telegram:group:".length).split(":")[0] ?? "";
+  return "";
 }
 
 function readObject(value: unknown): Record<string, unknown> | null {

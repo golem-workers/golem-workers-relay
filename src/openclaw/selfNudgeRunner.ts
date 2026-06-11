@@ -653,8 +653,16 @@ function readRuntimeHistoryMessages(payload: unknown): TranscriptMessage[] {
 function isUserFacingRuntimeSessionKey(sessionKey: string): boolean {
   if (!sessionKey || sessionKey === "main" || sessionKey === "global" || sessionKey === "unknown") return false;
   if (sessionKey.startsWith("agent:")) return false;
-  if (!sessionKey.includes(":")) return false;
-  return true;
+  return (
+    sessionKey.startsWith("tg:") ||
+    sessionKey.startsWith("telegram:direct:") ||
+    sessionKey.startsWith("telegram:group:") ||
+    sessionKey.startsWith("whatsapp:") ||
+    sessionKey.startsWith("whatsapp-personal:") ||
+    sessionKey.startsWith("webchat:") ||
+    sessionKey.startsWith("direct:") ||
+    sessionKey.startsWith("openclaw-direct:")
+  );
 }
 
 function isStaleLatestUserMessage(message: TranscriptMessage, nowMs: number): boolean {

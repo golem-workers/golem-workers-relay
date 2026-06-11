@@ -194,6 +194,10 @@ describe("activity helpers", () => {
   it("infers channel and target from session keys", () => {
     expect(inferConversationChannel("tg:-100:server")).toBe("telegram");
     expect(inferTransportTarget({ sessionKey: "tg:-100:server" })?.chatId).toBe("-100");
+    expect(inferConversationChannel("telegram:direct:449985919")).toBe("telegram");
+    expect(inferTransportTarget({ sessionKey: "telegram:direct:449985919" })?.chatId).toBe("449985919");
+    expect(inferConversationChannel("telegram:group:-100")).toBe("telegram");
+    expect(inferTransportTarget({ sessionKey: "telegram:group:-100" })?.chatId).toBe("-100");
     expect(inferConversationChannel("whatsapp-personal:chat-1:server")).toBe("whatsapp_personal");
     expect(inferTransportTarget({ sessionKey: "whatsapp-personal:chat-1:server" })?.chatId).toBe("chat-1");
   });

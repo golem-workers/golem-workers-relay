@@ -624,6 +624,55 @@ describe("selfNudgeRunner", () => {
     expect(transcript?.latestUserMessage?.text).toBe("new user task");
   });
 
+  it("ignores newer internal runtime sessions with private final text when direct Telegram is waiting", async () => {
+    const historyBySession = new Map<string, unknown>([
+      [
+        "agent:main:internal:codex-final",
+        {
+          messages: [
+            { role: "user", createdAt: 9_000, content: "internal bookkeeping" },
+            { role: "assistant", createdAt: 9_500, content: "Done. Visible reply sent." },
+          ],
+        },
+      ],
+      [
+        "agent:main:telegram:direct:449985919",
+        {
+          messages: [
+            { role: "user", createdAt: 7_000, content: "continue the tracker tasks" },
+            { role: "assistant", createdAt: 7_500, content: "Working on the next tracker task." },
+          ],
+        },
+      ],
+    ]);
+    const gateway = {
+      request: vi.fn((method: string, params?: unknown) => {
+        if (method === "sessions.list") {
+          return {
+            sessions: [
+              { key: "agent:main:internal:codex-final", updatedAt: 9_500 },
+              { key: "agent:main:telegram:direct:449985919", updatedAt: 7_500 },
+            ],
+          };
+        }
+        if (method === "chat.history") {
+          const sessionKey = (params as { sessionKey?: string } | undefined)?.sessionKey;
+          const payload = sessionKey ? historyBySession.get(sessionKey) : null;
+          if (payload) return payload;
+        }
+        throw new Error(`unexpected gateway method ${method}`);
+      }),
+    };
+
+    const transcript = await readFreshestOpenclawRuntimeTranscript({
+      gateway,
+      analyzedRecentMessageCount: 3,
+    });
+
+    expect(transcript?.sessionKey).toBe("telegram:direct:449985919");
+    expect(transcript?.latestUserMessage?.text).toBe("continue the tracker tasks");
+  });
+
   it("marks the latest real user request in the analyzer payload without duplicating status nudges", async () => {
     const fetchImpl = vi.fn((_url: string | URL | Request, init?: RequestInit) => {
       const body = typeof init?.body === "string" ? init.body : "";
