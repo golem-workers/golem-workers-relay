@@ -230,6 +230,61 @@ describe("createMessageProcessor", () => {
     await expect(store.list()).resolves.toEqual([]);
   });
 
+  it("closes stale durable in-flight tasks from relay restart recovery when run metadata is missing", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-restart-missing-run-"));
+    const store = createInFlightTaskStore({ stateDir });
+    await store.upsert({
+      schemaVersion: 1,
+      backendMessageId: "msg_restart_missing_run_1",
+      relayMessageId: "relay_restart_missing_run_1",
+      relayInstanceId: "relay_1",
+      sessionKey: "tg:123:srv_1",
+      messageText: "ping before crash",
+      context: {
+        channel: "telegram",
+        deliverySystem: "relay_channel_v2",
+      },
+      startedAtMs: Date.now() - 60_000,
+      updatedAtMs: Date.now() - 60_000,
+    });
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const recoverChatTaskFromTranscript = vi.fn();
+    const runChatTask = vi.fn();
+
+    await reconcileDurableInFlightChatTasks({
+      cfg: {
+        relayInstanceId: "relay_1",
+        restartRecoveryTimeoutMs: 10,
+      },
+      runner: { recoverChatTaskFromTranscript, runChatTask } as never,
+      backend: { submitInboundMessage } as never,
+      inFlightTaskStore: store,
+    });
+
+    expect(runChatTask).not.toHaveBeenCalled();
+    expect(recoverChatTaskFromTranscript).not.toHaveBeenCalled();
+    expect(submitInboundMessage).toHaveBeenCalledTimes(1);
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        relayInstanceId: "relay_1",
+        relayMessageId: "relay_restart_missing_run_1",
+        outcome: "error",
+        error: {
+          code: "RESTART_RECOVERY_MISSING_RUN",
+        },
+        openclawMeta: {
+          deliverySystem: "relay_channel_v2",
+          sessionKey: "tg:123:srv_1",
+          trace: {
+            backendMessageId: "msg_restart_missing_run_1",
+            relayInstanceId: "relay_1",
+          },
+        },
+      },
+    });
+    await expect(store.list()).resolves.toEqual([]);
+  });
+
   it("splits long relay_channel_v2 telegram text into ordered idempotent sends", async () => {
     executeTelegramTransportActionViaBackendMock
       .mockResolvedValueOnce({ transportMessageId: "tg-long-1" })
@@ -1084,6 +1139,8 @@ describe("createMessageProcessor", () => {
   });
 
   it("times out stuck chat tasks, aborts them, and ignores late completion", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-owned-timeout-"));
+    const store = createInFlightTaskStore({ stateDir });
     let resolveRun!: (value: {
       result: {
         outcome: "reply";
@@ -1116,6 +1173,7 @@ describe("createMessageProcessor", () => {
       gateway: { start: vi.fn(), getHello: vi.fn() } as never,
       runner: { runChatTask, abortTask } as never,
       backend: { submitInboundMessage } as never,
+      inFlightTaskStore: store,
     });
 
     await processor({
@@ -1128,6 +1186,7 @@ describe("createMessageProcessor", () => {
     });
 
     expect(abortTask).toHaveBeenCalledWith("msg_timeout_1", "RELAY_TASK_TIMEOUT");
+    await expect(store.list()).resolves.toEqual([]);
     expect(submitInboundMessage).toHaveBeenCalledTimes(1);
     expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({
       body: {
