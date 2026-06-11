@@ -2,14 +2,22 @@ import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { logger } from "./logger.js";
 import { loadRelayConfig, type RelayConfig } from "./config/env.js";
-import { isCodexModelRef, readOpenclawPrimaryModelRef, resolveOpenclawConfig } from "./openclaw/openclawConfig.js";
+import {
+  isCodexModelRef,
+  readOpenclawPrimaryModelRef,
+  resolveOpenclawConfig,
+} from "./openclaw/openclawConfig.js";
 import { BackendClient } from "./backend/backendClient.js";
 import { type InboundPushMessage } from "./backend/types.js";
 import { GatewayClient } from "./openclaw/gatewayClient.js";
 import { ChatRunner } from "./openclaw/chatRunner.js";
 import { transcribeAudioWithOpenAi } from "./openclaw/openaiTranscription.js";
 import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
-import { InMemoryTaskQueue, QueueClosedError, QueueFullError } from "./queue/inMemoryTaskQueue.js";
+import {
+  InMemoryTaskQueue,
+  QueueClosedError,
+  QueueFullError,
+} from "./queue/inMemoryTaskQueue.js";
 import {
   createMessageProcessor,
   createRelayTaskControl,
@@ -35,9 +43,13 @@ import {
   buildFinalDecisionNoticeText,
   buildNudgeDecisionNoticeText,
   createSelfNudgeRunner,
+  findVisibleFinalityInOpenclawRuntimeHistory,
 } from "./openclaw/selfNudgeRunner.js";
 import { createOpenclawConnectionStatusReporter } from "./openclaw/connectionStatusReporter.js";
-import { closeHttpServer, startRelayChannelDataPlaneServer } from "./relayChannel/startDataPlaneServer.js";
+import {
+  closeHttpServer,
+  startRelayChannelDataPlaneServer,
+} from "./relayChannel/startDataPlaneServer.js";
 import { startRelayChannelControlPlane } from "./relayChannel/startControlPlaneServer.js";
 import { createRelayChannelTransportDeliveryTracker } from "./relayChannel/transportDeliveryTracker.js";
 import { abortActiveChatTaskByBackendMessageId } from "./agentControl/abortActiveChatTask.js";
@@ -103,12 +115,13 @@ async function main(): Promise<void> {
       relayChannelDataPlane: cfg.relayChannel.enabled
         ? `${cfg.relayChannel.dataPlaneHost}:${cfg.relayChannel.dataPlanePort}`
         : null,
-      relayChannelPluginAutoUpdateEnabled: cfg.relayChannel.plugin.autoUpdateEnabled,
+      relayChannelPluginAutoUpdateEnabled:
+        cfg.relayChannel.plugin.autoUpdateEnabled,
       relayChannelPluginGitRef: cfg.relayChannel.plugin.gitRef,
       relayChannelPluginRepoDir: cfg.relayChannel.plugin.repoDir,
       diagnosticNotifierEnabled: cfg.diagnosticNotifier.enabled,
     },
-    "Relay starting"
+    "Relay starting",
   );
 
   const backend = new BackendClient({
@@ -121,12 +134,16 @@ async function main(): Promise<void> {
   await activityIndex.load();
 
   let gateway: GatewayClient | null = null;
-  let reportOpenclawConnectionStatus:
-    | ReturnType<typeof createOpenclawConnectionStatusReporter>
-    | null = null;
-  let getRelayChannelHealth: () => Record<string, unknown> = () => ({ enabled: false });
+  let reportOpenclawConnectionStatus: ReturnType<
+    typeof createOpenclawConnectionStatusReporter
+  > | null = null;
+  let getRelayChannelHealth: () => Record<string, unknown> = () => ({
+    enabled: false,
+  });
   let relayChannelCleanup: (() => Promise<void>) | null = null;
-  let publishRelayChannelEvent: ((event: Record<string, unknown>) => void) | null = null;
+  let publishRelayChannelEvent:
+    | ((event: Record<string, unknown>) => void)
+    | null = null;
   const transportDeliveryTracker = createRelayChannelTransportDeliveryTracker();
   if (cfg.relayChannel.enabled) {
     const dp = startRelayChannelDataPlaneServer({
@@ -165,7 +182,9 @@ async function main(): Promise<void> {
         void reportOpenclawConnectionStatus({
           connected: gateway?.isReady() ?? false,
           observedAtMs: Date.now(),
-          reason: state.clientConnected ? undefined : "Relay-channel control plane disconnected",
+          reason: state.clientConnected
+            ? undefined
+            : "Relay-channel control plane disconnected",
         });
       },
     });
@@ -183,13 +202,13 @@ async function main(): Promise<void> {
       await cp.close();
       await closeHttpServer(dp.server);
     };
-
   }
 
   reportOpenclawConnectionStatus = createOpenclawConnectionStatusReporter({
     backend,
     relayInstanceId: cfg.relayInstanceId,
-    buildDeliveryReport: () => buildRelayDeliveryReportForBackend(cfg, getRelayChannelHealth),
+    buildDeliveryReport: () =>
+      buildRelayDeliveryReportForBackend(cfg, getRelayChannelHealth),
   });
 
   let chatRunner: ChatRunner | null = null;
@@ -213,15 +232,15 @@ async function main(): Promise<void> {
       });
     },
   });
-  let devicePairingAutoApprover:
-    | ReturnType<typeof createDevicePairingAutoApprover>
-    | null = null;
-  let nodePairingAutoApprover:
-    | ReturnType<typeof createNodePairingAutoApprover>
-    | null = null;
-  let execApprovalAutoApprover:
-    | ReturnType<typeof createExecApprovalAutoApprover>
-    | null = null;
+  let devicePairingAutoApprover: ReturnType<
+    typeof createDevicePairingAutoApprover
+  > | null = null;
+  let nodePairingAutoApprover: ReturnType<
+    typeof createNodePairingAutoApprover
+  > | null = null;
+  let execApprovalAutoApprover: ReturnType<
+    typeof createExecApprovalAutoApprover
+  > | null = null;
 
   gateway = new GatewayClient({
     url: openclaw.gateway.wsUrl,
@@ -280,7 +299,7 @@ async function main(): Promise<void> {
               openclawRunId: runId,
               error: error instanceof Error ? error.message : String(error),
             },
-            "Failed to durably record in-flight OpenClaw run"
+            "Failed to durably record in-flight OpenClaw run",
           );
         });
     },
@@ -338,7 +357,7 @@ async function main(): Promise<void> {
         stage: "reconcile_failed",
         error: error instanceof Error ? error.message : String(error),
       },
-      "Relay restart recovery failed"
+      "Relay restart recovery failed",
     );
   });
 
@@ -361,12 +380,19 @@ async function main(): Promise<void> {
       const now = Date.now();
       const oldestActiveTask =
         activeTasks.length > 0
-          ? activeTasks.reduce((oldest, task) => (task.startedAtMs < oldest.startedAtMs ? task : oldest))
+          ? activeTasks.reduce((oldest, task) =>
+              task.startedAtMs < oldest.startedAtMs ? task : oldest,
+            )
           : null;
-      const activeTaskAgeMs = oldestActiveTask ? now - oldestActiveTask.startedAtMs : null;
+      const activeTaskAgeMs = oldestActiveTask
+        ? now - oldestActiveTask.startedAtMs
+        : null;
       return {
         ok: true,
-        ready: !shuttingDown && gateway.isReady() && queueState.queueLength < queueState.maxQueue,
+        ready:
+          !shuttingDown &&
+          gateway.isReady() &&
+          queueState.queueLength < queueState.maxQueue,
         details: {
           shuttingDown,
           gatewayReady: gateway.isReady(),
@@ -404,14 +430,14 @@ async function main(): Promise<void> {
                   sessionKey,
                   error: error instanceof Error ? error.message : String(error),
                 },
-                "Failed to record conversation inbound activity"
+                "Failed to record conversation inbound activity",
               );
             });
           const removedSystemReminders = queue.removeQueued(
             (queued) =>
               queued.input.kind === "chat" &&
               queued.input.sessionKey === sessionKey &&
-              isSystemReminderMessage(queued)
+              isSystemReminderMessage(queued),
           );
           for (const queued of removedSystemReminders) {
             void submitDroppedSystemReminder({
@@ -426,7 +452,7 @@ async function main(): Promise<void> {
               queued.input.kind === "chat" &&
               queued.input.sessionKey === sessionKey &&
               isUserChatMessage(queued) &&
-              queued.messageId !== message.messageId
+              queued.messageId !== message.messageId,
           );
           for (const queued of removedUserChats) {
             void submitDroppedSupersededUserChat({
@@ -438,9 +464,10 @@ async function main(): Promise<void> {
           }
           const abortedSystemReminder = taskControl.abortActive(
             (task) =>
-              (task.taskKind === "system_reminder" || task.taskKind === "status_nudge") &&
+              (task.taskKind === "system_reminder" ||
+                task.taskKind === "status_nudge") &&
               task.sessionKey === sessionKey,
-            "newer_user_message"
+            "newer_user_message",
           );
           if (abortedSystemReminder) {
             logger.warn(
@@ -450,12 +477,13 @@ async function main(): Promise<void> {
                 backendMessageId: message.messageId,
                 sessionKey,
               },
-              "Preempted active system reminder for newer user message"
+              "Preempted active system reminder for newer user message",
             );
           }
           const abortedUserChat = taskControl.abortActive(
-            (task) => task.taskKind === "user_chat" && task.sessionKey === sessionKey,
-            "newer_user_message"
+            (task) =>
+              task.taskKind === "user_chat" && task.sessionKey === sessionKey,
+            "newer_user_message",
           );
           if (abortedUserChat) {
             logger.warn(
@@ -465,7 +493,7 @@ async function main(): Promise<void> {
                 backendMessageId: message.messageId,
                 sessionKey,
               },
-              "Preempted active user chat for newer user message"
+              "Preempted active user chat for newer user message",
             );
           }
         }
@@ -477,12 +505,13 @@ async function main(): Promise<void> {
             stage: "enqueued",
             backendMessageId: message.messageId,
             kind: message.input.kind,
-            sessionKey: message.input.kind === "chat" ? message.input.sessionKey : null,
+            sessionKey:
+              message.input.kind === "chat" ? message.input.sessionKey : null,
             queueLength: queueState.queueLength,
             inFlight: queueState.inFlight,
             maxQueue: queueState.maxQueue,
           },
-          "Relay message enqueued"
+          "Relay message enqueued",
         );
       } catch (error) {
         if (error instanceof QueueClosedError) {
@@ -574,7 +603,9 @@ async function main(): Promise<void> {
         pathPrefix: cfg.openaiProxy.pathPrefix,
         backendPathPrefix: cfg.openaiProxy.backendPathPrefix,
         shouldProxyWebSocketUpgrade: () => {
-          const activeModelRef = readOpenclawPrimaryModelRef(openclaw.configPath);
+          const activeModelRef = readOpenclawPrimaryModelRef(
+            openclaw.configPath,
+          );
           if (isCodexModelRef(activeModelRef)) {
             return Promise.resolve({ allowed: true as const });
           }
@@ -583,12 +614,13 @@ async function main(): Promise<void> {
               activeModelRef,
               openclawConfigPath: openclaw.configPath,
             },
-            "Rejecting OpenAI websocket proxy upgrade because the active model is not codex/*"
+            "Rejecting OpenAI websocket proxy upgrade because the active model is not codex/*",
           );
           return Promise.resolve({
             allowed: false as const,
             statusCode: 403,
-            message: "OpenAI websocket proxy is only available for active codex/* models",
+            message:
+              "OpenAI websocket proxy is only available for active codex/* models",
           });
         },
       })
@@ -654,10 +686,19 @@ async function main(): Promise<void> {
           gateway,
           openrouterProxyPort: cfg.openrouterProxy.port,
           openrouterProxyPathPrefix: cfg.openrouterProxy.pathPrefix,
-          sendNudgeMessage: ({ transcript, decision, messageText, taskId, nowMs }) => {
+          sendNudgeMessage: ({
+            transcript,
+            decision,
+            messageText,
+            taskId,
+            nowMs,
+          }) => {
             const route =
-              activityIndex.snapshot().find((record) => record.sessionKey === transcript.sessionKey) ??
-              activityIndex.findBestUserVisibleRoute({ now: nowMs });
+              activityIndex
+                .snapshot()
+                .find(
+                  (record) => record.sessionKey === transcript.sessionKey,
+                ) ?? activityIndex.findBestUserVisibleRoute({ now: nowMs });
             const message: InboundPushMessage = {
               messageId: taskId,
               sentAtMs: nowMs,
@@ -671,7 +712,9 @@ async function main(): Promise<void> {
                   relayInstanceId: cfg.relayInstanceId,
                   sessionKey: transcript.sessionKey,
                   routeSessionKey: route?.sessionKey ?? transcript.sessionKey,
-                  channel: route?.channel ?? inferConversationChannel(transcript.sessionKey),
+                  channel:
+                    route?.channel ??
+                    inferConversationChannel(transcript.sessionKey),
                   transportTarget:
                     route?.transportTarget ??
                     inferTransportTarget({
@@ -696,14 +739,17 @@ async function main(): Promise<void> {
                 queueLength: queueState.queueLength,
                 inFlight: queueState.inFlight,
               },
-              "Relay self-nudge enqueued a user-owned conversation turn"
+              "Relay self-nudge enqueued a user-owned conversation turn",
             );
             return Promise.resolve();
           },
-          findVisibleFinality: ({ transcript }) => {
+          findVisibleFinality: async ({ transcript }) => {
             const route =
-              activityIndex.snapshot().find((record) => record.sessionKey === transcript.sessionKey) ??
-              activityIndex.findBestUserVisibleRoute();
+              activityIndex
+                .snapshot()
+                .find(
+                  (record) => record.sessionKey === transcript.sessionKey,
+                ) ?? activityIndex.findBestUserVisibleRoute();
             const finality = route
               ? activityIndex.findLatestVisibleFinality({
                   sessionKey: route.sessionKey,
@@ -721,13 +767,20 @@ async function main(): Promise<void> {
                       ? finality.deliveryKind
                       : undefined,
                 }
-              : null;
+              : await findVisibleFinalityInOpenclawRuntimeHistory({
+                  gateway,
+                  sessionKey: transcript.sessionKey,
+                  afterMs: transcript.latestUserMessage?.timestampMs,
+                });
           },
           notifyNudgeDecision: cfg.selfNudge.nudgeNoticeEnabled
             ? async ({ transcript, decision, messageText, nowMs }) => {
                 const route =
-                  activityIndex.snapshot().find((record) => record.sessionKey === transcript.sessionKey) ??
-                  activityIndex.findBestUserVisibleRoute({ now: nowMs });
+                  activityIndex
+                    .snapshot()
+                    .find(
+                      (record) => record.sessionKey === transcript.sessionKey,
+                    ) ?? activityIndex.findBestUserVisibleRoute({ now: nowMs });
                 const userId = route?.userId ?? "relay-self-nudge-debug";
                 const notificationId = `relay-self-nudge-debug:${cfg.relayInstanceId}:${randomUUID()}`;
                 const message: InboundPushMessage = {
@@ -737,7 +790,12 @@ async function main(): Promise<void> {
                     kind: "system_notification",
                     notificationId,
                     userId,
-                    text: buildNudgeDecisionNoticeText({ transcript, decision, messageText, nowMs }),
+                    text: buildNudgeDecisionNoticeText({
+                      transcript,
+                      decision,
+                      messageText,
+                      nowMs,
+                    }),
                     eventKey: "relay.self_nudge.status_nudge",
                     code: "relay:self_nudge:status_nudge",
                     severity: "info",
@@ -764,15 +822,18 @@ async function main(): Promise<void> {
                     sessionKey: result.sessionKey,
                     error: result.error,
                   },
-                  "Relay self-nudge debug notice processed"
+                  "Relay self-nudge debug notice processed",
                 );
               }
             : undefined,
           notifyFinalDecision: cfg.selfNudge.finalNoticeEnabled
             ? async ({ transcript, decision, nowMs, visibleFinality }) => {
                 const route =
-                  activityIndex.snapshot().find((record) => record.sessionKey === transcript.sessionKey) ??
-                  activityIndex.findBestUserVisibleRoute({ now: nowMs });
+                  activityIndex
+                    .snapshot()
+                    .find(
+                      (record) => record.sessionKey === transcript.sessionKey,
+                    ) ?? activityIndex.findBestUserVisibleRoute({ now: nowMs });
                 const userId = route?.userId ?? "relay-self-nudge-final";
                 const notificationId = `relay-self-nudge-final:${cfg.relayInstanceId}:${randomUUID()}`;
                 const message: InboundPushMessage = {
@@ -782,7 +843,12 @@ async function main(): Promise<void> {
                     kind: "system_notification",
                     notificationId,
                     userId,
-                    text: buildFinalDecisionNoticeText({ transcript, decision, nowMs, visibleFinality }),
+                    text: buildFinalDecisionNoticeText({
+                      transcript,
+                      decision,
+                      nowMs,
+                      visibleFinality,
+                    }),
                     eventKey: "relay.self_nudge.final_answer",
                     code: "relay:self_nudge:final_answer",
                     severity: "info",
@@ -809,7 +875,7 @@ async function main(): Promise<void> {
                     sessionKey: result.sessionKey,
                     error: result.error,
                   },
-                  "Relay self-nudge final notice processed"
+                  "Relay self-nudge final notice processed",
                 );
               }
             : undefined,
@@ -830,7 +896,10 @@ async function main(): Promise<void> {
   selfNudgeRunner?.stop();
   queue.stopAccepting();
   const drainState = queue.getState();
-  logger.info({ inFlight: drainState.inFlight, queueLength: drainState.queueLength }, "Stop signal received; draining relay queue");
+  logger.info(
+    { inFlight: drainState.inFlight, queueLength: drainState.queueLength },
+    "Stop signal received; draining relay queue",
+  );
   await closeServer(server);
   if (openrouterProxyServer) {
     await closeServer(openrouterProxyServer);
@@ -864,7 +933,7 @@ async function main(): Promise<void> {
     const finalState = queue.getState();
     logger.warn(
       { inFlight: finalState.inFlight, queueLength: finalState.queueLength },
-      "Relay drain timeout reached; forcing shutdown"
+      "Relay drain timeout reached; forcing shutdown",
     );
   }
   gateway.stop();
@@ -875,17 +944,26 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  logger.error({ err: err instanceof Error ? err.message : String(err) }, "Relay crashed");
+  logger.error(
+    { err: err instanceof Error ? err.message : String(err) },
+    "Relay crashed",
+  );
   process.exit(1);
 });
 
-type ChatPushMessage = InboundPushMessage & { input: Extract<InboundPushMessage["input"], { kind: "chat" }> };
+type ChatPushMessage = InboundPushMessage & {
+  input: Extract<InboundPushMessage["input"], { kind: "chat" }>;
+};
 
-function isUserChatMessage(message: InboundPushMessage): message is ChatPushMessage {
+function isUserChatMessage(
+  message: InboundPushMessage,
+): message is ChatPushMessage {
   return message.input.kind === "chat" && !isSystemReminderMessage(message);
 }
 
-function isSystemReminderMessage(message: InboundPushMessage): message is ChatPushMessage {
+function isSystemReminderMessage(
+  message: InboundPushMessage,
+): message is ChatPushMessage {
   if (message.input.kind !== "chat") {
     return false;
   }
@@ -894,7 +972,9 @@ function isSystemReminderMessage(message: InboundPushMessage): message is ChatPu
     return false;
   }
   const kind = (context as { kind?: unknown }).kind;
-  return kind === "relay_stale_timeout_reminder" || kind === "relay_status_nudge";
+  return (
+    kind === "relay_stale_timeout_reminder" || kind === "relay_status_nudge"
+  );
 }
 
 async function recordTransportEventActivity(input: {
@@ -903,13 +983,19 @@ async function recordTransportEventActivity(input: {
 }): Promise<void> {
   if (input.message.input.kind !== "transport_event") return;
   const event = input.message.input.event;
-  if (event.eventType !== "transport.message.received" && event.eventType !== "transport.delivery.receipt") {
+  if (
+    event.eventType !== "transport.message.received" &&
+    event.eventType !== "transport.delivery.receipt"
+  ) {
     return;
   }
   const payload = event.payload;
-  const sessionKey = readString(payload.sessionKey) ?? readString(payload.conversationKey);
+  const sessionKey =
+    readString(payload.sessionKey) ?? readString(payload.conversationKey);
   if (!sessionKey) return;
-  const channel = readConversationChannel(payload.channel) ?? inferConversationChannel(sessionKey);
+  const channel =
+    readConversationChannel(payload.channel) ??
+    inferConversationChannel(sessionKey);
   const transportTarget = inferTransportTarget({
     sessionKey,
     channel,
@@ -921,7 +1007,10 @@ async function recordTransportEventActivity(input: {
         sessionKey,
         channel,
         transportTarget,
-        text: readString(payload.text) ?? readString(payload.messageText) ?? undefined,
+        text:
+          readString(payload.text) ??
+          readString(payload.messageText) ??
+          undefined,
         at: input.message.sentAtMs ?? Date.now(),
       });
     } else {
@@ -932,21 +1021,39 @@ async function recordTransportEventActivity(input: {
         at: input.message.sentAtMs ?? Date.now(),
       });
       const deliveryKind = readVisibleDeliveryKind(payload.deliveryKind);
-      if (deliveryKind && (payload.status === "sent" || payload.status === "delivered")) {
+      if (
+        deliveryKind &&
+        (payload.status === "sent" || payload.status === "delivered")
+      ) {
         const deliveredAt = input.message.sentAtMs ?? Date.now();
         await input.activityIndex.recordVisibleDelivery({
-          evidenceId: readString(payload.evidenceId) ?? readString(payload.eventId) ?? readString(payload.actionId) ?? undefined,
+          evidenceId:
+            readString(payload.evidenceId) ??
+            readString(payload.eventId) ??
+            readString(payload.actionId) ??
+            undefined,
           sessionKey,
           channel,
           transportTarget,
-          sourceRequestId: readString(payload.sourceRequestId) ?? readString(payload.backendMessageId) ?? undefined,
+          sourceRequestId:
+            readString(payload.sourceRequestId) ??
+            readString(payload.backendMessageId) ??
+            undefined,
           relayMessageId: input.message.messageId,
           runId: readString(payload.runId) ?? undefined,
-          correlationMessageId: readString(payload.correlationMessageId) ?? undefined,
-          visibleMessageId: readString(payload.visibleMessageId) ?? readString(payload.actionId) ?? undefined,
-          transportMessageId: readString(payload.transportMessageId) ?? undefined,
+          correlationMessageId:
+            readString(payload.correlationMessageId) ?? undefined,
+          visibleMessageId:
+            readString(payload.visibleMessageId) ??
+            readString(payload.actionId) ??
+            undefined,
+          transportMessageId:
+            readString(payload.transportMessageId) ?? undefined,
           deliveryKind,
-          visibleText: readString(payload.visibleText) ?? readString(payload.text) ?? undefined,
+          visibleText:
+            readString(payload.visibleText) ??
+            readString(payload.text) ??
+            undefined,
           mediaSummary: readString(payload.mediaSummary) ?? undefined,
           deliveredAt,
           recordedAt: Date.now(),
@@ -962,7 +1069,7 @@ async function recordTransportEventActivity(input: {
         sessionKey,
         error: error instanceof Error ? error.message : String(error),
       },
-      "Failed to record conversation transport activity"
+      "Failed to record conversation transport activity",
     );
   }
 }
@@ -980,7 +1087,9 @@ function readVisibleDeliveryKind(value: unknown) {
   return null;
 }
 
-function readConversationChannel(value: unknown): ReturnType<typeof inferConversationChannel> | null {
+function readConversationChannel(
+  value: unknown,
+): ReturnType<typeof inferConversationChannel> | null {
   if (
     value === "telegram" ||
     value === "whatsapp" ||
@@ -995,18 +1104,25 @@ function readConversationChannel(value: unknown): ReturnType<typeof inferConvers
   return null;
 }
 
-function readServerIdFromTransportSessionKey(sessionKey: string): string | undefined {
+function readServerIdFromTransportSessionKey(
+  sessionKey: string,
+): string | undefined {
   if (sessionKey.startsWith("tg:")) {
     return sessionKey.slice("tg:".length).split(":")[1]?.trim() || undefined;
   }
   if (sessionKey.startsWith("whatsapp-personal:")) {
-    return sessionKey.slice("whatsapp-personal:".length).split(":")[1]?.trim() || undefined;
+    return (
+      sessionKey.slice("whatsapp-personal:".length).split(":")[1]?.trim() ||
+      undefined
+    );
   }
   return undefined;
 }
 
 function readString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
 }
 
 async function submitDroppedSupersededUserChat(input: {
@@ -1034,7 +1150,9 @@ async function submitDroppedSupersededUserChat(input: {
             relayMessageId,
             relayInstanceId: input.relayInstanceId,
           },
-          ...(input.message.input.kind === "chat" ? { sessionKey: input.message.input.sessionKey } : {}),
+          ...(input.message.input.kind === "chat"
+            ? { sessionKey: input.message.input.sessionKey }
+            : {}),
         },
       },
     });
@@ -1046,7 +1164,7 @@ async function submitDroppedSupersededUserChat(input: {
         backendMessageId: input.message.messageId,
         error: error instanceof Error ? error.message : String(error),
       },
-      "Failed to submit dropped user chat callback"
+      "Failed to submit dropped user chat callback",
     );
   }
 }
@@ -1073,7 +1191,9 @@ async function submitDroppedSystemReminder(input: {
             relayMessageId,
             relayInstanceId: input.relayInstanceId,
           },
-          ...(input.message.input.kind === "chat" ? { sessionKey: input.message.input.sessionKey } : {}),
+          ...(input.message.input.kind === "chat"
+            ? { sessionKey: input.message.input.sessionKey }
+            : {}),
         },
       },
     });
@@ -1085,14 +1205,14 @@ async function submitDroppedSystemReminder(input: {
         backendMessageId: input.message.messageId,
         error: error instanceof Error ? error.message : String(error),
       },
-      "Failed to submit dropped system reminder callback"
+      "Failed to submit dropped system reminder callback",
     );
   }
 }
 
 function buildRelayDeliveryReportForBackend(
   cfg: RelayConfig,
-  getHealth: () => Record<string, unknown>
+  getHealth: () => Record<string, unknown>,
 ): Record<string, unknown> {
   if (!cfg.relayChannel.enabled) {
     return {
@@ -1138,7 +1258,10 @@ function createStopSignal() {
   return state;
 }
 
-async function ensureGatewayConnected(gateway: GatewayClient, stop: { stopped: boolean }) {
+async function ensureGatewayConnected(
+  gateway: GatewayClient,
+  stop: { stopped: boolean },
+) {
   if (stop.stopped) {
     throw new Error("Relay stop requested before gateway startup completed");
   }

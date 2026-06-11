@@ -11,6 +11,7 @@ import {
   createFileSelfNudgeProcessedStore,
   createSelfNudgeRunner,
   evaluateSelfNudgeTick,
+  findVisibleFinalityInOpenclawRuntimeHistory,
   formatStatusNudgeMessage,
   readFreshestOpenclawRuntimeTranscript,
   readFreshestSessionTranscript,
@@ -60,13 +61,19 @@ function makeState(): SelfNudgeState {
   };
 }
 
-function makeTranscript(input?: Partial<FreshestSessionTranscript>): FreshestSessionTranscript {
+function makeTranscript(
+  input?: Partial<FreshestSessionTranscript>,
+): FreshestSessionTranscript {
   return {
     sessionKey: "s1",
     sessionFile: "/tmp/s1.jsonl",
     mtimeMs: 10_000,
     messages: [{ role: "user", text: "please finish this task", lineIndex: 0 }],
-    latestUserMessage: { role: "user", text: "please finish this task", lineIndex: 0 },
+    latestUserMessage: {
+      role: "user",
+      text: "please finish this task",
+      lineIndex: 0,
+    },
     ...input,
   };
 }
@@ -95,7 +102,9 @@ describe("selfNudgeRunner", () => {
   });
 
   it("does not fall back to session files when OpenClaw gateway is unavailable", async () => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-"));
+    const stateDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "gwr-nudge-state-"),
+    );
     const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
     const sessionFile = path.join(sessionsDir, "active.jsonl");
@@ -103,18 +112,24 @@ describe("selfNudgeRunner", () => {
       sessionFile,
       JSON.stringify({
         type: "message",
-        message: { role: "user", timestamp: 4_000, content: "finish this direct request" },
-      })
+        message: {
+          role: "user",
+          timestamp: 4_000,
+          content: "finish this direct request",
+        },
+      }),
     );
     await fs.writeFile(
       path.join(sessionsDir, "sessions.json"),
       JSON.stringify({
         "agent:main:telegram:direct:449985919": { sessionFile },
       }),
-      "utf8"
+      "utf8",
     );
     const sendNudgeMessage = makeSendNudgeMessageMock();
-    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error("should not call model"));
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(new Error("should not call model"));
     const runner = createSelfNudgeRunner({
       settings: enabledSettings,
       stateDir,
@@ -133,7 +148,9 @@ describe("selfNudgeRunner", () => {
   });
 
   it("selects the OpenClaw session with the newest user request and returns that request plus N later assistant messages", async () => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-"));
+    const stateDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "gwr-nudge-state-"),
+    );
     const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
     const completedSessionFile = path.join(sessionsDir, "completed.jsonl");
@@ -141,20 +158,36 @@ describe("selfNudgeRunner", () => {
     await fs.writeFile(
       completedSessionFile,
       [
-        JSON.stringify({ type: "message", message: { role: "user", timestamp: 1_000, content: "older request" } }),
-        JSON.stringify({ type: "message", message: { role: "assistant", timestamp: 1_100, content: "Done." } }),
-      ].join("\n")
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", timestamp: 1_000, content: "older request" },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "assistant", timestamp: 1_100, content: "Done." },
+        }),
+      ].join("\n"),
     );
     await fs.writeFile(
       activeSessionFile,
       [
-        JSON.stringify({ type: "message", message: { role: "user", timestamp: 4_000, content: "first" } }),
         JSON.stringify({
           type: "message",
-          message: { role: "assistant", timestamp: 4_100, content: [{ type: "text", text: "working" }] },
+          message: { role: "user", timestamp: 4_000, content: "first" },
         }),
-        JSON.stringify({ type: "message", message: { role: "user", timestamp: 4_200, content: "latest" } }),
-      ].join("\n")
+        JSON.stringify({
+          type: "message",
+          message: {
+            role: "assistant",
+            timestamp: 4_100,
+            content: [{ type: "text", text: "working" }],
+          },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", timestamp: 4_200, content: "latest" },
+        }),
+      ].join("\n"),
     );
     await fs.utimes(completedSessionFile, new Date(5_000), new Date(5_000));
     await fs.utimes(activeSessionFile, new Date(2_000), new Date(2_000));
@@ -164,7 +197,7 @@ describe("selfNudgeRunner", () => {
         "agent:main:completed": { sessionFile: completedSessionFile },
         "agent:main:active": { sessionFile: "active.jsonl" },
       }),
-      "utf8"
+      "utf8",
     );
 
     const transcript = await readFreshestSessionTranscript({
@@ -174,7 +207,13 @@ describe("selfNudgeRunner", () => {
 
     expect(transcript?.sessionKey).toBe("active");
     expect(transcript?.messages).toEqual([
-      { role: "user", text: "latest", lineIndex: 2, timestampMs: 4_200, isLatestUserRequest: true },
+      {
+        role: "user",
+        text: "latest",
+        lineIndex: 2,
+        timestampMs: 4_200,
+        isLatestUserRequest: true,
+      },
     ]);
     expect(transcript?.latestUserMessage).toEqual({
       role: "user",
@@ -194,7 +233,11 @@ describe("selfNudgeRunner", () => {
         { role: "user", text: "do all tasks", lineIndex: 2 },
         { role: "assistant", text: "task 1 done", lineIndex: 3 },
         { role: "user", text: "[STATUS_NUDGE]\nContinue.", lineIndex: 4 },
-        { role: "assistant", text: "task 2 done, task 3 remains", lineIndex: 5 },
+        {
+          role: "assistant",
+          text: "task 2 done, task 3 remains",
+          lineIndex: 5,
+        },
         { role: "assistant", text: "still checking task 3", lineIndex: 6 },
       ],
     });
@@ -206,14 +249,21 @@ describe("selfNudgeRunner", () => {
       isLatestUserRequest: true,
     });
     expect(analysis?.messages).toEqual([
-      { role: "user", text: "do all tasks", lineIndex: 2, isLatestUserRequest: true },
+      {
+        role: "user",
+        text: "do all tasks",
+        lineIndex: 2,
+        isLatestUserRequest: true,
+      },
       { role: "assistant", text: "task 2 done, task 3 remains", lineIndex: 5 },
       { role: "assistant", text: "still checking task 3", lineIndex: 6 },
     ]);
   });
 
   it("ignores internal maintenance sessions when choosing a nudge transcript", async () => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-"));
+    const stateDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "gwr-nudge-state-"),
+    );
     const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
     const heartbeatSessionFile = path.join(sessionsDir, "main.jsonl");
@@ -226,29 +276,46 @@ describe("selfNudgeRunner", () => {
           message: {
             role: "user",
             timestamp: 5_000,
-            content: "Read HEARTBEAT.md if it exists. If nothing needs attention, reply HEARTBEAT_OK.",
+            content:
+              "Read HEARTBEAT.md if it exists. If nothing needs attention, reply HEARTBEAT_OK.",
           },
         }),
-        JSON.stringify({ type: "message", message: { role: "assistant", timestamp: 5_100, content: "HEARTBEAT_OK" } }),
-      ].join("\n")
+        JSON.stringify({
+          type: "message",
+          message: {
+            role: "assistant",
+            timestamp: 5_100,
+            content: "HEARTBEAT_OK",
+          },
+        }),
+      ].join("\n"),
     );
     await fs.writeFile(
       workSessionFile,
       [
         JSON.stringify({
           type: "message",
-          message: { role: "user", timestamp: 4_000, content: "Complete the runtime scenario checks." },
+          message: {
+            role: "user",
+            timestamp: 4_000,
+            content: "Complete the runtime scenario checks.",
+          },
         }),
-        JSON.stringify({ type: "message", message: { role: "assistant", timestamp: 4_100, content: "Working." } }),
-      ].join("\n")
+        JSON.stringify({
+          type: "message",
+          message: { role: "assistant", timestamp: 4_100, content: "Working." },
+        }),
+      ].join("\n"),
     );
     await fs.writeFile(
       path.join(sessionsDir, "sessions.json"),
       JSON.stringify({
         "agent:main:main": { sessionFile: heartbeatSessionFile },
-        "agent:main:tg:-5297593928:cmp9kwhbf0175209zotr1q9le": { sessionFile: "work.jsonl" },
+        "agent:main:tg:-5297593928:cmp9kwhbf0175209zotr1q9le": {
+          sessionFile: "work.jsonl",
+        },
       }),
-      "utf8"
+      "utf8",
     );
 
     const transcript = await readFreshestSessionTranscript({
@@ -256,12 +323,18 @@ describe("selfNudgeRunner", () => {
       analyzedRecentMessageCount: 1,
     });
 
-    expect(transcript?.sessionKey).toBe("tg:-5297593928:cmp9kwhbf0175209zotr1q9le");
-    expect(transcript?.latestUserMessage?.text).toBe("Complete the runtime scenario checks.");
+    expect(transcript?.sessionKey).toBe(
+      "tg:-5297593928:cmp9kwhbf0175209zotr1q9le",
+    );
+    expect(transcript?.latestUserMessage?.text).toBe(
+      "Complete the runtime scenario checks.",
+    );
   });
 
   it("keeps user-facing status nudge sessions eligible for follow-up nudges", async () => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-"));
+    const stateDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "gwr-nudge-state-"),
+    );
     const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
     const nudgeSessionFile = path.join(sessionsDir, "nudge.jsonl");
@@ -300,14 +373,16 @@ describe("selfNudgeRunner", () => {
             content: "Commit for #150 is ready. Closing the issue now.",
           },
         }),
-      ].join("\n")
+      ].join("\n"),
     );
     await fs.writeFile(
       path.join(sessionsDir, "sessions.json"),
       JSON.stringify({
-        "agent:main:tg:-5297593928:cmp9kwhbf0175209zotr1q9le": { sessionFile: "nudge.jsonl" },
+        "agent:main:tg:-5297593928:cmp9kwhbf0175209zotr1q9le": {
+          sessionFile: "nudge.jsonl",
+        },
       }),
-      "utf8"
+      "utf8",
     );
 
     const transcript = await readFreshestSessionTranscript({
@@ -315,8 +390,12 @@ describe("selfNudgeRunner", () => {
       analyzedRecentMessageCount: 3,
     });
 
-    expect(transcript?.sessionKey).toBe("tg:-5297593928:cmp9kwhbf0175209zotr1q9le");
-    expect(transcript?.latestUserMessage?.text).toBe("continue doing tracker tasks");
+    expect(transcript?.sessionKey).toBe(
+      "tg:-5297593928:cmp9kwhbf0175209zotr1q9le",
+    );
+    expect(transcript?.latestUserMessage?.text).toBe(
+      "continue doing tracker tasks",
+    );
     expect(transcript?.messages.map((message) => message.text)).toEqual([
       "continue doing tracker tasks",
       "Closed the first batch. Next is #150.",
@@ -326,7 +405,9 @@ describe("selfNudgeRunner", () => {
   });
 
   it("ignores pre-compaction memory flush turns when choosing the latest user request", async () => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-state-"));
+    const stateDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "gwr-nudge-state-"),
+    );
     const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
     const sessionFile = path.join(sessionsDir, "sacra.jsonl");
@@ -366,14 +447,16 @@ describe("selfNudgeRunner", () => {
             content: "NO_REPLY",
           },
         }),
-      ].join("\n")
+      ].join("\n"),
     );
     await fs.writeFile(
       path.join(sessionsDir, "sessions.json"),
       JSON.stringify({
-        "agent:main:tg:-5297593928:cmp9kwhbf0175209zotr1q9le": { sessionFile: "sacra.jsonl" },
+        "agent:main:tg:-5297593928:cmp9kwhbf0175209zotr1q9le": {
+          sessionFile: "sacra.jsonl",
+        },
       }),
-      "utf8"
+      "utf8",
     );
 
     const transcript = await readFreshestSessionTranscript({
@@ -381,8 +464,12 @@ describe("selfNudgeRunner", () => {
       analyzedRecentMessageCount: 3,
     });
 
-    expect(transcript?.sessionKey).toBe("tg:-5297593928:cmp9kwhbf0175209zotr1q9le");
-    expect(transcript?.latestUserMessage?.text).toBe("выполняй все задачи с тасктрекера пока их не сделаешь");
+    expect(transcript?.sessionKey).toBe(
+      "tg:-5297593928:cmp9kwhbf0175209zotr1q9le",
+    );
+    expect(transcript?.latestUserMessage?.text).toBe(
+      "выполняй все задачи с тасктрекера пока их не сделаешь",
+    );
     expect(transcript?.messages.map((message) => message.text)).toEqual([
       "выполняй все задачи с тасктрекера пока их не сделаешь",
       "Продолжаю с первой открытой задачей.",
@@ -397,7 +484,11 @@ describe("selfNudgeRunner", () => {
         {
           messages: [
             { role: "assistant", createdAt: 3_900, content: "ready" },
-            { role: "user", createdAt: 4_000, content: "older telegram request" },
+            {
+              role: "user",
+              createdAt: 4_000,
+              content: "older telegram request",
+            },
           ],
         },
       ],
@@ -406,7 +497,11 @@ describe("selfNudgeRunner", () => {
         {
           messages: [
             { role: "assistant", createdAt: 5_900, content: "ready" },
-            { role: "user", createdAt: 6_000, content: "newer webchat request" },
+            {
+              role: "user",
+              createdAt: 6_000,
+              content: "newer webchat request",
+            },
           ],
         },
       ],
@@ -426,7 +521,8 @@ describe("selfNudgeRunner", () => {
         }
         if (method === "chat.history") {
           expect(params).toMatchObject({ limit: 100 });
-          const sessionKey = (params as { sessionKey?: string } | undefined)?.sessionKey;
+          const sessionKey = (params as { sessionKey?: string } | undefined)
+            ?.sessionKey;
           const payload = sessionKey ? historyBySession.get(sessionKey) : null;
           if (payload) return payload;
         }
@@ -440,9 +536,17 @@ describe("selfNudgeRunner", () => {
     });
 
     expect(transcript?.sessionKey).toBe("webchat:conversation-1");
-    expect(transcript?.sessionFile).toBe("gateway://chat.history/agent:main:webchat:conversation-1");
+    expect(transcript?.sessionFile).toBe(
+      "gateway://chat.history/agent:main:webchat:conversation-1",
+    );
     expect(transcript?.messages).toEqual([
-      { role: "user", text: "newer webchat request", lineIndex: 1, timestampMs: 6_000, isLatestUserRequest: true },
+      {
+        role: "user",
+        text: "newer webchat request",
+        lineIndex: 1,
+        timestampMs: 6_000,
+        isLatestUserRequest: true,
+      },
     ]);
   });
 
@@ -451,14 +555,22 @@ describe("selfNudgeRunner", () => {
       request: vi.fn((method: string, params?: unknown) => {
         if (method === "sessions.list") {
           return {
-            sessions: [{ key: "agent:main:tg:-5297593928:server-a", updatedAt: 10_000 }],
+            sessions: [
+              { key: "agent:main:tg:-5297593928:server-a", updatedAt: 10_000 },
+            ],
           };
         }
         if (method === "chat.history") {
-          expect(params).toMatchObject({ sessionKey: "agent:main:tg:-5297593928:server-a" });
+          expect(params).toMatchObject({
+            sessionKey: "agent:main:tg:-5297593928:server-a",
+          });
           return {
             messages: [
-              { role: "user", createdAt: 10_000, content: "release everything" },
+              {
+                role: "user",
+                createdAt: 10_000,
+                content: "release everything",
+              },
               {
                 role: "assistant",
                 createdAt: 10_100,
@@ -479,8 +591,19 @@ describe("selfNudgeRunner", () => {
 
     expect(transcript?.mtimeMs).toBe(14_500);
     expect(transcript?.messages).toEqual([
-      { role: "user", text: "release everything", lineIndex: 0, timestampMs: 10_000, isLatestUserRequest: true },
-      { role: "assistant", text: "Edited status: tests are still running.", lineIndex: 1, timestampMs: 14_500 },
+      {
+        role: "user",
+        text: "release everything",
+        lineIndex: 0,
+        timestampMs: 10_000,
+        isLatestUserRequest: true,
+      },
+      {
+        role: "assistant",
+        text: "Edited status: tests are still running.",
+        lineIndex: 1,
+        timestampMs: 14_500,
+      },
     ]);
   });
 
@@ -490,17 +613,33 @@ describe("selfNudgeRunner", () => {
         if (method === "sessions.list") {
           expect(params).toEqual({ agentId: "main", limit: 50 });
           return {
-            sessions: [{ key: "agent:main:tg:-5297593928:server-a", updatedAt: 4_300 }],
+            sessions: [
+              { key: "agent:main:tg:-5297593928:server-a", updatedAt: 4_300 },
+            ],
           };
         }
         if (method === "chat.history") {
-          expect(params).toMatchObject({ sessionKey: "agent:main:tg:-5297593928:server-a" });
+          expect(params).toMatchObject({
+            sessionKey: "agent:main:tg:-5297593928:server-a",
+          });
           return {
             messages: [
               { role: "user", createdAt: 4_000, content: "continue tasks" },
-              { role: "assistant", createdAt: 4_100, content: "Next item is #150." },
-              { role: "user", createdAt: 4_200, content: "[STATUS_NUDGE]\nProceed with #150." },
-              { role: "assistant", createdAt: 4_300, content: "Working on #150." },
+              {
+                role: "assistant",
+                createdAt: 4_100,
+                content: "Next item is #150.",
+              },
+              {
+                role: "user",
+                createdAt: 4_200,
+                content: "[STATUS_NUDGE]\nProceed with #150.",
+              },
+              {
+                role: "assistant",
+                createdAt: 4_300,
+                content: "Working on #150.",
+              },
             ],
           };
         }
@@ -528,15 +667,27 @@ describe("selfNudgeRunner", () => {
       request: vi.fn((method: string, params?: unknown) => {
         if (method === "sessions.list") {
           return {
-            sessions: [{ key: "agent:main:tg:-5297593928:server-a", updatedAt: 10_000 }],
+            sessions: [
+              { key: "agent:main:tg:-5297593928:server-a", updatedAt: 10_000 },
+            ],
           };
         }
         if (method === "chat.history") {
-          expect(params).toMatchObject({ sessionKey: "agent:main:tg:-5297593928:server-a" });
+          expect(params).toMatchObject({
+            sessionKey: "agent:main:tg:-5297593928:server-a",
+          });
           return {
             messages: [
-              { role: "user", createdAt: 4_000, content: "complete the prod verification" },
-              { role: "assistant", createdAt: 4_100, content: "I am checking prod now." },
+              {
+                role: "user",
+                createdAt: 4_000,
+                content: "complete the prod verification",
+              },
+              {
+                role: "assistant",
+                createdAt: 4_100,
+                content: "I am checking prod now.",
+              },
               {
                 role: "assistant",
                 createdAt: 4_500,
@@ -546,7 +697,8 @@ describe("selfNudgeRunner", () => {
               {
                 role: "assistant",
                 createdAt: 5_000,
-                content: 'FINAL(100%): message "I am chec..." from 04:10 is final',
+                content:
+                  'FINAL(100%): message "I am chec..." from 04:10 is final',
               },
               {
                 role: "assistant",
@@ -580,9 +732,21 @@ describe("selfNudgeRunner", () => {
         {
           messages: [
             { role: "user", createdAt: 1_000, content: "old user task" },
-            { role: "assistant", createdAt: 8_000, content: "Still working on old task." },
-            { role: "user", createdAt: 9_000, content: "[STATUS_NUDGE]\nContinue old task." },
-            { role: "assistant", createdAt: 9_100, content: "Continuing old task." },
+            {
+              role: "assistant",
+              createdAt: 8_000,
+              content: "Still working on old task.",
+            },
+            {
+              role: "user",
+              createdAt: 9_000,
+              content: "[STATUS_NUDGE]\nContinue old task.",
+            },
+            {
+              role: "assistant",
+              createdAt: 9_100,
+              content: "Continuing old task.",
+            },
           ],
         },
       ],
@@ -591,7 +755,11 @@ describe("selfNudgeRunner", () => {
         {
           messages: [
             { role: "user", createdAt: 7_000, content: "new user task" },
-            { role: "assistant", createdAt: 7_500, content: "I am working on the new task." },
+            {
+              role: "assistant",
+              createdAt: 7_500,
+              content: "I am working on the new task.",
+            },
           ],
         },
       ],
@@ -607,7 +775,8 @@ describe("selfNudgeRunner", () => {
           };
         }
         if (method === "chat.history") {
-          const sessionKey = (params as { sessionKey?: string } | undefined)?.sessionKey;
+          const sessionKey = (params as { sessionKey?: string } | undefined)
+            ?.sessionKey;
           const payload = sessionKey ? historyBySession.get(sessionKey) : null;
           if (payload) return payload;
         }
@@ -631,7 +800,11 @@ describe("selfNudgeRunner", () => {
         {
           messages: [
             { role: "user", createdAt: 9_000, content: "internal bookkeeping" },
-            { role: "assistant", createdAt: 9_500, content: "Done. Visible reply sent." },
+            {
+              role: "assistant",
+              createdAt: 9_500,
+              content: "Done. Visible reply sent.",
+            },
           ],
         },
       ],
@@ -639,8 +812,16 @@ describe("selfNudgeRunner", () => {
         "agent:main:telegram:direct:449985919",
         {
           messages: [
-            { role: "user", createdAt: 7_000, content: "continue the tracker tasks" },
-            { role: "assistant", createdAt: 7_500, content: "Working on the next tracker task." },
+            {
+              role: "user",
+              createdAt: 7_000,
+              content: "continue the tracker tasks",
+            },
+            {
+              role: "assistant",
+              createdAt: 7_500,
+              content: "Working on the next tracker task.",
+            },
           ],
         },
       ],
@@ -656,7 +837,8 @@ describe("selfNudgeRunner", () => {
           };
         }
         if (method === "chat.history") {
-          const sessionKey = (params as { sessionKey?: string } | undefined)?.sessionKey;
+          const sessionKey = (params as { sessionKey?: string } | undefined)
+            ?.sessionKey;
           const payload = sessionKey ? historyBySession.get(sessionKey) : null;
           if (payload) return payload;
         }
@@ -670,64 +852,102 @@ describe("selfNudgeRunner", () => {
     });
 
     expect(transcript?.sessionKey).toBe("telegram:direct:449985919");
-    expect(transcript?.latestUserMessage?.text).toBe("continue the tracker tasks");
+    expect(transcript?.latestUserMessage?.text).toBe(
+      "continue the tracker tasks",
+    );
   });
 
   it("marks the latest real user request in the analyzer payload without duplicating status nudges", async () => {
-    const fetchImpl = vi.fn((_url: string | URL | Request, init?: RequestInit) => {
-      const body = typeof init?.body === "string" ? init.body : "";
-      const payload = JSON.parse(body) as {
-        messages: Array<{ role: string; content: string }>;
-      };
-      const systemPrompt = payload.messages[0]?.content ?? "";
-      expect(systemPrompt).not.toContain("greater than 90");
-      expect(systemPrompt).not.toContain("90 or lower");
-      expect(systemPrompt).not.toContain(">90");
-      expect(systemPrompt).not.toMatch(/\bPR\b|pull request|release not run|deployment not run/i);
-      const analyzerInput = JSON.parse(payload.messages[1]?.content ?? "{}") as {
-        latestMessages: Array<Record<string, unknown>>;
-      };
-      expect(analyzerInput.latestMessages).toEqual([
-        { role: "user", text: "finish every release task", isLatestUserRequest: true },
-        { role: "assistant", text: "Two tasks are done, one release task remains." },
-      ]);
-      return Promise.resolve(new Response(
-        JSON.stringify({
-          choices: [
-            {
-              message: {
-                content: JSON.stringify({
-                  shouldNudge: true,
-                  statusNudgeMessage:
-                    "Continue the remaining release task from the user's request and report new evidence.",
-                  finalConfidence: 30,
-                  reasonCode: "unknown",
-                  reason: "assistant reported remaining work",
-                }),
-              },
-            },
-          ],
-        }),
-        { status: 200, headers: { "content-type": "application/json" } }
-      ));
-    });
+    const fetchImpl = vi.fn(
+      (_url: string | URL | Request, init?: RequestInit) => {
+        const body = typeof init?.body === "string" ? init.body : "";
+        const payload = JSON.parse(body) as {
+          messages: Array<{ role: string; content: string }>;
+        };
+        const systemPrompt = payload.messages[0]?.content ?? "";
+        expect(systemPrompt).not.toContain("greater than 90");
+        expect(systemPrompt).not.toContain("90 or lower");
+        expect(systemPrompt).not.toContain(">90");
+        expect(systemPrompt).not.toMatch(
+          /\bPR\b|pull request|release not run|deployment not run/i,
+        );
+        const analyzerInput = JSON.parse(
+          payload.messages[1]?.content ?? "{}",
+        ) as {
+          latestMessages: Array<Record<string, unknown>>;
+        };
+        expect(analyzerInput.latestMessages).toEqual([
+          {
+            role: "user",
+            text: "finish every release task",
+            isLatestUserRequest: true,
+          },
+          {
+            role: "assistant",
+            text: "Two tasks are done, one release task remains.",
+          },
+        ]);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      shouldNudge: true,
+                      statusNudgeMessage:
+                        "Continue the remaining release task from the user's request and report new evidence.",
+                      finalConfidence: 30,
+                      reasonCode: "unknown",
+                      reason: "assistant reported remaining work",
+                    }),
+                  },
+                },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
+      },
+    );
     const gateway = {
       request: vi.fn((method: string, params?: unknown) => {
         if (method === "sessions.list") {
           return {
-            sessions: [{ key: "agent:main:tg:-5297593928:server-a", updatedAt: 8_000 }],
+            sessions: [
+              { key: "agent:main:tg:-5297593928:server-a", updatedAt: 8_000 },
+            ],
           };
         }
         if (method === "chat.history") {
-          expect(params).toMatchObject({ sessionKey: "agent:main:tg:-5297593928:server-a", limit: 100 });
+          expect(params).toMatchObject({
+            sessionKey: "agent:main:tg:-5297593928:server-a",
+            limit: 100,
+          });
           return {
             messages: [
               { role: "user", createdAt: 1_000, content: "old request" },
               { role: "assistant", createdAt: 2_000, content: "old answer" },
-              { role: "user", createdAt: 3_000, content: "finish every release task" },
-              { role: "assistant", createdAt: 4_000, content: "First release task is done." },
-              { role: "user", createdAt: 5_000, content: "[STATUS_NUDGE]\nContinue the release." },
-              { role: "assistant", createdAt: 6_000, content: "Two tasks are done, one release task remains." },
+              {
+                role: "user",
+                createdAt: 3_000,
+                content: "finish every release task",
+              },
+              {
+                role: "assistant",
+                createdAt: 4_000,
+                content: "First release task is done.",
+              },
+              {
+                role: "user",
+                createdAt: 5_000,
+                content: "[STATUS_NUDGE]\nContinue the release.",
+              },
+              {
+                role: "assistant",
+                createdAt: 6_000,
+                content: "Two tasks are done, one release task remains.",
+              },
             ],
           };
         }
@@ -776,7 +996,8 @@ describe("selfNudgeRunner", () => {
       sendNudgeMessage,
       decide: vi.fn().mockResolvedValue({
         shouldNudge: true,
-        statusNudgeMessage: "Continue with the migration and report the next concrete step.",
+        statusNudgeMessage:
+          "Continue with the migration and report the next concrete step.",
         finalConfidence: 10,
       }),
     });
@@ -785,7 +1006,7 @@ describe("selfNudgeRunner", () => {
     const sentNudge = sendNudgeMessage.mock.calls[0]?.[0];
     expect(sentNudge?.transcript.sessionKey).toBe("s1");
     expect(sentNudge?.messageText).toBe(
-      "[STATUS_NUDGE]\nContinue with the migration and report the next concrete step."
+      "[STATUS_NUDGE]\nContinue with the migration and report the next concrete step.",
     );
     expect(computeSelfNudgeWaitMs(1_000, state.consecutiveNudges)).toBe(2_000);
   });
@@ -803,10 +1024,25 @@ describe("selfNudgeRunner", () => {
       transcript: makeTranscript({
         mtimeMs: 14_500,
         messages: [
-          { role: "user", text: "release everything", lineIndex: 0, timestampMs: 10_000 },
-          { role: "assistant", text: "Edited status: tests are still running.", lineIndex: 1, timestampMs: 14_500 },
+          {
+            role: "user",
+            text: "release everything",
+            lineIndex: 0,
+            timestampMs: 10_000,
+          },
+          {
+            role: "assistant",
+            text: "Edited status: tests are still running.",
+            lineIndex: 1,
+            timestampMs: 14_500,
+          },
         ],
-        latestUserMessage: { role: "user", text: "release everything", lineIndex: 0, timestampMs: 10_000 },
+        latestUserMessage: {
+          role: "user",
+          text: "release everything",
+          lineIndex: 0,
+          timestampMs: 10_000,
+        },
       }),
       state: makeState(),
       nowMs: 15_000,
@@ -832,7 +1068,12 @@ describe("selfNudgeRunner", () => {
       transcript: makeTranscript({
         mtimeMs: 10_000,
         messages: [
-          { role: "user", text: "debug the prod agent", lineIndex: 0, timestampMs: 0 },
+          {
+            role: "user",
+            text: "debug the prod agent",
+            lineIndex: 0,
+            timestampMs: 0,
+          },
           {
             role: "assistant",
             text: "Proxy is fixed; now running the embedded smoke test.",
@@ -840,7 +1081,12 @@ describe("selfNudgeRunner", () => {
             timestampMs: 118_000,
           },
         ],
-        latestUserMessage: { role: "user", text: "debug the prod agent", lineIndex: 0, timestampMs: 0 },
+        latestUserMessage: {
+          role: "user",
+          text: "debug the prod agent",
+          lineIndex: 0,
+          timestampMs: 0,
+        },
       }),
       state: makeState(),
       nowMs: 120_000,
@@ -854,7 +1100,9 @@ describe("selfNudgeRunner", () => {
   });
 
   it("does not repeat the same persisted nudge when the analysis transcript is unchanged", async () => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-once-"));
+    const stateDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "gwr-nudge-once-"),
+    );
     const processedStore = createFileSelfNudgeProcessedStore({ stateDir });
     const transcript = makeTranscript({ mtimeMs: 10_000 });
     const firstSender = makeSendNudgeMessageMock();
@@ -896,7 +1144,9 @@ describe("selfNudgeRunner", () => {
   });
 
   it("rechecks a previously nudged request when assistant messages change", async () => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-recheck-"));
+    const stateDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "gwr-nudge-recheck-"),
+    );
     const processedStore = createFileSelfNudgeProcessedStore({ stateDir });
     const transcript = makeTranscript({ mtimeMs: 10_000 });
 
@@ -946,17 +1196,34 @@ describe("selfNudgeRunner", () => {
 
   it("does not close a turn on private final text without visible finality evidence", async () => {
     const sendNudgeMessage = makeSendNudgeMessageMock();
-    const notifyFinalDecision = vi.fn<(input: FinalDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
+    const notifyFinalDecision = vi
+      .fn<(input: FinalDecisionNotice) => Promise<void>>()
+      .mockResolvedValue(undefined);
 
     const result = await evaluateSelfNudgeTick({
       settings: { ...enabledSettings, finalNoticeEnabled: true },
       transcript: makeTranscript({
         mtimeMs: 10_000,
         messages: [
-          { role: "user", text: "send the answer in telegram", lineIndex: 0, timestampMs: 9_000 },
-          { role: "assistant", text: "Done. Visible reply sent.", lineIndex: 1, timestampMs: 10_000 },
+          {
+            role: "user",
+            text: "send the answer in telegram",
+            lineIndex: 0,
+            timestampMs: 9_000,
+          },
+          {
+            role: "assistant",
+            text: "Done. Visible reply sent.",
+            lineIndex: 1,
+            timestampMs: 10_000,
+          },
         ],
-        latestUserMessage: { role: "user", text: "send the answer in telegram", lineIndex: 0, timestampMs: 9_000 },
+        latestUserMessage: {
+          role: "user",
+          text: "send the answer in telegram",
+          lineIndex: 0,
+          timestampMs: 9_000,
+        },
       }),
       state: makeState(),
       nowMs: 11_000,
@@ -976,24 +1243,41 @@ describe("selfNudgeRunner", () => {
       expect.objectContaining({
         messageText:
           "[STATUS_NUDGE]\nContinue the current user-visible reply. A private final answer exists, but no visible delivery evidence was found for the source conversation.",
-      })
+      }),
     );
     expect(notifyFinalDecision).not.toHaveBeenCalled();
   });
 
   it("allows final closure when visible finality evidence exists", async () => {
     const sendNudgeMessage = makeSendNudgeMessageMock();
-    const notifyFinalDecision = vi.fn<(input: FinalDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
+    const notifyFinalDecision = vi
+      .fn<(input: FinalDecisionNotice) => Promise<void>>()
+      .mockResolvedValue(undefined);
 
     const result = await evaluateSelfNudgeTick({
       settings: { ...enabledSettings, finalNoticeEnabled: true },
       transcript: makeTranscript({
         mtimeMs: 10_000,
         messages: [
-          { role: "user", text: "send the answer in telegram", lineIndex: 0, timestampMs: 9_000 },
-          { role: "assistant", text: "Private final text.", lineIndex: 1, timestampMs: 10_000 },
+          {
+            role: "user",
+            text: "send the answer in telegram",
+            lineIndex: 0,
+            timestampMs: 9_000,
+          },
+          {
+            role: "assistant",
+            text: "Private final text.",
+            lineIndex: 1,
+            timestampMs: 10_000,
+          },
         ],
-        latestUserMessage: { role: "user", text: "send the answer in telegram", lineIndex: 0, timestampMs: 9_000 },
+        latestUserMessage: {
+          role: "user",
+          text: "send the answer in telegram",
+          lineIndex: 0,
+          timestampMs: 9_000,
+        },
       }),
       state: makeState(),
       nowMs: 11_000,
@@ -1014,11 +1298,147 @@ describe("selfNudgeRunner", () => {
 
     expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
     expect(sendNudgeMessage).not.toHaveBeenCalled();
-    const expectedVisibleFinality = expect.objectContaining({ visibleText: "Visible Telegram answer." }) as unknown;
+    const expectedVisibleFinality = expect.objectContaining({
+      visibleText: "Visible Telegram answer.",
+    }) as unknown;
     expect(notifyFinalDecision).toHaveBeenCalledWith(
       expect.objectContaining({
         visibleFinality: expectedVisibleFinality,
-      })
+      }),
+    );
+  });
+
+  it("treats successful OpenClaw message tool sends as visible finality evidence", async () => {
+    const gateway = {
+      request: vi.fn((method: string, params?: unknown) => {
+        expect(method).toBe("chat.history");
+        expect(params).toMatchObject({
+          sessionKey: "telegram:direct:449985919",
+        });
+        return Promise.resolve({
+          messages: [
+            {
+              role: "user",
+              createdAt: 10_000,
+              content: "а че там за репорты?",
+            },
+            {
+              role: "assistant",
+              createdAt: 11_000,
+              content: [
+                {
+                  type: "toolCall",
+                  name: "message",
+                  arguments: {
+                    action: "send",
+                    message: "Да, есть weekly analytics reports по GA4.",
+                  },
+                },
+              ],
+            },
+          ],
+        });
+      }),
+    };
+
+    const evidence = await findVisibleFinalityInOpenclawRuntimeHistory({
+      gateway,
+      sessionKey: "telegram:direct:449985919",
+      afterMs: 10_000,
+    });
+
+    expect(evidence).toEqual({
+      visibleText: "Да, есть weekly analytics reports по GA4.",
+      deliveredAtMs: 11_000,
+      deliveryKind: "final",
+    });
+  });
+
+  it("closes final answers when OpenClaw message tool delivery is present in runtime history", async () => {
+    const sendNudgeMessage = makeSendNudgeMessageMock();
+    const notifyFinalDecision = vi
+      .fn<(input: FinalDecisionNotice) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    const gateway = {
+      request: vi.fn(() =>
+        Promise.resolve({
+          messages: [
+            {
+              role: "user",
+              createdAt: 10_000,
+              content: "а че там за репорты?",
+            },
+            {
+              role: "assistant",
+              createdAt: 11_000,
+              content: [
+                {
+                  type: "toolCall",
+                  name: "message",
+                  arguments: JSON.stringify({
+                    action: "send",
+                    message: "Да, есть weekly analytics reports по GA4.",
+                  }),
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    };
+
+    const result = await evaluateSelfNudgeTick({
+      settings: { ...enabledSettings, finalNoticeEnabled: true },
+      transcript: makeTranscript({
+        sessionKey: "telegram:direct:449985919",
+        mtimeMs: 11_000,
+        messages: [
+          {
+            role: "user",
+            text: "а че там за репорты?",
+            lineIndex: 0,
+            timestampMs: 10_000,
+          },
+          {
+            role: "assistant",
+            text: "Да, есть weekly analytics reports по GA4.",
+            lineIndex: 1,
+            timestampMs: 11_000,
+          },
+        ],
+        latestUserMessage: {
+          role: "user",
+          text: "а че там за репорты?",
+          lineIndex: 0,
+          timestampMs: 10_000,
+        },
+      }),
+      state: makeState(),
+      nowMs: 12_000,
+      sendNudgeMessage,
+      notifyFinalDecision,
+      findVisibleFinality: ({ transcript }) =>
+        findVisibleFinalityInOpenclawRuntimeHistory({
+          gateway,
+          sessionKey: transcript.sessionKey,
+          afterMs: transcript.latestUserMessage?.timestampMs,
+        }),
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: false,
+        statusNudgeMessage: null,
+        finalConfidence: 100,
+        reasonCode: "final_answer",
+      }),
+    });
+
+    expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
+    expect(sendNudgeMessage).not.toHaveBeenCalled();
+    expect(notifyFinalDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleFinality: expect.objectContaining({
+          visibleText: "Да, есть weekly analytics reports по GA4.",
+        }) as unknown,
+      }),
     );
   });
 
@@ -1026,10 +1446,13 @@ describe("selfNudgeRunner", () => {
     const sendNudgeMessage = makeSendNudgeMessageMock();
     const decide = vi.fn().mockResolvedValue({
       shouldNudge: true,
-      statusNudgeMessage: "The assistant claimed completion, but the original request still needs verification.",
+      statusNudgeMessage:
+        "The assistant claimed completion, but the original request still needs verification.",
       finalConfidence: 10,
     });
-    const notifyFinalDecision = vi.fn<(input: FinalDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
+    const notifyFinalDecision = vi
+      .fn<(input: FinalDecisionNotice) => Promise<void>>()
+      .mockResolvedValue(undefined);
 
     const result = await evaluateSelfNudgeTick({
       settings: { ...enabledSettings, finalNoticeEnabled: true },
@@ -1053,7 +1476,9 @@ describe("selfNudgeRunner", () => {
 
     expect(result).toEqual({ nudged: true, nextDelayMs: 2_000 });
     expect(decide).toHaveBeenCalledTimes(1);
-    const [decisionInput] = decide.mock.calls[0] as [{ transcript: FreshestSessionTranscript }];
+    const [decisionInput] = decide.mock.calls[0] as [
+      { transcript: FreshestSessionTranscript },
+    ];
     expect(decisionInput.transcript.messages).toEqual([
       { role: "user", text: "please finish this task", lineIndex: 0 },
       {
@@ -1066,14 +1491,16 @@ describe("selfNudgeRunner", () => {
       expect.objectContaining({
         messageText:
           "[STATUS_NUDGE]\nThe assistant claimed completion, but the original request still needs verification.",
-      })
+      }),
     );
     expect(notifyFinalDecision).not.toHaveBeenCalled();
   });
 
   it("nudges when the model classifies a progress update as unfinished", async () => {
     const sendNudgeMessage = makeSendNudgeMessageMock();
-    const notifyFinalDecision = vi.fn<(input: FinalDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
+    const notifyFinalDecision = vi
+      .fn<(input: FinalDecisionNotice) => Promise<void>>()
+      .mockResolvedValue(undefined);
 
     const result = await evaluateSelfNudgeTick({
       settings: { ...enabledSettings, finalNoticeEnabled: true },
@@ -1087,8 +1514,7 @@ describe("selfNudgeRunner", () => {
           },
           {
             role: "assistant",
-            text:
-              "PR #119 сейчас open, mergeable, GitHub checks green. Релизов/деплоев не запускал.",
+            text: "PR #119 сейчас open, mergeable, GitHub checks green. Релизов/деплоев не запускал.",
             lineIndex: 1,
           },
         ],
@@ -1123,7 +1549,9 @@ describe("selfNudgeRunner", () => {
 
   it("sends a user-visible debug notice with confidence and the status nudge message when enabled", async () => {
     const sendNudgeMessage = makeSendNudgeMessageMock();
-    const notifyNudgeDecision = vi.fn<(input: NudgeDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
+    const notifyNudgeDecision = vi
+      .fn<(input: NudgeDecisionNotice) => Promise<void>>()
+      .mockResolvedValue(undefined);
 
     await evaluateSelfNudgeTick({
       settings: {
@@ -1145,7 +1573,9 @@ describe("selfNudgeRunner", () => {
 
     expect(notifyNudgeDecision).toHaveBeenCalledTimes(1);
     const notice = notifyNudgeDecision.mock.calls[0]?.[0];
-    expect(notice?.messageText).toBe("[STATUS_NUDGE]\nContinue with the migration.");
+    expect(notice?.messageText).toBe(
+      "[STATUS_NUDGE]\nContinue with the migration.",
+    );
     expect(notice?.decision.finalConfidence).toBe(37);
   });
 
@@ -1169,7 +1599,9 @@ describe("selfNudgeRunner", () => {
     });
 
     const sentNudge = sendNudgeMessage.mock.calls[0]?.[0];
-    expect(sentNudge?.transcript.sessionKey).toBe("tg:-5297593928:cmp9kwhbf0175209zotr1q9le");
+    expect(sentNudge?.transcript.sessionKey).toBe(
+      "tg:-5297593928:cmp9kwhbf0175209zotr1q9le",
+    );
     expect(sentNudge?.messageText).toBe("[STATUS_NUDGE]\nContinue.");
   });
 
@@ -1193,7 +1625,9 @@ describe("selfNudgeRunner", () => {
     });
 
     const sentNudge = sendNudgeMessage.mock.calls[0]?.[0];
-    expect(sentNudge?.transcript.sessionKey).toBe("tg:-5297593928:cmp9kwhbf0175209zotr1q9le");
+    expect(sentNudge?.transcript.sessionKey).toBe(
+      "tg:-5297593928:cmp9kwhbf0175209zotr1q9le",
+    );
   });
 
   it("resets consecutive nudge backoff when a new user message appears", async () => {
@@ -1246,7 +1680,13 @@ describe("selfNudgeRunner", () => {
       state,
       nowMs: 11_000,
       sendNudgeMessage,
-      decide: vi.fn().mockResolvedValue({ shouldNudge: false, statusNudgeMessage: null, finalConfidence: 0 }),
+      decide: vi
+        .fn()
+        .mockResolvedValue({
+          shouldNudge: false,
+          statusNudgeMessage: null,
+          finalConfidence: 0,
+        }),
     });
 
     expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
@@ -1254,7 +1694,9 @@ describe("selfNudgeRunner", () => {
   });
 
   it("optionally notifies once when the model decides the latest request is final", async () => {
-    const notifyFinalDecision = vi.fn<(input: FinalDecisionNotice) => Promise<void>>().mockResolvedValue(undefined);
+    const notifyFinalDecision = vi
+      .fn<(input: FinalDecisionNotice) => Promise<void>>()
+      .mockResolvedValue(undefined);
     const state = makeState();
     const settings: RelaySelfNudgeSettings = {
       ...enabledSettings,
@@ -1342,7 +1784,12 @@ describe("selfNudgeRunner", () => {
     const text = buildFinalDecisionNoticeText({
       transcript: makeTranscript({
         messages: [
-          { role: "user", text: "please do x", lineIndex: 0, timestampMs: Date.UTC(2026, 5, 3, 11, 10) },
+          {
+            role: "user",
+            text: "please do x",
+            lineIndex: 0,
+            timestampMs: Date.UTC(2026, 5, 3, 11, 10),
+          },
           {
             role: "assistant",
             text: "Finished the deployment and checks.",
@@ -1366,14 +1813,21 @@ describe("selfNudgeRunner", () => {
       nowMs: Date.UTC(2026, 5, 3, 11, 12),
     });
 
-    expect(text).toBe('TURN_FINAL: message "Finished t..." from 11:11 is final');
+    expect(text).toBe(
+      'TURN_FINAL: message "Finished t..." from 11:11 is final',
+    );
   });
 
   it("formats final notices from visible delivery evidence when it differs from private final text", () => {
     const text = buildFinalDecisionNoticeText({
       transcript: makeTranscript({
         messages: [
-          { role: "user", text: "please do x", lineIndex: 0, timestampMs: Date.UTC(2026, 5, 3, 11, 10) },
+          {
+            role: "user",
+            text: "please do x",
+            lineIndex: 0,
+            timestampMs: Date.UTC(2026, 5, 3, 11, 10),
+          },
           {
             role: "assistant",
             text: "Private final text.",
@@ -1402,14 +1856,21 @@ describe("selfNudgeRunner", () => {
       nowMs: Date.UTC(2026, 5, 3, 11, 14),
     });
 
-    expect(text).toBe('TURN_FINAL: message "Visible Te..." from 11:13 is final');
+    expect(text).toBe(
+      'TURN_FINAL: message "Visible Te..." from 11:13 is final',
+    );
   });
 
   it("does not use a previous relay final notice as the final assistant preview", () => {
     const text = buildFinalDecisionNoticeText({
       transcript: makeTranscript({
         messages: [
-          { role: "user", text: "please do x", lineIndex: 0, timestampMs: Date.UTC(2026, 5, 3, 11, 10) },
+          {
+            role: "user",
+            text: "please do x",
+            lineIndex: 0,
+            timestampMs: Date.UTC(2026, 5, 3, 11, 10),
+          },
           {
             role: "assistant",
             text: "Finished the deployment and checks.",
@@ -1439,7 +1900,9 @@ describe("selfNudgeRunner", () => {
       nowMs: Date.UTC(2026, 5, 3, 11, 13),
     });
 
-    expect(text).toBe('TURN_FINAL: message "Finished t..." from 11:11 is final');
+    expect(text).toBe(
+      'TURN_FINAL: message "Finished t..." from 11:11 is final',
+    );
   });
 
   it("formats nudge debug notices with final confidence and decision context", () => {
@@ -1473,7 +1936,7 @@ describe("selfNudgeRunner", () => {
     });
 
     expect(text).toBe(
-      'NUDGE(42% final): latest user "Please deploy the release and confirm all checks..." assistant "I pushed the change, but deployment remains."\n[STATUS_NUDGE]\nContinue deployment.'
+      'NUDGE(42% final): latest user "Please deploy the release and confirm all checks..." assistant "I pushed the change, but deployment remains."\n[STATUS_NUDGE]\nContinue deployment.',
     );
   });
 
@@ -1508,7 +1971,9 @@ describe("selfNudgeRunner", () => {
   });
 
   it("persists final decisions so restart does not send delayed final notices for old messages", async () => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-index-"));
+    const stateDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "gwr-nudge-index-"),
+    );
     const firstStore = createFileSelfNudgeProcessedStore({ stateDir });
     const settings: RelaySelfNudgeSettings = {
       ...enabledSettings,
@@ -1566,7 +2031,9 @@ describe("selfNudgeRunner", () => {
   });
 
   it("dedupes final notices when runtime history line indexes shift", async () => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-nudge-runtime-index-"));
+    const stateDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "gwr-nudge-runtime-index-"),
+    );
     const store = createFileSelfNudgeProcessedStore({ stateDir });
     const settings: RelaySelfNudgeSettings = {
       ...enabledSettings,
@@ -1697,7 +2164,9 @@ describe("selfNudgeRunner", () => {
   });
 
   it("does not double-prefix status nudge messages", () => {
-    expect(formatStatusNudgeMessage("[STATUS_NUDGE]\nContinue.")).toBe("[STATUS_NUDGE]\nContinue.");
+    expect(formatStatusNudgeMessage("[STATUS_NUDGE]\nContinue.")).toBe(
+      "[STATUS_NUDGE]\nContinue.",
+    );
   });
 
   it("uses the configured OpenRouter provider proxy path for analysis", () => {
@@ -1705,7 +2174,9 @@ describe("selfNudgeRunner", () => {
       buildOpenRouterProxyChatCompletionsUrl({
         port: 18080,
         pathPrefix: "/provider-proxy/openrouter/",
-      })
-    ).toBe("http://127.0.0.1:18080/provider-proxy/openrouter/api/v1/chat/completions");
+      }),
+    ).toBe(
+      "http://127.0.0.1:18080/provider-proxy/openrouter/api/v1/chat/completions",
+    );
   });
 });

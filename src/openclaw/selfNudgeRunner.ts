@@ -47,7 +47,11 @@ export type SelfNudgeDecision = {
   shouldNudge: boolean;
   statusNudgeMessage: string | null;
   finalConfidence: number;
-  reasonCode?: "final_answer" | "waiting_for_user" | "no_active_request" | "unknown";
+  reasonCode?:
+    | "final_answer"
+    | "waiting_for_user"
+    | "no_active_request"
+    | "unknown";
   reason?: string;
 };
 
@@ -58,7 +62,11 @@ export type SelfNudgeVisibleFinalityEvidence = {
 };
 
 type GatewayLike = {
-  request: (method: string, params?: unknown, options?: { timeoutMs?: number }) => Promise<unknown>;
+  request: (
+    method: string,
+    params?: unknown,
+    options?: { timeoutMs?: number },
+  ) => Promise<unknown>;
 };
 
 export type SelfNudgeMessageSender = (input: {
@@ -81,9 +89,14 @@ export type SelfNudgeProcessedRecord = {
 };
 
 export type SelfNudgeProcessedStore = {
-  get: (input: { sessionKey: string; userFingerprint: string }) => Promise<SelfNudgeProcessedRecord | null>;
+  get: (input: {
+    sessionKey: string;
+    userFingerprint: string;
+  }) => Promise<SelfNudgeProcessedRecord | null>;
   markAnalyzed: (
-    input: Omit<SelfNudgeProcessedRecord, "finalNoticeSentAtMs"> & { finalNoticeSentAtMs?: number | null }
+    input: Omit<SelfNudgeProcessedRecord, "finalNoticeSentAtMs"> & {
+      finalNoticeSentAtMs?: number | null;
+    },
   ) => Promise<void>;
   markFinalNoticeSent: (input: {
     sessionKey: string;
@@ -112,9 +125,17 @@ export function buildFinalDecisionNoticeText(input: {
   nowMs: number;
   visibleFinality?: SelfNudgeVisibleFinalityEvidence | null;
 }): string {
-  const finalMessage = findFinalAssistantMessage(input.transcript) ?? input.transcript.latestUserMessage;
-  const preview = makeFinalNoticePreview(input.visibleFinality?.visibleText ?? finalMessage?.text ?? "");
-  const timeText = formatNoticeTime(input.visibleFinality?.deliveredAtMs ?? finalMessage?.timestampMs ?? input.nowMs);
+  const finalMessage =
+    findFinalAssistantMessage(input.transcript) ??
+    input.transcript.latestUserMessage;
+  const preview = makeFinalNoticePreview(
+    input.visibleFinality?.visibleText ?? finalMessage?.text ?? "",
+  );
+  const timeText = formatNoticeTime(
+    input.visibleFinality?.deliveredAtMs ??
+      finalMessage?.timestampMs ??
+      input.nowMs,
+  );
   return `TURN_FINAL: message "${preview}" from ${timeText} is final`;
 }
 
@@ -124,9 +145,15 @@ export function buildNudgeDecisionNoticeText(input: {
   messageText: string;
   nowMs: number;
 }): string {
-  const userPreview = makeNoticePreview(input.transcript.latestUserMessage?.text ?? "");
-  const assistantPreview = makeNoticePreview(findFinalAssistantMessage(input.transcript)?.text ?? "");
-  const assistantText = assistantPreview ? ` assistant "${assistantPreview}"` : "";
+  const userPreview = makeNoticePreview(
+    input.transcript.latestUserMessage?.text ?? "",
+  );
+  const assistantPreview = makeNoticePreview(
+    findFinalAssistantMessage(input.transcript)?.text ?? "",
+  );
+  const assistantText = assistantPreview
+    ? ` assistant "${assistantPreview}"`
+    : "";
   return `NUDGE(${input.decision.finalConfidence}% final): latest user "${userPreview}"${assistantText}\n${input.messageText}`;
 }
 
@@ -155,7 +182,10 @@ export function createSelfNudgeRunner(input: {
   findVisibleFinality?: (input: {
     transcript: FreshestSessionTranscript;
     decision: SelfNudgeDecision;
-  }) => Promise<SelfNudgeVisibleFinalityEvidence | null> | SelfNudgeVisibleFinalityEvidence | null;
+  }) =>
+    | Promise<SelfNudgeVisibleFinalityEvidence | null>
+    | SelfNudgeVisibleFinalityEvidence
+    | null;
 }): SelfNudgeRunner {
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
@@ -167,7 +197,10 @@ export function createSelfNudgeRunner(input: {
     lastNudgeAtMs: null,
     lastFinalNoticeFingerprint: null,
   };
-  const pollIntervalMs = Math.max(1_000, Math.trunc(input.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS));
+  const pollIntervalMs = Math.max(
+    1_000,
+    Math.trunc(input.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS),
+  );
   const processedStore =
     input.processedStore ??
     createFileSelfNudgeProcessedStore({
@@ -177,14 +210,17 @@ export function createSelfNudgeRunner(input: {
   const schedule = (delayMs: number): void => {
     if (stopped) return;
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
-      void tick().catch((error) => {
-        logger.warn(
-          { err: error instanceof Error ? error.message : String(error) },
-          "Relay self-nudge tick failed"
-        );
-      });
-    }, Math.max(1_000, Math.trunc(delayMs)));
+    timer = setTimeout(
+      () => {
+        void tick().catch((error) => {
+          logger.warn(
+            { err: error instanceof Error ? error.message : String(error) },
+            "Relay self-nudge tick failed",
+          );
+        });
+      },
+      Math.max(1_000, Math.trunc(delayMs)),
+    );
     timer.unref?.();
   };
 
@@ -199,7 +235,9 @@ export function createSelfNudgeRunner(input: {
         return;
       }
       if (!input.gateway) {
-        logger.warn("Relay self-nudge skipped because OpenClaw gateway is unavailable");
+        logger.warn(
+          "Relay self-nudge skipped because OpenClaw gateway is unavailable",
+        );
         schedule(pollIntervalMs);
         return;
       }
@@ -209,7 +247,7 @@ export function createSelfNudgeRunner(input: {
       }).catch((error) => {
         logger.warn(
           { err: error instanceof Error ? error.message : String(error) },
-          "Relay self-nudge runtime transcript read failed"
+          "Relay self-nudge runtime transcript read failed",
         );
         return null;
       });
@@ -281,7 +319,10 @@ export async function evaluateSelfNudgeTick(input: {
   findVisibleFinality?: (input: {
     transcript: FreshestSessionTranscript;
     decision: SelfNudgeDecision;
-  }) => Promise<SelfNudgeVisibleFinalityEvidence | null> | SelfNudgeVisibleFinalityEvidence | null;
+  }) =>
+    | Promise<SelfNudgeVisibleFinalityEvidence | null>
+    | SelfNudgeVisibleFinalityEvidence
+    | null;
 }): Promise<{ nudged: boolean; nextDelayMs: number }> {
   const latestUser = input.transcript.latestUserMessage;
   if (!latestUser) {
@@ -305,10 +346,17 @@ export async function evaluateSelfNudgeTick(input: {
     input.state.lastFinalNoticeFingerprint = null;
   }
 
-  const waitMs = computeSelfNudgeWaitMs(input.settings.baseTimeoutMs, input.state.consecutiveNudges);
-  const latestAssistantActivityMs = findLatestAssistantActivityAfterLatestUser(input.transcript);
+  const waitMs = computeSelfNudgeWaitMs(
+    input.settings.baseTimeoutMs,
+    input.state.consecutiveNudges,
+  );
+  const latestAssistantActivityMs = findLatestAssistantActivityAfterLatestUser(
+    input.transcript,
+  );
   const transcriptActivityMs =
-    latestAssistantActivityMs == null ? input.transcript.mtimeMs : Math.max(input.transcript.mtimeMs, latestAssistantActivityMs);
+    latestAssistantActivityMs == null
+      ? input.transcript.mtimeMs
+      : Math.max(input.transcript.mtimeMs, latestAssistantActivityMs);
   const anchorMs = input.state.lastNudgeAtMs ?? transcriptActivityMs;
   const elapsedMs = input.nowMs - anchorMs;
   if (elapsedMs < waitMs) {
@@ -320,11 +368,15 @@ export async function evaluateSelfNudgeTick(input: {
     userFingerprint,
   });
   if (existingRecord && isClosedDecision(existingRecord.decision)) {
-    input.state.lastFinalNoticeFingerprint = existingRecord.finalNoticeSentAtMs ? userFingerprint : null;
+    input.state.lastFinalNoticeFingerprint = existingRecord.finalNoticeSentAtMs
+      ? userFingerprint
+      : null;
     return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
   }
 
-  const analysisFingerprint = fingerprintAnalysisMessages(input.transcript.messages);
+  const analysisFingerprint = fingerprintAnalysisMessages(
+    input.transcript.messages,
+  );
   if (
     existingRecord &&
     existingRecord.decision.shouldNudge &&
@@ -408,7 +460,10 @@ export async function evaluateSelfNudgeTick(input: {
   input.state.lastNudgeAtMs = input.nowMs;
   return {
     nudged: true,
-    nextDelayMs: computeSelfNudgeWaitMs(input.settings.baseTimeoutMs, input.state.consecutiveNudges),
+    nextDelayMs: computeSelfNudgeWaitMs(
+      input.settings.baseTimeoutMs,
+      input.state.consecutiveNudges,
+    ),
   };
 }
 
@@ -429,10 +484,15 @@ export async function readFreshestSessionTranscript(input: {
   }
   if (!isPlainObject(parsed)) return null;
 
-  const candidates: Array<{ sessionKey: string; sessionFile: string; mtimeMs: number }> = [];
+  const candidates: Array<{
+    sessionKey: string;
+    sessionFile: string;
+    mtimeMs: number;
+  }> = [];
   for (const [mapKey, entry] of Object.entries(parsed)) {
     if (!isPlainObject(entry)) continue;
-    const rawSessionFile = typeof entry.sessionFile === "string" ? entry.sessionFile.trim() : "";
+    const rawSessionFile =
+      typeof entry.sessionFile === "string" ? entry.sessionFile.trim() : "";
     if (!rawSessionFile) continue;
     const sessionFile = path.isAbsolute(rawSessionFile)
       ? rawSessionFile
@@ -447,7 +507,9 @@ export async function readFreshestSessionTranscript(input: {
   }
   const transcripts: FreshestSessionTranscript[] = [];
   for (const candidate of candidates) {
-    const transcriptMessages = await readTranscriptMessages(candidate.sessionFile);
+    const transcriptMessages = await readTranscriptMessages(
+      candidate.sessionFile,
+    );
     const analysis = buildSelfNudgeAnalysisTranscript({
       messages: transcriptMessages,
       analyzedRecentMessageCount: input.analyzedRecentMessageCount,
@@ -456,7 +518,13 @@ export async function readFreshestSessionTranscript(input: {
       continue;
     }
     const latestUserMessage = analysis.latestUserMessage;
-    if (!latestUserMessage || !canUseTranscriptForSelfNudge(candidate.sessionKey, latestUserMessage.text)) {
+    if (
+      !latestUserMessage ||
+      !canUseTranscriptForSelfNudge(
+        candidate.sessionKey,
+        latestUserMessage.text,
+      )
+    ) {
       continue;
     }
     transcripts.push({
@@ -480,14 +548,18 @@ export async function readFreshestOpenclawRuntimeTranscript(input: {
       agentId: "main",
       limit: 50,
     },
-    { timeoutMs: 5_000 }
+    { timeoutMs: 5_000 },
   );
   const candidates = readRuntimeSessionCandidates(sessionsPayload);
   const transcripts: FreshestSessionTranscript[] = [];
   for (const candidate of candidates) {
-    const historyPayload = await readRuntimeChatHistory(input.gateway, candidate.gatewaySessionKey, {
-      limit: computeRuntimeHistoryScanLimit(input.analyzedRecentMessageCount),
-    });
+    const historyPayload = await readRuntimeChatHistory(
+      input.gateway,
+      candidate.gatewaySessionKey,
+      {
+        limit: computeRuntimeHistoryScanLimit(input.analyzedRecentMessageCount),
+      },
+    );
     const messages = readRuntimeHistoryMessages(historyPayload);
     const analysis = buildSelfNudgeAnalysisTranscript({
       messages,
@@ -495,10 +567,19 @@ export async function readFreshestOpenclawRuntimeTranscript(input: {
     });
     if (!analysis) continue;
     const latestUserMessage = analysis.latestUserMessage;
-    if (!latestUserMessage || !canUseTranscriptForSelfNudge(candidate.sessionKey, latestUserMessage.text)) {
+    if (
+      !latestUserMessage ||
+      !canUseTranscriptForSelfNudge(
+        candidate.sessionKey,
+        latestUserMessage.text,
+      )
+    ) {
       continue;
     }
-    const activityMs = computeAnalysisActivityMs(candidate.updatedAtMs, analysis.messages);
+    const activityMs = computeAnalysisActivityMs(
+      candidate.updatedAtMs,
+      analysis.messages,
+    );
     transcripts.push({
       sessionKey: candidate.sessionKey,
       sessionFile: `gateway://chat.history/${candidate.gatewaySessionKey}`,
@@ -521,30 +602,47 @@ export function buildSelfNudgeAnalysisTranscript(input: {
     (message) =>
       message.role === "assistant" &&
       message.lineIndex > latestUserMessage.lineIndex &&
-      !isRelaySelfNudgeNoticeMessage(message.text)
+      !isRelaySelfNudgeNoticeMessage(message.text),
   );
-  const maxAssistantMessages = Math.max(0, Math.trunc(input.analyzedRecentMessageCount));
+  const maxAssistantMessages = Math.max(
+    0,
+    Math.trunc(input.analyzedRecentMessageCount),
+  );
   const selectedAssistantMessages =
-    maxAssistantMessages > 0 ? assistantMessagesAfterLatestUser.slice(-maxAssistantMessages) : [];
-  const latestUserRequest = { ...latestUserMessage, isLatestUserRequest: true as const };
+    maxAssistantMessages > 0
+      ? assistantMessagesAfterLatestUser.slice(-maxAssistantMessages)
+      : [];
+  const latestUserRequest = {
+    ...latestUserMessage,
+    isLatestUserRequest: true as const,
+  };
   return {
     latestUserMessage: latestUserRequest,
     messages: [latestUserRequest, ...selectedAssistantMessages],
   };
 }
 
-function computeAnalysisActivityMs(fallbackMs: number, messages: TranscriptMessage[]): number {
-  const timestamps = messages.flatMap((message) => (typeof message.timestampMs === "number" ? [message.timestampMs] : []));
+function computeAnalysisActivityMs(
+  fallbackMs: number,
+  messages: TranscriptMessage[],
+): number {
+  const timestamps = messages.flatMap((message) =>
+    typeof message.timestampMs === "number" ? [message.timestampMs] : [],
+  );
   if (timestamps.length === 0) return fallbackMs;
   return Math.max(...timestamps);
 }
 
-function computeRuntimeHistoryScanLimit(analyzedRecentMessageCount: number): number {
+function computeRuntimeHistoryScanLimit(
+  analyzedRecentMessageCount: number,
+): number {
   const requested = Math.max(0, Math.trunc(analyzedRecentMessageCount));
   return Math.max(RUNTIME_HISTORY_SCAN_LIMIT, requested + 1);
 }
 
-function findLatestAssistantActivityAfterLatestUser(transcript: FreshestSessionTranscript): number | null {
+function findLatestAssistantActivityAfterLatestUser(
+  transcript: FreshestSessionTranscript,
+): number | null {
   const latestUserLineIndex = transcript.latestUserMessage?.lineIndex;
   if (latestUserLineIndex == null) return null;
   let latestTimestampMs: number | null = null;
@@ -557,23 +655,32 @@ function findLatestAssistantActivityAfterLatestUser(transcript: FreshestSessionT
     ) {
       continue;
     }
-    latestTimestampMs = latestTimestampMs == null ? message.timestampMs : Math.max(latestTimestampMs, message.timestampMs);
+    latestTimestampMs =
+      latestTimestampMs == null
+        ? message.timestampMs
+        : Math.max(latestTimestampMs, message.timestampMs);
   }
   return latestTimestampMs;
 }
 
-function canUseTranscriptForSelfNudge(sessionKey: string, latestUserText: string): boolean {
+function canUseTranscriptForSelfNudge(
+  sessionKey: string,
+  latestUserText: string,
+): boolean {
   const classification = classifySessionActivity({
     sessionKey,
     latestUserText,
   });
   if (classification === "external_user_chat") return true;
-  return classification === "status_nudge" && isUserFacingRuntimeSessionKey(sessionKey);
+  return (
+    classification === "status_nudge" &&
+    isUserFacingRuntimeSessionKey(sessionKey)
+  );
 }
 
 function compareSessionTranscriptsForNudge(
   a: FreshestSessionTranscript,
-  b: FreshestSessionTranscript
+  b: FreshestSessionTranscript,
 ): number {
   const aLatestUserMs = a.latestUserMessage?.timestampMs ?? a.mtimeMs;
   const bLatestUserMs = b.latestUserMessage?.timestampMs ?? b.mtimeMs;
@@ -586,8 +693,13 @@ type RuntimeSessionCandidate = {
   updatedAtMs: number;
 };
 
-function readRuntimeSessionCandidates(payload: unknown): RuntimeSessionCandidate[] {
-  const sessions = isPlainObject(payload) && Array.isArray(payload.sessions) ? payload.sessions : [];
+function readRuntimeSessionCandidates(
+  payload: unknown,
+): RuntimeSessionCandidate[] {
+  const sessions =
+    isPlainObject(payload) && Array.isArray(payload.sessions)
+      ? payload.sessions
+      : [];
   return sessions
     .flatMap((session): RuntimeSessionCandidate[] => {
       if (!isPlainObject(session)) return [];
@@ -595,7 +707,9 @@ function readRuntimeSessionCandidates(payload: unknown): RuntimeSessionCandidate
       if (!gatewaySessionKey) return [];
       const sessionKey = normalizeSessionKey(gatewaySessionKey);
       if (!isUserFacingRuntimeSessionKey(sessionKey)) return [];
-      const updatedAtMs = readTimestampMs(session.updatedAt) ?? readTimestampMs(session.lastUserMessageAt);
+      const updatedAtMs =
+        readTimestampMs(session.updatedAt) ??
+        readTimestampMs(session.lastUserMessageAt);
       if (updatedAtMs == null) return [];
       return [{ gatewaySessionKey, sessionKey, updatedAtMs }];
     })
@@ -605,7 +719,7 @@ function readRuntimeSessionCandidates(payload: unknown): RuntimeSessionCandidate
 async function readRuntimeChatHistory(
   gateway: GatewayLike,
   gatewaySessionKey: string,
-  input: { limit: number }
+  input: { limit: number },
 ): Promise<unknown> {
   try {
     return await gateway.request(
@@ -615,7 +729,7 @@ async function readRuntimeChatHistory(
         limit: input.limit,
         maxChars: MAX_MESSAGE_TEXT_LEN,
       },
-      { timeoutMs: 5_000 }
+      { timeoutMs: 5_000 },
     );
   } catch (error) {
     const normalizedSessionKey = normalizeSessionKey(gatewaySessionKey);
@@ -627,18 +741,25 @@ async function readRuntimeChatHistory(
         limit: input.limit,
         maxChars: MAX_MESSAGE_TEXT_LEN,
       },
-      { timeoutMs: 5_000 }
+      { timeoutMs: 5_000 },
     );
   }
 }
 
 function readRuntimeHistoryMessages(payload: unknown): TranscriptMessage[] {
-  const messages = isPlainObject(payload) && Array.isArray(payload.messages) ? payload.messages : [];
+  const messages =
+    isPlainObject(payload) && Array.isArray(payload.messages)
+      ? payload.messages
+      : [];
   return messages.flatMap((message, index): TranscriptMessage[] => {
     if (!isPlainObject(message)) return [];
-    const role = message.role === "user" || message.role === "assistant" ? message.role : null;
+    const role =
+      message.role === "user" || message.role === "assistant"
+        ? message.role
+        : null;
     if (!role) return [];
-    if (role === "assistant" && isRelayOwnedRuntimeHistoryMessage(message)) return [];
+    if (role === "assistant" && isRelayOwnedRuntimeHistoryMessage(message))
+      return [];
     const text = extractTextFromMessage(message).trim();
     if (!text) return [];
     const timestampMs = readFreshestMessageTimestampMs(message);
@@ -650,8 +771,51 @@ function readRuntimeHistoryMessages(payload: unknown): TranscriptMessage[] {
   });
 }
 
+export async function findVisibleFinalityInOpenclawRuntimeHistory(input: {
+  gateway: GatewayLike;
+  sessionKey: string;
+  afterMs?: number;
+}): Promise<SelfNudgeVisibleFinalityEvidence | null> {
+  const historyPayload = await readRuntimeChatHistory(
+    input.gateway,
+    input.sessionKey,
+    {
+      limit: RUNTIME_HISTORY_SCAN_LIMIT,
+    },
+  );
+  const messages: unknown[] =
+    isPlainObject(historyPayload) && Array.isArray(historyPayload.messages)
+      ? historyPayload.messages
+      : [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!isPlainObject(message) || message.role !== "assistant") continue;
+    const timestampMs = readFreshestMessageTimestampMs(message);
+    if (
+      input.afterMs != null &&
+      timestampMs != null &&
+      timestampMs < input.afterMs
+    )
+      continue;
+    const visibleText = readMessageToolSendText(message);
+    if (!visibleText) continue;
+    return {
+      visibleText,
+      ...(timestampMs != null ? { deliveredAtMs: timestampMs } : {}),
+      deliveryKind: "final",
+    };
+  }
+  return null;
+}
+
 function isUserFacingRuntimeSessionKey(sessionKey: string): boolean {
-  if (!sessionKey || sessionKey === "main" || sessionKey === "global" || sessionKey === "unknown") return false;
+  if (
+    !sessionKey ||
+    sessionKey === "main" ||
+    sessionKey === "global" ||
+    sessionKey === "unknown"
+  )
+    return false;
   if (sessionKey.startsWith("agent:")) return false;
   return (
     sessionKey.startsWith("tg:") ||
@@ -665,13 +829,22 @@ function isUserFacingRuntimeSessionKey(sessionKey: string): boolean {
   );
 }
 
-function isStaleLatestUserMessage(message: TranscriptMessage, nowMs: number): boolean {
+function isStaleLatestUserMessage(
+  message: TranscriptMessage,
+  nowMs: number,
+): boolean {
   if (typeof message.timestampMs !== "number") return false;
   return nowMs - message.timestampMs > MAX_SELF_NUDGE_LATEST_USER_AGE_MS;
 }
 
-export function computeSelfNudgeWaitMs(baseTimeoutMs: number, consecutiveNudges: number): number {
-  return Math.max(MIN_BASE_TIMEOUT_MS, Math.trunc(baseTimeoutMs)) * (Math.max(0, Math.trunc(consecutiveNudges)) + 1);
+export function computeSelfNudgeWaitMs(
+  baseTimeoutMs: number,
+  consecutiveNudges: number,
+): number {
+  return (
+    Math.max(MIN_BASE_TIMEOUT_MS, Math.trunc(baseTimeoutMs)) *
+    (Math.max(0, Math.trunc(consecutiveNudges)) + 1)
+  );
 }
 
 export function formatStatusNudgeMessage(body: string): string {
@@ -715,16 +888,20 @@ async function decideSelfNudgeWithOpenRouter(input: {
               latestMessages: input.transcript.messages.map((message) => ({
                 role: message.role,
                 text: truncateText(message.text, MAX_MESSAGE_TEXT_LEN),
-                ...(message.isLatestUserRequest ? { isLatestUserRequest: true } : {}),
+                ...(message.isLatestUserRequest
+                  ? { isLatestUserRequest: true }
+                  : {}),
               })),
             }),
           },
         ],
       }),
-    }
+    },
   );
   if (!response.ok) {
-    throw new Error(`OpenRouter nudge analysis failed: HTTP ${response.status}`);
+    throw new Error(
+      `OpenRouter nudge analysis failed: HTTP ${response.status}`,
+    );
   }
   const payload = await response.json();
   const content = extractChatCompletionContent(payload);
@@ -742,7 +919,9 @@ export function buildOpenRouterProxyChatCompletionsUrl(input: {
   return `http://127.0.0.1:${input.port}${normalizedPrefix}/api/v1/chat/completions`;
 }
 
-async function readTranscriptMessages(sessionFile: string): Promise<TranscriptMessage[]> {
+async function readTranscriptMessages(
+  sessionFile: string,
+): Promise<TranscriptMessage[]> {
   const raw = await fs.readFile(sessionFile, "utf8").catch(() => "");
   if (!raw.trim()) return [];
   const messages: TranscriptMessage[] = [];
@@ -758,7 +937,10 @@ async function readTranscriptMessages(sessionFile: string): Promise<TranscriptMe
     if (!isPlainObject(parsed) || parsed.type !== "message") return;
     const message = parsed.message;
     if (!isPlainObject(message)) return;
-    const role = message.role === "user" || message.role === "assistant" ? message.role : null;
+    const role =
+      message.role === "user" || message.role === "assistant"
+        ? message.role
+        : null;
     if (!role) return;
     const text = extractTextFromMessage(message).trim();
     if (!text) return;
@@ -766,7 +948,7 @@ async function readTranscriptMessages(sessionFile: string): Promise<TranscriptMe
     messages.push(
       typeof timestampMs === "number"
         ? { role, text, lineIndex: index, timestampMs }
-        : { role, text, lineIndex: index }
+        : { role, text, lineIndex: index },
     );
   });
   return messages;
@@ -774,9 +956,11 @@ async function readTranscriptMessages(sessionFile: string): Promise<TranscriptMe
 
 function extractMessageTimestampMs(
   record: Record<string, unknown>,
-  message: Record<string, unknown>
+  message: Record<string, unknown>,
 ): number | undefined {
-  return parseTimestampMs(message.timestamp) ?? parseTimestampMs(record.timestamp);
+  return (
+    parseTimestampMs(message.timestamp) ?? parseTimestampMs(record.timestamp)
+  );
 }
 
 function parseTimestampMs(value: unknown): number | undefined {
@@ -797,7 +981,9 @@ function readTimestampMs(value: unknown): number | undefined {
   return parseTimestampMs(value);
 }
 
-function readFreshestMessageTimestampMs(message: Record<string, unknown>): number | undefined {
+function readFreshestMessageTimestampMs(
+  message: Record<string, unknown>,
+): number | undefined {
   const timestamps = [
     readTimestampMs(message.createdAt),
     readTimestampMs(message.timestamp),
@@ -842,19 +1028,29 @@ function parseSelfNudgeDecision(raw: string): SelfNudgeDecision {
     };
   }
   if (!isPlainObject(parsed)) {
-    return { shouldNudge: false, statusNudgeMessage: null, finalConfidence: 0, reason: "model_returned_non_object" };
+    return {
+      shouldNudge: false,
+      statusNudgeMessage: null,
+      finalConfidence: 0,
+      reason: "model_returned_non_object",
+    };
   }
   const finalConfidence = parseFinalConfidence(parsed.finalConfidence);
-  const shouldNudge = parsed.shouldNudge === true && finalConfidence <= FINAL_ANSWER_CONFIDENCE_THRESHOLD;
+  const shouldNudge =
+    parsed.shouldNudge === true &&
+    finalConfidence <= FINAL_ANSWER_CONFIDENCE_THRESHOLD;
   const statusNudgeMessage =
-    typeof parsed.statusNudgeMessage === "string" && parsed.statusNudgeMessage.trim().length > 0
+    typeof parsed.statusNudgeMessage === "string" &&
+    parsed.statusNudgeMessage.trim().length > 0
       ? parsed.statusNudgeMessage.trim()
       : null;
   const reason = typeof parsed.reason === "string" ? parsed.reason : undefined;
   const reasonCode = parseSelfNudgeReasonCode(parsed.reasonCode);
   return {
     shouldNudge,
-    statusNudgeMessage: shouldNudge ? normalizeNudgeBody(statusNudgeMessage) : null,
+    statusNudgeMessage: shouldNudge
+      ? normalizeNudgeBody(statusNudgeMessage)
+      : null,
     finalConfidence,
     ...(reasonCode ? { reasonCode } : {}),
     reason,
@@ -878,7 +1074,9 @@ function clampFinalConfidence(value: number): number {
   return Math.max(0, Math.min(100, Math.trunc(value)));
 }
 
-function parseSelfNudgeReasonCode(value: unknown): SelfNudgeDecision["reasonCode"] | undefined {
+function parseSelfNudgeReasonCode(
+  value: unknown,
+): SelfNudgeDecision["reasonCode"] | undefined {
   return value === "final_answer" ||
     value === "waiting_for_user" ||
     value === "no_active_request" ||
@@ -901,11 +1099,21 @@ export function createFileSelfNudgeProcessedStore(input: {
   maxRecords?: number;
 }): SelfNudgeProcessedStore {
   const filePath =
-    input.filePath ?? path.join(input.stateDir, "agents", "main", "golem-workers", "relay-self-nudge-index.json");
+    input.filePath ??
+    path.join(
+      input.stateDir,
+      "agents",
+      "main",
+      "golem-workers",
+      "relay-self-nudge-index.json",
+    );
   const maxRecords = Math.max(100, Math.trunc(input.maxRecords ?? 5_000));
-  let cache: { records: Record<string, SelfNudgeProcessedRecord> } | null = null;
+  let cache: { records: Record<string, SelfNudgeProcessedRecord> } | null =
+    null;
 
-  const load = async (): Promise<{ records: Record<string, SelfNudgeProcessedRecord> }> => {
+  const load = async (): Promise<{
+    records: Record<string, SelfNudgeProcessedRecord>;
+  }> => {
     if (cache) return cache;
     const raw = await fs.readFile(filePath, "utf8").catch(() => "");
     if (!raw.trim()) {
@@ -921,29 +1129,42 @@ export function createFileSelfNudgeProcessedStore(input: {
     return cache;
   };
 
-  const save = async (store: { records: Record<string, SelfNudgeProcessedRecord> }): Promise<void> => {
-    const entries = Object.entries(store.records).sort(([, a], [, b]) => b.analyzedAtMs - a.analyzedAtMs);
+  const save = async (store: {
+    records: Record<string, SelfNudgeProcessedRecord>;
+  }): Promise<void> => {
+    const entries = Object.entries(store.records).sort(
+      ([, a], [, b]) => b.analyzedAtMs - a.analyzedAtMs,
+    );
     store.records = Object.fromEntries(entries.slice(0, maxRecords));
     await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
     const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-    await fs.writeFile(tempPath, `${JSON.stringify({ version: 1, records: store.records }, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
+    await fs.writeFile(
+      tempPath,
+      `${JSON.stringify({ version: 1, records: store.records }, null, 2)}\n`,
+      {
+        encoding: "utf8",
+        mode: 0o600,
+      },
+    );
     await fs.rename(tempPath, filePath);
   };
 
   return {
     get: async ({ sessionKey, userFingerprint }) => {
       const store = await load();
-      return store.records[processedRecordKey(sessionKey, userFingerprint)] ?? null;
+      return (
+        store.records[processedRecordKey(sessionKey, userFingerprint)] ?? null
+      );
     },
     markAnalyzed: async (record) => {
       const store = await load();
       const key = processedRecordKey(record.sessionKey, record.userFingerprint);
       store.records[key] = {
         ...record,
-        finalNoticeSentAtMs: record.finalNoticeSentAtMs ?? store.records[key]?.finalNoticeSentAtMs ?? null,
+        finalNoticeSentAtMs:
+          record.finalNoticeSentAtMs ??
+          store.records[key]?.finalNoticeSentAtMs ??
+          null,
       };
       await save(store);
     },
@@ -958,36 +1179,65 @@ export function createFileSelfNudgeProcessedStore(input: {
   };
 }
 
-function processedRecordKey(sessionKey: string, userFingerprint: string): string {
-  return createHash("sha256").update(`${sessionKey}\n${userFingerprint}`).digest("hex");
+function processedRecordKey(
+  sessionKey: string,
+  userFingerprint: string,
+): string {
+  return createHash("sha256")
+    .update(`${sessionKey}\n${userFingerprint}`)
+    .digest("hex");
 }
 
-function parseProcessedRecords(value: unknown): Record<string, SelfNudgeProcessedRecord> {
-  const rawRecords = isPlainObject(value) && isPlainObject(value.records) ? value.records : {};
+function parseProcessedRecords(
+  value: unknown,
+): Record<string, SelfNudgeProcessedRecord> {
+  const rawRecords =
+    isPlainObject(value) && isPlainObject(value.records) ? value.records : {};
   const records: Record<string, SelfNudgeProcessedRecord> = {};
   for (const [key, rawRecord] of Object.entries(rawRecords)) {
     if (!isPlainObject(rawRecord)) continue;
-    const sessionKey = typeof rawRecord.sessionKey === "string" ? rawRecord.sessionKey : "";
-    const userFingerprint = typeof rawRecord.userFingerprint === "string" ? rawRecord.userFingerprint : "";
+    const sessionKey =
+      typeof rawRecord.sessionKey === "string" ? rawRecord.sessionKey : "";
+    const userFingerprint =
+      typeof rawRecord.userFingerprint === "string"
+        ? rawRecord.userFingerprint
+        : "";
     const decision = parseStoredDecision(rawRecord.decision);
-    const analyzedAtMs = typeof rawRecord.analyzedAtMs === "number" ? rawRecord.analyzedAtMs : null;
+    const analyzedAtMs =
+      typeof rawRecord.analyzedAtMs === "number"
+        ? rawRecord.analyzedAtMs
+        : null;
     const latestUserLineIndex =
-      typeof rawRecord.latestUserLineIndex === "number" ? rawRecord.latestUserLineIndex : null;
-    if (!sessionKey || !userFingerprint || !decision || analyzedAtMs == null || latestUserLineIndex == null) {
+      typeof rawRecord.latestUserLineIndex === "number"
+        ? rawRecord.latestUserLineIndex
+        : null;
+    if (
+      !sessionKey ||
+      !userFingerprint ||
+      !decision ||
+      analyzedAtMs == null ||
+      latestUserLineIndex == null
+    ) {
       continue;
     }
     records[key] = {
       sessionKey,
       userFingerprint,
       analysisFingerprint:
-        typeof rawRecord.analysisFingerprint === "string" ? rawRecord.analysisFingerprint : null,
+        typeof rawRecord.analysisFingerprint === "string"
+          ? rawRecord.analysisFingerprint
+          : null,
       latestUserTimestampMs:
-        typeof rawRecord.latestUserTimestampMs === "number" ? rawRecord.latestUserTimestampMs : null,
+        typeof rawRecord.latestUserTimestampMs === "number"
+          ? rawRecord.latestUserTimestampMs
+          : null,
       latestUserLineIndex,
       decision,
       analyzedAtMs,
       finalNoticeSentAtMs:
-        typeof rawRecord.finalNoticeSentAtMs === "number" ? rawRecord.finalNoticeSentAtMs : null,
+        typeof rawRecord.finalNoticeSentAtMs === "number"
+          ? rawRecord.finalNoticeSentAtMs
+          : null,
     };
   }
   return records;
@@ -997,7 +1247,8 @@ function parseStoredDecision(value: unknown): SelfNudgeDecision | null {
   if (!isPlainObject(value)) return null;
   const shouldNudge = value.shouldNudge === true;
   const statusNudgeMessage =
-    typeof value.statusNudgeMessage === "string" && value.statusNudgeMessage.trim()
+    typeof value.statusNudgeMessage === "string" &&
+    value.statusNudgeMessage.trim()
       ? value.statusNudgeMessage.trim()
       : null;
   const reason = typeof value.reason === "string" ? value.reason : undefined;
@@ -1030,12 +1281,16 @@ function extractJsonObject(raw: string): string {
 }
 
 function extractChatCompletionContent(payload: unknown): string | null {
-  const choices: unknown[] = isPlainObject(payload) && Array.isArray(payload.choices) ? payload.choices : [];
+  const choices: unknown[] =
+    isPlainObject(payload) && Array.isArray(payload.choices)
+      ? payload.choices
+      : [];
   const choice = choices[0] ?? null;
   if (!isPlainObject(choice)) return null;
   const message = choice.message;
   if (!isPlainObject(message)) return null;
-  return typeof message.content === "string" && message.content.trim().length > 0
+  return typeof message.content === "string" &&
+    message.content.trim().length > 0
     ? message.content.trim()
     : null;
 }
@@ -1049,7 +1304,8 @@ function extractTextFromMessage(message: Record<string, unknown>): string {
         if (typeof part === "string") return part;
         if (!isPlainObject(part)) return "";
         if (typeof part.text === "string") return part.text;
-        if (part.type === "text" && typeof part.content === "string") return part.content;
+        if (part.type === "text" && typeof part.content === "string")
+          return part.content;
         return "";
       })
       .filter(Boolean)
@@ -1059,17 +1315,81 @@ function extractTextFromMessage(message: Record<string, unknown>): string {
   return "";
 }
 
-function findLatestUserRequestMessage(messages: TranscriptMessage[]): TranscriptMessage | null {
+function readMessageToolSendText(
+  message: Record<string, unknown>,
+): string | null {
+  const calls = collectToolCallObjects(message);
+  for (const call of calls) {
+    const name = readString(call.name) ?? readString(call.toolName);
+    if (name !== "message") continue;
+    const args =
+      parseToolCallArguments(call.arguments) ??
+      parseToolCallArguments(call.input);
+    if (!args) continue;
+    if (readString(args.action) !== "send") continue;
+    const text = readString(args.message) ?? readString(args.text);
+    if (text) return text;
+  }
+  return null;
+}
+
+function collectToolCallObjects(value: unknown): Record<string, unknown>[] {
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value))
+    return value.flatMap((item) => collectToolCallObjects(item));
+  const record = value as Record<string, unknown>;
+  const type = readString(record.type);
+  const name = readString(record.name) ?? readString(record.toolName);
+  const ownCall =
+    name &&
+    (type === "toolCall" ||
+      type === "function_call" ||
+      "arguments" in record ||
+      "input" in record)
+      ? [record]
+      : [];
+  const nested = [
+    record.content,
+    record.toolCall,
+    record.tool_calls,
+    record.toolCalls,
+  ].flatMap((item) => collectToolCallObjects(item));
+  return [...ownCall, ...nested];
+}
+
+function parseToolCallArguments(
+  value: unknown,
+): Record<string, unknown> | null {
+  if (isPlainObject(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function findLatestUserRequestMessage(
+  messages: TranscriptMessage[],
+): TranscriptMessage | null {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
-    if (message?.role === "user" && !isIgnoredSelfNudgeUserMessage(message.text)) return message;
+    if (
+      message?.role === "user" &&
+      !isIgnoredSelfNudgeUserMessage(message.text)
+    )
+      return message;
   }
   return null;
 }
 
 function isIgnoredSelfNudgeUserMessage(text: string): boolean {
   const normalized = text.trimStart();
-  return isStatusNudgeMessage(normalized) || isPreCompactionMemoryFlushMessage(normalized);
+  return (
+    isStatusNudgeMessage(normalized) ||
+    isPreCompactionMemoryFlushMessage(normalized)
+  );
 }
 
 function isStatusNudgeMessage(text: string): boolean {
@@ -1077,10 +1397,15 @@ function isStatusNudgeMessage(text: string): boolean {
 }
 
 function isPreCompactionMemoryFlushMessage(text: string): boolean {
-  return /^Pre-compaction memory flush\./i.test(text) && /Store durable memories only in memory\//i.test(text);
+  return (
+    /^Pre-compaction memory flush\./i.test(text) &&
+    /Store durable memories only in memory\//i.test(text)
+  );
 }
 
-function findFinalAssistantMessage(transcript: FreshestSessionTranscript): TranscriptMessage | null {
+function findFinalAssistantMessage(
+  transcript: FreshestSessionTranscript,
+): TranscriptMessage | null {
   const latestUserLineIndex = transcript.latestUserMessage?.lineIndex ?? -1;
   for (let index = transcript.messages.length - 1; index >= 0; index -= 1) {
     const message = transcript.messages[index];
@@ -1094,7 +1419,10 @@ function findFinalAssistantMessage(transcript: FreshestSessionTranscript): Trans
   }
   for (let index = transcript.messages.length - 1; index >= 0; index -= 1) {
     const message = transcript.messages[index];
-    if (message?.role === "assistant" && !isRelaySelfNudgeNoticeMessage(message.text)) {
+    if (
+      message?.role === "assistant" &&
+      !isRelaySelfNudgeNoticeMessage(message.text)
+    ) {
       return message;
     }
   }
@@ -1110,14 +1438,19 @@ function isRelaySelfNudgeNoticeMessage(text: string): boolean {
   );
 }
 
-function isRelayOwnedRuntimeHistoryMessage(message: Record<string, unknown>): boolean {
+function isRelayOwnedRuntimeHistoryMessage(
+  message: Record<string, unknown>,
+): boolean {
   const text = extractTextFromMessage(message).trim();
   if (text && isRelaySelfNudgeNoticeMessage(text)) return true;
 
   const metadata = isPlainObject(message.__openclaw) ? message.__openclaw : {};
-  const identifiers = [message.id, message.idempotencyKey, metadata.id, metadata.messageId].flatMap((value) =>
-    typeof value === "string" ? [value.trim()] : []
-  );
+  const identifiers = [
+    message.id,
+    message.idempotencyKey,
+    metadata.id,
+    metadata.messageId,
+  ].flatMap((value) => (typeof value === "string" ? [value.trim()] : []));
   return identifiers.some((value) => value.startsWith("system-notification:"));
 }
 
@@ -1142,7 +1475,9 @@ function formatNoticeTime(timestampMs: number): string {
 
 function fingerprintMessage(message: TranscriptMessage): string {
   const stablePosition =
-    typeof message.timestampMs === "number" ? `ts:${message.timestampMs}` : `line:${message.lineIndex}`;
+    typeof message.timestampMs === "number"
+      ? `ts:${message.timestampMs}`
+      : `line:${message.lineIndex}`;
   return createHash("sha256")
     .update(`${stablePosition}\n${message.role}\n${message.text}`)
     .digest("hex");
@@ -1158,8 +1493,8 @@ function fingerprintAnalysisMessages(messages: TranscriptMessage[]): string {
           lineIndex: message.lineIndex,
           timestampMs: message.timestampMs ?? null,
           isLatestUserRequest: message.isLatestUserRequest === true,
-        }))
-      )
+        })),
+      ),
     )
     .digest("hex");
 }
@@ -1174,11 +1509,15 @@ function normalizeNudgeBody(raw: string | null | undefined): string {
 
 function normalizeOpenRouterModel(model: string | null): string {
   const raw = model?.trim() || DEFAULT_NUDGE_MODEL;
-  return raw.toLowerCase().startsWith("openrouter/") ? raw.slice("openrouter/".length) : raw;
+  return raw.toLowerCase().startsWith("openrouter/")
+    ? raw.slice("openrouter/".length)
+    : raw;
 }
 
 function normalizeSessionKey(mapKey: string): string {
-  return mapKey.startsWith("agent:main:") ? mapKey.slice("agent:main:".length) : mapKey;
+  return mapKey.startsWith("agent:main:")
+    ? mapKey.slice("agent:main:".length)
+    : mapKey;
 }
 
 function resetState(state: SelfNudgeState): void {
