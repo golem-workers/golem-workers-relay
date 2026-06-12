@@ -649,11 +649,12 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   OPENCLAW_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/openclaw"
   test -f "${CODEX_PACKAGE_DIR}/package.json"
   test -f "${OPENCLAW_PACKAGE_DIR}/package.json"
-  test -f "${PNPM_HOME_DIR}/codex"
-  test -f "${PNPM_HOME_DIR}/openclaw"
-  ln -sfn "${PNPM_HOME_DIR}/codex" /usr/local/bin/codex
-  ln -sfn "${PNPM_HOME_DIR}/openclaw" /usr/local/bin/openclaw
+  test -x "${GLOBAL_PNPM_ROOT}/.bin/codex"
+  test -x "${GLOBAL_PNPM_ROOT}/.bin/openclaw"
+  ln -sfn "${GLOBAL_PNPM_ROOT}/.bin/codex" /usr/local/bin/codex
+  ln -sfn "${GLOBAL_PNPM_ROOT}/.bin/openclaw" /usr/local/bin/openclaw
   test -x /usr/local/bin/codex
+  test -x /usr/local/bin/openclaw
   command -v codex >/dev/null 2>&1
   command -v openclaw >/dev/null 2>&1
   mkdir -p /root/.codex
