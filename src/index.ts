@@ -339,6 +339,7 @@ async function main(): Promise<void> {
     taskControl,
     transportDeliveryTracker,
     inFlightTaskStore,
+    activityIndex,
   });
 
   void reconcileDurableInFlightChatTasks({
@@ -350,6 +351,7 @@ async function main(): Promise<void> {
     backend,
     inFlightTaskStore,
     transportDeliveryTracker,
+    activityIndex,
   }).catch((error) => {
     logger.warn(
       {

@@ -60,6 +60,7 @@ describe("createMessageProcessor", () => {
       transportMessageId: "tg-direct-1",
     });
     const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const recordVisibleDelivery = vi.fn().mockResolvedValue(undefined);
     const runChatTask = vi.fn().mockResolvedValue({
       result: {
         outcome: "reply",
@@ -89,6 +90,7 @@ describe("createMessageProcessor", () => {
       gateway: { start: vi.fn(), getHello: vi.fn() } as never,
       runner: { runChatTask } as never,
       backend: { submitInboundMessage, sendTelegramTransportAction: vi.fn() } as never,
+      activityIndex: { recordVisibleDelivery },
     });
 
     await processor({
@@ -133,6 +135,30 @@ describe("createMessageProcessor", () => {
     expect(firstCall?.body?.openclawMeta?.transportAccountId).toBe("default");
     expect(firstCall?.body?.openclawMeta?.transportMessageId).toBe("tg-direct-1");
     expect(firstCall?.body?.openclawMeta?.transportDelivered).toBe(true);
+    const visibleDelivery = recordVisibleDelivery.mock.calls[0]?.[0] as
+      | {
+          sessionKey?: string;
+          sourceRequestId?: string;
+          correlationMessageId?: string;
+          relayMessageId?: string;
+          runId?: string;
+          transportMessageId?: string;
+          deliveryKind?: string;
+          visibleText?: string;
+          mediaSummary?: string;
+        }
+      | undefined;
+    expect(visibleDelivery).toMatchObject({
+      sessionKey: "tg:123:srv_1",
+      sourceRequestId: "msg_v2_1",
+      correlationMessageId: "msg_v2_1",
+      runId: "run_v2_1",
+      transportMessageId: "tg-direct-1",
+      deliveryKind: "final",
+      visibleText: "hello user",
+      mediaSummary: "report.pdf",
+    });
+    expect(visibleDelivery?.relayMessageId).toMatch(/^relay_/);
   });
 
   it("reconciles a durable in-flight task after restart without resending chat.send", async () => {

@@ -19,6 +19,22 @@ import { type RelayChannelTransportDeliveryTracker } from "../relayChannel/trans
 import { executeWhatsAppPersonalMessageSend } from "../relayChannel/whatsappPersonalTransport.js";
 import type { DurableInFlightChatTask, InFlightTaskStore } from "./inFlightTaskStore.js";
 
+type VisibleDeliveryRecorder = {
+  recordVisibleDelivery(input: {
+    sessionKey: string;
+    sourceRequestId?: string;
+    relayMessageId?: string;
+    runId?: string;
+    correlationMessageId?: string;
+    transportMessageId?: string;
+    deliveryKind: "final";
+    visibleText?: string;
+    mediaSummary?: string;
+    deliveredAt?: number;
+    recordedAt?: number;
+  }): Promise<unknown>;
+};
+
 type MessageProcessorInput = {
   cfg: {
     relayInstanceId: string;
@@ -38,6 +54,7 @@ type MessageProcessorInput = {
   taskControl?: RelayTaskControl;
   transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
   inFlightTaskStore?: InFlightTaskStore;
+  activityIndex?: VisibleDeliveryRecorder;
 };
 
 type DiskUsageSnapshot = {
@@ -144,6 +161,7 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
         taskControl,
         transportDeliveryTracker,
         inFlightTaskStore: input.inFlightTaskStore,
+        activityIndex: input.activityIndex,
       });
       return;
     }
@@ -163,6 +181,7 @@ export function createMessageProcessor(input: MessageProcessorInput): (msg: Inbo
           taskControl,
           transportDeliveryTracker,
           inFlightTaskStore: input.inFlightTaskStore,
+          activityIndex: input.activityIndex,
         });
       },
     });
@@ -178,6 +197,7 @@ export async function reconcileDurableInFlightChatTasks(input: {
   backend: BackendClient;
   inFlightTaskStore: InFlightTaskStore;
   transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
+  activityIndex?: VisibleDeliveryRecorder;
 }): Promise<void> {
   const records = await input.inFlightTaskStore.list();
   const timeoutMs = Math.max(1, Math.trunc(input.cfg.restartRecoveryTimeoutMs ?? 30_000));
@@ -373,6 +393,7 @@ async function flushChatBatch(input: {
   taskControl: RelayTaskControl;
   transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
   inFlightTaskStore?: InFlightTaskStore;
+  activityIndex?: VisibleDeliveryRecorder;
 }): Promise<void> {
   if (input.items.length === 0) return;
   if (input.items.length === 1) {
@@ -388,6 +409,7 @@ async function flushChatBatch(input: {
         taskControl: input.taskControl,
         transportDeliveryTracker: input.transportDeliveryTracker,
         inFlightTaskStore: input.inFlightTaskStore,
+        activityIndex: input.activityIndex,
       });
       only.deferred.resolve();
     } catch (error) {
@@ -426,6 +448,7 @@ async function flushChatBatch(input: {
       taskControl: input.taskControl,
       transportDeliveryTracker: input.transportDeliveryTracker,
       inFlightTaskStore: input.inFlightTaskStore,
+      activityIndex: input.activityIndex,
     });
     target.deferred.resolve();
   } catch (error) {
@@ -523,6 +546,7 @@ async function reconcileDurableInFlightChatTask(input: {
   backend: BackendClient;
   inFlightTaskStore: InFlightTaskStore;
   transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
+  activityIndex?: VisibleDeliveryRecorder;
   record: DurableInFlightChatTask;
   timeoutMs: number;
 }): Promise<void> {
@@ -576,6 +600,16 @@ async function reconcileDurableInFlightChatTask(input: {
       backendMessageId: record.backendMessageId,
       relayMessageId: record.relayMessageId,
       transportDeliveryTracker: input.transportDeliveryTracker,
+    });
+    await recordDirectVisibleReplyDelivery({
+      activityIndex: input.activityIndex,
+      sessionKey: record.sessionKey,
+      backendMessageId: record.backendMessageId,
+      relayMessageId: record.relayMessageId,
+      runId: recovered.result.reply.runId,
+      reply: replyPayload,
+      directTransportMeta,
+      deliveredAt: finishedAtMs,
     });
     await input.backend.submitInboundMessage({
       body: {
@@ -672,6 +706,7 @@ async function processSingleMessage(input: {
   taskControl: RelayTaskControl;
   transportDeliveryTracker?: RelayChannelTransportDeliveryTracker;
   inFlightTaskStore?: InFlightTaskStore;
+  activityIndex?: VisibleDeliveryRecorder;
 }): Promise<void> {
   const { cfg, gateway, runner, backend, msg } = input;
   const startedAt = Date.now();
@@ -948,6 +983,16 @@ async function processSingleMessage(input: {
             relayMessageId,
             transportDeliveryTracker: input.transportDeliveryTracker,
           });
+          await recordDirectVisibleReplyDelivery({
+            activityIndex: input.activityIndex,
+            sessionKey: msg.input.sessionKey,
+            backendMessageId: msg.messageId,
+            relayMessageId,
+            runId: result.reply.runId,
+            reply: replyPayload,
+            directTransportMeta,
+            deliveredAt: finishedAtMs,
+          });
           input.transportDeliveryTracker?.clear({
             correlationMessageId: msg.messageId,
             sessionKey: msg.input.sessionKey,
@@ -1218,6 +1263,65 @@ async function readDiskUsageSnapshot(targetPath: string): Promise<DiskUsageSnaps
     usedPercent,
   };
 }
+
+async function recordDirectVisibleReplyDelivery(input: {
+  activityIndex?: VisibleDeliveryRecorder;
+  sessionKey: string;
+  backendMessageId: string;
+  relayMessageId: string;
+  runId?: string;
+  reply: Extract<RelayInboundMessageRequest, { outcome: "reply" }>["reply"];
+  directTransportMeta: {
+    transportDelivered: true;
+    transportChannelId: "telegram" | "whatsapp_personal";
+    transportAccountId: "default";
+    transportMessageId?: string;
+  } | null;
+  deliveredAt: number;
+}): Promise<void> {
+  if (!input.activityIndex || !input.directTransportMeta) {
+    return;
+  }
+  const visibleText = stripNativeMediaDirectives(extractReplyText(input.reply.message));
+  const media = Array.isArray(input.reply.media) ? input.reply.media : [];
+  const mediaSummary =
+    media.length > 0
+      ? media
+          .map((item) => item.fileName || item.contentType || item.path)
+          .filter((item): item is string => typeof item === "string" && item.length > 0)
+          .join(", ")
+      : undefined;
+  try {
+    await input.activityIndex.recordVisibleDelivery({
+      sessionKey: input.sessionKey,
+      sourceRequestId: input.backendMessageId,
+      correlationMessageId: input.backendMessageId,
+      relayMessageId: input.relayMessageId,
+      ...(input.runId ? { runId: input.runId } : {}),
+      ...(input.directTransportMeta.transportMessageId
+        ? { transportMessageId: input.directTransportMeta.transportMessageId }
+        : {}),
+      deliveryKind: "final",
+      ...(visibleText ? { visibleText } : {}),
+      ...(mediaSummary ? { mediaSummary } : {}),
+      deliveredAt: input.deliveredAt,
+      recordedAt: Date.now(),
+    });
+  } catch (error) {
+    logger.warn(
+      {
+        event: "visible_delivery_index",
+        stage: "record_failed",
+        backendMessageId: input.backendMessageId,
+        relayMessageId: input.relayMessageId,
+        sessionKey: input.sessionKey,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      "Failed to record direct visible reply delivery"
+    );
+  }
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && (value as { constructor?: unknown }).constructor === Object;
 }
