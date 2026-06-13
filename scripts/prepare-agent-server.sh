@@ -649,6 +649,12 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   OPENCLAW_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/openclaw"
   test -f "${CODEX_PACKAGE_DIR}/package.json"
   test -f "${OPENCLAW_PACKAGE_DIR}/package.json"
+  OPENCLAW_INSTALLED_VERSION="$(node -e "const pkg=require('${OPENCLAW_PACKAGE_DIR}/package.json'); process.stdout.write(String(pkg.version || ''))")"
+  if [[ -z "${OPENCLAW_INSTALLED_VERSION}" ]]; then
+    echo "Unable to resolve installed OpenClaw version from ${OPENCLAW_PACKAGE_DIR}/package.json" >&2
+    exit 1
+  fi
+  CODEX_PLUGIN_NPM_SPEC="@openclaw/codex@${OPENCLAW_INSTALLED_VERSION}"
   test -x "${GLOBAL_PNPM_ROOT}/.bin/codex"
   test -x "${GLOBAL_PNPM_ROOT}/.bin/openclaw"
   ln -sfn "${GLOBAL_PNPM_ROOT}/.bin/codex" /usr/local/bin/codex
@@ -894,7 +900,7 @@ NODE
   set_step "openclaw_codex_plugin_install"
   openclaw plugins uninstall codex --force >/dev/null 2>&1 || true
   rm -rf /root/.openclaw/extensions/codex
-  openclaw plugins install @openclaw/codex
+  openclaw plugins install "${CODEX_PLUGIN_NPM_SPEC}"
   CODEX_PLUGIN_INSTALL_DIR="$(node --input-type=module - <<'NODE'
 import fs from "node:fs"
 import os from "node:os"
