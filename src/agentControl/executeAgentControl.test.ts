@@ -16,6 +16,8 @@ const noopGateway = {
 const originalStateDir = process.env.OPENCLAW_STATE_DIR;
 const originalPath = process.env.PATH;
 const originalHome = process.env.HOME;
+const originalCodexHome = process.env.CODEX_HOME;
+const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
 const originalRelayEnvPath = process.env.RELAY_ENV_PATH;
 const originalFetch = global.fetch;
 
@@ -39,6 +41,16 @@ afterEach(() => {
     delete process.env.RELAY_ENV_PATH;
   } else {
     process.env.RELAY_ENV_PATH = originalRelayEnvPath;
+  }
+  if (originalCodexHome === undefined) {
+    delete process.env.CODEX_HOME;
+  } else {
+    process.env.CODEX_HOME = originalCodexHome;
+  }
+  if (originalOpenAiApiKey === undefined) {
+    delete process.env.OPENAI_API_KEY;
+  } else {
+    process.env.OPENAI_API_KEY = originalOpenAiApiKey;
   }
   global.fetch = originalFetch;
   vi.useRealTimers();
@@ -630,6 +642,62 @@ describe("executeAgentControl Codex login", () => {
       accountId: "acct-123",
       lastError: null,
     });
+  });
+
+  it("switches Codex login auth without keeping API key credentials in auth.json", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-set-login-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    const codexHome = path.join(tempDir, ".codex");
+    process.env.CODEX_HOME = codexHome;
+    process.env.OPENAI_API_KEY = "env-relay-token";
+    await fs.mkdir(path.join(tempDir, "agents", "main", "agent"), { recursive: true });
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "stored-relay-token" }, null, 2),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempDir, "agents", "main", "agent", "auth-profiles.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          profiles: {
+            "openai:user@example.com": {
+              type: "oauth",
+              provider: "openai",
+              access: "access-token",
+              refresh: "refresh-token",
+              expires: Date.now() + 60_000,
+              email: "user@example.com",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const result = await executeAgentControl({
+      action: { kind: "codex.auth.set", mode: "openai_login" },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    const authJson = JSON.parse(await fs.readFile(path.join(codexHome, "auth.json"), "utf8")) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      kind: "codex.auth.set",
+      mode: "openai_login",
+      applied: true,
+      authModes: {
+        openaiLogin: { available: true, active: true },
+        apiKey: { available: true, active: false },
+      },
+    });
+    expect(authJson.auth_mode).toBe("chatgpt");
+    expect(authJson.OPENAI_API_KEY).toBeUndefined();
   });
 });
 

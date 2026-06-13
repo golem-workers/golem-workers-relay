@@ -791,8 +791,10 @@ export async function setCodexAuthMode(configPath: string, mode: CodexAuthMode):
     if (!status.authModes.openaiLogin.available) {
       throw new Error(status.authModes.openaiLogin.message);
     }
+    const chatGptAuthJson = { ...authJson };
+    delete chatGptAuthJson.OPENAI_API_KEY;
     await writeCodexCliAuthJson({
-      ...authJson,
+      ...chatGptAuthJson,
       auth_mode: "chatgpt",
     });
   } else {
