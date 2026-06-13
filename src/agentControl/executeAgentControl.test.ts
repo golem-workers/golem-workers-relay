@@ -671,6 +671,7 @@ describe("executeAgentControl Codex login", () => {
               refresh: "refresh-token",
               expires: Date.now() + 60_000,
               email: "user@example.com",
+              accountId: "acct-123",
             },
           },
         },
@@ -698,6 +699,13 @@ describe("executeAgentControl Codex login", () => {
     });
     expect(authJson.auth_mode).toBe("chatgpt");
     expect(authJson.OPENAI_API_KEY).toBeUndefined();
+    expect(authJson.tokens).toEqual({
+      id_token: "access-token",
+      access_token: "access-token",
+      refresh_token: "refresh-token",
+      account_id: "acct-123",
+    });
+    expect(typeof authJson.last_refresh).toBe("string");
   });
 });
 

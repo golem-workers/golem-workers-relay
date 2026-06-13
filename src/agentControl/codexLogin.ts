@@ -99,6 +99,15 @@ type PendingCodexLogin = {
 type CodexCliAuthJson = {
   auth_mode?: unknown;
   OPENAI_API_KEY?: unknown;
+  tokens?: unknown;
+  last_refresh?: unknown;
+};
+
+type CodexCliChatGptTokens = {
+  id_token: string;
+  access_token: string;
+  refresh_token: string;
+  account_id?: string;
 };
 
 type RequestedDeviceCode = {
@@ -585,10 +594,7 @@ function buildResult(
   };
 }
 
-async function readPersistedCodexStatus(
-  kind: "codex.login.start" | "codex.login.status",
-  configPath: string,
-): Promise<CodexLoginActionResult> {
+async function readPersistedCodexOAuthEntries(configPath: string): Promise<Array<[string, Record<string, unknown>]>> {
   const entriesByProfileId = new Map<string, Record<string, unknown>>();
   for (const authStorePath of resolveCodexAuthStorePaths(configPath)) {
     const store = await readAuthProfilesStore(authStorePath);
@@ -602,7 +608,50 @@ async function readPersistedCodexStatus(
       entriesByProfileId.set(profileId, credential);
     }
   }
-  const entries = Array.from(entriesByProfileId.entries());
+  return Array.from(entriesByProfileId.entries());
+}
+
+function pickLiveCodexOAuthEntry(
+  entries: Array<[string, Record<string, unknown>]>,
+): [string, Record<string, unknown>] | null {
+  if (entries.length === 0) {
+    return null;
+  }
+  const now = Date.now();
+  const liveEntries = entries.filter(([, credential]) => {
+    const expires = typeof credential.expires === "number" ? credential.expires : null;
+    return expires == null || expires > now;
+  });
+  return liveEntries[0] ?? null;
+}
+
+async function resolveCodexCliChatGptTokens(configPath: string): Promise<CodexCliChatGptTokens | null> {
+  const entry = pickLiveCodexOAuthEntry(await readPersistedCodexOAuthEntries(configPath));
+  if (!entry) {
+    return null;
+  }
+  const [, credential] = entry;
+  const accessToken = normalizeString(credential.access);
+  const refreshToken = normalizeString(credential.refresh);
+  if (!accessToken || !refreshToken) {
+    return null;
+  }
+  const accountId = normalizeString(credential.accountId);
+  return {
+    // Codex parses account email and plan metadata from id_token claims. The
+    // OAuth access token issued by the Codex device flow carries those claims.
+    id_token: accessToken,
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    ...(accountId ? { account_id: accountId } : {}),
+  };
+}
+
+async function readPersistedCodexStatus(
+  kind: "codex.login.start" | "codex.login.status",
+  configPath: string,
+): Promise<CodexLoginActionResult> {
+  const entries = await readPersistedCodexOAuthEntries(configPath);
   if (entries.length === 0) {
     const authModes = await resolveCodexAuthModes({
       loginAvailable: false,
@@ -791,11 +840,17 @@ export async function setCodexAuthMode(configPath: string, mode: CodexAuthMode):
     if (!status.authModes.openaiLogin.available) {
       throw new Error(status.authModes.openaiLogin.message);
     }
+    const tokens = await resolveCodexCliChatGptTokens(configPath);
+    if (!tokens) {
+      throw new Error("Saved OpenAI login is incomplete. Start a new device login.");
+    }
     const chatGptAuthJson = { ...authJson };
     delete chatGptAuthJson.OPENAI_API_KEY;
     await writeCodexCliAuthJson({
       ...chatGptAuthJson,
       auth_mode: "chatgpt",
+      tokens,
+      last_refresh: new Date().toISOString(),
     });
   } else {
     const apiKey = normalizeString(authJson.OPENAI_API_KEY) || normalizeString(process.env.OPENAI_API_KEY);
