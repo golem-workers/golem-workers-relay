@@ -497,6 +497,9 @@ main() {
     file \
     git \
     wget \
+    novnc \
+    websockify \
+    x11vnc \
     xvfb \
     pulseaudio \
     pulseaudio-utils \
@@ -523,6 +526,9 @@ main() {
   google-chrome-stable --version
 
   command -v Xvfb >/dev/null 2>&1 || { echo "Missing Xvfb after dependency install" >&2; exit 1; }
+  command -v websockify >/dev/null 2>&1 || { echo "Missing websockify after dependency install" >&2; exit 1; }
+  command -v x11vnc >/dev/null 2>&1 || { echo "Missing x11vnc after dependency install" >&2; exit 1; }
+  test -d /usr/share/novnc || { echo "Missing /usr/share/novnc after dependency install" >&2; exit 1; }
   command -v pulseaudio >/dev/null 2>&1 || { echo "Missing pulseaudio after dependency install" >&2; exit 1; }
   command -v pactl >/dev/null 2>&1 || { echo "Missing pactl after dependency install" >&2; exit 1; }
   command -v parec >/dev/null 2>&1 || { echo "Missing parec after dependency install" >&2; exit 1; }
