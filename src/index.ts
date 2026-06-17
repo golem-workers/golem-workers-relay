@@ -368,6 +368,81 @@ async function main(): Promise<void> {
     maxQueue: cfg.pushMaxQueue,
     processor: processOne,
   });
+  const preemptSessionForUserOwnedTurn = (input: {
+    message: ChatPushMessage;
+    reason: string;
+    dropQueuedUserChats: boolean;
+  }) => {
+    const { message, reason, dropQueuedUserChats } = input;
+    const sessionKey = message.input.sessionKey;
+    const removedSystemReminders = queue.removeQueued(
+      (queued) =>
+        queued.input.kind === "chat" &&
+        queued.input.sessionKey === sessionKey &&
+        isSystemReminderMessage(queued) &&
+        queued.messageId !== message.messageId,
+    );
+    for (const queued of removedSystemReminders) {
+      void submitDroppedSystemReminder({
+        backend,
+        relayInstanceId: cfg.relayInstanceId,
+        message: queued,
+        reason,
+      });
+    }
+    if (dropQueuedUserChats) {
+      const removedUserChats = queue.removeQueued(
+        (queued) =>
+          queued.input.kind === "chat" &&
+          queued.input.sessionKey === sessionKey &&
+          isUserChatMessage(queued) &&
+          queued.messageId !== message.messageId,
+      );
+      for (const queued of removedUserChats) {
+        void submitDroppedSupersededUserChat({
+          backend,
+          relayInstanceId: cfg.relayInstanceId,
+          message: queued,
+          reason: "superseded_by_newer_user_message",
+        });
+      }
+    }
+    const abortedSystemReminder = taskControl.abortActive(
+      (task) =>
+        (task.taskKind === "system_reminder" ||
+          task.taskKind === "status_nudge") &&
+        task.sessionKey === sessionKey,
+      reason,
+    );
+    if (abortedSystemReminder) {
+      logger.warn(
+        {
+          event: "relay_queue",
+          stage: "active_system_task_preempted",
+          backendMessageId: message.messageId,
+          sessionKey,
+          reason,
+        },
+        "Preempted active system task for newer user-owned turn",
+      );
+    }
+    const abortedUserChat = taskControl.abortActive(
+      (task) => task.taskKind === "user_chat" && task.sessionKey === sessionKey,
+      reason,
+    );
+    if (abortedUserChat) {
+      logger.warn(
+        {
+          event: "relay_queue",
+          stage: "active_user_task_preempted",
+          backendMessageId: message.messageId,
+          sessionKey,
+          reason,
+        },
+        "Preempted active user chat for newer user-owned turn",
+      );
+    }
+  };
 
   const server = startPushServer({
     port: cfg.pushPort,
@@ -435,69 +510,11 @@ async function main(): Promise<void> {
                 "Failed to record conversation inbound activity",
               );
             });
-          const removedSystemReminders = queue.removeQueued(
-            (queued) =>
-              queued.input.kind === "chat" &&
-              queued.input.sessionKey === sessionKey &&
-              isSystemReminderMessage(queued),
-          );
-          for (const queued of removedSystemReminders) {
-            void submitDroppedSystemReminder({
-              backend,
-              relayInstanceId: cfg.relayInstanceId,
-              message: queued,
-              reason: "dropped_for_newer_user_message",
-            });
-          }
-          const removedUserChats = queue.removeQueued(
-            (queued) =>
-              queued.input.kind === "chat" &&
-              queued.input.sessionKey === sessionKey &&
-              isUserChatMessage(queued) &&
-              queued.messageId !== message.messageId,
-          );
-          for (const queued of removedUserChats) {
-            void submitDroppedSupersededUserChat({
-              backend,
-              relayInstanceId: cfg.relayInstanceId,
-              message: queued,
-              reason: "superseded_by_newer_user_message",
-            });
-          }
-          const abortedSystemReminder = taskControl.abortActive(
-            (task) =>
-              (task.taskKind === "system_reminder" ||
-                task.taskKind === "status_nudge") &&
-              task.sessionKey === sessionKey,
-            "newer_user_message",
-          );
-          if (abortedSystemReminder) {
-            logger.warn(
-              {
-                event: "relay_queue",
-                stage: "active_system_task_preempted",
-                backendMessageId: message.messageId,
-                sessionKey,
-              },
-              "Preempted active system reminder for newer user message",
-            );
-          }
-          const abortedUserChat = taskControl.abortActive(
-            (task) =>
-              task.taskKind === "user_chat" && task.sessionKey === sessionKey,
-            "newer_user_message",
-          );
-          if (abortedUserChat) {
-            logger.warn(
-              {
-                event: "relay_queue",
-                stage: "active_user_task_preempted",
-                backendMessageId: message.messageId,
-                sessionKey,
-              },
-              "Preempted active user chat for newer user message",
-            );
-          }
+          preemptSessionForUserOwnedTurn({
+            message,
+            reason: "newer_user_message",
+            dropQueuedUserChats: true,
+          });
         }
         queue.enqueue(message);
         const queueState = queue.getState();
@@ -701,7 +718,7 @@ async function main(): Promise<void> {
                 .find(
                   (record) => record.sessionKey === transcript.sessionKey,
                 ) ?? activityIndex.findBestUserVisibleRoute({ now: nowMs });
-            const message: InboundPushMessage = {
+            const message: ChatPushMessage = {
               messageId: taskId,
               sentAtMs: nowMs,
               input: {
@@ -729,6 +746,11 @@ async function main(): Promise<void> {
                 },
               },
             };
+            preemptSessionForUserOwnedTurn({
+              message,
+              reason: "newer_status_nudge",
+              dropQueuedUserChats: false,
+            });
             queue.enqueue(message);
             const queueState = queue.getState();
             logger.info(
