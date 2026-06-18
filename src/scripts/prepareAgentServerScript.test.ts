@@ -20,4 +20,21 @@ describe("prepare-agent-server snapshot preparation", () => {
     expect(script).toContain("command -v parec");
     expect(script).toContain("command -v pacat");
   });
+
+  it("bakes the WhatsApp plugin into provider snapshots before channel warmup", () => {
+    const script = readFileSync(prepareAgentServerScriptPath, "utf8");
+
+    expect(script).toContain(
+      'OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-clawhub:@openclaw/whatsapp}"'
+    );
+    expect(script).toContain("install_openclaw_whatsapp_plugin() {");
+    expect(script).toContain('openclaw plugins install "${OPENCLAW_WHATSAPP_PLUGIN_SPEC}"');
+    expect(script).toContain("openclaw plugins enable whatsapp");
+    expect(script.indexOf('set_step "openclaw_whatsapp_plugin_install"')).toBeGreaterThan(
+      script.indexOf('set_step "openclaw_snapshot_channels_warmup_config"')
+    );
+    expect(script.indexOf('set_step "openclaw_whatsapp_plugin_install"')).toBeLessThan(
+      script.indexOf('set_step "openclaw_snapshot_channels_warmup_start"')
+    );
+  });
 });

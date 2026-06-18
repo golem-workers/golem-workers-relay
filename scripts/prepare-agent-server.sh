@@ -22,6 +22,7 @@ fi
 NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 PNPM_HOME_DIR="/root/.local/share/pnpm"
+OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-clawhub:@openclaw/whatsapp}"
 RUN_OPENCLAW_ONBOARD=1
 APT_SOURCES_LIST="/etc/apt/sources.list"
 UBUNTU_SUITE="${UBUNTU_SUITE:-noble}"
@@ -439,6 +440,16 @@ warm_openclaw_snapshot_channels() {
   echo "OpenClaw gateway passed snapshot warmup readiness."
   sleep 5
   echo "Snapshot warmup settle complete."
+}
+
+install_openclaw_whatsapp_plugin() {
+  if openclaw plugins inspect whatsapp --runtime --json >/dev/null 2>&1; then
+    echo "OpenClaw WhatsApp plugin already installed."
+  else
+    openclaw plugins install "${OPENCLAW_WHATSAPP_PLUGIN_SPEC}"
+  fi
+  openclaw plugins enable whatsapp
+  openclaw plugins inspect whatsapp --runtime --json >/dev/null
 }
 
 main() {
@@ -1122,6 +1133,9 @@ NODE
 
   set_step "openclaw_snapshot_channels_warmup_config"
   write_openclaw_snapshot_warmup_config
+
+  set_step "openclaw_whatsapp_plugin_install"
+  install_openclaw_whatsapp_plugin
 
   set_step "openclaw_snapshot_channels_warmup_start"
   warm_openclaw_snapshot_channels
