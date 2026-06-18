@@ -1158,8 +1158,8 @@ import path from "node:path"
 
 const configDir = path.join(os.homedir(), ".openclaw")
 const configPath = path.join(configDir, "openclaw.json")
-const requiredPluginIds = ["relay-channel", "codex"]
-const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram", "whatsapp"]
+const requiredPluginIds = ["relay-channel", "codex", "whatsapp"]
+const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram"]
 const stalePluginIds = ["memory-lancedb-pro", "memory-lancedb"]
 const defaultExtensionsDir = path.join(configDir, "extensions")
 const pluginIndexPath = path.join(configDir, "plugins", "installs.json")

@@ -30,6 +30,10 @@ describe("prepare-agent-server snapshot preparation", () => {
     expect(script).toContain("install_openclaw_whatsapp_plugin() {");
     expect(script).toContain('openclaw plugins install "${OPENCLAW_WHATSAPP_PLUGIN_SPEC}"');
     expect(script).toContain("openclaw plugins enable whatsapp");
+    expect(script).toContain('const requiredPluginIds = ["relay-channel", "codex", "whatsapp"]');
+    expect(script).toContain(
+      'const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram"]'
+    );
     expect(script.indexOf('set_step "openclaw_whatsapp_plugin_install"')).toBeGreaterThan(
       script.indexOf('set_step "openclaw_snapshot_channels_warmup_config"')
     );
