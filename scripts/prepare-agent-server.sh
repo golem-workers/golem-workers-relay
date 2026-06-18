@@ -406,9 +406,12 @@ channelsCfg.telegram = {
 }
 channelsCfg.whatsapp = {
   enabled: true,
+  dmPolicy: "allowlist",
+  allowFrom: [],
+  groupPolicy: "disabled",
+  groupAllowFrom: [],
+  sendReadReceipts: true,
   selfChatMode: true,
-  dmPolicy: "open",
-  allowFrom: ["*"],
 }
 
 const pluginsCfg = ensureRecord(parsed, "plugins")
