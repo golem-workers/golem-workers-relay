@@ -407,9 +407,7 @@ channelsCfg.telegram = {
 channelsCfg.whatsapp = {
   enabled: true,
   dmPolicy: "allowlist",
-  allowFrom: [],
   groupPolicy: "disabled",
-  groupAllowFrom: [],
   sendReadReceipts: true,
   selfChatMode: true,
 }

@@ -33,6 +33,8 @@ describe("prepare-agent-server snapshot preparation", () => {
     expect(script).toContain('dmPolicy: "allowlist"');
     expect(script).toContain('groupPolicy: "disabled"');
     expect(script).toContain("sendReadReceipts: true");
+    expect(script).not.toContain("allowFrom: [],");
+    expect(script).not.toContain("groupAllowFrom: [],");
     expect(script).toContain('const requiredPluginIds = ["relay-channel", "codex", "whatsapp"]');
     expect(script).toContain(
       'const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram"]'
