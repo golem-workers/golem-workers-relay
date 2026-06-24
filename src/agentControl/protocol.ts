@@ -201,6 +201,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
         purpose: modelAssignmentPurposeSchema,
         primary: modelRefStringSchema,
         fallback: modelRefStringSchema,
+        thinkingDefault: thinkingDefaultSchema,
       })
     ),
   }),

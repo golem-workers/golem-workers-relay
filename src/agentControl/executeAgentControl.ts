@@ -798,14 +798,16 @@ async function readModelAssignments(configPath: string): Promise<AgentControlRes
       purpose,
       primary: mapPublicModelRef(typeof entry?.primary === "string" ? entry.primary : null, defaultsCfg),
       fallback: mapPublicModelRef(fallbackValues[0] ?? null, defaultsCfg),
+      thinkingDefault: purpose === "main" ? readThinkingDefault(defaultsCfg?.thinkingDefault) : null,
     };
   });
   return {
     kind: "modelAssignments.read",
-    assignments: assignments.map(({ purpose, primary, fallback }) => ({
+    assignments: assignments.map(({ purpose, primary, fallback, thinkingDefault }) => ({
       purpose,
       primary,
       fallback,
+      thinkingDefault,
     })),
   };
 }

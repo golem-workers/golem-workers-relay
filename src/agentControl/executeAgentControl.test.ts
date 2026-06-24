@@ -1001,6 +1001,7 @@ describe("executeAgentControl model set", () => {
     await fs.writeFile(configPath, JSON.stringify({
       agents: {
         defaults: {
+          thinkingDefault: "xhigh",
           model: {
             primary: "openrouter/google/gemini-2.5-flash",
             fallbacks: ["openrouter/openai/gpt-oss-120b"],
@@ -1032,31 +1033,37 @@ describe("executeAgentControl model set", () => {
           purpose: "main",
           primary: "openrouter/google/gemini-2.5-flash",
           fallback: "openrouter/openai/gpt-oss-120b",
+          thinkingDefault: "xhigh",
         },
         {
           purpose: "image",
           primary: null,
           fallback: null,
+          thinkingDefault: null,
         },
         {
           purpose: "imageGeneration",
           primary: "openai/gpt-image-2",
           fallback: "openrouter/google/gemini-3.1-flash-image-preview",
+          thinkingDefault: null,
         },
         {
           purpose: "videoGeneration",
           primary: "fal/fal-ai/minimax/video-01-live",
           fallback: "openai/sora-2",
+          thinkingDefault: null,
         },
         {
           purpose: "musicGeneration",
           primary: null,
           fallback: null,
+          thinkingDefault: null,
         },
         {
           purpose: "pdf",
           primary: null,
           fallback: null,
+          thinkingDefault: null,
         },
       ],
     });
