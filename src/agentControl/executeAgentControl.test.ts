@@ -95,10 +95,47 @@ if [ "$#" -ge 6 ] && [ "$1" = "--user" ] && [ "$2" = "show" ] && [ "$3" = "openc
 fi
 exit 1
 `,
-    "utf8"
+    "utf8",
   );
   fsSync.chmodSync(scriptPath, 0o755);
   process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+}
+
+async function readAgentRuntimeAuthSqlite(agentDir: string): Promise<{
+  store: {
+    version?: number;
+    profiles?: Record<string, Record<string, unknown>>;
+  } | null;
+  state: {
+    version?: number;
+    order?: Record<string, string[]>;
+    lastGood?: Record<string, string>;
+  } | null;
+}> {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(path.join(agentDir, "openclaw-agent.sqlite"), {
+    readOnly: true,
+  });
+  try {
+    const storeRow = db.prepare("SELECT store_json FROM auth_profile_store WHERE store_key = ?").get("primary") as { store_json?: string } | undefined;
+    const stateRow = db.prepare("SELECT state_json FROM auth_profile_state WHERE state_key = ?").get("primary") as { state_json?: string } | undefined;
+    const store = storeRow?.store_json
+      ? (JSON.parse(storeRow.store_json) as {
+          version?: number;
+          profiles?: Record<string, Record<string, unknown>>;
+        })
+      : null;
+    const state = stateRow?.state_json
+      ? (JSON.parse(stateRow.state_json) as {
+          version?: number;
+          order?: Record<string, string[]>;
+          lastGood?: Record<string, string>;
+        })
+      : null;
+    return { store, state };
+  } finally {
+    db.close();
+  }
 }
 
 describe("executeAgentControl relay self nudge settings", () => {
@@ -126,7 +163,7 @@ describe("executeAgentControl relay self nudge settings", () => {
           },
         },
       }),
-      "utf8"
+      "utf8",
     );
 
     const result = await executeAgentControl({
@@ -152,13 +189,9 @@ describe("executeAgentControl relay self nudge settings", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await vi.runOnlyPendingTimersAsync();
     await expect(fs.readFile(envPath, "utf8")).resolves.toContain("RELAY_SELF_NUDGE_ENABLED=1");
-    await expect(fs.readFile(envPath, "utf8")).resolves.toContain(
-      "RELAY_SELF_NUDGE_ANALYZED_RECENT_MESSAGE_COUNT=2"
-    );
+    await expect(fs.readFile(envPath, "utf8")).resolves.toContain("RELAY_SELF_NUDGE_ANALYZED_RECENT_MESSAGE_COUNT=2");
     await expect(fs.readFile(envPath, "utf8")).resolves.toContain("RELAY_SELF_NUDGE_BASE_TIMEOUT_MS=600000");
-    await expect(fs.readFile(envPath, "utf8")).resolves.toContain(
-      "RELAY_SELF_NUDGE_MODEL=openrouter/google/gemini-2.5-flash"
-    );
+    await expect(fs.readFile(envPath, "utf8")).resolves.toContain("RELAY_SELF_NUDGE_MODEL=openrouter/google/gemini-2.5-flash");
     await expect(fs.readFile(envPath, "utf8")).resolves.toContain("DEBUG_NUDGE=1");
     const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
       golemWorkers?: unknown;
@@ -175,7 +208,10 @@ describe("executeAgentControl status nudge", () => {
     const runChatTask = vi.fn().mockResolvedValue({
       result: {
         outcome: "reply",
-        reply: { runId: "run_status_1", message: { role: "assistant", content: "Still working." } },
+        reply: {
+          runId: "run_status_1",
+          message: { role: "assistant", content: "Still working." },
+        },
       },
       openclawMeta: { method: "chat.send", runId: "run_status_1" },
     });
@@ -196,7 +232,11 @@ describe("executeAgentControl status nudge", () => {
       statusNudgeRunner: { runChatTask },
     });
 
-    expect(result).toEqual({ kind: "chat.statusNudge", accepted: true, runId: "run_status_1" });
+    expect(result).toEqual({
+      kind: "chat.statusNudge",
+      accepted: true,
+      runId: "run_status_1",
+    });
     expect(runChatTask).toHaveBeenCalledWith({
       taskId: "nudge_1",
       sessionKey: "tg:123:srv_1",
@@ -250,7 +290,7 @@ describe("executeAgentControl status nudge", () => {
         },
         configPath: "/tmp/openclaw.json",
         gateway: noopGateway,
-      })
+      }),
     ).rejects.toMatchObject({
       code: "STATUS_NUDGE_UNAVAILABLE",
     });
@@ -277,7 +317,7 @@ describe("executeAgentControl channel pairing", () => {
           },
         ],
       }),
-      "utf8"
+      "utf8",
     );
 
     const result = await executeAgentControl({
@@ -321,21 +361,21 @@ describe("executeAgentControl channel pairing", () => {
           },
         ],
       }),
-      "utf8"
+      "utf8",
     );
 
     const result = await executeAgentControl({
-      action: { kind: "channelPairing.approve", channel: "telegram", code: "ABCD2345" },
+      action: {
+        kind: "channelPairing.approve",
+        channel: "telegram",
+        code: "ABCD2345",
+      },
       configPath: path.join(credentialsDir, "..", "openclaw.json"),
       gateway: noopGateway,
     });
 
-    const pairingStore = JSON.parse(
-      await fs.readFile(path.join(credentialsDir, "telegram-pairing.json"), "utf8")
-    ) as { requests: unknown[] };
-    const allowFromStore = JSON.parse(
-      await fs.readFile(path.join(credentialsDir, "telegram-default-allowFrom.json"), "utf8")
-    ) as { allowFrom: string[] };
+    const pairingStore = JSON.parse(await fs.readFile(path.join(credentialsDir, "telegram-pairing.json"), "utf8")) as { requests: unknown[] };
+    const allowFromStore = JSON.parse(await fs.readFile(path.join(credentialsDir, "telegram-default-allowFrom.json"), "utf8")) as { allowFrom: string[] };
 
     expect(result).toEqual({
       kind: "channelPairing.approve",
@@ -374,7 +414,11 @@ describe("executeAgentControl WhatsApp login", () => {
     };
 
     const result = await executeAgentControl({
-      action: { kind: "whatsapp.login.start", forceRelink: true, timeoutMs: 15_000 },
+      action: {
+        kind: "whatsapp.login.start",
+        forceRelink: true,
+        timeoutMs: 15_000,
+      },
       configPath: "/tmp/openclaw.json",
       gateway,
     });
@@ -472,6 +516,9 @@ describe("executeAgentControl Codex login", () => {
   it("persists a successful Codex login into auth-profiles and config bindings", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-login-success-"));
     const configPath = path.join(tempDir, "openclaw.json");
+    const codexHome = path.join(tempDir, ".codex");
+    process.env.CODEX_HOME = codexHome;
+    await fs.mkdir(codexHome, { recursive: true });
     await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
 
     global.fetch = vi.fn((input: string | URL) => {
@@ -544,9 +591,7 @@ describe("executeAgentControl Codex login", () => {
       lastError: null,
     });
 
-    const authProfiles = JSON.parse(
-      await fs.readFile(path.join(tempDir, "auth-profiles.json"), "utf8"),
-    ) as {
+    const authProfiles = JSON.parse(await fs.readFile(path.join(tempDir, "auth-profiles.json"), "utf8")) as {
       version: number;
       profiles: Record<string, Record<string, unknown>>;
     };
@@ -559,9 +604,7 @@ describe("executeAgentControl Codex login", () => {
       accountId: "acct-123",
       chatgptPlanType: "plus",
     });
-    const agentAuthProfiles = JSON.parse(
-      await fs.readFile(path.join(tempDir, "agents", "main", "agent", "auth-profiles.json"), "utf8"),
-    ) as {
+    const agentAuthProfiles = JSON.parse(await fs.readFile(path.join(tempDir, "agents", "main", "agent", "auth-profiles.json"), "utf8")) as {
       version: number;
       profiles: Record<string, Record<string, unknown>>;
     };
@@ -592,14 +635,58 @@ describe("executeAgentControl Codex login", () => {
       email: "user@example.com",
     });
     expect(config.auth?.order?.openai).toEqual(["openai:user@example.com"]);
-    expect(config.agents?.defaults?.models?.["openai/gpt-5.5"]).toEqual({ agentRuntime: { id: "codex" } });
+    expect(config.agents?.defaults?.models?.["openai/gpt-5.5"]).toEqual({
+      agentRuntime: { id: "codex" },
+    });
+
+    const runtimeAuth = await readAgentRuntimeAuthSqlite(path.join(tempDir, "agents", "main", "agent"));
+    expect(runtimeAuth.store?.version).toBe(1);
+    expect(runtimeAuth.store?.profiles?.["openai:user@example.com"]).toMatchObject({
+      type: "oauth",
+      provider: "openai",
+      refresh: "refresh-token-123",
+      email: "user@example.com",
+      accountId: "acct-123",
+      chatgptPlanType: "plus",
+    });
+    expect(runtimeAuth.state?.order?.openai).toEqual(["openai:user@example.com"]);
+    expect(runtimeAuth.state?.lastGood?.openai).toBe("openai:user@example.com");
+
+    const codexAuthJson = JSON.parse(await fs.readFile(path.join(codexHome, "auth.json"), "utf8")) as Record<string, unknown>;
+    expect(codexAuthJson.auth_mode).toBe("chatgpt");
+    expect(codexAuthJson.tokens).toEqual({
+      id_token:
+        "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQ3MDAwMDAwMDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3QtMTIzIiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwbHVzIn19.signature",
+      access_token:
+        "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQ3MDAwMDAwMDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3QtMTIzIiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwbHVzIn19.signature",
+      refresh_token: "refresh-token-123",
+      account_id: "acct-123",
+    });
+
+    await fs.rm(path.join(tempDir, "auth-profiles.json"));
+    await fs.rm(path.join(tempDir, "agents", "main", "agent", "auth-profiles.json"));
+    codexLoginTesting.resetCodexLoginState();
+    const sqliteOnlyStatus = await executeAgentControl({
+      action: { kind: "codex.login.status" },
+      configPath,
+      gateway: noopGateway,
+    });
+    expect(sqliteOnlyStatus).toMatchObject({
+      kind: "codex.login.status",
+      state: "connected",
+      profileId: "openai:user@example.com",
+      email: "user@example.com",
+      accountId: "acct-123",
+    });
   });
 
   it("reports connected Codex status when the OAuth profile only exists in the agent auth store", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-login-agent-store-"));
     const configPath = path.join(tempDir, "openclaw.json");
     await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
-    await fs.mkdir(path.join(tempDir, "agents", "main", "agent"), { recursive: true });
+    await fs.mkdir(path.join(tempDir, "agents", "main", "agent"), {
+      recursive: true,
+    });
     await fs.writeFile(
       path.join(tempDir, "agents", "main", "agent", "auth-profiles.json"),
       JSON.stringify(
@@ -650,14 +737,12 @@ describe("executeAgentControl Codex login", () => {
     const codexHome = path.join(tempDir, ".codex");
     process.env.CODEX_HOME = codexHome;
     process.env.OPENAI_API_KEY = "env-relay-token";
-    await fs.mkdir(path.join(tempDir, "agents", "main", "agent"), { recursive: true });
+    await fs.mkdir(path.join(tempDir, "agents", "main", "agent"), {
+      recursive: true,
+    });
     await fs.mkdir(codexHome, { recursive: true });
     await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
-    await fs.writeFile(
-      path.join(codexHome, "auth.json"),
-      JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "stored-relay-token" }, null, 2),
-      "utf8",
-    );
+    await fs.writeFile(path.join(codexHome, "auth.json"), JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "stored-relay-token" }, null, 2), "utf8");
     await fs.writeFile(
       path.join(tempDir, "agents", "main", "agent", "auth-profiles.json"),
       JSON.stringify(
@@ -885,10 +970,7 @@ describe("executeAgentControl model set", () => {
       result: "success",
     });
     expect(config.agents?.defaults?.model?.primary).toBe("openrouter/google/gemini-3.1-pro-preview");
-    expect(config.agents?.defaults?.model?.fallbacks).toEqual([
-      "openrouter/google/gemini-3-flash-preview",
-      "openrouter/meta-llama/llama-4-scout",
-    ]);
+    expect(config.agents?.defaults?.model?.fallbacks).toEqual(["openrouter/google/gemini-3-flash-preview", "openrouter/meta-llama/llama-4-scout"]);
     expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3.1-pro-preview"]).toEqual({});
     expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3-flash-preview"]).toEqual({});
     expect(config.agents?.defaults?.models?.["openrouter/meta-llama/llama-4-scout"]).toEqual({});
@@ -900,11 +982,7 @@ describe("executeAgentControl model set", () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-unset-"));
     const configPath = path.join(tempDir, "openclaw.json");
     await installFakeSystemctl();
-    await fs.writeFile(
-      configPath,
-      JSON.stringify({ agents: { defaults: { thinkingDefault: "minimal" } } }, null, 2),
-      "utf8"
-    );
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: { thinkingDefault: "minimal" } } }, null, 2), "utf8");
 
     const result = await executeAgentControl({
       action: {
@@ -986,37 +1064,46 @@ describe("executeAgentControl model set", () => {
       thinkingDefault: "high",
     });
     expect(config.agents?.defaults?.model?.primary).toBe("openai/gpt-5.3-codex");
-    expect(config.agents?.defaults?.model?.fallbacks).toEqual([
-      "openai/gpt-5.4",
-      "openrouter/google/gemini-3-flash-preview",
-    ]);
-    expect(config.agents?.defaults?.models?.["openai/gpt-5.3-codex"]).toEqual({ agentRuntime: { id: "codex" } });
-    expect(config.agents?.defaults?.models?.["openai/gpt-5.4"]).toEqual({ agentRuntime: { id: "codex" } });
+    expect(config.agents?.defaults?.model?.fallbacks).toEqual(["openai/gpt-5.4", "openrouter/google/gemini-3-flash-preview"]);
+    expect(config.agents?.defaults?.models?.["openai/gpt-5.3-codex"]).toEqual({
+      agentRuntime: { id: "codex" },
+    });
+    expect(config.agents?.defaults?.models?.["openai/gpt-5.4"]).toEqual({
+      agentRuntime: { id: "codex" },
+    });
     expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3-flash-preview"]).toEqual({});
   });
 
   it("reads all model assignments from config", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-assignments-read-"));
     const configPath = path.join(tempDir, "openclaw.json");
-    await fs.writeFile(configPath, JSON.stringify({
-      agents: {
-        defaults: {
-          thinkingDefault: "xhigh",
-          model: {
-            primary: "openrouter/google/gemini-2.5-flash",
-            fallbacks: ["openrouter/openai/gpt-oss-120b"],
-          },
-          imageGenerationModel: {
-            primary: "openai/gpt-image-2",
-            fallbacks: ["openrouter/google/gemini-3.1-flash-image-preview"],
-          },
-          videoGenerationModel: {
-            primary: "fal/fal-ai/minimax/video-01-live",
-            fallbacks: ["openai/sora-2"],
+    await fs.writeFile(
+      configPath,
+      JSON.stringify(
+        {
+          agents: {
+            defaults: {
+              thinkingDefault: "xhigh",
+              model: {
+                primary: "openrouter/google/gemini-2.5-flash",
+                fallbacks: ["openrouter/openai/gpt-oss-120b"],
+              },
+              imageGenerationModel: {
+                primary: "openai/gpt-image-2",
+                fallbacks: ["openrouter/google/gemini-3.1-flash-image-preview"],
+              },
+              videoGenerationModel: {
+                primary: "fal/fal-ai/minimax/video-01-live",
+                fallbacks: ["openai/sora-2"],
+              },
+            },
           },
         },
-      },
-    }, null, 2), "utf8");
+        null,
+        2,
+      ),
+      "utf8",
+    );
 
     const result = await executeAgentControl({
       action: {
@@ -1171,7 +1258,11 @@ describe("executeAgentControl model set", () => {
     });
     expect(config.agents?.defaults?.model?.primary).toBe("openai/gpt-5.5");
     expect(config.agents?.defaults?.model?.fallbacks).toEqual(["openai/gpt-5.4"]);
-    expect(config.agents?.defaults?.models?.["openai/gpt-5.5"]).toEqual({ agentRuntime: { id: "codex" } });
-    expect(config.agents?.defaults?.models?.["openai/gpt-5.4"]).toEqual({ agentRuntime: { id: "codex" } });
+    expect(config.agents?.defaults?.models?.["openai/gpt-5.5"]).toEqual({
+      agentRuntime: { id: "codex" },
+    });
+    expect(config.agents?.defaults?.models?.["openai/gpt-5.4"]).toEqual({
+      agentRuntime: { id: "codex" },
+    });
   });
 });

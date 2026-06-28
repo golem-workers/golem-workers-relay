@@ -81,6 +81,12 @@ type AuthProfilesStore = {
   profiles: Record<string, OAuthCredential | Record<string, unknown>>;
 };
 
+type AuthProfileStateStore = {
+  version: number;
+  order?: Record<string, string[]>;
+  lastGood?: Record<string, string>;
+};
+
 type PendingCodexLogin = {
   state: "pending" | "connected" | "failed";
   message: string;
@@ -165,9 +171,7 @@ function normalizeFutureEpochSeconds(value: unknown): number | undefined {
 function parseJsonObject(text: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(text);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
   } catch {
     return null;
   }
@@ -183,19 +187,10 @@ function sanitizeDeviceCodeErrorText(value: string): string {
   const c1Start = String.fromCharCode(0x80);
   const c1End = String.fromCharCode(0x9f);
   const controlCharsRegex = new RegExp(`[${c0Start}-${c0End}${del}${c1Start}-${c1End}]`, "g");
-  return value
-    .replace(osc8Regex, "")
-    .replace(ansiCsiRegex, "")
-    .replace(controlCharsRegex, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return value.replace(osc8Regex, "").replace(ansiCsiRegex, "").replace(controlCharsRegex, " ").replace(/\s+/g, " ").trim();
 }
 
-function formatDeviceCodeError(params: {
-  prefix: string;
-  status: number;
-  bodyText: string;
-}): string {
+function formatDeviceCodeError(params: { prefix: string; status: number; bodyText: string }): string {
   const body = parseJsonObject(params.bodyText);
   const error = normalizeString(body?.error);
   const description = normalizeString(body?.error_description);
@@ -276,7 +271,11 @@ function resolveCodexAuthIdentity(accessToken: string): {
   return {
     accountId,
     chatgptPlanType,
-    ...(stableSubject ? { profileName: `id-${Buffer.from(stableSubject).toString("base64url")}` } : {}),
+    ...(stableSubject
+      ? {
+          profileName: `id-${Buffer.from(stableSubject).toString("base64url")}`,
+        }
+      : {}),
   };
 }
 
@@ -324,10 +323,7 @@ async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
 
 function resolveCodexAuthStorePaths(configPath: string): string[] {
   const stateDir = path.dirname(configPath);
-  return [
-    path.join(stateDir, AUTH_PROFILES_FILE),
-    path.join(stateDir, "agents", MAIN_AGENT_ID, "agent", AUTH_PROFILES_FILE),
-  ];
+  return [path.join(stateDir, AUTH_PROFILES_FILE), path.join(stateDir, "agents", MAIN_AGENT_ID, "agent", AUTH_PROFILES_FILE)];
 }
 
 function resolveCodexCliAuthPath(): string {
@@ -351,10 +347,7 @@ async function writeCodexCliAuthJson(auth: CodexCliAuthJson): Promise<void> {
   await writeJsonFile(resolveCodexCliAuthPath(), auth);
 }
 
-async function resolveCodexAuthModes(params: {
-  loginAvailable: boolean;
-  loginMessage: string;
-}): Promise<CodexAuthModes> {
+async function resolveCodexAuthModes(params: { loginAvailable: boolean; loginMessage: string }): Promise<CodexAuthModes> {
   const authJson = await readCodexCliAuthJson();
   const authMode = normalizeString(authJson.auth_mode)?.toLowerCase() ?? null;
   const apiKeyAvailable = Boolean(normalizeString(authJson.OPENAI_API_KEY) || normalizeString(process.env.OPENAI_API_KEY));
@@ -367,40 +360,197 @@ async function resolveCodexAuthModes(params: {
     apiKey: {
       available: apiKeyAvailable,
       active: apiKeyAvailable && authMode === "apikey",
-      message: apiKeyAvailable
-        ? "Codex API access is available on this agent."
-        : "Codex API access is not configured on this agent.",
+      message: apiKeyAvailable ? "Codex API access is available on this agent." : "Codex API access is not configured on this agent.",
     },
   };
 }
 
 function mergeProviderOrder(existing: unknown, profileId: string): string[] {
-  const normalized = Array.isArray(existing)
-    ? existing.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-    : [];
+  const normalized = Array.isArray(existing) ? existing.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
   return [profileId, ...normalized.filter((item) => item !== profileId)];
 }
 
-async function persistCodexCredentials(input: {
-  configPath: string;
-  creds: DeviceCodeCredentials;
-}): Promise<{ profileId: string; email: string | null; accountId: string | null }> {
+function upsertAuthProfileFirst(profiles: AuthProfilesStore["profiles"], profileId: string, credential: OAuthCredential): AuthProfilesStore["profiles"] {
+  return {
+    [profileId]: credential,
+    ...Object.fromEntries(Object.entries(profiles).filter(([existingProfileId]) => existingProfileId !== profileId)),
+  };
+}
+
+function coerceAuthProfileStateStore(value: unknown): AuthProfileStateStore {
+  if (!isRecord(value)) {
+    return { version: 1 };
+  }
+  const order = isRecord(value.order)
+    ? Object.fromEntries(
+        Object.entries(value.order).flatMap(([provider, profileIds]) => {
+          if (!Array.isArray(profileIds)) {
+            return [];
+          }
+          const normalized = profileIds.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+          return normalized.length > 0 ? [[provider, normalized]] : [];
+        }),
+      )
+    : undefined;
+  const lastGood = isRecord(value.lastGood)
+    ? Object.fromEntries(
+        Object.entries(value.lastGood).flatMap(([provider, profileId]) =>
+          typeof profileId === "string" && profileId.trim().length > 0 ? [[provider, profileId]] : [],
+        ),
+      )
+    : undefined;
+  return {
+    version: typeof value.version === "number" ? value.version : 1,
+    ...(order && Object.keys(order).length > 0 ? { order } : {}),
+    ...(lastGood && Object.keys(lastGood).length > 0 ? { lastGood } : {}),
+  };
+}
+
+function parseSqliteJsonCell(value: unknown): unknown {
+  if (typeof value !== "string" || value.length === 0) {
+    return null;
+  }
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function resolveCodexAgentDir(configPath: string): string {
+  return path.join(path.dirname(configPath), "agents", MAIN_AGENT_ID, "agent");
+}
+
+function resolveCodexAuthProfileDatabasePath(configPath: string): string {
+  return path.join(resolveCodexAgentDir(configPath), "openclaw-agent.sqlite");
+}
+
+async function updateCodexRuntimeAuthStore(input: { configPath: string; profileId: string; credential: OAuthCredential }): Promise<void> {
+  const { DatabaseSync } = await import("node:sqlite");
+  const databasePath = resolveCodexAuthProfileDatabasePath(input.configPath);
+  await fs.mkdir(path.dirname(databasePath), { recursive: true });
+  const db = new DatabaseSync(databasePath);
+  try {
+    db.exec(`
+      PRAGMA busy_timeout = 5000;
+      CREATE TABLE IF NOT EXISTS auth_profile_store (
+        store_key TEXT NOT NULL PRIMARY KEY,
+        store_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS auth_profile_state (
+        state_key TEXT NOT NULL PRIMARY KEY,
+        state_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    const now = Date.now();
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const rawStore = db.prepare("SELECT store_json FROM auth_profile_store WHERE store_key = ?").get("primary") as { store_json?: string } | undefined;
+      const store = readAuthProfilesStoreFromRaw(parseSqliteJsonCell(rawStore?.store_json));
+      store.profiles = upsertAuthProfileFirst(store.profiles, input.profileId, input.credential);
+
+      const rawState = db.prepare("SELECT state_json FROM auth_profile_state WHERE state_key = ?").get("primary") as { state_json?: string } | undefined;
+      const state = coerceAuthProfileStateStore(parseSqliteJsonCell(rawState?.state_json));
+      state.order = {
+        ...state.order,
+        openai: mergeProviderOrder(state.order?.openai, input.profileId),
+      };
+      state.lastGood = {
+        ...state.lastGood,
+        openai: input.profileId,
+      };
+
+      db.prepare(
+        `INSERT INTO auth_profile_store (store_key, store_json, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(store_key) DO UPDATE SET store_json = excluded.store_json, updated_at = excluded.updated_at`,
+      ).run("primary", JSON.stringify(store), now);
+      db.prepare(
+        `INSERT INTO auth_profile_state (state_key, state_json, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(state_key) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at`,
+      ).run("primary", JSON.stringify(state), now);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    db.close();
+  }
+}
+
+function readAuthProfilesStoreFromRaw(value: unknown): AuthProfilesStore {
+  if (isRecord(value) && isRecord(value.profiles) && typeof value.version === "number") {
+    return {
+      version: value.version,
+      profiles: value.profiles as AuthProfilesStore["profiles"],
+    };
+  }
+  return {
+    version: 1,
+    profiles: {},
+  };
+}
+
+async function readRuntimeAuthProfilesStore(configPath: string): Promise<AuthProfilesStore> {
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    const databasePath = resolveCodexAuthProfileDatabasePath(configPath);
+    const db = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      db.exec("PRAGMA busy_timeout = 5000;");
+      const rawStore = db.prepare("SELECT store_json FROM auth_profile_store WHERE store_key = ?").get("primary") as { store_json?: string } | undefined;
+      return readAuthProfilesStoreFromRaw(parseSqliteJsonCell(rawStore?.store_json));
+    } finally {
+      db.close();
+    }
+  } catch {
+    return {
+      version: 1,
+      profiles: {},
+    };
+  }
+}
+
+function buildOAuthCredential(input: { creds: DeviceCodeCredentials; identity: ReturnType<typeof resolveCodexAuthIdentity> }): OAuthCredential {
+  return {
+    type: "oauth",
+    provider: "openai",
+    access: input.creds.access,
+    refresh: input.creds.refresh,
+    expires: input.creds.expires,
+    ...(input.identity.email ? { email: input.identity.email } : {}),
+    ...(input.identity.accountId ? { accountId: input.identity.accountId } : {}),
+    ...(input.identity.chatgptPlanType ? { chatgptPlanType: input.identity.chatgptPlanType } : {}),
+  };
+}
+
+async function persistCodexCredentials(input: { configPath: string; creds: DeviceCodeCredentials }): Promise<{
+  profileId: string;
+  email: string | null;
+  accountId: string | null;
+  tokens: CodexCliChatGptTokens;
+}> {
   const identity = resolveCodexAuthIdentity(input.creds.access);
   const profileId = buildAuthProfileId("openai", identity.profileName);
+  const credential = buildOAuthCredential({ creds: input.creds, identity });
+  const tokens = buildCodexCliChatGptTokens(credential);
+  if (!tokens) {
+    throw new Error("OpenAI OAuth token exchange response was incomplete.");
+  }
   for (const authStorePath of resolveCodexAuthStorePaths(input.configPath)) {
     const authStore = await readAuthProfilesStore(authStorePath);
-    authStore.profiles[profileId] = {
-      type: "oauth",
-      provider: "openai",
-      access: input.creds.access,
-      refresh: input.creds.refresh,
-      expires: input.creds.expires,
-      ...(identity.email ? { email: identity.email } : {}),
-      ...(identity.accountId ? { accountId: identity.accountId } : {}),
-      ...(identity.chatgptPlanType ? { chatgptPlanType: identity.chatgptPlanType } : {}),
-    } satisfies OAuthCredential;
+    authStore.profiles = upsertAuthProfileFirst(authStore.profiles, profileId, credential);
     await writeJsonFile(authStorePath, authStore);
   }
+  await updateCodexRuntimeAuthStore({
+    configPath: input.configPath,
+    profileId,
+    credential,
+  });
 
   const currentConfig = await readConfigObject(input.configPath);
   const currentAuth = isRecord(currentConfig.auth) ? currentConfig.auth : {};
@@ -434,9 +584,7 @@ async function persistCodexCredentials(input: {
         models: {
           ...currentModels,
           [OPENAI_CODEX_DEFAULT_MODEL]: {
-            ...(isRecord(currentModels[OPENAI_CODEX_DEFAULT_MODEL])
-              ? currentModels[OPENAI_CODEX_DEFAULT_MODEL]
-              : {}),
+            ...(isRecord(currentModels[OPENAI_CODEX_DEFAULT_MODEL]) ? currentModels[OPENAI_CODEX_DEFAULT_MODEL] : {}),
             agentRuntime: { id: "codex" },
           },
         },
@@ -448,7 +596,35 @@ async function persistCodexCredentials(input: {
     profileId,
     email: identity.email ?? null,
     accountId: identity.accountId ?? null,
+    tokens,
   };
+}
+
+function buildCodexCliChatGptTokens(credential: Record<string, unknown>): CodexCliChatGptTokens | null {
+  const accessToken = normalizeString(credential.access);
+  const refreshToken = normalizeString(credential.refresh);
+  if (!accessToken || !refreshToken) {
+    return null;
+  }
+  const accountId = normalizeString(credential.accountId);
+  return {
+    id_token: accessToken,
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    ...(accountId ? { account_id: accountId } : {}),
+  };
+}
+
+async function writeCodexCliChatGptAuth(tokens: CodexCliChatGptTokens): Promise<void> {
+  const authJson = await readCodexCliAuthJson();
+  const chatGptAuthJson = { ...authJson };
+  delete chatGptAuthJson.OPENAI_API_KEY;
+  await writeCodexCliAuthJson({
+    ...chatGptAuthJson,
+    auth_mode: "chatgpt",
+    tokens,
+    last_refresh: new Date().toISOString(),
+  });
 }
 
 async function requestDeviceCode(fetchFn: typeof fetch): Promise<RequestedDeviceCode> {
@@ -483,10 +659,7 @@ async function requestDeviceCode(fetchFn: typeof fetch): Promise<RequestedDevice
     deviceAuthId,
     userCode,
     verificationUrl: `${OPENAI_AUTH_BASE_URL}/codex/device`,
-    intervalMs:
-      typeof intervalSeconds === "number"
-        ? intervalSeconds * 1000
-        : OPENAI_CODEX_DEVICE_CODE_DEFAULT_INTERVAL_MS,
+    intervalMs: typeof intervalSeconds === "number" ? intervalSeconds * 1000 : OPENAI_CODEX_DEVICE_CODE_DEFAULT_INTERVAL_MS,
   };
 }
 
@@ -517,9 +690,7 @@ async function pollDeviceAuthorization(params: {
       return { authorizationCode, codeVerifier };
     }
     if (response.status === 403 || response.status === 404) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, resolveNextPollDelayMs(params.intervalMs, deadlineMs)),
-      );
+      await new Promise((resolve) => setTimeout(resolve, resolveNextPollDelayMs(params.intervalMs, deadlineMs)));
       continue;
     }
     throw new Error(
@@ -533,11 +704,7 @@ async function pollDeviceAuthorization(params: {
   throw new Error("OpenAI device authorization timed out after 15 minutes.");
 }
 
-async function exchangeDeviceAuthorization(params: {
-  fetchFn: typeof fetch;
-  authorizationCode: string;
-  codeVerifier: string;
-}): Promise<DeviceCodeCredentials> {
+async function exchangeDeviceAuthorization(params: { fetchFn: typeof fetch; authorizationCode: string; codeVerifier: string }): Promise<DeviceCodeCredentials> {
   const response = await params.fetchFn(`${OPENAI_AUTH_BASE_URL}/oauth/token`, {
     method: "POST",
     headers: resolveHeaders("application/x-www-form-urlencoded"),
@@ -576,7 +743,10 @@ async function exchangeDeviceAuthorization(params: {
 function buildResult(
   kind: "codex.login.start" | "codex.login.status",
   state: CodexLoginState,
-  params: Partial<Omit<CodexLoginActionResult, "kind" | "state">> & { message: string; authModes: CodexAuthModes },
+  params: Partial<Omit<CodexLoginActionResult, "kind" | "state">> & {
+    message: string;
+    authModes: CodexAuthModes;
+  },
 ): CodexLoginActionResult {
   return {
     kind,
@@ -596,8 +766,11 @@ function buildResult(
 
 async function readPersistedCodexOAuthEntries(configPath: string): Promise<Array<[string, Record<string, unknown>]>> {
   const entriesByProfileId = new Map<string, Record<string, unknown>>();
-  for (const authStorePath of resolveCodexAuthStorePaths(configPath)) {
-    const store = await readAuthProfilesStore(authStorePath);
+  const stores = [
+    await readRuntimeAuthProfilesStore(configPath),
+    ...(await Promise.all(resolveCodexAuthStorePaths(configPath).map((authStorePath) => readAuthProfilesStore(authStorePath)))),
+  ];
+  for (const store of stores) {
     for (const [profileId, credential] of Object.entries(store.profiles)) {
       if (!isRecord(credential)) {
         continue;
@@ -605,15 +778,15 @@ async function readPersistedCodexOAuthEntries(configPath: string): Promise<Array
       if (credential.type !== "oauth" || (credential.provider !== "openai" && credential.provider !== "openai-codex")) {
         continue;
       }
-      entriesByProfileId.set(profileId, credential);
+      if (!entriesByProfileId.has(profileId)) {
+        entriesByProfileId.set(profileId, credential);
+      }
     }
   }
   return Array.from(entriesByProfileId.entries());
 }
 
-function pickLiveCodexOAuthEntry(
-  entries: Array<[string, Record<string, unknown>]>,
-): [string, Record<string, unknown>] | null {
+function pickLiveCodexOAuthEntry(entries: Array<[string, Record<string, unknown>]>): [string, Record<string, unknown>] | null {
   if (entries.length === 0) {
     return null;
   }
@@ -631,26 +804,10 @@ async function resolveCodexCliChatGptTokens(configPath: string): Promise<CodexCl
     return null;
   }
   const [, credential] = entry;
-  const accessToken = normalizeString(credential.access);
-  const refreshToken = normalizeString(credential.refresh);
-  if (!accessToken || !refreshToken) {
-    return null;
-  }
-  const accountId = normalizeString(credential.accountId);
-  return {
-    // Codex parses account email and plan metadata from id_token claims. The
-    // OAuth access token issued by the Codex device flow carries those claims.
-    id_token: accessToken,
-    access_token: accessToken,
-    refresh_token: refreshToken,
-    ...(accountId ? { account_id: accountId } : {}),
-  };
+  return buildCodexCliChatGptTokens(credential);
 }
 
-async function readPersistedCodexStatus(
-  kind: "codex.login.start" | "codex.login.status",
-  configPath: string,
-): Promise<CodexLoginActionResult> {
+async function readPersistedCodexStatus(kind: "codex.login.start" | "codex.login.status", configPath: string): Promise<CodexLoginActionResult> {
   const entries = await readPersistedCodexOAuthEntries(configPath);
   if (entries.length === 0) {
     const authModes = await resolveCodexAuthModes({
@@ -702,10 +859,7 @@ async function readPersistedCodexStatus(
   });
 }
 
-async function snapshotPendingSession(
-  kind: "codex.login.start" | "codex.login.status",
-  session: PendingCodexLogin,
-): Promise<CodexLoginActionResult> {
+async function snapshotPendingSession(kind: "codex.login.start" | "codex.login.status", session: PendingCodexLogin): Promise<CodexLoginActionResult> {
   if (session.state === "connected") {
     const loginMessage = session.email ? `Connected as ${session.email}.` : "OpenAI login is connected on this agent.";
     const authModes = await resolveCodexAuthModes({
@@ -785,10 +939,9 @@ function startPendingCodexLogin(configPath: string): PendingCodexLogin {
         codeVerifier: authorized.codeVerifier,
       });
       const persisted = await persistCodexCredentials({ configPath, creds });
+      await writeCodexCliChatGptAuth(persisted.tokens);
       session.state = "connected";
-      session.message = persisted.email
-        ? `Connected as ${persisted.email}.`
-        : "Codex login complete.";
+      session.message = persisted.email ? `Connected as ${persisted.email}.` : "Codex login complete.";
       session.verificationUrl = null;
       session.userCode = null;
       session.expiresAtMs = null;
@@ -844,14 +997,7 @@ export async function setCodexAuthMode(configPath: string, mode: CodexAuthMode):
     if (!tokens) {
       throw new Error("Saved OpenAI login is incomplete. Start a new device login.");
     }
-    const chatGptAuthJson = { ...authJson };
-    delete chatGptAuthJson.OPENAI_API_KEY;
-    await writeCodexCliAuthJson({
-      ...chatGptAuthJson,
-      auth_mode: "chatgpt",
-      tokens,
-      last_refresh: new Date().toISOString(),
-    });
+    await writeCodexCliChatGptAuth(tokens);
   } else {
     const apiKey = normalizeString(authJson.OPENAI_API_KEY) || normalizeString(process.env.OPENAI_API_KEY);
     if (!apiKey) {
