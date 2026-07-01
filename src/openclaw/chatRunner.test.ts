@@ -2519,7 +2519,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("returns as soon as the current session transcript gets the reply even without a terminal event", async () => {
+  it("waits briefly after a transcript-only reply before releasing the run", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-timeout-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
 
@@ -2619,7 +2619,8 @@ describe("ChatRunner", () => {
       method: "chat.send",
       runId: "run_transcript_timeout",
     });
-    expect(elapsedMs).toBeLessThan(2_000);
+    expect(elapsedMs).toBeGreaterThanOrEqual(3_000);
+    expect(elapsedMs).toBeLessThan(5_000);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
@@ -2731,7 +2732,7 @@ describe("ChatRunner", () => {
       token: "t",
       onEvent: (evt) => runner?.handleEvent(evt),
     });
-    runner = new ChatRunner(client);
+    runner = new ChatRunner(client, { transcriptCompletionSettleMs: 0 });
 
     await client.start();
     const startedAtMs = Date.now();
@@ -2874,7 +2875,7 @@ describe("ChatRunner", () => {
       token: "t",
       onEvent: (evt) => runner?.handleEvent(evt),
     });
-    runner = new ChatRunner(client);
+    runner = new ChatRunner(client, { transcriptCompletionSettleMs: 0 });
 
     await client.start();
     const startedAtMs = Date.now();

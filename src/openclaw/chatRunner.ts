@@ -151,6 +151,7 @@ const OPENCLAW_DISCONNECT_TRANSCRIPT_RECOVERY_TIMEOUT_MS = 1_500;
 const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_POLL_INTERVAL_MS = 250;
 const OPENCLAW_EMPTY_FINAL_CONTINUATION_TIMEOUT_MS = 10 * 60_000;
 const OPENCLAW_TRANSCRIPT_FINAL_STABILITY_MS = 1_000;
+const OPENCLAW_TRANSCRIPT_COMPLETION_SETTLE_MS = 3_000;
 const OPENCLAW_RUN_TRACE_RETENTION_MS = 60_000;
 
 type GatewayChatContentPart =
@@ -813,6 +814,7 @@ export class ChatRunner {
   private sessionMaintenanceLock: Promise<void> | null = null;
   private readonly devLogEnabled: boolean;
   private readonly devLogTextMaxLen: number;
+  private readonly transcriptCompletionSettleMs: number;
   private readonly retry: ChatRetryOptions;
   private readonly transcription: TranscriptionOptions;
   private readonly transcribeAudio: (input: {
@@ -828,6 +830,7 @@ export class ChatRunner {
     opts?: {
       devLogEnabled?: boolean;
       devLogTextMaxLen?: number;
+      transcriptCompletionSettleMs?: number;
       retry?: Partial<ChatRetryOptions>;
       transcription?: Partial<TranscriptionOptions>;
       transcribeAudio?: (input: {
@@ -848,6 +851,10 @@ export class ChatRunner {
   ) {
     this.devLogEnabled = opts?.devLogEnabled ?? false;
     this.devLogTextMaxLen = opts?.devLogTextMaxLen ?? 200;
+    this.transcriptCompletionSettleMs = Math.max(
+      0,
+      Math.trunc(opts?.transcriptCompletionSettleMs ?? OPENCLAW_TRANSCRIPT_COMPLETION_SETTLE_MS),
+    );
     const retryAttempts = Math.max(1, Math.trunc(opts?.retry?.attempts ?? 3));
     const replySessionInitConflictAttempts = Math.max(
       retryAttempts,
@@ -922,6 +929,32 @@ export class ChatRunner {
     for (const runId of rejectableRunIds) {
       this.rejectRunWaiter(runId, new GatewayRunDisconnectedError(runId, state.reason));
     }
+  }
+
+  private async settleAfterTranscriptCompletion(input: {
+    taskId: string;
+    runId: string;
+    sessionKey: string;
+    startedAtMs: number;
+    timeoutMs: number;
+  }): Promise<void> {
+    if (this.transcriptCompletionSettleMs <= 0) return;
+    const remainingMs = input.timeoutMs - (Date.now() - input.startedAtMs);
+    const settleMs = Math.min(this.transcriptCompletionSettleMs, Math.max(0, remainingMs - 100));
+    if (settleMs <= 0) return;
+    logger.info(
+      {
+        event: "message_flow",
+        direction: "relay_to_openclaw",
+        stage: "transcript_completion_settle",
+        backendMessageId: input.taskId,
+        openclawRunId: input.runId,
+        sessionKey: input.sessionKey,
+        settleMs,
+      },
+      "Waiting briefly after transcript-only completion before releasing the relay queue",
+    );
+    await sleep(settleMs);
   }
 
   handleEvent(evt: EventFrame): void {
@@ -1247,6 +1280,13 @@ export class ChatRunner {
             },
             "Detected final reply directly from session transcript"
           );
+          await this.settleAfterTranscriptCompletion({
+            taskId: input.taskId,
+            runId,
+            sessionKey: input.sessionKey,
+            startedAtMs,
+            timeoutMs: input.timeoutMs,
+          });
           return await buildReplyRunResult({
             taskId: input.taskId,
             runId,
