@@ -56,6 +56,7 @@ export type ChatRunResult =
 type ChatRetryOptions = {
   attempts: number;
   baseDelayMs: number[];
+  replySessionInitConflictAttempts: number;
   replySessionInitConflictBaseDelayMs: number[];
   jitterMs: number;
 };
@@ -778,6 +779,13 @@ function computeRetryBackoffMs(input: {
   return computeBackoffMs(baseDelayMs, input.attempt - 1, input.retry.jitterMs);
 }
 
+function retryAttemptsForReason(input: { retry: ChatRetryOptions; reason: string }): number {
+  if (input.reason === "reply_session_init_conflict") {
+    return input.retry.replySessionInitConflictAttempts;
+  }
+  return input.retry.attempts;
+}
+
 function resolveDefaultStateDir(): string {
   return resolveOpenclawStateDir(process.env);
 }
@@ -840,8 +848,14 @@ export class ChatRunner {
   ) {
     this.devLogEnabled = opts?.devLogEnabled ?? false;
     this.devLogTextMaxLen = opts?.devLogTextMaxLen ?? 200;
+    const retryAttempts = Math.max(1, Math.trunc(opts?.retry?.attempts ?? 3));
+    const replySessionInitConflictAttempts = Math.max(
+      retryAttempts,
+      Math.trunc(opts?.retry?.replySessionInitConflictAttempts ?? 6),
+    );
     this.retry = {
-      attempts: Math.max(1, Math.trunc(opts?.retry?.attempts ?? 3)),
+      attempts: retryAttempts,
+      replySessionInitConflictAttempts,
       baseDelayMs: Array.isArray(opts?.retry?.baseDelayMs)
         ? opts?.retry?.baseDelayMs.map((n) => Math.max(0, Math.trunc(n)))
         : [300, 800, 1500],
@@ -849,7 +863,7 @@ export class ChatRunner {
         ? opts.retry.replySessionInitConflictBaseDelayMs.map((n) => Math.max(0, Math.trunc(n)))
         : Array.isArray(opts?.retry?.baseDelayMs)
           ? opts.retry.baseDelayMs.map((n) => Math.max(0, Math.trunc(n)))
-          : [3000, 5000, 8000],
+          : [3000, 5000, 10_000, 20_000, 30_000],
       jitterMs: Math.max(0, Math.trunc(opts?.retry?.jitterMs ?? 250)),
     };
     this.transcription = {
@@ -1080,7 +1094,8 @@ export class ChatRunner {
     }
     let transportRecoveryEnabled = false;
     let retryKeySuffix: string | null = null;
-    for (let attempt = 1; attempt <= this.retry.attempts; attempt += 1) {
+    const maxLoopAttempts = Math.max(this.retry.attempts, this.retry.replySessionInitConflictAttempts);
+    for (let attempt = 1; attempt <= maxLoopAttempts; attempt += 1) {
       let finalAttemptMessage: GatewayChatMessage | null = null;
       const elapsedMs = Date.now() - startedAtMs;
       const remainingMs = Math.max(0, input.timeoutMs - elapsedMs);
@@ -1159,7 +1174,8 @@ export class ChatRunner {
           continue;
         }
         const backoffMs = computeRetryBackoffMs({ retry: this.retry, attempt, reason: classification.reason });
-        const retryable = attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
+        const maxAttemptsForReason = retryAttemptsForReason({ retry: this.retry, reason: classification.reason });
+        const retryable = attempt < maxAttemptsForReason && remainingMs > backoffMs + 1000;
         logger.warn(
           {
             event: "message_flow",
@@ -1544,7 +1560,9 @@ export class ChatRunner {
 
         const backoffMs = computeRetryBackoffMs({ retry: this.retry, attempt, reason: classification.reason });
         const retryable =
-          classification.retryable && attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
+          classification.retryable &&
+          attempt < retryAttemptsForReason({ retry: this.retry, reason: classification.reason }) &&
+          remainingMs > backoffMs + 1000;
         if (!retryable) {
           const transcriptFinalMessage =
             finalAttemptMessage !== null

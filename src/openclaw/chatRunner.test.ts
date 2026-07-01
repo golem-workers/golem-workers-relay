@@ -3411,7 +3411,13 @@ describe("ChatRunner", () => {
       onEvent: (evt) => runner?.handleEvent(evt),
     });
     runner = new ChatRunner(client, {
-      retry: { attempts: 3, baseDelayMs: [1], replySessionInitConflictBaseDelayMs: [1], jitterMs: 0 },
+      retry: {
+        attempts: 2,
+        baseDelayMs: [1],
+        replySessionInitConflictAttempts: 3,
+        replySessionInitConflictBaseDelayMs: [1],
+        jitterMs: 0,
+      },
     });
 
     await client.start();
