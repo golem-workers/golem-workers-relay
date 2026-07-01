@@ -2543,6 +2543,7 @@ describe("ChatRunner", () => {
     await fs.writeFile(sessionFile, "", "utf8");
 
     let sentMessage: unknown = null;
+    let abortCalls = 0;
     const { wss, port } = startServer((ws) => {
       ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
       ws.on("message", (data) => {
@@ -2559,7 +2560,7 @@ describe("ChatRunner", () => {
                 type: "hello-ok",
                 protocol: 3,
                 policy: { tickIntervalMs: 5000 },
-                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+                features: { methods: ["chat.send", "chat.abort", "sessions.usage"], events: ["chat"] },
               },
             })
           );
@@ -2588,6 +2589,11 @@ describe("ChatRunner", () => {
               "utf8"
             );
           }, 50);
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.abort") {
+          abortCalls += 1;
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { aborted: true } }));
         }
       });
     });
@@ -2619,6 +2625,7 @@ describe("ChatRunner", () => {
       method: "chat.send",
       runId: "run_transcript_timeout",
     });
+    expect(abortCalls).toBe(1);
     expect(elapsedMs).toBeGreaterThanOrEqual(3_000);
     expect(elapsedMs).toBeLessThan(5_000);
 

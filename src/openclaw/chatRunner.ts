@@ -152,6 +152,7 @@ const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_POLL_INTERVAL_MS = 250;
 const OPENCLAW_EMPTY_FINAL_CONTINUATION_TIMEOUT_MS = 10 * 60_000;
 const OPENCLAW_TRANSCRIPT_FINAL_STABILITY_MS = 1_000;
 const OPENCLAW_TRANSCRIPT_COMPLETION_SETTLE_MS = 3_000;
+const OPENCLAW_TRANSCRIPT_COMPLETION_ABORT_TIMEOUT_MS = 1_500;
 const OPENCLAW_RUN_TRACE_RETENTION_MS = 60_000;
 
 type GatewayChatContentPart =
@@ -957,6 +958,70 @@ export class ChatRunner {
     await sleep(settleMs);
   }
 
+  private gatewaySupportsMethod(method: string): boolean {
+    const methods = this.gateway.getHello()?.features?.methods;
+    return !Array.isArray(methods) || methods.includes(method);
+  }
+
+  private async abortTranscriptCompletedRun(input: {
+    taskId: string;
+    runId: string;
+    sessionKey: string;
+    startedAtMs: number;
+    timeoutMs: number;
+  }): Promise<void> {
+    if (!this.gatewaySupportsMethod("chat.abort")) return;
+    const remainingMs = input.timeoutMs - (Date.now() - input.startedAtMs);
+    const abortTimeoutMs = Math.min(
+      OPENCLAW_TRANSCRIPT_COMPLETION_ABORT_TIMEOUT_MS,
+      Math.max(0, remainingMs - 100),
+    );
+    if (abortTimeoutMs <= 0) return;
+    logger.info(
+      {
+        event: "message_flow",
+        direction: "relay_to_openclaw",
+        stage: "transcript_completion_abort",
+        backendMessageId: input.taskId,
+        openclawRunId: input.runId,
+        sessionKey: input.sessionKey,
+        timeoutMs: abortTimeoutMs,
+      },
+      "Aborting transcript-completed OpenClaw run before releasing the relay queue",
+    );
+    try {
+      await this.gateway.request(
+        "chat.abort",
+        { sessionKey: input.sessionKey, runId: input.runId },
+        { timeoutMs: abortTimeoutMs },
+      );
+    } catch (error) {
+      logger.warn(
+        {
+          event: "message_flow",
+          direction: "relay_to_openclaw",
+          stage: "transcript_completion_abort_failed",
+          backendMessageId: input.taskId,
+          openclawRunId: input.runId,
+          sessionKey: input.sessionKey,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Failed to abort transcript-completed OpenClaw run",
+      );
+    }
+  }
+
+  private async releaseTranscriptCompletedRun(input: {
+    taskId: string;
+    runId: string;
+    sessionKey: string;
+    startedAtMs: number;
+    timeoutMs: number;
+  }): Promise<void> {
+    await this.abortTranscriptCompletedRun(input);
+    await this.settleAfterTranscriptCompletion(input);
+  }
+
   handleEvent(evt: EventFrame): void {
     if (evt.event !== "chat") return;
     const parsed = chatEventSchema.safeParse(evt.payload);
@@ -1280,7 +1345,7 @@ export class ChatRunner {
             },
             "Detected final reply directly from session transcript"
           );
-          await this.settleAfterTranscriptCompletion({
+          await this.releaseTranscriptCompletedRun({
             taskId: input.taskId,
             runId,
             sessionKey: input.sessionKey,
@@ -1388,6 +1453,13 @@ export class ChatRunner {
               },
               "Recovered final reply from session transcript after empty final event"
             );
+            await this.releaseTranscriptCompletedRun({
+              taskId: input.taskId,
+              runId,
+              sessionKey: input.sessionKey,
+              startedAtMs,
+              timeoutMs: input.timeoutMs,
+            });
             return await buildReplyRunResult({
               taskId: input.taskId,
               runId,
@@ -1715,6 +1787,13 @@ export class ChatRunner {
               },
               "Recovered final reply from session transcript after gateway disconnect"
             );
+            await this.releaseTranscriptCompletedRun({
+              taskId: input.taskId,
+              runId,
+              sessionKey: input.sessionKey,
+              startedAtMs,
+              timeoutMs: input.timeoutMs,
+            });
             return await buildReplyRunResult({
               taskId: input.taskId,
               runId,
@@ -1782,6 +1861,13 @@ export class ChatRunner {
             },
             "Recovered final reply from session transcript after missing terminal event"
           );
+          await this.releaseTranscriptCompletedRun({
+            taskId: input.taskId,
+            runId,
+            sessionKey: input.sessionKey,
+            startedAtMs,
+            timeoutMs: input.timeoutMs,
+          });
           return await buildReplyRunResult({
             taskId: input.taskId,
             runId,
