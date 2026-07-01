@@ -3236,7 +3236,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("retries transport interruptions in the same session with a recovery note", async () => {
+  it("retries transient reply session initialization conflicts with a recovery note", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
 
@@ -3287,7 +3287,7 @@ describe("ChatRunner", () => {
                     sessionKey,
                     seq: 1,
                     state: "error",
-                    errorMessage: "Network connection lost.",
+                    errorMessage: "reply session initialization conflicted for agent:main:tg:7278830001:server",
                   },
                 })
               );

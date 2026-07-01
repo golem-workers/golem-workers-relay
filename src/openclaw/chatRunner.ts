@@ -132,6 +132,7 @@ const TRANSPORT_INTERRUPTION_PATTERNS = [
   /gateway connection lost/i,
   /handshake timed out/i,
   /upstream disconnected/i,
+  /reply session initialization conflicted/i,
 ] as const;
 
 const TRANSPORT_RECOVERY_NOTE = [
