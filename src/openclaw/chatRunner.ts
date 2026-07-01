@@ -788,6 +788,20 @@ function retryAttemptsForReason(input: { retry: ChatRetryOptions; reason: string
   return input.retry.attempts;
 }
 
+function summarizeChatAbortResult(payload: unknown): {
+  aborted: boolean | null;
+  runIds: string[];
+} {
+  if (!payload || typeof payload !== "object") {
+    return { aborted: null, runIds: [] };
+  }
+  const p = payload as Record<string, unknown>;
+  return {
+    aborted: typeof p.aborted === "boolean" ? p.aborted : null,
+    runIds: Array.isArray(p.runIds) ? p.runIds.filter((value): value is string => typeof value === "string") : [],
+  };
+}
+
 function resolveDefaultStateDir(): string {
   return resolveOpenclawStateDir(process.env);
 }
@@ -990,10 +1004,23 @@ export class ChatRunner {
       "Aborting transcript-completed OpenClaw run before releasing the relay queue",
     );
     try {
-      await this.gateway.request(
+      const runAbortResult = await this.gateway.request(
         "chat.abort",
         { sessionKey: input.sessionKey, runId: input.runId },
         { timeoutMs: abortTimeoutMs },
+      );
+      logger.info(
+        {
+          event: "message_flow",
+          direction: "relay_to_openclaw",
+          stage: "transcript_completion_abort_result",
+          backendMessageId: input.taskId,
+          openclawRunId: input.runId,
+          sessionKey: input.sessionKey,
+          scope: "run",
+          ...summarizeChatAbortResult(runAbortResult),
+        },
+        "OpenClaw transcript-completed run abort result",
       );
     } catch (error) {
       logger.warn(
@@ -1007,6 +1034,76 @@ export class ChatRunner {
           error: error instanceof Error ? error.message : String(error),
         },
         "Failed to abort transcript-completed OpenClaw run",
+      );
+    }
+    await this.abortSessionRuns({
+      taskId: input.taskId,
+      sessionKey: input.sessionKey,
+      startedAtMs: input.startedAtMs,
+      timeoutMs: input.timeoutMs,
+      stage: "transcript_completion_session_abort",
+      reason: "transcript_completion",
+    });
+  }
+
+  private async abortSessionRuns(input: {
+    taskId: string;
+    sessionKey: string;
+    startedAtMs: number;
+    timeoutMs: number;
+    stage: string;
+    reason: string;
+  }): Promise<void> {
+    if (!this.gatewaySupportsMethod("chat.abort")) return;
+    const remainingMs = input.timeoutMs - (Date.now() - input.startedAtMs);
+    const abortTimeoutMs = Math.min(
+      OPENCLAW_TRANSCRIPT_COMPLETION_ABORT_TIMEOUT_MS,
+      Math.max(0, remainingMs - 100),
+    );
+    if (abortTimeoutMs <= 0) return;
+    logger.info(
+      {
+        event: "message_flow",
+        direction: "relay_to_openclaw",
+        stage: input.stage,
+        backendMessageId: input.taskId,
+        sessionKey: input.sessionKey,
+        reason: input.reason,
+        timeoutMs: abortTimeoutMs,
+      },
+      "Aborting active OpenClaw session runs",
+    );
+    try {
+      const sessionAbortResult = await this.gateway.request(
+        "chat.abort",
+        { sessionKey: input.sessionKey },
+        { timeoutMs: abortTimeoutMs },
+      );
+      logger.info(
+        {
+          event: "message_flow",
+          direction: "relay_to_openclaw",
+          stage: `${input.stage}_result`,
+          backendMessageId: input.taskId,
+          sessionKey: input.sessionKey,
+          reason: input.reason,
+          scope: "session",
+          ...summarizeChatAbortResult(sessionAbortResult),
+        },
+        "OpenClaw session abort result",
+      );
+    } catch (error) {
+      logger.warn(
+        {
+          event: "message_flow",
+          direction: "relay_to_openclaw",
+          stage: `${input.stage}_failed`,
+          backendMessageId: input.taskId,
+          sessionKey: input.sessionKey,
+          reason: input.reason,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Failed to abort active OpenClaw session runs",
       );
     }
   }
@@ -1274,6 +1371,16 @@ export class ChatRunner {
         const backoffMs = computeRetryBackoffMs({ retry: this.retry, attempt, reason: classification.reason });
         const maxAttemptsForReason = retryAttemptsForReason({ retry: this.retry, reason: classification.reason });
         const retryable = attempt < maxAttemptsForReason && remainingMs > backoffMs + 1000;
+        if (retryable && classification.reason === "reply_session_init_conflict") {
+          await this.abortSessionRuns({
+            taskId: input.taskId,
+            sessionKey: input.sessionKey,
+            startedAtMs,
+            timeoutMs: input.timeoutMs,
+            stage: "reply_session_init_conflict_session_abort",
+            reason: "reply_session_init_conflict",
+          });
+        }
         logger.warn(
           {
             event: "message_flow",
@@ -1742,6 +1849,16 @@ export class ChatRunner {
           retryKeySuffix = "transport-recovery";
         } else if (classification.reason === "reply_session_init_conflict") {
           retryKeySuffix = "reply-session-init-conflict";
+          if (retryable) {
+            await this.abortSessionRuns({
+              taskId: input.taskId,
+              sessionKey: input.sessionKey,
+              startedAtMs,
+              timeoutMs: input.timeoutMs,
+              stage: "reply_session_init_conflict_session_abort",
+              reason: "reply_session_init_conflict",
+            });
+          }
         }
         await sleep(backoffMs);
       } catch (err) {

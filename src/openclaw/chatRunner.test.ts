@@ -2543,7 +2543,7 @@ describe("ChatRunner", () => {
     await fs.writeFile(sessionFile, "", "utf8");
 
     let sentMessage: unknown = null;
-    let abortCalls = 0;
+    const abortParams: unknown[] = [];
     const { wss, port } = startServer((ws) => {
       ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
       ws.on("message", (data) => {
@@ -2592,8 +2592,16 @@ describe("ChatRunner", () => {
           return;
         }
         if (frame.type === "req" && frame.method === "chat.abort") {
-          abortCalls += 1;
-          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { aborted: true } }));
+          abortParams.push(frame.params);
+          const hasRunId = Boolean((frame.params as { runId?: unknown } | undefined)?.runId);
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: hasRunId ? { aborted: false, runIds: [] } : { aborted: true, runIds: ["run_session_cleanup"] },
+            })
+          );
         }
       });
     });
@@ -2625,9 +2633,121 @@ describe("ChatRunner", () => {
       method: "chat.send",
       runId: "run_transcript_timeout",
     });
-    expect(abortCalls).toBe(1);
+    expect(abortParams).toEqual([
+      { sessionKey, runId: "run_transcript_timeout" },
+      { sessionKey },
+    ]);
     expect(elapsedMs).toBeGreaterThanOrEqual(3_000);
     expect(elapsedMs).toBeLessThan(5_000);
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
+  it("aborts active session runs before retrying a reply-session initialization conflict", async () => {
+    const sessionKey = "tg:7278830001:cmo-reply-conflict";
+    const abortParams: unknown[] = [];
+    let sendCount = 0;
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "chat.abort", "sessions.usage"], events: ["chat"] },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          sendCount += 1;
+          if (sendCount === 1) {
+            ws.send(
+              JSON.stringify({
+                type: "res",
+                id: frame.id,
+                ok: false,
+                error: {
+                  code: "GATEWAY_ERROR",
+                  message: `reply session initialization conflicted for agent:main:${sessionKey}`,
+                },
+              })
+            );
+            return;
+          }
+          const runId = "run_after_reply_session_conflict";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: {
+                  runId,
+                  sessionKey,
+                  seq: 1,
+                  state: "final",
+                  message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: "Recovered after conflict" }],
+                  },
+                },
+              })
+            );
+          }, 0);
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.abort") {
+          abortParams.push(frame.params);
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { aborted: true, runIds: [] } }));
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client, {
+      retry: {
+        attempts: 1,
+        replySessionInitConflictAttempts: 2,
+        baseDelayMs: [1],
+        replySessionInitConflictBaseDelayMs: [1],
+        jitterMs: 0,
+      },
+    });
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "task_reply_session_conflict",
+      sessionKey,
+      messageText: "hi",
+      deliverySystem: "relay_channel_v2",
+      timeoutMs: 2_000,
+    });
+
+    expect(sendCount).toBe(2);
+    expect(abortParams).toEqual([{ sessionKey }]);
+    expect(result.outcome).toBe("reply");
+    if (result.outcome !== "reply") throw new Error("expected reply");
+    expect(result.reply.message).toEqual({
+      role: "assistant",
+      content: [{ type: "text", text: "Recovered after conflict" }],
+    });
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
