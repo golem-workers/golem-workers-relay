@@ -153,6 +153,7 @@ const OPENCLAW_EMPTY_FINAL_CONTINUATION_TIMEOUT_MS = 10 * 60_000;
 const OPENCLAW_TRANSCRIPT_FINAL_STABILITY_MS = 1_000;
 const OPENCLAW_TRANSCRIPT_COMPLETION_SETTLE_MS = 3_000;
 const OPENCLAW_TRANSCRIPT_COMPLETION_ABORT_TIMEOUT_MS = 1_500;
+const OPENCLAW_REPLY_SESSION_CONFLICT_RESET_AFTER_ATTEMPTS = 2;
 const OPENCLAW_RUN_TRACE_RETENTION_MS = 60_000;
 
 type GatewayChatContentPart =
@@ -1108,6 +1109,67 @@ export class ChatRunner {
     }
   }
 
+  private async resetSessionAfterRepeatedReplySessionConflict(input: {
+    taskId: string;
+    sessionKey: string;
+    startedAtMs: number;
+    timeoutMs: number;
+    attempt: number;
+  }): Promise<void> {
+    if (input.attempt < OPENCLAW_REPLY_SESSION_CONFLICT_RESET_AFTER_ATTEMPTS) return;
+    if (!this.gatewaySupportsMethod("sessions.reset")) return;
+    const remainingMs = input.timeoutMs - (Date.now() - input.startedAtMs);
+    const resetTimeoutMs = Math.min(
+      OPENCLAW_TRANSCRIPT_COMPLETION_ABORT_TIMEOUT_MS,
+      Math.max(0, remainingMs - 100),
+    );
+    if (resetTimeoutMs <= 0) return;
+    logger.info(
+      {
+        event: "message_flow",
+        direction: "relay_to_openclaw",
+        stage: "reply_session_init_conflict_session_reset",
+        backendMessageId: input.taskId,
+        sessionKey: input.sessionKey,
+        attempt: input.attempt,
+        timeoutMs: resetTimeoutMs,
+      },
+      "Resetting OpenClaw session after repeated reply-session initialization conflicts",
+    );
+    try {
+      const resetResult = await this.gateway.request(
+        "sessions.reset",
+        { key: input.sessionKey, reason: "reset" },
+        { timeoutMs: resetTimeoutMs },
+      );
+      logger.info(
+        {
+          event: "message_flow",
+          direction: "relay_to_openclaw",
+          stage: "reply_session_init_conflict_session_reset_result",
+          backendMessageId: input.taskId,
+          sessionKey: input.sessionKey,
+          attempt: input.attempt,
+          result: resetResult,
+        },
+        "OpenClaw session reset result",
+      );
+    } catch (error) {
+      logger.warn(
+        {
+          event: "message_flow",
+          direction: "relay_to_openclaw",
+          stage: "reply_session_init_conflict_session_reset_failed",
+          backendMessageId: input.taskId,
+          sessionKey: input.sessionKey,
+          attempt: input.attempt,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Failed to reset OpenClaw session after reply-session initialization conflict",
+      );
+    }
+  }
+
   private async releaseTranscriptCompletedRun(input: {
     taskId: string;
     runId: string;
@@ -1379,6 +1441,13 @@ export class ChatRunner {
             timeoutMs: input.timeoutMs,
             stage: "reply_session_init_conflict_session_abort",
             reason: "reply_session_init_conflict",
+          });
+          await this.resetSessionAfterRepeatedReplySessionConflict({
+            taskId: input.taskId,
+            sessionKey: input.sessionKey,
+            startedAtMs,
+            timeoutMs: input.timeoutMs,
+            attempt,
           });
         }
         logger.warn(
@@ -1857,6 +1926,13 @@ export class ChatRunner {
               timeoutMs: input.timeoutMs,
               stage: "reply_session_init_conflict_session_abort",
               reason: "reply_session_init_conflict",
+            });
+            await this.resetSessionAfterRepeatedReplySessionConflict({
+              taskId: input.taskId,
+              sessionKey: input.sessionKey,
+              startedAtMs,
+              timeoutMs: input.timeoutMs,
+              attempt,
             });
           }
         }
