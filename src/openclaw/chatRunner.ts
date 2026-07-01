@@ -56,6 +56,7 @@ export type ChatRunResult =
 type ChatRetryOptions = {
   attempts: number;
   baseDelayMs: number[];
+  replySessionInitConflictBaseDelayMs: number[];
   jitterMs: number;
 };
 
@@ -119,6 +120,8 @@ type ResolvedSessionTranscriptState = {
   baselineLineCount?: number;
 };
 
+const REPLY_SESSION_INIT_CONFLICT_PATTERN = /reply session initialization conflicted/i;
+
 const TRANSPORT_INTERRUPTION_PATTERNS = [
   /network connection lost/i,
   /socket hang up/i,
@@ -132,7 +135,6 @@ const TRANSPORT_INTERRUPTION_PATTERNS = [
   /gateway connection lost/i,
   /handshake timed out/i,
   /upstream disconnected/i,
-  /reply session initialization conflicted/i,
 ] as const;
 
 const TRANSPORT_RECOVERY_NOTE = [
@@ -239,6 +241,9 @@ function classifyRetryableGatewayError(message: string): {
   // Fallback heuristics: some upstream providers embed JSON-ish text in the message.
   if (/status"\s*:\s*"INTERNAL"/.test(message) && /"code"\s*:\s*5\d\d/.test(message)) {
     return { retryable: true, reason: "heuristic_internal" };
+  }
+  if (REPLY_SESSION_INIT_CONFLICT_PATTERN.test(message)) {
+    return { retryable: true, reason: "reply_session_init_conflict" };
   }
   if (TRANSPORT_INTERRUPTION_PATTERNS.some((pattern) => pattern.test(message))) {
     return { retryable: true, reason: "transport_interruption" };
@@ -735,12 +740,12 @@ function shouldPreferTranscriptReplyMessage(input: {
 function buildAttemptIdempotencyKey(input: {
   taskId: string;
   attempt: number;
-  transportRecoveryEnabled: boolean;
+  retryKeySuffix: string | null;
 }): string {
-  if (!input.transportRecoveryEnabled || input.attempt <= 1) {
+  if (!input.retryKeySuffix || input.attempt <= 1) {
     return input.taskId;
   }
-  return `${input.taskId}:transport-recovery:${input.attempt}`;
+  return `${input.taskId}:${input.retryKeySuffix}:${input.attempt}`;
 }
 
 function normalizeGatewayFailureMessage(input: {
@@ -750,12 +755,27 @@ function normalizeGatewayFailureMessage(input: {
   transportRecoveryEnabled: boolean;
 }): string {
   if (input.reason !== "transport_interruption") {
+    if (input.reason === "reply_session_init_conflict") {
+      return `The agent could not start a reply session because a previous session initialization was still in progress. We retried ${input.attempts} times, but recovery did not succeed.`;
+    }
     return input.message;
   }
   if (input.transportRecoveryEnabled || input.attempts > 1) {
     return `The agent lost network connectivity while running tools. We retried ${input.attempts} times in the same session, but recovery did not succeed. Partial files may exist in the workspace.`;
   }
   return "The agent lost network connectivity while running tools. Partial files may exist in the workspace.";
+}
+
+function computeRetryBackoffMs(input: {
+  retry: ChatRetryOptions;
+  attempt: number;
+  reason: string;
+}): number {
+  const baseDelayMs =
+    input.reason === "reply_session_init_conflict"
+      ? input.retry.replySessionInitConflictBaseDelayMs
+      : input.retry.baseDelayMs;
+  return computeBackoffMs(baseDelayMs, input.attempt - 1, input.retry.jitterMs);
 }
 
 function resolveDefaultStateDir(): string {
@@ -825,6 +845,11 @@ export class ChatRunner {
       baseDelayMs: Array.isArray(opts?.retry?.baseDelayMs)
         ? opts?.retry?.baseDelayMs.map((n) => Math.max(0, Math.trunc(n)))
         : [300, 800, 1500],
+      replySessionInitConflictBaseDelayMs: Array.isArray(opts?.retry?.replySessionInitConflictBaseDelayMs)
+        ? opts.retry.replySessionInitConflictBaseDelayMs.map((n) => Math.max(0, Math.trunc(n)))
+        : Array.isArray(opts?.retry?.baseDelayMs)
+          ? opts.retry.baseDelayMs.map((n) => Math.max(0, Math.trunc(n)))
+          : [3000, 5000, 8000],
       jitterMs: Math.max(0, Math.trunc(opts?.retry?.jitterMs ?? 250)),
     };
     this.transcription = {
@@ -1054,6 +1079,7 @@ export class ChatRunner {
       );
     }
     let transportRecoveryEnabled = false;
+    let retryKeySuffix: string | null = null;
     for (let attempt = 1; attempt <= this.retry.attempts; attempt += 1) {
       let finalAttemptMessage: GatewayChatMessage | null = null;
       const elapsedMs = Date.now() - startedAtMs;
@@ -1068,9 +1094,8 @@ export class ChatRunner {
         };
       }
 
-      // Keep the same idempotency key for blind retries. Recovery retries after a
-      // terminal transport interruption intentionally use a new key because we send
-      // a new recovery note in the same session.
+      // Keep the same idempotency key for blind retries. Terminal retries use a
+      // fresh key so OpenClaw does not return the prior failed run.
       let runId: string | null = null;
       try {
         const attemptMessage = maybeApplyTransportRecoveryNote(
@@ -1081,7 +1106,7 @@ export class ChatRunner {
         const idempotencyKey = buildAttemptIdempotencyKey({
           taskId: input.taskId,
           attempt,
-          transportRecoveryEnabled,
+          retryKeySuffix,
         });
         const payload = await this.gateway.request("chat.send", {
           sessionKey: input.sessionKey,
@@ -1115,6 +1140,9 @@ export class ChatRunner {
         const classification = classifyRetryableGatewayError(msg);
         if (classification.reason === "transport_interruption") {
           transportRecoveryEnabled = true;
+          retryKeySuffix = "transport-recovery";
+        } else if (classification.reason === "reply_session_init_conflict") {
+          retryKeySuffix = "reply-session-init-conflict";
         }
         if (gatewayMessage.fallback && shouldFallbackToUploadedFiles(err)) {
           logger.warn(
@@ -1130,7 +1158,7 @@ export class ChatRunner {
           attempt -= 1;
           continue;
         }
-        const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
+        const backoffMs = computeRetryBackoffMs({ retry: this.retry, attempt, reason: classification.reason });
         const retryable = attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
         logger.warn(
           {
@@ -1514,7 +1542,7 @@ export class ChatRunner {
           "Message flow transition"
         );
 
-        const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
+        const backoffMs = computeRetryBackoffMs({ retry: this.retry, attempt, reason: classification.reason });
         const retryable =
           classification.retryable && attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
         if (!retryable) {
@@ -1581,6 +1609,9 @@ export class ChatRunner {
         }
         if (classification.reason === "transport_interruption") {
           transportRecoveryEnabled = true;
+          retryKeySuffix = "transport-recovery";
+        } else if (classification.reason === "reply_session_init_conflict") {
+          retryKeySuffix = "reply-session-init-conflict";
         }
         await sleep(backoffMs);
       } catch (err) {
@@ -1638,7 +1669,7 @@ export class ChatRunner {
               devLogEnabled: this.devLogEnabled,
             });
           }
-          const backoffMs = computeBackoffMs(this.retry.baseDelayMs, attempt - 1, this.retry.jitterMs);
+          const backoffMs = computeRetryBackoffMs({ retry: this.retry, attempt, reason: "transport_interruption" });
           const elapsedMs = Date.now() - startedAtMs;
           const remainingMs = Math.max(0, input.timeoutMs - elapsedMs);
           const retryable = attempt < this.retry.attempts && remainingMs > backoffMs + 1000;
@@ -1666,6 +1697,7 @@ export class ChatRunner {
             };
           }
           transportRecoveryEnabled = true;
+          retryKeySuffix = "transport-recovery";
           await sleep(backoffMs);
           continue;
         }

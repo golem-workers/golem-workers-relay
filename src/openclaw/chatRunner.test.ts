@@ -3236,7 +3236,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("retries transient reply session initialization conflicts with a recovery note", async () => {
+  it("retries transport interruptions in the same session with a recovery note", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
 
@@ -3287,7 +3287,7 @@ describe("ChatRunner", () => {
                     sessionKey,
                     seq: 1,
                     state: "error",
-                    errorMessage: "reply session initialization conflicted for agent:main:tg:7278830001:server",
+                    errorMessage: "Network connection lost.",
                   },
                 })
               );
@@ -3330,6 +3330,110 @@ describe("ChatRunner", () => {
     expect(sentMessages[1]).toContain("The previous attempt ended due to a network interruption");
     expect(sentMessages[1]).toContain("continue from existing artifacts if possible");
     expect(sentIdempotencyKeys).toEqual(["task_transport_recovery", "task_transport_recovery:transport-recovery:2"]);
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
+  it("retries reply session initialization conflicts with a fresh idempotency key and no recovery note", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+
+    let sendCount = 0;
+    const sentMessages: unknown[] = [];
+    const sentIdempotencyKeys: string[] = [];
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: {
+                  methods: ["chat.send", "sessions.usage"],
+                  events: ["chat"],
+                },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          sendCount += 1;
+          const params = (frame.params ?? {}) as Record<string, unknown>;
+          sentMessages.push(params.message);
+          sentIdempotencyKeys.push(typeof params.idempotencyKey === "string" ? params.idempotencyKey : "missing");
+          const runId = `run_reply_session_${sendCount}`;
+          const sessionKey = typeof params.sessionKey === "string" ? params.sessionKey : "unknown";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            if (sendCount < 3) {
+              ws.send(
+                JSON.stringify({
+                  type: "event",
+                  event: "chat",
+                  payload: {
+                    runId,
+                    sessionKey,
+                    seq: 1,
+                    state: "error",
+                    errorMessage: "Error: reply session initialization conflicted for agent:main:tg:7278830001:server",
+                  },
+                })
+              );
+              return;
+            }
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: { runId, sessionKey, seq: 1, state: "final", message: { text: "ok reply-a731e563" } },
+              })
+            );
+          }, 10);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client, {
+      retry: { attempts: 3, baseDelayMs: [1], replySessionInitConflictBaseDelayMs: [1], jitterMs: 0 },
+    });
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "task_reply_session_conflict",
+      sessionKey: "s-reply-session",
+      messageText: "Ответь одной строкой без пояснений: ok reply-a731e563",
+      timeoutMs: 2000,
+    });
+
+    expect(result.outcome).toBe("reply");
+    expect(sendCount).toBe(3);
+    expect(sentMessages).toEqual([
+      "Ответь одной строкой без пояснений: ok reply-a731e563",
+      "Ответь одной строкой без пояснений: ok reply-a731e563",
+      "Ответь одной строкой без пояснений: ok reply-a731e563",
+    ]);
+    expect(sentIdempotencyKeys).toEqual([
+      "task_reply_session_conflict",
+      "task_reply_session_conflict:reply-session-init-conflict:2",
+      "task_reply_session_conflict:reply-session-init-conflict:3",
+    ]);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));
