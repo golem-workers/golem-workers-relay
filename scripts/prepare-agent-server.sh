@@ -23,6 +23,23 @@ NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 PNPM_HOME_DIR="/root/.local/share/pnpm"
 OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-clawhub:@openclaw/whatsapp}"
+OPENCLAW_SAFE_SKILL_SPECS=(
+  "@steipete/github"
+  "@gpyangyoujun/multi-search-engine"
+  "@matrixy/agent-browser-clawdbot"
+  "@peytoncasper/browser-automation"
+  "@ivangdavila/word-docx"
+  "@ivangdavila/excel-xlsx"
+  "@ivangdavila/powerpoint-pptx"
+  "@steipete/markdown-converter"
+  "@ivangdavila/data-analysis"
+  "@steipete/openai-whisper"
+  "@michaelgathara/youtube-watcher"
+  "@steipete/video-frames"
+  "@steipete/gog"
+  "@steipete/notion"
+  "@lamelas/himalaya"
+)
 RUN_OPENCLAW_ONBOARD=1
 APT_SOURCES_LIST="/etc/apt/sources.list"
 UBUNTU_SUITE="${UBUNTU_SUITE:-noble}"
@@ -451,6 +468,20 @@ install_openclaw_whatsapp_plugin() {
   fi
   openclaw plugins enable whatsapp
   openclaw plugins inspect whatsapp --runtime --json >/dev/null
+}
+
+preinstall_openclaw_safe_skills() {
+  mkdir -p /root/.openclaw/workspace/skills
+  for skill_spec in "${OPENCLAW_SAFE_SKILL_SPECS[@]}"; do
+    local skill_slug="${skill_spec##*/}"
+    local skill_dir="/root/.openclaw/workspace/skills/${skill_slug}"
+    if [[ -s "${skill_dir}/SKILL.md" ]]; then
+      echo "OpenClaw skill ${skill_slug} already preinstalled."
+    else
+      openclaw skills install "${skill_spec}"
+    fi
+    test -s "${skill_dir}/SKILL.md"
+  done
 }
 
 main() {
@@ -1123,6 +1154,9 @@ if (hasEnabledCodexNativeHookRelayDefault(installDir)) {
 console.log(`codex prepared: ${installDir}`)
 console.log(patchedFiles.length > 0 ? `codex native hook relay disabled in: ${patchedFiles.join(", ")}` : "codex native hook relay already disabled")
 NODE
+
+  set_step "openclaw_safe_skills_preinstall"
+  preinstall_openclaw_safe_skills
 
   test -f "${GLOBAL_PNPM_ROOT}/playwright/package.json"
   if [[ "${RUN_OPENCLAW_ONBOARD}" == "1" ]]; then

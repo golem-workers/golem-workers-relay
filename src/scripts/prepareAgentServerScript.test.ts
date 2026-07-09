@@ -46,4 +46,26 @@ describe("prepare-agent-server snapshot preparation", () => {
       script.indexOf('set_step "openclaw_snapshot_channels_warmup_start"')
     );
   });
+
+  it("bakes curated OpenClaw skills into provider snapshots before onboarding", () => {
+    const script = readFileSync(prepareAgentServerScriptPath, "utf8");
+
+    expect(script).toContain("OPENCLAW_SAFE_SKILL_SPECS=(");
+    expect(script).toContain('"@steipete/github"');
+    expect(script).toContain('"@gpyangyoujun/multi-search-engine"');
+    expect(script).toContain('"@matrixy/agent-browser-clawdbot"');
+    expect(script).toContain('"@peytoncasper/browser-automation"');
+    expect(script).toContain('"@ivangdavila/data-analysis"');
+    expect(script).toContain('"@michaelgathara/youtube-watcher"');
+    expect(script).toContain('"@lamelas/himalaya"');
+    expect(script).toContain("preinstall_openclaw_safe_skills() {");
+    expect(script).toContain('openclaw skills install "${skill_spec}"');
+    expect(script).toContain('test -s "${skill_dir}/SKILL.md"');
+    expect(script.indexOf('set_step "openclaw_safe_skills_preinstall"')).toBeGreaterThan(
+      script.indexOf('set_step "openclaw_codex_plugin_install"')
+    );
+    expect(script.indexOf('set_step "openclaw_safe_skills_preinstall"')).toBeLessThan(
+      script.indexOf('set_step "openclaw_onboard"')
+    );
+  });
 });
