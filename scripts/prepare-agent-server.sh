@@ -25,7 +25,6 @@ PNPM_HOME_DIR="/root/.local/share/pnpm"
 OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-clawhub:@openclaw/whatsapp}"
 OPENCLAW_SAFE_SKILL_SPECS=(
   "@steipete/github"
-  "@gpyangyoujun/multi-search-engine"
   "@matrixy/agent-browser-clawdbot"
   "@peytoncasper/browser-automation"
   "@ivangdavila/word-docx"

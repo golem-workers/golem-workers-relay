@@ -52,7 +52,7 @@ describe("prepare-agent-server snapshot preparation", () => {
 
     expect(script).toContain("OPENCLAW_SAFE_SKILL_SPECS=(");
     expect(script).toContain('"@steipete/github"');
-    expect(script).toContain('"@gpyangyoujun/multi-search-engine"');
+    expect(script).not.toContain('"@gpyangyoujun/multi-search-engine"');
     expect(script).toContain('"@matrixy/agent-browser-clawdbot"');
     expect(script).toContain('"@peytoncasper/browser-automation"');
     expect(script).toContain('"@ivangdavila/data-analysis"');
