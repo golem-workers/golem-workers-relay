@@ -54,7 +54,7 @@ describe("prepare-agent-server snapshot preparation", () => {
     expect(script).toContain('"@steipete/github"');
     expect(script).not.toContain('"@gpyangyoujun/multi-search-engine"');
     expect(script).toContain('"@matrixy/agent-browser-clawdbot"');
-    expect(script).toContain('"@peytoncasper/browser-automation"');
+    expect(script).not.toContain('"@peytoncasper/browser-automation"');
     expect(script).toContain('"@ivangdavila/data-analysis"');
     expect(script).toContain('"@michaelgathara/youtube-watcher"');
     expect(script).toContain('"@lamelas/himalaya"');

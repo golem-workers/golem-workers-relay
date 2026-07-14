@@ -26,7 +26,6 @@ OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-clawhub:@opencla
 OPENCLAW_SAFE_SKILL_SPECS=(
   "@steipete/github"
   "@matrixy/agent-browser-clawdbot"
-  "@peytoncasper/browser-automation"
   "@ivangdavila/word-docx"
   "@ivangdavila/excel-xlsx"
   "@ivangdavila/powerpoint-pptx"
