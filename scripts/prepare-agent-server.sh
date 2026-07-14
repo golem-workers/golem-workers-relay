@@ -22,6 +22,7 @@ fi
 NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 PNPM_HOME_DIR="/root/.local/share/pnpm"
+OPENCLAW_MIN_NODE_VERSION="22.22.3"
 OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-clawhub:@openclaw/whatsapp}"
 OPENCLAW_SAFE_SKILL_SPECS=(
   "@steipete/github"
@@ -127,6 +128,42 @@ write_file() {
   local content="$2"
   mkdir -p "$(dirname "${path}")"
   printf '%s' "${content}" >"${path}"
+}
+
+node_22_meets_openclaw_floor() {
+  local raw_version="${1#v}"
+  local major minor patch extra
+  local required_major required_minor required_patch
+
+  raw_version="${raw_version%%[-+]*}"
+  IFS=. read -r major minor patch extra <<<"${raw_version}"
+  IFS=. read -r required_major required_minor required_patch <<<"${OPENCLAW_MIN_NODE_VERSION}"
+  [[ -z "${extra:-}" ]] || return 1
+  [[ "${major:-}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${minor:-}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${patch:-}" =~ ^[0-9]+$ ]] || return 1
+
+  (( major == required_major && (minor > required_minor || (minor == required_minor && patch >= required_patch)) ))
+}
+
+install_openclaw_nodejs() {
+  local installed_node_version
+
+  installed_node_version="$(node --version 2>/dev/null || true)"
+  if node_22_meets_openclaw_floor "${installed_node_version}"; then
+    echo "Node.js already meets OpenClaw requirement: ${installed_node_version}"
+    return
+  fi
+
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  apt-get install -y nodejs
+  hash -r
+
+  installed_node_version="$(node --version 2>/dev/null || true)"
+  if ! node_22_meets_openclaw_floor "${installed_node_version}"; then
+    echo "Node.js ${OPENCLAW_MIN_NODE_VERSION}+ on major ${OPENCLAW_MIN_NODE_VERSION%%.*} is required; got ${installed_node_version:-missing}" >&2
+    return 1
+  fi
 }
 
 is_hetzner_host() {
@@ -617,10 +654,7 @@ EOF
   sudo -u linuxbrew -H bash -lc 'cd / && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)" && (/home/linuxbrew/.linuxbrew/bin/brew list node >/dev/null 2>&1 && /home/linuxbrew/.linuxbrew/bin/brew uninstall --force node || true)'
 
   set_step "nodejs"
-  if ! command -v node >/dev/null 2>&1 || ! node --version | grep -q '^v22\.'; then
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-    apt-get install -y nodejs
-  fi
+  install_openclaw_nodejs
   node --version
   npm --version
 
