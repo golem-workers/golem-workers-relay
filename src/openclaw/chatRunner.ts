@@ -393,7 +393,16 @@ function matchesTranscriptUserMessage(candidateText: string, requestText: string
     return true;
   }
 
-  const allowContainedMatch = Math.max(compactCandidate.length, compactRequest.length) >= 200;
+  // A status nudge quotes the earlier user request it is trying to recover.
+  // When transcript baselining is temporarily unavailable, contained matching
+  // would otherwise pair the nudge with that stale request and its old reply.
+  if (/^\[STATUS_NUDGE\](?:\s|$)/i.test(compactRequest)) {
+    return false;
+  }
+
+  const allowContainedMatch =
+    Math.max(compactCandidate.length, compactRequest.length) >= 200 &&
+    Math.min(compactCandidate.length, compactRequest.length) >= 80;
   if (!allowContainedMatch) {
     return false;
   }

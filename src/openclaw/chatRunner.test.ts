@@ -2519,6 +2519,129 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("does not recover a stale reply quoted by a status nudge when the transcript baseline is unavailable", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-stale-nudge-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+
+    const sessionKey = "telegram:direct:700000001";
+    const sessionId = "sess-transcript-stale-nudge";
+    const sessionFile = path.join(sessionsDir, `${sessionId}.jsonl`);
+    const statusNudge = [
+      "[STATUS_NUDGE]",
+      "The user asked 'reverse hyper чейто' (what is a reverse hyper).",
+      "The assistant only provided a GIF without an explanation.",
+      "Please provide a brief textual explanation of what a reverse hyper machine is and its primary purpose in training.",
+    ].join("\n");
+
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string; params?: unknown };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                policy: { tickIntervalMs: 5000 },
+                features: { methods: ["chat.send", "sessions.usage"], events: ["chat"] },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          const runId = "run_transcript_stale_nudge";
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          setTimeout(() => {
+            void (async () => {
+              await fs.writeFile(
+                path.join(sessionsDir, "sessions.json"),
+                JSON.stringify({
+                  [`agent:main:${sessionKey}`]: {
+                    sessionId,
+                    updatedAt: Date.now(),
+                    sessionFile,
+                  },
+                }),
+                "utf8"
+              );
+              await fs.writeFile(
+                sessionFile,
+                [
+                  JSON.stringify({
+                    type: "message",
+                    message: { role: "user", content: "reverse hyper чейто" },
+                  }),
+                  JSON.stringify({
+                    type: "message",
+                    message: {
+                      role: "assistant",
+                      content: [{ type: "text", text: "0593-Krmb3cB.gif" }],
+                    },
+                  }),
+                ].join("\n") + "\n",
+                "utf8"
+              );
+            })();
+          }, 20);
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: "event",
+                event: "chat",
+                payload: {
+                  runId,
+                  sessionKey,
+                  seq: 1,
+                  state: "final",
+                  message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: "Reverse hyper trains the posterior chain." }],
+                  },
+                },
+              })
+            );
+          }, 2_800);
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client, { transcriptCompletionSettleMs: 0 });
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "self_nudge_stale_transcript",
+      sessionKey,
+      messageText: statusNudge,
+      timeoutMs: 3_500,
+    });
+
+    expect(result.outcome).toBe("reply");
+    if (result.outcome !== "reply") throw new Error("expected reply");
+    expect(result.reply.message).toEqual({
+      role: "assistant",
+      content: [{ type: "text", text: "Reverse hyper trains the posterior chain." }],
+    });
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("waits briefly after a transcript-only reply before releasing the run", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-timeout-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);

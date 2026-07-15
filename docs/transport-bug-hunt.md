@@ -32,6 +32,17 @@ The first replay target is the stale transcript-session failure:
 The regression test is `recovers a transcript-only reply after OpenClaw rotates the relay-backed session file` in
 `src/openclaw/chatRunner.test.ts`.
 
+The second replay target is a stale reply quoted by a status nudge:
+
+1. Transcript baselining is temporarily unavailable when relay starts the nudge turn.
+2. Existing history contains an earlier short user request and its assistant reply.
+3. The `[STATUS_NUDGE]` text quotes that earlier request while asking the agent to finish it.
+4. Relay must not use contained-text matching to pair the nudge with the earlier request.
+5. Relay waits for a reply to the current nudge or a correlated gateway terminal event.
+
+The regression test is `does not recover a stale reply quoted by a status nudge when the transcript baseline is unavailable`
+in `src/openclaw/chatRunner.test.ts`.
+
 ## Bug-Hunt Areas
 
 - `ChatRunner` completion matrix: missing final, empty final, late final, duplicated final, terminal error, abort, disconnect.
