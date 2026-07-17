@@ -13,8 +13,10 @@ import {
   evaluateSelfNudgeTick,
   findVisibleFinalityInOpenclawRuntimeHistory,
   formatStatusNudgeMessage,
+  hasActiveOpenclawRuntimeWork,
   readFreshestOpenclawRuntimeTranscript,
   readFreshestSessionTranscript,
+  STATUS_NUDGE_MESSAGE,
   type FreshestSessionTranscript,
   type RelaySelfNudgeSettings,
   type SelfNudgeDecision,
@@ -857,6 +859,85 @@ describe("selfNudgeRunner", () => {
     );
   });
 
+  it("detects active OpenClaw sessions and process-bearing runtime records", () => {
+    expect(
+      hasActiveOpenclawRuntimeWork({
+        sessions: [{ key: "agent:main:telegram:group:-1", status: "running" }],
+      }),
+    ).toBe(true);
+    expect(
+      hasActiveOpenclawRuntimeWork({
+        sessions: [{ key: "agent:main:subagent:worker", hasActiveRun: true }],
+      }),
+    ).toBe(true);
+    expect(
+      hasActiveOpenclawRuntimeWork({
+        sessions: [{ key: "agent:main:main", status: "done", hasActiveRun: false }],
+      }),
+    ).toBe(false);
+  });
+
+  it("does not inspect chat history while any OpenClaw session is active", async () => {
+    const gateway = {
+      request: vi.fn((method: string) => {
+        if (method === "sessions.list") {
+          return {
+            sessions: [
+              {
+                key: "agent:main:telegram:group:-current",
+                updatedAt: 10_000,
+                status: "running",
+                hasActiveRun: true,
+              },
+              {
+                key: "agent:main:telegram:group:-older",
+                updatedAt: 9_000,
+                status: "done",
+                hasActiveRun: false,
+              },
+            ],
+          };
+        }
+        throw new Error(`chat history must not be read while active: ${method}`);
+      }),
+    };
+
+    const transcript = await readFreshestOpenclawRuntimeTranscript({
+      gateway,
+      analyzedRecentMessageCount: 3,
+    });
+
+    expect(transcript).toBeNull();
+    expect(gateway.request).toHaveBeenCalledTimes(1);
+    expect(gateway.request).toHaveBeenCalledWith(
+      "sessions.list",
+      { agentId: "main", limit: 50 },
+      { timeoutMs: 5_000 },
+    );
+  });
+
+  it("does not read runtime state when local relay work is active", async () => {
+    const gateway = { request: vi.fn() };
+    const fetchImpl = vi.fn<typeof fetch>();
+    const sendNudgeMessage = makeSendNudgeMessageMock();
+    const runner = createSelfNudgeRunner({
+      settings: enabledSettings,
+      sendNudgeMessage,
+      openrouterProxyPort: 18080,
+      openrouterProxyPathPrefix: "/provider-proxy/openrouter",
+      fetchImpl,
+      gateway,
+      isLocallyIdle: () => false,
+    });
+
+    await runner.tick(20_000);
+    runner.stop();
+
+    expect(gateway.request).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(sendNudgeMessage).not.toHaveBeenCalled();
+  });
+
   it("marks the latest real user request in the analyzer payload without duplicating status nudges", async () => {
     const fetchImpl = vi.fn(
       (_url: string | URL | Request, init?: RequestInit) => {
@@ -871,6 +952,12 @@ describe("selfNudgeRunner", () => {
         expect(systemPrompt).not.toMatch(
           /\bPR\b|pull request|release not run|deployment not run/i,
         );
+        expect(systemPrompt).toContain(
+          "first determine what concrete actions the assistant actually completed",
+        );
+        expect(systemPrompt).toContain("then judge whether those actions make the request final");
+        expect(systemPrompt).not.toContain("statusNudgeMessage");
+        expect(systemPrompt).toContain("do not generate nudge text");
         const analyzerInput = JSON.parse(
           payload.messages[1]?.content ?? "{}",
         ) as {
@@ -1005,10 +1092,61 @@ describe("selfNudgeRunner", () => {
     expect(sent).toEqual({ nudged: true, nextDelayMs: 2_000 });
     const sentNudge = sendNudgeMessage.mock.calls[0]?.[0];
     expect(sentNudge?.transcript.sessionKey).toBe("s1");
-    expect(sentNudge?.messageText).toBe(
-      "[STATUS_NUDGE]\nContinue with the migration and report the next concrete step.",
-    );
+    expect(sentNudge?.messageText).toBe(STATUS_NUDGE_MESSAGE);
     expect(computeSelfNudgeWaitMs(1_000, state.consecutiveNudges)).toBe(2_000);
+  });
+
+  it("does not run the action/finality analyzer when idle confirmation fails", async () => {
+    const decide = vi.fn();
+    const sendNudgeMessage = makeSendNudgeMessageMock();
+
+    const result = await evaluateSelfNudgeTick({
+      settings: enabledSettings,
+      transcript: makeTranscript({ mtimeMs: 10_000 }),
+      state: makeState(),
+      nowMs: 11_000,
+      sendNudgeMessage,
+      confirmIdle: () => false,
+      decide,
+    });
+
+    expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
+    expect(decide).not.toHaveBeenCalled();
+    expect(sendNudgeMessage).not.toHaveBeenCalled();
+  });
+
+  it("drops a pending nudge when activity starts during model analysis", async () => {
+    const confirmIdle = vi
+      .fn<() => boolean>()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false);
+    const sendNudgeMessage = makeSendNudgeMessageMock();
+    const processedStore = {
+      get: vi.fn().mockResolvedValue(null),
+      markAnalyzed: vi.fn().mockResolvedValue(undefined),
+      markFinalNoticeSent: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const result = await evaluateSelfNudgeTick({
+      settings: enabledSettings,
+      transcript: makeTranscript({ mtimeMs: 10_000 }),
+      state: makeState(),
+      nowMs: 11_000,
+      sendNudgeMessage,
+      processedStore,
+      confirmIdle,
+      decide: vi.fn().mockResolvedValue({
+        shouldNudge: true,
+        statusNudgeMessage: "Model-generated instructions must be ignored.",
+        finalConfidence: 20,
+        reasonCode: "unknown",
+      }),
+    });
+
+    expect(result).toEqual({ nudged: false, nextDelayMs: 1_000 });
+    expect(confirmIdle).toHaveBeenCalledTimes(2);
+    expect(sendNudgeMessage).not.toHaveBeenCalled();
+    expect(processedStore.markAnalyzed).not.toHaveBeenCalled();
   });
 
   it("does not nudge while a recent edited status update is inside the wait window", async () => {
@@ -1241,8 +1379,7 @@ describe("selfNudgeRunner", () => {
     expect(result).toEqual({ nudged: true, nextDelayMs: 2_000 });
     expect(sendNudgeMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        messageText:
-          "[STATUS_NUDGE]\nContinue the current user-visible reply. A private final answer exists, but no visible delivery evidence was found for the source conversation.",
+        messageText: STATUS_NUDGE_MESSAGE,
       }),
     );
     expect(notifyFinalDecision).not.toHaveBeenCalled();
@@ -1489,8 +1626,7 @@ describe("selfNudgeRunner", () => {
     ]);
     expect(sendNudgeMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        messageText:
-          "[STATUS_NUDGE]\nThe assistant claimed completion, but the original request still needs verification.",
+        messageText: STATUS_NUDGE_MESSAGE,
       }),
     );
     expect(notifyFinalDecision).not.toHaveBeenCalled();
@@ -1544,7 +1680,7 @@ describe("selfNudgeRunner", () => {
     expect(sentNudge?.decision.finalConfidence).toBe(70);
     expect(sentNudge?.decision.reasonCode).toBe("unknown");
     expect(sentNudge?.decision.reason).toContain("partial outcome");
-    expect(sentNudge?.messageText).toContain("ready PR");
+    expect(sentNudge?.messageText).toBe(STATUS_NUDGE_MESSAGE);
   });
 
   it("sends a user-visible debug notice with confidence and the status nudge message when enabled", async () => {
@@ -1573,9 +1709,7 @@ describe("selfNudgeRunner", () => {
 
     expect(notifyNudgeDecision).toHaveBeenCalledTimes(1);
     const notice = notifyNudgeDecision.mock.calls[0]?.[0];
-    expect(notice?.messageText).toBe(
-      "[STATUS_NUDGE]\nContinue with the migration.",
-    );
+    expect(notice?.messageText).toBe(STATUS_NUDGE_MESSAGE);
     expect(notice?.decision.finalConfidence).toBe(37);
   });
 
@@ -1602,7 +1736,7 @@ describe("selfNudgeRunner", () => {
     expect(sentNudge?.transcript.sessionKey).toBe(
       "tg:-5297593928:cmp9kwhbf0175209zotr1q9le",
     );
-    expect(sentNudge?.messageText).toBe("[STATUS_NUDGE]\nContinue.");
+    expect(sentNudge?.messageText).toBe(STATUS_NUDGE_MESSAGE);
   });
 
   it("keeps self-nudge turns on the original telegram session", async () => {
@@ -2163,9 +2297,12 @@ describe("selfNudgeRunner", () => {
     expect(notifyFinalDecision).not.toHaveBeenCalled();
   });
 
-  it("does not double-prefix status nudge messages", () => {
+  it("always formats the same fixed status nudge message", () => {
     expect(formatStatusNudgeMessage("[STATUS_NUDGE]\nContinue.")).toBe(
-      "[STATUS_NUDGE]\nContinue.",
+      STATUS_NUDGE_MESSAGE,
+    );
+    expect(formatStatusNudgeMessage("Invent a different requirement.")).toBe(
+      STATUS_NUDGE_MESSAGE,
     );
   });
 

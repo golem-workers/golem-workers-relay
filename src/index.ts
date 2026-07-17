@@ -44,6 +44,7 @@ import {
   buildNudgeDecisionNoticeText,
   createSelfNudgeRunner,
   findVisibleFinalityInOpenclawRuntimeHistory,
+  isOpenclawRuntimeIdle,
 } from "./openclaw/selfNudgeRunner.js";
 import { createOpenclawConnectionStatusReporter } from "./openclaw/connectionStatusReporter.js";
 import {
@@ -705,6 +706,32 @@ async function main(): Promise<void> {
           gateway,
           openrouterProxyPort: cfg.openrouterProxy.port,
           openrouterProxyPathPrefix: cfg.openrouterProxy.pathPrefix,
+          isLocallyIdle: () => {
+            const queueState = queue.getState();
+            return (
+              queueState.queueLength === 0 &&
+              queueState.inFlight === 0 &&
+              taskControl.getActiveTasks().length === 0
+            );
+          },
+          confirmIdle: async () => {
+            const before = queue.getState();
+            if (
+              before.queueLength > 0 ||
+              before.inFlight > 0 ||
+              taskControl.getActiveTasks().length > 0
+            ) {
+              return false;
+            }
+            const runtimeIdle = await isOpenclawRuntimeIdle({ gateway });
+            const after = queue.getState();
+            return (
+              runtimeIdle &&
+              after.queueLength === 0 &&
+              after.inFlight === 0 &&
+              taskControl.getActiveTasks().length === 0
+            );
+          },
           sendNudgeMessage: ({
             transcript,
             decision,
@@ -746,11 +773,6 @@ async function main(): Promise<void> {
                 },
               },
             };
-            preemptSessionForUserOwnedTurn({
-              message,
-              reason: "newer_status_nudge",
-              dropQueuedUserChats: false,
-            });
             queue.enqueue(message);
             const queueState = queue.getState();
             logger.info(

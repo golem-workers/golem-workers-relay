@@ -6,6 +6,9 @@ import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 import { classifySessionActivity } from "../conversation/activityIndex.js";
 
 export const STATUS_NUDGE_MARKER = "[STATUS_NUDGE]";
+export const STATUS_NUDGE_BODY =
+  "Continue from where you left off, or if you have finished, report the result.";
+export const STATUS_NUDGE_MESSAGE = `${STATUS_NUDGE_MARKER}\n${STATUS_NUDGE_BODY}`;
 
 const DEFAULT_NUDGE_MODEL = "google/gemini-3.1-flash-lite";
 const DEFAULT_POLL_INTERVAL_MS = 10_000;
@@ -166,6 +169,8 @@ export function createSelfNudgeRunner(input: {
   pollIntervalMs?: number;
   fetchImpl?: typeof fetch;
   gateway?: GatewayLike;
+  isLocallyIdle?: () => boolean;
+  confirmIdle?: () => boolean | Promise<boolean>;
   processedStore?: SelfNudgeProcessedStore;
   notifyFinalDecision?: (input: {
     transcript: FreshestSessionTranscript;
@@ -241,6 +246,10 @@ export function createSelfNudgeRunner(input: {
         schedule(pollIntervalMs);
         return;
       }
+      if (input.isLocallyIdle && !input.isLocallyIdle()) {
+        schedule(pollIntervalMs);
+        return;
+      }
       const transcript = await readFreshestOpenclawRuntimeTranscript({
         gateway: input.gateway,
         analyzedRecentMessageCount: settings.analyzedRecentMessageCount,
@@ -265,6 +274,7 @@ export function createSelfNudgeRunner(input: {
         notifyFinalDecision: input.notifyFinalDecision,
         notifyNudgeDecision: input.notifyNudgeDecision,
         findVisibleFinality: input.findVisibleFinality,
+        confirmIdle: input.confirmIdle,
         decide: (decisionInput) =>
           decideSelfNudgeWithOpenRouter({
             ...decisionInput,
@@ -316,6 +326,7 @@ export async function evaluateSelfNudgeTick(input: {
     settings: RelaySelfNudgeSettings;
     transcript: FreshestSessionTranscript;
   }) => Promise<SelfNudgeDecision>;
+  confirmIdle?: () => boolean | Promise<boolean>;
   findVisibleFinality?: (input: {
     transcript: FreshestSessionTranscript;
     decision: SelfNudgeDecision;
@@ -385,6 +396,10 @@ export async function evaluateSelfNudgeTick(input: {
     return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
   }
 
+  if (!(await confirmSelfNudgeIdle(input.confirmIdle))) {
+    return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
+  }
+
   let decision = await input.decide({
     settings: input.settings,
     transcript: input.transcript,
@@ -398,24 +413,26 @@ export async function evaluateSelfNudgeTick(input: {
     if (!visibleFinality) {
       decision = {
         shouldNudge: true,
-        statusNudgeMessage:
-          "Continue the current user-visible reply. A private final answer exists, but no visible delivery evidence was found for the source conversation.",
+        statusNudgeMessage: null,
         finalConfidence: 0,
         reasonCode: "unknown",
         reason: "private_final_without_visible_delivery",
       };
     }
   }
-  await input.processedStore?.markAnalyzed({
-    sessionKey: input.transcript.sessionKey,
-    userFingerprint,
-    analysisFingerprint,
-    latestUserTimestampMs: latestUser.timestampMs ?? null,
-    latestUserLineIndex: latestUser.lineIndex,
-    decision,
-    analyzedAtMs: input.nowMs,
-  });
+  if (!(await confirmSelfNudgeIdle(input.confirmIdle))) {
+    return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
+  }
   if (!decision.shouldNudge) {
+    await input.processedStore?.markAnalyzed({
+      sessionKey: input.transcript.sessionKey,
+      userFingerprint,
+      analysisFingerprint,
+      latestUserTimestampMs: latestUser.timestampMs ?? null,
+      latestUserLineIndex: latestUser.lineIndex,
+      decision,
+      analyzedAtMs: input.nowMs,
+    });
     if (
       input.settings.finalNoticeEnabled &&
       input.notifyFinalDecision &&
@@ -438,16 +455,7 @@ export async function evaluateSelfNudgeTick(input: {
     return { nudged: false, nextDelayMs: input.settings.baseTimeoutMs };
   }
 
-  const body = normalizeNudgeBody(decision.statusNudgeMessage);
-  const messageText = formatStatusNudgeMessage(body);
-  if (input.settings.nudgeNoticeEnabled && input.notifyNudgeDecision) {
-    await input.notifyNudgeDecision({
-      transcript: input.transcript,
-      decision,
-      messageText,
-      nowMs: input.nowMs,
-    });
-  }
+  const messageText = STATUS_NUDGE_MESSAGE;
   const taskId = `self_nudge_${randomUUID()}`;
   await input.sendNudgeMessage({
     transcript: input.transcript,
@@ -456,8 +464,25 @@ export async function evaluateSelfNudgeTick(input: {
     taskId,
     nowMs: input.nowMs,
   });
+  await input.processedStore?.markAnalyzed({
+    sessionKey: input.transcript.sessionKey,
+    userFingerprint,
+    analysisFingerprint,
+    latestUserTimestampMs: latestUser.timestampMs ?? null,
+    latestUserLineIndex: latestUser.lineIndex,
+    decision,
+    analyzedAtMs: input.nowMs,
+  });
   input.state.consecutiveNudges += 1;
   input.state.lastNudgeAtMs = input.nowMs;
+  if (input.settings.nudgeNoticeEnabled && input.notifyNudgeDecision) {
+    await input.notifyNudgeDecision({
+      transcript: input.transcript,
+      decision,
+      messageText,
+      nowMs: input.nowMs,
+    });
+  }
   return {
     nudged: true,
     nextDelayMs: computeSelfNudgeWaitMs(
@@ -465,6 +490,21 @@ export async function evaluateSelfNudgeTick(input: {
       input.state.consecutiveNudges,
     ),
   };
+}
+
+async function confirmSelfNudgeIdle(
+  confirmIdle: (() => boolean | Promise<boolean>) | undefined,
+): Promise<boolean> {
+  if (!confirmIdle) return true;
+  try {
+    return (await confirmIdle()) === true;
+  } catch (error) {
+    logger.warn(
+      { err: error instanceof Error ? error.message : String(error) },
+      "Relay self-nudge idle confirmation failed closed",
+    );
+    return false;
+  }
 }
 
 export async function readFreshestSessionTranscript(input: {
@@ -550,6 +590,7 @@ export async function readFreshestOpenclawRuntimeTranscript(input: {
     },
     { timeoutMs: 5_000 },
   );
+  if (hasActiveOpenclawRuntimeWork(sessionsPayload)) return null;
   const candidates = readRuntimeSessionCandidates(sessionsPayload);
   const transcripts: FreshestSessionTranscript[] = [];
   for (const candidate of candidates) {
@@ -590,6 +631,48 @@ export async function readFreshestOpenclawRuntimeTranscript(input: {
   }
   transcripts.sort(compareSessionTranscriptsForNudge);
   return transcripts[0] ?? null;
+}
+
+export function hasActiveOpenclawRuntimeWork(payload: unknown): boolean {
+  const sessions =
+    isPlainObject(payload) && Array.isArray(payload.sessions)
+      ? payload.sessions
+      : [];
+  return sessions.some((session) => {
+    if (!isPlainObject(session)) return false;
+    if (
+      session.hasActiveRun === true ||
+      session.active === true ||
+      session.busy === true ||
+      session.isActive === true
+    ) {
+      return true;
+    }
+    if (isPlainObject(session.activeRun)) return true;
+    if (Array.isArray(session.activeRuns) && session.activeRuns.length > 0)
+      return true;
+    const status = readString(session.status)?.toLowerCase();
+    return (
+      status === "active" ||
+      status === "in_progress" ||
+      status === "pending" ||
+      status === "queued" ||
+      status === "running" ||
+      status === "starting" ||
+      status === "working"
+    );
+  });
+}
+
+export async function isOpenclawRuntimeIdle(input: {
+  gateway: GatewayLike;
+}): Promise<boolean> {
+  const payload = await input.gateway.request(
+    "sessions.list",
+    { agentId: "main", limit: 50 },
+    { timeoutMs: 5_000 },
+  );
+  return !hasActiveOpenclawRuntimeWork(payload);
 }
 
 export function buildSelfNudgeAnalysisTranscript(input: {
@@ -847,11 +930,9 @@ export function computeSelfNudgeWaitMs(
   );
 }
 
-export function formatStatusNudgeMessage(body: string): string {
-  const trimmed = body.trim();
-  return trimmed.startsWith(STATUS_NUDGE_MARKER)
-    ? trimmed
-    : `${STATUS_NUDGE_MARKER}\n${trimmed}`;
+export function formatStatusNudgeMessage(body?: string): string {
+  void body;
+  return STATUS_NUDGE_MESSAGE;
 }
 
 async function decideSelfNudgeWithOpenRouter(input: {
@@ -1001,7 +1082,8 @@ function buildSelfNudgeSystemPrompt(): string {
     "Inspect only the provided OpenClaw session transcript messages.",
     "The message with isLatestUserRequest=true is the latest real user request and is always the task to judge.",
     "Assistant messages are limited to the configured recent agent messages after that user request; ignore older work not shown.",
-    "Return strict JSON with keys: shouldNudge, statusNudgeMessage, finalConfidence, reasonCode, reason.",
+    "Evaluate in this order: first determine what concrete actions the assistant actually completed after the latest user request; then judge whether those actions make the request final.",
+    "Return strict JSON with keys: shouldNudge, finalConfidence, reasonCode, reason.",
     "Set finalConfidence to an integer from 0 to 100: your confidence that the assistant's latest answer fully completes the latest user request.",
     "Set reasonCode to one of: final_answer, waiting_for_user, no_active_request, unknown.",
     "Set shouldNudge=false with reasonCode=final_answer only when the latest user request is fully complete.",
@@ -1010,8 +1092,7 @@ function buildSelfNudgeSystemPrompt(): string {
     "Set shouldNudge=true when the assistant should continue without waiting for the user.",
     "Treat progress updates, partial outcomes, and explicitly remaining work as unfinished unless the latest user request only asked for that limited update.",
     "A final status line such as 'Status: 100% complete' is evidence to consider, but it is not authoritative; verify it against the latest real user request and the assistant's full answer.",
-    "When shouldNudge=true, statusNudgeMessage must briefly name what remains relative to the latest user request and ask the agent to continue with new evidence.",
-    "Do not include the [STATUS_NUDGE] marker; the relay adds it.",
+    "Do not write instructions for the agent and do not generate nudge text; the relay always sends a fixed status-nudge message.",
   ].join("\n");
 }
 
@@ -1022,7 +1103,7 @@ function parseSelfNudgeDecision(raw: string): SelfNudgeDecision {
   } catch {
     return {
       shouldNudge: true,
-      statusNudgeMessage: normalizeNudgeBody(raw),
+      statusNudgeMessage: null,
       finalConfidence: 0,
       reason: "model_returned_non_json",
     };
@@ -1039,18 +1120,11 @@ function parseSelfNudgeDecision(raw: string): SelfNudgeDecision {
   const shouldNudge =
     parsed.shouldNudge === true &&
     finalConfidence <= FINAL_ANSWER_CONFIDENCE_THRESHOLD;
-  const statusNudgeMessage =
-    typeof parsed.statusNudgeMessage === "string" &&
-    parsed.statusNudgeMessage.trim().length > 0
-      ? parsed.statusNudgeMessage.trim()
-      : null;
   const reason = typeof parsed.reason === "string" ? parsed.reason : undefined;
   const reasonCode = parseSelfNudgeReasonCode(parsed.reasonCode);
   return {
     shouldNudge,
-    statusNudgeMessage: shouldNudge
-      ? normalizeNudgeBody(statusNudgeMessage)
-      : null,
+    statusNudgeMessage: null,
     finalConfidence,
     ...(reasonCode ? { reasonCode } : {}),
     reason,
@@ -1497,14 +1571,6 @@ function fingerprintAnalysisMessages(messages: TranscriptMessage[]): string {
       ),
     )
     .digest("hex");
-}
-
-function normalizeNudgeBody(raw: string | null | undefined): string {
-  const text = typeof raw === "string" ? raw.trim() : "";
-  return (
-    text ||
-    "Continue the in-flight work on the user's latest request. Report new evidence and the next action you are taking now. If you are genuinely blocked and cannot proceed without external input, say so clearly and use Status: 100% complete."
-  );
 }
 
 function normalizeOpenRouterModel(model: string | null): string {
