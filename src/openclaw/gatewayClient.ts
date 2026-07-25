@@ -732,6 +732,11 @@ export class GatewayClient {
     } catch {
       // ignore
     }
+    // We detach the failed socket before terminating it, so its close handler
+    // cannot schedule the next attempt.
+    if (this.hasConnectedOnce) {
+      this.scheduleReconnect();
+    }
   }
 
   private emitConnectionStateChange(connected: boolean, reason?: string): void {
@@ -764,4 +769,3 @@ function rawDataToString(data: unknown): string {
     return "";
   }
 }
-

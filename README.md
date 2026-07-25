@@ -14,6 +14,7 @@ The relay also reports the current OpenClaw connectivity state back to backend:
 
 - sends `DISCONNECTED` when startup connect fails or an established gateway connection drops
 - throttles repeated disconnect reports to at most once per minute
+- keeps retrying with backoff when a restarting gateway temporarily rejects a reconnect
 - sends `CONNECTED` immediately after the gateway connection is restored
 
 For `relay_channel_v2`, relay startup also checks the installed `relay-channel`

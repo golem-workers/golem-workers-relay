@@ -356,6 +356,82 @@ describe("GatewayClient", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("keeps reconnecting when the gateway is temporarily unavailable after a prior connection", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+
+    let connections = 0;
+    const { wss, port } = startServer((ws) => {
+      connections += 1;
+      const connectionNo = connections;
+      ws.send(
+        JSON.stringify({
+          type: "event",
+          event: "connect.challenge",
+          payload: { nonce: `nonce${connectionNo}`, ts: 1 },
+        })
+      );
+      ws.on("message", (data) => {
+        const text = rawDataToString(data);
+        const frame = JSON.parse(text) as { type: string; id: string; method: string };
+        if (frame.type !== "req" || frame.method !== "connect") {
+          return;
+        }
+
+        if (connectionNo === 2) {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: false,
+              error: {
+                code: "UNAVAILABLE",
+                message: "gateway starting; retry shortly",
+                retryable: true,
+              },
+            })
+          );
+          return;
+        }
+
+        ws.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              type: "hello-ok",
+              protocol: 3,
+              policy: { tickIntervalMs: 5000, maxPayload: 1, maxBufferedBytes: 1 },
+              server: { version: "x", connId: `c${connectionNo}` },
+              snapshot: {},
+              features: { methods: [], events: [] },
+            },
+          })
+        );
+        if (connectionNo === 1) {
+          setTimeout(() => ws.close(4001, "gateway restart"), 10);
+        }
+      });
+    });
+
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+    });
+    await client.start();
+    await vi.waitFor(
+      () => {
+        expect(connections).toBe(3);
+        expect(client.isReady()).toBe(true);
+      },
+      { timeout: 4000, interval: 25 }
+    );
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("uses the configured tick timeout multiplier before closing the socket", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
@@ -439,4 +515,3 @@ async function delayTerminateOnNextSockets(client: GatewayClient, count: number,
 function getClientSocket(client: GatewayClient): WebSocket | null {
   return (client as unknown as { ws?: WebSocket | null }).ws ?? null;
 }
-
