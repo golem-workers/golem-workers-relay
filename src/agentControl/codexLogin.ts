@@ -1,7 +1,9 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import JSON5 from "json5";
+import type { CodexAuthBundle } from "./protocol.js";
 
 const OPENAI_AUTH_BASE_URL = "https://auth.openai.com";
 const OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -11,6 +13,7 @@ const OPENAI_CODEX_DEVICE_CODE_TIMEOUT_MS = 15 * 60_000;
 const OPENAI_CODEX_DEVICE_CODE_DEFAULT_INTERVAL_MS = 5_000;
 const OPENAI_CODEX_DEVICE_CODE_MIN_INTERVAL_MS = 1_000;
 const AUTH_PROFILES_FILE = "auth-profiles.json";
+const CODEX_AUTH_SYNC_STATE_FILE = "golem-auth-sync.json";
 const MAIN_AGENT_ID = "main";
 
 type CodexLoginState = "not_logged_in" | "pending" | "connected" | "failed" | "unavailable";
@@ -46,6 +49,33 @@ export type CodexAuthSetActionResult = {
   kind: "codex.auth.set";
   mode: CodexAuthMode;
   applied: true;
+  authModes: CodexAuthModes;
+};
+
+export type CodexAuthExportActionResult = {
+  kind: "codex.auth.export";
+  bundle: CodexAuthBundle;
+};
+
+export type CodexAuthImportActionResult = {
+  kind: "codex.auth.import";
+  applied: true;
+  profileId: string;
+  email: string | null;
+  accountId: string | null;
+  expiresAtMs: number;
+  authModes: CodexAuthModes;
+};
+
+export type CodexAuthSyncActionResult = {
+  kind: "codex.auth.sync";
+  applied: boolean;
+  reason: "applied" | "up_to_date";
+  bundleVersion: number;
+  profileId: string;
+  email: string | null;
+  accountId: string | null;
+  expiresAtMs: number;
   authModes: CodexAuthModes;
 };
 
@@ -132,6 +162,19 @@ type DeviceCodeCredentials = {
   access: string;
   refresh: string;
   expires: number;
+};
+
+type CodexAuthSyncState = {
+  formatVersion: 1;
+  bundleVersion: number;
+  profileId: string;
+  expiresAtMs: number;
+  syncedAt: string;
+};
+
+type FileSnapshot = {
+  filePath: string;
+  contents: Buffer | null;
 };
 
 let pendingCodexLogin: PendingCodexLogin | null = null;
@@ -318,7 +361,16 @@ async function readAuthProfilesStore(authStorePath: string): Promise<AuthProfile
 
 async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await fs.rename(tempPath, filePath);
+  } finally {
+    await fs.rm(tempPath, { force: true });
+  }
 }
 
 function resolveCodexAuthStorePaths(configPath: string): string[] {
@@ -328,6 +380,10 @@ function resolveCodexAuthStorePaths(configPath: string): string[] {
 
 function resolveCodexCliAuthPath(): string {
   return path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "auth.json");
+}
+
+function resolveCodexAuthSyncStatePath(): string {
+  return path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), CODEX_AUTH_SYNC_STATE_FILE);
 }
 
 async function readCodexCliAuthJson(): Promise<CodexCliAuthJson> {
@@ -528,14 +584,19 @@ function buildOAuthCredential(input: { creds: DeviceCodeCredentials; identity: R
   };
 }
 
-async function persistCodexCredentials(input: { configPath: string; creds: DeviceCodeCredentials }): Promise<{
+async function persistCodexCredentials(input: {
+  configPath: string;
+  creds: DeviceCodeCredentials;
+  identityToken?: string;
+  profileId?: string;
+}): Promise<{
   profileId: string;
   email: string | null;
   accountId: string | null;
   tokens: CodexCliChatGptTokens;
 }> {
-  const identity = resolveCodexAuthIdentity(input.creds.access);
-  const profileId = buildAuthProfileId("openai", identity.profileName);
+  const identity = resolveCodexAuthIdentity(input.identityToken ?? input.creds.access);
+  const profileId = input.profileId ?? buildAuthProfileId("openai", identity.profileName);
   const credential = buildOAuthCredential({ creds: input.creds, identity });
   const tokens = buildCodexCliChatGptTokens(credential);
   if (!tokens) {
@@ -615,7 +676,7 @@ function buildCodexCliChatGptTokens(credential: Record<string, unknown>): CodexC
   };
 }
 
-async function writeCodexCliChatGptAuth(tokens: CodexCliChatGptTokens): Promise<void> {
+async function writeCodexCliChatGptAuth(tokens: CodexCliChatGptTokens, lastRefresh?: string | null): Promise<void> {
   const authJson = await readCodexCliAuthJson();
   const chatGptAuthJson = { ...authJson };
   delete chatGptAuthJson.OPENAI_API_KEY;
@@ -623,7 +684,7 @@ async function writeCodexCliChatGptAuth(tokens: CodexCliChatGptTokens): Promise<
     ...chatGptAuthJson,
     auth_mode: "chatgpt",
     tokens,
-    last_refresh: new Date().toISOString(),
+    last_refresh: lastRefresh ?? new Date().toISOString(),
   });
 }
 
@@ -805,6 +866,228 @@ async function resolveCodexCliChatGptTokens(configPath: string): Promise<CodexCl
   }
   const [, credential] = entry;
   return buildCodexCliChatGptTokens(credential);
+}
+
+function readCodexCliChatGptTokens(authJson: CodexCliAuthJson): CodexCliChatGptTokens | null {
+  if (normalizeString(authJson.auth_mode)?.toLowerCase() !== "chatgpt" || !isRecord(authJson.tokens)) {
+    return null;
+  }
+  const idToken = normalizeString(authJson.tokens.id_token);
+  const accessToken = normalizeString(authJson.tokens.access_token);
+  const refreshToken = normalizeString(authJson.tokens.refresh_token);
+  const accountId = normalizeString(authJson.tokens.account_id);
+  if (!idToken || !accessToken || !refreshToken) {
+    return null;
+  }
+  return {
+    id_token: idToken,
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    ...(accountId ? { account_id: accountId } : {}),
+  };
+}
+
+function resolveJwtExpiryMs(token: string): number | null {
+  const expiresAtSeconds = normalizeFutureEpochSeconds(decodeCodexJwtPayload(token)?.exp);
+  return expiresAtSeconds ? expiresAtSeconds * 1000 : null;
+}
+
+function mergeCodexAuthIdentity(primaryToken: string, fallbackToken: string): ReturnType<typeof resolveCodexAuthIdentity> {
+  const primary = resolveCodexAuthIdentity(primaryToken);
+  const fallback = resolveCodexAuthIdentity(fallbackToken);
+  return {
+    email: primary.email ?? fallback.email,
+    accountId: primary.accountId ?? fallback.accountId,
+    chatgptPlanType: primary.chatgptPlanType ?? fallback.chatgptPlanType,
+    profileName: primary.profileName ?? fallback.profileName,
+  };
+}
+
+function findPersistedCredentialForTokens(
+  entries: Array<[string, Record<string, unknown>]>,
+  tokens: CodexCliChatGptTokens,
+): Record<string, unknown> | null {
+  return (
+    entries.find(([, credential]) => normalizeString(credential.refresh) === tokens.refresh_token)?.[1] ??
+    entries.find(([, credential]) => {
+      const credentialAccountId = normalizeString(credential.accountId);
+      return Boolean(tokens.account_id && credentialAccountId === tokens.account_id);
+    })?.[1] ??
+    null
+  );
+}
+
+async function readCanonicalCodexAuthBundle(configPath: string): Promise<CodexAuthBundle> {
+  const entries = await readPersistedCodexOAuthEntries(configPath);
+  const authJson = await readCodexCliAuthJson();
+  const cliTokens = readCodexCliChatGptTokens(authJson);
+  if (cliTokens) {
+    const credential = findPersistedCredentialForTokens(entries, cliTokens);
+    const identity = mergeCodexAuthIdentity(cliTokens.id_token, cliTokens.access_token);
+    const expiresAtMs =
+      resolveJwtExpiryMs(cliTokens.access_token) ??
+      (typeof credential?.expires === "number" ? credential.expires : null);
+    if (!expiresAtMs || expiresAtMs <= Date.now()) {
+      throw new Error("Saved OpenAI login is expired or missing an expiry. Start a new device login.");
+    }
+    const accountId = cliTokens.account_id ?? identity.accountId ?? normalizeString(credential?.accountId);
+    const email = identity.email ?? normalizeString(credential?.email);
+    const chatgptPlanType = identity.chatgptPlanType ?? normalizeString(credential?.chatgptPlanType);
+    return {
+      formatVersion: 1,
+      profileId: buildAuthProfileId("openai", identity.profileName ?? email),
+      accessToken: cliTokens.access_token,
+      refreshToken: cliTokens.refresh_token,
+      idToken: cliTokens.id_token,
+      expiresAtMs,
+      lastRefresh: normalizeString(authJson.last_refresh),
+      email,
+      accountId,
+      chatgptPlanType,
+    };
+  }
+
+  const entry = pickLiveCodexOAuthEntry(entries);
+  if (!entry) {
+    throw new Error("No reusable OpenAI login is available on this agent.");
+  }
+  const [, credential] = entry;
+  const accessToken = normalizeString(credential.access);
+  const refreshToken = normalizeString(credential.refresh);
+  const expiresAtMs = typeof credential.expires === "number" ? credential.expires : null;
+  if (!accessToken || !refreshToken || !expiresAtMs || expiresAtMs <= Date.now()) {
+    throw new Error("Saved OpenAI login is incomplete or expired. Start a new device login.");
+  }
+  const identity = resolveCodexAuthIdentity(accessToken);
+  const email = identity.email ?? normalizeString(credential.email);
+  return {
+    formatVersion: 1,
+    profileId: buildAuthProfileId("openai", identity.profileName ?? email),
+    accessToken,
+    refreshToken,
+    idToken: accessToken,
+    expiresAtMs,
+    lastRefresh: null,
+    email,
+    accountId: identity.accountId ?? normalizeString(credential.accountId),
+    chatgptPlanType: identity.chatgptPlanType ?? normalizeString(credential.chatgptPlanType),
+  };
+}
+
+async function snapshotFiles(filePaths: string[]): Promise<FileSnapshot[]> {
+  return await Promise.all(
+    Array.from(new Set(filePaths)).map(async (filePath): Promise<FileSnapshot> => {
+      try {
+        return { filePath, contents: await fs.readFile(filePath) };
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+          return { filePath, contents: null };
+        }
+        throw error;
+      }
+    }),
+  );
+}
+
+async function restoreFileSnapshots(snapshots: FileSnapshot[]): Promise<void> {
+  for (const snapshot of snapshots) {
+    if (snapshot.contents === null) {
+      await fs.rm(snapshot.filePath, { force: true });
+      continue;
+    }
+    await fs.mkdir(path.dirname(snapshot.filePath), { recursive: true });
+    const tempPath = `${snapshot.filePath}.${process.pid}.${randomUUID()}.rollback`;
+    try {
+      await fs.writeFile(tempPath, snapshot.contents, { mode: 0o600 });
+      await fs.rename(tempPath, snapshot.filePath);
+    } finally {
+      await fs.rm(tempPath, { force: true });
+    }
+  }
+}
+
+async function readCodexAuthSyncState(): Promise<CodexAuthSyncState | null> {
+  try {
+    const parsed: unknown = JSON.parse(await fs.readFile(resolveCodexAuthSyncStatePath(), "utf8"));
+    if (
+      isRecord(parsed) &&
+      parsed.formatVersion === 1 &&
+      typeof parsed.bundleVersion === "number" &&
+      typeof parsed.profileId === "string" &&
+      typeof parsed.expiresAtMs === "number" &&
+      typeof parsed.syncedAt === "string"
+    ) {
+      return parsed as CodexAuthSyncState;
+    }
+    return null;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function applyCodexAuthBundle(input: {
+  configPath: string;
+  bundle: CodexAuthBundle;
+  syncState?: CodexAuthSyncState;
+}): Promise<CodexAuthImportActionResult> {
+  if (input.bundle.expiresAtMs <= Date.now()) {
+    throw new Error("Cannot import an expired OpenAI auth bundle.");
+  }
+  const identity = mergeCodexAuthIdentity(input.bundle.idToken, input.bundle.accessToken);
+  const canonicalProfileId = buildAuthProfileId("openai", identity.profileName ?? identity.email);
+  if (canonicalProfileId !== input.bundle.profileId) {
+    throw new Error("OpenAI auth bundle profile does not match its signed token identity.");
+  }
+  const snapshots = await snapshotFiles([
+    input.configPath,
+    ...resolveCodexAuthStorePaths(input.configPath),
+    resolveCodexAuthProfileDatabasePath(input.configPath),
+    resolveCodexCliAuthPath(),
+    ...(input.syncState ? [resolveCodexAuthSyncStatePath()] : []),
+  ]);
+  try {
+    const persisted = await persistCodexCredentials({
+      configPath: input.configPath,
+      creds: {
+        access: input.bundle.accessToken,
+        refresh: input.bundle.refreshToken,
+        expires: input.bundle.expiresAtMs,
+      },
+      identityToken: input.bundle.idToken,
+      profileId: input.bundle.profileId,
+    });
+    await writeCodexCliChatGptAuth(
+      {
+        id_token: input.bundle.idToken,
+        access_token: input.bundle.accessToken,
+        refresh_token: input.bundle.refreshToken,
+        ...(input.bundle.accountId ? { account_id: input.bundle.accountId } : {}),
+      },
+      input.bundle.lastRefresh,
+    );
+    if (input.syncState) {
+      await writeJsonFile(resolveCodexAuthSyncStatePath(), input.syncState);
+    }
+    const status = await readPersistedCodexStatus("codex.login.status", input.configPath);
+    if (status.state !== "connected") {
+      throw new Error(status.lastError ?? status.message);
+    }
+    return {
+      kind: "codex.auth.import",
+      applied: true,
+      profileId: persisted.profileId,
+      email: persisted.email,
+      accountId: persisted.accountId,
+      expiresAtMs: input.bundle.expiresAtMs,
+      authModes: status.authModes,
+    };
+  } catch (error) {
+    await restoreFileSnapshots(snapshots);
+    throw error;
+  }
 }
 
 async function readPersistedCodexStatus(kind: "codex.login.start" | "codex.login.status", configPath: string): Promise<CodexLoginActionResult> {
@@ -1015,6 +1298,71 @@ export async function setCodexAuthMode(configPath: string, mode: CodexAuthMode):
     mode,
     applied: true,
     authModes: nextStatus.authModes,
+  };
+}
+
+export async function exportCodexAuthBundle(configPath: string): Promise<CodexAuthExportActionResult> {
+  return {
+    kind: "codex.auth.export",
+    bundle: await readCanonicalCodexAuthBundle(configPath),
+  };
+}
+
+export async function importCodexAuthBundle(
+  configPath: string,
+  bundle: CodexAuthBundle,
+): Promise<CodexAuthImportActionResult> {
+  return await applyCodexAuthBundle({ configPath, bundle });
+}
+
+export async function syncCodexAuthBundle(
+  configPath: string,
+  bundleVersion: number,
+  bundle: CodexAuthBundle,
+): Promise<CodexAuthSyncActionResult> {
+  const syncState = await readCodexAuthSyncState();
+  const status = await readPersistedCodexStatus("codex.login.status", configPath);
+  if (
+    syncState &&
+    syncState.bundleVersion >= bundleVersion &&
+    status.state === "connected" &&
+    status.profileId === syncState.profileId
+  ) {
+    const currentBundle = await readCanonicalCodexAuthBundle(configPath);
+    return {
+      kind: "codex.auth.sync",
+      applied: false,
+      reason: "up_to_date",
+      bundleVersion: syncState.bundleVersion,
+      profileId: currentBundle.profileId,
+      email: currentBundle.email,
+      accountId: currentBundle.accountId,
+      expiresAtMs: currentBundle.expiresAtMs,
+      authModes: status.authModes,
+    };
+  }
+
+  const imported = await applyCodexAuthBundle({
+    configPath,
+    bundle,
+    syncState: {
+      formatVersion: 1,
+      bundleVersion,
+      profileId: bundle.profileId,
+      expiresAtMs: bundle.expiresAtMs,
+      syncedAt: new Date().toISOString(),
+    },
+  });
+  return {
+    kind: "codex.auth.sync",
+    applied: true,
+    reason: "applied",
+    bundleVersion,
+    profileId: imported.profileId,
+    email: imported.email,
+    accountId: imported.accountId,
+    expiresAtMs: imported.expiresAtMs,
+    authModes: imported.authModes,
   };
 }
 

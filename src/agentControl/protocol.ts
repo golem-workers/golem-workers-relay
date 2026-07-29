@@ -26,6 +26,21 @@ const codexAuthModesSchema = z.object({
   openaiLogin: codexAuthModeStatusSchema,
   apiKey: codexAuthModeStatusSchema,
 });
+export const codexAuthBundleSchema = z
+  .object({
+    formatVersion: z.literal(1),
+    profileId: z.string().min(1),
+    accessToken: z.string().min(1),
+    refreshToken: z.string().min(1),
+    idToken: z.string().min(1),
+    expiresAtMs: z.number().int().positive(),
+    lastRefresh: z.string().min(1).nullable(),
+    email: z.string().min(1).nullable(),
+    accountId: z.string().min(1).nullable(),
+    chatgptPlanType: z.string().min(1).nullable(),
+  })
+  .strict();
+export type CodexAuthBundle = z.infer<typeof codexAuthBundleSchema>;
 const selfNudgeSettingsSchema = z.object({
   enabled: z.boolean(),
   analyzedRecentMessageCount: z.number().int().min(0).max(50),
@@ -106,6 +121,18 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("codex.auth.set"),
     mode: z.enum(["openai_login", "api_key"]),
+  }),
+  z.object({
+    kind: z.literal("codex.auth.export"),
+  }),
+  z.object({
+    kind: z.literal("codex.auth.import"),
+    bundle: codexAuthBundleSchema,
+  }),
+  z.object({
+    kind: z.literal("codex.auth.sync"),
+    bundleVersion: z.number().int().positive(),
+    bundle: codexAuthBundleSchema,
   }),
   z.object({
     kind: z.literal("github.auth.configure"),
@@ -261,6 +288,30 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     mode: z.enum(["openai_login", "api_key"]),
     applied: z.literal(true),
     authModes: codexAuthModesSchema.optional(),
+  }),
+  z.object({
+    kind: z.literal("codex.auth.export"),
+    bundle: codexAuthBundleSchema,
+  }),
+  z.object({
+    kind: z.literal("codex.auth.import"),
+    applied: z.literal(true),
+    profileId: z.string().min(1),
+    email: z.string().min(1).nullable(),
+    accountId: z.string().min(1).nullable(),
+    expiresAtMs: z.number().int().positive(),
+    authModes: codexAuthModesSchema,
+  }),
+  z.object({
+    kind: z.literal("codex.auth.sync"),
+    applied: z.boolean(),
+    reason: z.enum(["applied", "up_to_date"]),
+    bundleVersion: z.number().int().positive(),
+    profileId: z.string().min(1),
+    email: z.string().min(1).nullable(),
+    accountId: z.string().min(1).nullable(),
+    expiresAtMs: z.number().int().positive(),
+    authModes: codexAuthModesSchema,
   }),
   z.object({
     kind: z.literal("github.auth.configure"),

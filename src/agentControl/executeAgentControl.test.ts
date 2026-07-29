@@ -792,6 +792,121 @@ describe("executeAgentControl Codex login", () => {
     });
     expect(typeof authJson.last_refresh).toBe("string");
   });
+
+  it("imports a canonical Codex auth bundle into every runtime auth store", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-import-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    const codexHome = path.join(tempDir, ".codex");
+    process.env.CODEX_HOME = codexHome;
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    const accessToken =
+      "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQ3MDAwMDAwMDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3QtMTIzIiwia2hhdGdwdF9wbGFuX3R5cGUiOiJwbHVzIn19.signature";
+    const bundle = {
+      formatVersion: 1 as const,
+      profileId: "openai:user@example.com",
+      accessToken,
+      refreshToken: "refresh-token-import",
+      idToken: accessToken,
+      expiresAtMs: 4_700_000_000_000,
+      lastRefresh: "2026-07-29T07:35:00.000Z",
+      email: "user@example.com",
+      accountId: "acct-123",
+      chatgptPlanType: null,
+    };
+
+    const result = await executeAgentControl({
+      action: { kind: "codex.auth.import", bundle },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    expect(result).toMatchObject({
+      kind: "codex.auth.import",
+      applied: true,
+      profileId: "openai:user@example.com",
+      email: "user@example.com",
+      accountId: "acct-123",
+      expiresAtMs: 4_700_000_000_000,
+      authModes: {
+        openaiLogin: { available: true, active: true },
+      },
+    });
+    const codexAuthJson = JSON.parse(await fs.readFile(path.join(codexHome, "auth.json"), "utf8")) as {
+      auth_mode?: string;
+      tokens?: { refresh_token?: string };
+      last_refresh?: string;
+    };
+    expect(codexAuthJson).toMatchObject({
+      auth_mode: "chatgpt",
+      tokens: { refresh_token: "refresh-token-import" },
+      last_refresh: "2026-07-29T07:35:00.000Z",
+    });
+    const runtimeAuth = await readAgentRuntimeAuthSqlite(path.join(tempDir, "agents", "main", "agent"));
+    expect(runtimeAuth.store?.profiles?.["openai:user@example.com"]).toMatchObject({
+      type: "oauth",
+      provider: "openai",
+      refresh: "refresh-token-import",
+      expires: 4_700_000_000_000,
+    });
+    const exported = await executeAgentControl({
+      action: { kind: "codex.auth.export" },
+      configPath,
+      gateway: noopGateway,
+    });
+    expect(exported).toEqual({
+      kind: "codex.auth.export",
+      bundle,
+    });
+  });
+
+  it("syncs Codex auth bundles monotonically and skips an already applied version", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-sync-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    const codexHome = path.join(tempDir, ".codex");
+    process.env.CODEX_HOME = codexHome;
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    const accessToken =
+      "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQ3MDAwMDAwMDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3QtMTIzIn19.signature";
+    const bundle = {
+      formatVersion: 1 as const,
+      profileId: "openai:user@example.com",
+      accessToken,
+      refreshToken: "refresh-token-sync",
+      idToken: accessToken,
+      expiresAtMs: 4_700_000_000_000,
+      lastRefresh: null,
+      email: "user@example.com",
+      accountId: "acct-123",
+      chatgptPlanType: null,
+    };
+
+    const applied = await executeAgentControl({
+      action: { kind: "codex.auth.sync", bundleVersion: 7, bundle },
+      configPath,
+      gateway: noopGateway,
+    });
+    const skipped = await executeAgentControl({
+      action: { kind: "codex.auth.sync", bundleVersion: 7, bundle },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    expect(applied).toMatchObject({
+      kind: "codex.auth.sync",
+      applied: true,
+      reason: "applied",
+      bundleVersion: 7,
+    });
+    expect(skipped).toMatchObject({
+      kind: "codex.auth.sync",
+      applied: false,
+      reason: "up_to_date",
+      bundleVersion: 7,
+    });
+    const syncStateText = await fs.readFile(path.join(codexHome, "golem-auth-sync.json"), "utf8");
+    expect(syncStateText).toContain('"bundleVersion": 7');
+    expect(syncStateText).not.toContain("refresh-token-sync");
+  });
 });
 
 describe("executeAgentControl GitHub auth", () => {

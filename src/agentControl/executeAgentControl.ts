@@ -10,7 +10,14 @@ import {
   agentControlResultSchema,
   type AgentControlResult,
 } from "./protocol.js";
-import { getCodexLoginStatus, setCodexAuthMode, startCodexLogin } from "./codexLogin.js";
+import {
+  exportCodexAuthBundle,
+  getCodexLoginStatus,
+  importCodexAuthBundle,
+  setCodexAuthMode,
+  startCodexLogin,
+  syncCodexAuthBundle,
+} from "./codexLogin.js";
 import { configureGitHubAuth, getGitHubOauthStatus } from "./githubAuth.js";
 import type { ChatRunResult } from "../openclaw/chatRunner.js";
 import type { RelayInboundMessageRequest } from "../backend/types.js";
@@ -109,6 +116,16 @@ export async function executeAgentControl(input: {
                 ? await getCodexLoginStatus(input.configPath)
               : input.action.kind === "codex.auth.set"
                 ? await setCodexAuthMode(input.configPath, input.action.mode)
+              : input.action.kind === "codex.auth.export"
+                ? await exportCodexAuthBundle(input.configPath)
+              : input.action.kind === "codex.auth.import"
+                ? await importCodexAuthBundle(input.configPath, input.action.bundle)
+              : input.action.kind === "codex.auth.sync"
+                ? await syncCodexAuthBundle(
+                    input.configPath,
+                    input.action.bundleVersion,
+                    input.action.bundle,
+                  )
               : input.action.kind === "github.auth.configure"
                 ? await configureGitHubAuth(input.action)
               : input.action.kind === "github.oauth.status"

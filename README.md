@@ -202,6 +202,16 @@ Notes:
 
 Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 
+### Shared Codex authorization
+
+Agent control supports backend-only `codex.auth.export`, `codex.auth.import`, and
+`codex.auth.sync` actions. Export returns one canonical ChatGPT OAuth bundle assembled from the
+managed Codex cache and OpenClaw auth stores. Import validates signed-token identity and expiry,
+then updates `~/.codex/auth.json`, both OpenClaw `auth-profiles.json` files, OpenClaw config, and the
+runtime SQLite auth store with rollback on failure. Sync adds a non-secret local monotonic version
+marker at `~/.codex/golem-auth-sync.json`, so stale backend versions cannot replace newer
+credentials. JSON credential writes use mode `0600` and atomic rename.
+
 - `OPENCLAW_GATEWAY_WS_URL=ws://127.0.0.1:18789`
 - `OPENCLAW_GATEWAY_TOKEN=<secret>` (or `OPENCLAW_GATEWAY_PASSWORD=<secret>`)
 - `OPENCLAW_SCOPES=operator.admin` (default)
