@@ -223,6 +223,42 @@ export const relayOpenclawStatusRequestSchema = z.object({
 });
 export type RelayOpenclawStatusRequest = z.infer<typeof relayOpenclawStatusRequestSchema>;
 
+const nonnegativeFiniteNumberSchema = z.number().finite().nonnegative();
+
+export const relayAuthorizationUsageRequestSchema = z
+  .object({
+    observedAtMs: z.number().int().nonnegative(),
+    periodStart: z.string().datetime(),
+    periodEnd: z.string().datetime(),
+    providerUsage: z
+      .object({
+        provider: z.literal("openai"),
+        displayName: z.string().min(1).optional(),
+        plan: z.string().min(1).nullable().optional(),
+        windows: z.array(z.record(z.string(), z.unknown())),
+        billing: z.array(z.record(z.string(), z.unknown())),
+        error: z.string().nullable().optional(),
+      })
+      .passthrough(),
+    totals: z
+      .object({
+        inputTokens: nonnegativeFiniteNumberSchema,
+        outputTokens: nonnegativeFiniteNumberSchema,
+        cacheReadTokens: nonnegativeFiniteNumberSchema,
+        cacheWriteTokens: nonnegativeFiniteNumberSchema,
+        totalTokens: nonnegativeFiniteNumberSchema,
+        requestCount: nonnegativeFiniteNumberSchema,
+      })
+      .strict(),
+    byModel: z.array(z.record(z.string(), z.unknown())),
+    daily: z.array(z.record(z.string(), z.unknown())),
+    cacheStatus: z.record(z.string(), z.unknown()).nullable(),
+  })
+  .strict();
+export type RelayAuthorizationUsageRequest = z.infer<
+  typeof relayAuthorizationUsageRequestSchema
+>;
+
 export const acceptedResponseSchema = z.object({
   accepted: z.boolean(),
 });

@@ -79,6 +79,11 @@ export type CodexAuthSyncActionResult = {
   authModes: CodexAuthModes;
 };
 
+export type CodexAuthClearActionResult = {
+  kind: "codex.auth.clear";
+  applied: true;
+};
+
 type CodexJwtPayload = {
   exp?: unknown;
   iss?: unknown;
@@ -1245,8 +1250,17 @@ function startPendingCodexLogin(configPath: string): PendingCodexLogin {
   return session;
 }
 
-export async function startCodexLogin(configPath: string): Promise<CodexLoginActionResult> {
+export async function startCodexLogin(
+  configPath: string,
+  options?: { forceRelink?: boolean },
+): Promise<CodexLoginActionResult> {
   const existing = pendingCodexLogin;
+  if (options?.forceRelink && existing?.state === "pending") {
+    throw new Error("An OpenAI device login is already pending on this agent.");
+  }
+  if (options?.forceRelink) {
+    pendingCodexLogin = null;
+  }
   if (existing?.state === "pending") {
     await existing.ready;
     if (existing.state === "pending") {
@@ -1312,7 +1326,9 @@ export async function importCodexAuthBundle(
   configPath: string,
   bundle: CodexAuthBundle,
 ): Promise<CodexAuthImportActionResult> {
-  return await applyCodexAuthBundle({ configPath, bundle });
+  const result = await applyCodexAuthBundle({ configPath, bundle });
+  pendingCodexLogin = null;
+  return result;
 }
 
 export async function syncCodexAuthBundle(
@@ -1353,6 +1369,7 @@ export async function syncCodexAuthBundle(
       syncedAt: new Date().toISOString(),
     },
   });
+  pendingCodexLogin = null;
   return {
     kind: "codex.auth.sync",
     applied: true,
@@ -1364,6 +1381,91 @@ export async function syncCodexAuthBundle(
     expiresAtMs: imported.expiresAtMs,
     authModes: imported.authModes,
   };
+}
+
+function isOpenAiCredential(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    value.type === "oauth" &&
+    (value.provider === "openai" || value.provider === "openai-codex")
+  );
+}
+
+async function clearCodexRuntimeAuthStore(configPath: string): Promise<void> {
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    const databasePath = resolveCodexAuthProfileDatabasePath(configPath);
+    try {
+      await fs.access(databasePath);
+    } catch {
+      return;
+    }
+    const db = new DatabaseSync(databasePath);
+    try {
+      db.exec("PRAGMA busy_timeout = 5000;");
+      const rawStore = db.prepare("SELECT store_json FROM auth_profile_store WHERE store_key = ?").get("primary") as { store_json?: string } | undefined;
+      if (rawStore?.store_json) {
+        const store = readAuthProfilesStoreFromRaw(parseSqliteJsonCell(rawStore.store_json));
+        store.profiles = Object.fromEntries(
+          Object.entries(store.profiles).filter(([, value]) => !isOpenAiCredential(value)),
+        );
+        db.prepare("UPDATE auth_profile_store SET store_json = ?, updated_at = ? WHERE store_key = ?")
+          .run(JSON.stringify(store), Date.now(), "primary");
+      }
+      const rawState = db.prepare("SELECT state_json FROM auth_profile_state WHERE state_key = ?").get("primary") as { state_json?: string } | undefined;
+      if (rawState?.state_json) {
+        const state = coerceAuthProfileStateStore(parseSqliteJsonCell(rawState.state_json));
+        if (state.order) delete state.order.openai;
+        if (state.lastGood) delete state.lastGood.openai;
+        db.prepare("UPDATE auth_profile_state SET state_json = ?, updated_at = ? WHERE state_key = ?")
+          .run(JSON.stringify(state), Date.now(), "primary");
+      }
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+      throw error;
+    }
+  }
+}
+
+export async function clearCodexAuth(configPath: string): Promise<CodexAuthClearActionResult> {
+  for (const authStorePath of resolveCodexAuthStorePaths(configPath)) {
+    const store = await readAuthProfilesStore(authStorePath);
+    store.profiles = Object.fromEntries(
+      Object.entries(store.profiles).filter(([, value]) => !isOpenAiCredential(value)),
+    );
+    await writeJsonFile(authStorePath, store);
+  }
+  await clearCodexRuntimeAuthStore(configPath);
+
+  const config = await readConfigObject(configPath);
+  const auth = isRecord(config.auth) ? { ...config.auth } : {};
+  const profiles = isRecord(auth.profiles) ? { ...auth.profiles } : {};
+  for (const [profileId, profile] of Object.entries(profiles)) {
+    if (isRecord(profile) && profile.provider === "openai" && profile.mode === "oauth") {
+      delete profiles[profileId];
+    }
+  }
+  const order = isRecord(auth.order) ? { ...auth.order } : {};
+  delete order.openai;
+  auth.profiles = profiles;
+  auth.order = order;
+  await writeJsonFile(configPath, { ...config, auth });
+
+  const cliAuth = await readCodexCliAuthJson();
+  const nextCliAuth = { ...cliAuth };
+  delete nextCliAuth.tokens;
+  delete nextCliAuth.last_refresh;
+  if (normalizeString(nextCliAuth.auth_mode)?.toLowerCase() === "chatgpt") {
+    if (normalizeString(nextCliAuth.OPENAI_API_KEY)) nextCliAuth.auth_mode = "apikey";
+    else delete nextCliAuth.auth_mode;
+  }
+  await writeCodexCliAuthJson(nextCliAuth);
+  await fs.rm(resolveCodexAuthSyncStatePath(), { force: true });
+  pendingCodexLogin = null;
+  return { kind: "codex.auth.clear", applied: true };
 }
 
 export async function hasConnectedCodexLogin(configPath: string): Promise<boolean> {

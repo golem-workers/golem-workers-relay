@@ -114,6 +114,7 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("codex.login.start"),
+    forceRelink: z.boolean().optional(),
   }),
   z.object({
     kind: z.literal("codex.login.status"),
@@ -133,6 +134,9 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("codex.auth.sync"),
     bundleVersion: z.number().int().positive(),
     bundle: codexAuthBundleSchema,
+  }),
+  z.object({
+    kind: z.literal("codex.auth.clear"),
   }),
   z.object({
     kind: z.literal("github.auth.configure"),
@@ -312,6 +316,10 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     accountId: z.string().min(1).nullable(),
     expiresAtMs: z.number().int().positive(),
     authModes: codexAuthModesSchema,
+  }),
+  z.object({
+    kind: z.literal("codex.auth.clear"),
+    applied: z.literal(true),
   }),
   z.object({
     kind: z.literal("github.auth.configure"),

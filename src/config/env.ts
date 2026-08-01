@@ -39,6 +39,9 @@ const envSchema = z.object({
   RELAY_DIAGNOSTIC_NOTIFIER_JOURNAL_SYSTEM_UNITS: z.string().optional(),
   RELAY_DIAGNOSTIC_NOTIFIER_LOG_FILES: z.string().optional(),
   RELAY_DIAGNOSTIC_NOTIFIER_USER_ID: z.string().optional(),
+  RELAY_AUTHORIZATION_USAGE_ENABLED: envBooleanSchema.optional(),
+  RELAY_AUTHORIZATION_USAGE_INTERVAL_MS: z.coerce.number().int().min(60_000).max(86_400_000).optional(),
+  RELAY_AUTHORIZATION_USAGE_LOOKBACK_DAYS: z.coerce.number().int().min(1).max(365).optional(),
   RELAY_CONCURRENCY: z.coerce.number().int().min(1).max(10_000).optional(),
   RELAY_PUSH_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_PUSH_PATH: z.string().min(1).optional(),
@@ -133,6 +136,11 @@ export type RelayConfig = {
     journalSystemUnits: string[];
     logFiles: string[];
     targetUserId: string | null;
+  };
+  authorizationUsage: {
+    enabled: boolean;
+    intervalMs: number;
+    lookbackDays: number;
   };
   concurrency: number;
   pushPort: number;
@@ -268,6 +276,11 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
       ],
       logFiles: parseCsv(parsed.RELAY_DIAGNOSTIC_NOTIFIER_LOG_FILES) ?? [],
       targetUserId: parsed.RELAY_DIAGNOSTIC_NOTIFIER_USER_ID?.trim() || null,
+    },
+    authorizationUsage: {
+      enabled: parsed.RELAY_AUTHORIZATION_USAGE_ENABLED ?? true,
+      intervalMs: parsed.RELAY_AUTHORIZATION_USAGE_INTERVAL_MS ?? 300_000,
+      lookbackDays: parsed.RELAY_AUTHORIZATION_USAGE_LOOKBACK_DAYS ?? 30,
     },
     concurrency: parsed.RELAY_CONCURRENCY ?? parsed.RELAY_PUSH_MAX_CONCURRENT_REQUESTS ?? 100,
     pushPort: parsed.RELAY_PUSH_PORT ?? 18790,
@@ -419,6 +432,11 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
       logFiles: [],
       targetUserId: null,
     },
+    authorizationUsage: {
+      enabled: true,
+      intervalMs: 300_000,
+      lookbackDays: 30,
+    },
     concurrency: 100,
     pushPort: 18790,
     pushPath: "/relay/messages",
@@ -512,6 +530,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     ...overrides,
     openrouterProxy: { ...base.openrouterProxy, ...(overrides.openrouterProxy ?? {}) },
     diagnosticNotifier: { ...base.diagnosticNotifier, ...(overrides.diagnosticNotifier ?? {}) },
+    authorizationUsage: { ...base.authorizationUsage, ...(overrides.authorizationUsage ?? {}) },
     openaiProxy: { ...base.openaiProxy, ...(overrides.openaiProxy ?? {}) },
     jinaProxy: { ...base.jinaProxy, ...(overrides.jinaProxy ?? {}) },
     googleAiProxy: { ...base.googleAiProxy, ...(overrides.googleAiProxy ?? {}) },

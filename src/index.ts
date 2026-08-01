@@ -62,6 +62,7 @@ import {
 } from "./conversation/activityIndex.js";
 import { deliverSystemNotificationFromRelay } from "./conversation/systemNotificationDelivery.js";
 import { createRelayDiagnosticNotifier } from "./diagnostics/errorDiagnostics.js";
+import { createAuthorizationUsageReporter } from "./openclaw/authorizationUsageReporter.js";
 
 async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
@@ -121,6 +122,8 @@ async function main(): Promise<void> {
       relayChannelPluginGitRef: cfg.relayChannel.plugin.gitRef,
       relayChannelPluginRepoDir: cfg.relayChannel.plugin.repoDir,
       diagnosticNotifierEnabled: cfg.diagnosticNotifier.enabled,
+      authorizationUsageEnabled: cfg.authorizationUsage.enabled,
+      authorizationUsageIntervalMs: cfg.authorizationUsage.intervalMs,
     },
     "Relay starting",
   );
@@ -315,6 +318,12 @@ async function main(): Promise<void> {
 
   const stop = createStopSignal();
   await ensureGatewayConnected(gateway, stop);
+  const authorizationUsageReporter = createAuthorizationUsageReporter({
+    ...cfg.authorizationUsage,
+    gateway,
+    backend,
+  });
+  authorizationUsageReporter.start();
   const runner = chatRunner;
   if (!runner) {
     throw new Error("ChatRunner not initialized");
@@ -485,6 +494,7 @@ async function main(): Promise<void> {
           maxQueue: queueState.maxQueue,
           backendResilience,
           relayChannel: getRelayChannelHealth(),
+          authorizationUsage: authorizationUsageReporter.getState(),
         },
       };
     },
@@ -938,6 +948,7 @@ async function main(): Promise<void> {
 
   await waitForStop(stop);
   shuttingDown = true;
+  authorizationUsageReporter.stop();
   diagnosticNotifier.stop();
   selfNudgeRunner?.stop();
   queue.stopAccepting();

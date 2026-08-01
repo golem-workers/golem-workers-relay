@@ -1,11 +1,14 @@
 import { logger } from "../logger.js";
+import { z } from "zod";
 import { retryWithBackoff } from "../common/resilience/retry.js";
 import { CircuitBreaker } from "../common/resilience/circuitBreaker.js";
 import {
   type RelayInboundMessageRequest,
   type RelayOpenclawStatusRequest,
+  type RelayAuthorizationUsageRequest,
   relayInboundMessageRequestSchema,
   relayOpenclawStatusRequestSchema,
+  relayAuthorizationUsageRequestSchema,
   acceptedResponseSchema,
   relayTransportActionReconcileRequestSchema,
   relayTransportActionReconcileResponseSchema,
@@ -133,6 +136,29 @@ export class BackendClient {
       }
     });
     return { accepted: true };
+  }
+
+  async submitAuthorizationUsage(input: {
+    body: RelayAuthorizationUsageRequest;
+  }): Promise<{ accepted: true; assigned: boolean; authorizationAccountId?: string }> {
+    const url = `${this.opts.baseUrl}/api/v1/relays/authorization-usage`;
+    const body = relayAuthorizationUsageRequestSchema.parse(input.body);
+    const value = await retryWithBackoff(
+      () => postJson(url, this.opts.relayToken, body, 15_000),
+      {
+        attempts: 3,
+        baseDelayMs: [500, 1_500, 4_000],
+        jitterMs: 250,
+        shouldRetry: (err) => isRetryableBackendError(err),
+      },
+    );
+    return z
+      .object({
+        accepted: z.literal(true),
+        assigned: z.boolean(),
+        authorizationAccountId: z.string().min(1).optional(),
+      })
+      .parse(value);
   }
 
   async sendTelegramTransportAction(input: TelegramTransportActionRequest): Promise<{

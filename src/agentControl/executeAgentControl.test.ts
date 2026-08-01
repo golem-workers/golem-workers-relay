@@ -906,6 +906,20 @@ describe("executeAgentControl Codex login", () => {
     const syncStateText = await fs.readFile(path.join(codexHome, "golem-auth-sync.json"), "utf8");
     expect(syncStateText).toContain('"bundleVersion": 7');
     expect(syncStateText).not.toContain("refresh-token-sync");
+
+    const cleared = await executeAgentControl({
+      action: { kind: "codex.auth.clear" },
+      configPath,
+      gateway: noopGateway,
+    });
+    expect(cleared).toEqual({ kind: "codex.auth.clear", applied: true });
+    const afterClear = await executeAgentControl({
+      action: { kind: "codex.login.status" },
+      configPath,
+      gateway: noopGateway,
+    });
+    expect(afterClear).toMatchObject({ state: "not_logged_in" });
+    await expect(fs.access(path.join(codexHome, "golem-auth-sync.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 

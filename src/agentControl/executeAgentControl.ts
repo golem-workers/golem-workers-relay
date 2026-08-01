@@ -12,6 +12,7 @@ import {
 } from "./protocol.js";
 import {
   exportCodexAuthBundle,
+  clearCodexAuth,
   getCodexLoginStatus,
   importCodexAuthBundle,
   setCodexAuthMode,
@@ -111,7 +112,7 @@ export async function executeAgentControl(input: {
               : input.action.kind === "whatsapp.login.wait"
                 ? await waitForWhatsAppLogin(input.gateway, input.action)
               : input.action.kind === "codex.login.start"
-                ? await startCodexLogin(input.configPath)
+                ? await startCodexLogin(input.configPath, { forceRelink: input.action.forceRelink })
               : input.action.kind === "codex.login.status"
                 ? await getCodexLoginStatus(input.configPath)
               : input.action.kind === "codex.auth.set"
@@ -126,6 +127,8 @@ export async function executeAgentControl(input: {
                     input.action.bundleVersion,
                     input.action.bundle,
                   )
+              : input.action.kind === "codex.auth.clear"
+                ? await clearCodexAuth(input.configPath)
               : input.action.kind === "github.auth.configure"
                 ? await configureGitHubAuth(input.action)
               : input.action.kind === "github.oauth.status"
