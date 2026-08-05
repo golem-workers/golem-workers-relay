@@ -439,18 +439,6 @@ async function resolveCodexAuthModes(params: { loginAvailable: boolean; loginMes
   };
 }
 
-function mergeProviderOrder(existing: unknown, profileId: string): string[] {
-  const normalized = Array.isArray(existing) ? existing.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
-  return [profileId, ...normalized.filter((item) => item !== profileId)];
-}
-
-function upsertAuthProfileFirst(profiles: AuthProfilesStore["profiles"], profileId: string, credential: OAuthCredential): AuthProfilesStore["profiles"] {
-  return {
-    [profileId]: credential,
-    ...Object.fromEntries(Object.entries(profiles).filter(([existingProfileId]) => existingProfileId !== profileId)),
-  };
-}
-
 function coerceAuthProfileStateStore(value: unknown): AuthProfileStateStore {
   if (!isRecord(value)) {
     return { version: 1 };
@@ -499,6 +487,61 @@ function resolveCodexAuthProfileDatabasePath(configPath: string): string {
   return path.join(resolveCodexAgentDir(configPath), "openclaw-agent.sqlite");
 }
 
+function resolveCodexSessionsStorePath(configPath: string): string {
+  return path.join(path.dirname(configPath), "agents", MAIN_AGENT_ID, "sessions", "sessions.json");
+}
+
+function replaceOpenAiProfiles(
+  profiles: AuthProfilesStore["profiles"],
+  profileId: string,
+  credential: OAuthCredential,
+): AuthProfilesStore["profiles"] {
+  return {
+    [profileId]: credential,
+    ...Object.fromEntries(
+      Object.entries(profiles).filter(([, value]) => !isOpenAiCredential(value)),
+    ),
+  };
+}
+
+async function retargetCodexSessionAuthProfiles(
+  configPath: string,
+  profileId: string,
+): Promise<void> {
+  const sessionsPath = resolveCodexSessionsStorePath(configPath);
+  let sessions: unknown;
+  try {
+    sessions = JSON.parse(await fs.readFile(sessionsPath, "utf8")) as unknown;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  if (!isRecord(sessions)) {
+    return;
+  }
+  let changed = false;
+  for (const entry of Object.values(sessions)) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.authProfileOverride !== "string" ||
+      !entry.authProfileOverride.startsWith("openai:") ||
+      entry.authProfileOverride === profileId
+    ) {
+      continue;
+    }
+    entry.authProfileOverride = profileId;
+    entry.authProfileOverrideSource = "auto";
+    entry.authProfileOverrideCompactionCount =
+      typeof entry.compactionCount === "number" ? entry.compactionCount : 0;
+    changed = true;
+  }
+  if (changed) {
+    await writeJsonFile(sessionsPath, sessions);
+  }
+}
+
 async function updateCodexRuntimeAuthStore(input: { configPath: string; profileId: string; credential: OAuthCredential }): Promise<void> {
   const { DatabaseSync } = await import("node:sqlite");
   const databasePath = resolveCodexAuthProfileDatabasePath(input.configPath);
@@ -523,13 +566,13 @@ async function updateCodexRuntimeAuthStore(input: { configPath: string; profileI
     try {
       const rawStore = db.prepare("SELECT store_json FROM auth_profile_store WHERE store_key = ?").get("primary") as { store_json?: string } | undefined;
       const store = readAuthProfilesStoreFromRaw(parseSqliteJsonCell(rawStore?.store_json));
-      store.profiles = upsertAuthProfileFirst(store.profiles, input.profileId, input.credential);
+      store.profiles = replaceOpenAiProfiles(store.profiles, input.profileId, input.credential);
 
       const rawState = db.prepare("SELECT state_json FROM auth_profile_state WHERE state_key = ?").get("primary") as { state_json?: string } | undefined;
       const state = coerceAuthProfileStateStore(parseSqliteJsonCell(rawState?.state_json));
       state.order = {
         ...state.order,
-        openai: mergeProviderOrder(state.order?.openai, input.profileId),
+        openai: [input.profileId],
       };
       state.lastGood = {
         ...state.lastGood,
@@ -622,7 +665,7 @@ async function persistCodexCredentials(input: {
   }
   for (const authStorePath of resolveCodexAuthStorePaths(input.configPath)) {
     const authStore = await readAuthProfilesStore(authStorePath);
-    authStore.profiles = upsertAuthProfileFirst(authStore.profiles, profileId, credential);
+    authStore.profiles = replaceOpenAiProfiles(authStore.profiles, profileId, credential);
     await writeJsonFile(authStorePath, authStore);
   }
   await updateCodexRuntimeAuthStore({
@@ -638,13 +681,23 @@ async function persistCodexCredentials(input: {
   const currentAgents = isRecord(currentConfig.agents) ? currentConfig.agents : {};
   const currentDefaults = isRecord(currentAgents.defaults) ? currentAgents.defaults : {};
   const currentModels = isRecord(currentDefaults.models) ? currentDefaults.models : {};
+  const retainedProfiles = Object.fromEntries(
+    Object.entries(currentProfiles).filter(
+      ([, profile]) =>
+        !(
+          isRecord(profile) &&
+          (profile.provider === "openai" || profile.provider === "openai-codex") &&
+          profile.mode === "oauth"
+        ),
+    ),
+  );
 
   const nextConfig = {
     ...currentConfig,
     auth: {
       ...currentAuth,
       profiles: {
-        ...currentProfiles,
+        ...retainedProfiles,
         [profileId]: {
           provider: "openai",
           mode: "oauth",
@@ -653,7 +706,7 @@ async function persistCodexCredentials(input: {
       },
       order: {
         ...currentOrder,
-        openai: mergeProviderOrder(currentOrder.openai, profileId),
+        openai: [profileId],
       },
     },
     agents: {
@@ -671,6 +724,7 @@ async function persistCodexCredentials(input: {
     },
   };
   await writeJsonFile(input.configPath, nextConfig);
+  await retargetCodexSessionAuthProfiles(input.configPath, profileId);
   return {
     profileId,
     email: identity.email ?? null,
@@ -1175,6 +1229,7 @@ async function applyCodexAuthBundle(input: {
   const snapshots = await snapshotFiles([
     input.configPath,
     ...resolveCodexAuthStorePaths(input.configPath),
+    resolveCodexSessionsStorePath(input.configPath),
     resolveCodexCliAuthPath(),
     ...(input.syncState ? [resolveCodexAuthSyncStatePath()] : []),
   ]);

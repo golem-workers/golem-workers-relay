@@ -922,6 +922,22 @@ describe("executeAgentControl Codex login", () => {
       bundleVersion: 7,
     });
 
+    const sessionsPath = path.join(tempDir, "agents", "main", "sessions", "sessions.json");
+    await fs.mkdir(path.dirname(sessionsPath), { recursive: true });
+    await fs.writeFile(
+      sessionsPath,
+      JSON.stringify({
+        "agent:main:telegram:group:-100": {
+          sessionId: "session_1",
+          authProfileOverride: bundle.profileId,
+          authProfileOverrideSource: "auto",
+          authProfileOverrideCompactionCount: 2,
+          compactionCount: 3,
+        },
+      }),
+      "utf8",
+    );
+
     const switchedPayload = {
       exp: 4_700_000_000,
       "https://api.openai.com/profile": { email: "second@example.com" },
@@ -964,6 +980,29 @@ describe("executeAgentControl Codex login", () => {
     expect(syncStateText).toContain('"bundleVersion": 1');
     expect(syncStateText).toContain('"profileId": "openai:second@example.com"');
     expect(syncStateText).not.toContain("refresh-token-second");
+
+    const authStore = JSON.parse(
+      await fs.readFile(path.join(tempDir, "agents", "main", "agent", "auth-profiles.json"), "utf8"),
+    ) as { profiles: Record<string, unknown> };
+    expect(Object.keys(authStore.profiles)).toEqual(["openai:second@example.com"]);
+    const switchedConfig = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+      auth: { profiles: Record<string, unknown>; order: { openai: string[] } };
+    };
+    expect(Object.keys(switchedConfig.auth.profiles)).toEqual(["openai:second@example.com"]);
+    expect(switchedConfig.auth.order.openai).toEqual(["openai:second@example.com"]);
+    const runtimeAuth = await readAgentRuntimeAuthSqlite(path.join(tempDir, "agents", "main", "agent"));
+    expect(Object.keys(runtimeAuth.store?.profiles ?? {})).toEqual(["openai:second@example.com"]);
+    expect(runtimeAuth.state?.order?.openai).toEqual(["openai:second@example.com"]);
+    expect(runtimeAuth.state?.lastGood?.openai).toBe("openai:second@example.com");
+    const sessions = JSON.parse(await fs.readFile(sessionsPath, "utf8")) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(sessions["agent:main:telegram:group:-100"]).toMatchObject({
+      authProfileOverride: "openai:second@example.com",
+      authProfileOverrideSource: "auto",
+      authProfileOverrideCompactionCount: 3,
+    });
 
     const cleared = await executeAgentControl({
       action: { kind: "codex.auth.clear" },

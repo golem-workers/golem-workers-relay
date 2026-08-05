@@ -212,7 +212,9 @@ runtime SQLite auth store with rollback on failure. Sync adds a non-secret local
 `~/.codex/golem-auth-sync.json`. Versions are monotonic within one OpenAI profile; switching to a
 different profile applies even when its account-local version is lower. JSON credential writes use
 mode `0600` and atomic rename. Runtime SQLite rollback snapshots only two authorization rows, so
-sync does not copy or buffer the agent's potentially multi-gigabyte conversation database.
+sync does not copy or buffer the agent's potentially multi-gigabyte conversation database. Sync
+also replaces older OpenAI OAuth profiles and retargets existing session auth pins to the assigned
+profile, preventing long-lived Telegram or cron sessions from continuing on a previous login.
 
 - `OPENCLAW_GATEWAY_WS_URL=ws://127.0.0.1:18789`
 - `OPENCLAW_GATEWAY_TOKEN=<secret>` (or `OPENCLAW_GATEWAY_PASSWORD=<secret>`)
