@@ -182,6 +182,19 @@ type FileSnapshot = {
   contents: Buffer | null;
 };
 
+type CodexRuntimeAuthRow = {
+  json: string;
+  updatedAt: number;
+};
+
+type CodexRuntimeAuthSnapshot = {
+  databaseExisted: boolean;
+  storeTableExisted: boolean;
+  stateTableExisted: boolean;
+  storeRow: CodexRuntimeAuthRow | null;
+  stateRow: CodexRuntimeAuthRow | null;
+};
+
 let pendingCodexLogin: PendingCodexLogin | null = null;
 
 export const __testing = {
@@ -1011,6 +1024,118 @@ async function restoreFileSnapshots(snapshots: FileSnapshot[]): Promise<void> {
   }
 }
 
+async function snapshotCodexRuntimeAuthStore(
+  configPath: string,
+): Promise<CodexRuntimeAuthSnapshot> {
+  const databasePath = resolveCodexAuthProfileDatabasePath(configPath);
+  try {
+    await fs.access(databasePath);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return {
+        databaseExisted: false,
+        storeTableExisted: false,
+        stateTableExisted: false,
+        storeRow: null,
+        stateRow: null,
+      };
+    }
+    throw error;
+  }
+
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    db.exec("PRAGMA busy_timeout = 5000;");
+    const tableExists = (name: string) =>
+      Boolean(
+        db
+          .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?")
+          .get(name),
+      );
+    const storeTableExisted = tableExists("auth_profile_store");
+    const stateTableExisted = tableExists("auth_profile_state");
+    const store = storeTableExisted
+      ? (db
+          .prepare("SELECT store_json, updated_at FROM auth_profile_store WHERE store_key = ?")
+          .get("primary") as { store_json?: string; updated_at?: number } | undefined)
+      : undefined;
+    const state = stateTableExisted
+      ? (db
+          .prepare("SELECT state_json, updated_at FROM auth_profile_state WHERE state_key = ?")
+          .get("primary") as { state_json?: string; updated_at?: number } | undefined)
+      : undefined;
+    return {
+      databaseExisted: true,
+      storeTableExisted,
+      stateTableExisted,
+      storeRow:
+        typeof store?.store_json === "string" && typeof store.updated_at === "number"
+          ? { json: store.store_json, updatedAt: store.updated_at }
+          : null,
+      stateRow:
+        typeof state?.state_json === "string" && typeof state.updated_at === "number"
+          ? { json: state.state_json, updatedAt: state.updated_at }
+          : null,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+async function restoreCodexRuntimeAuthStore(
+  configPath: string,
+  snapshot: CodexRuntimeAuthSnapshot,
+): Promise<void> {
+  const databasePath = resolveCodexAuthProfileDatabasePath(configPath);
+  if (!snapshot.databaseExisted) {
+    await fs.rm(databasePath, { force: true });
+    await fs.rm(`${databasePath}-shm`, { force: true });
+    await fs.rm(`${databasePath}-wal`, { force: true });
+    return;
+  }
+
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(databasePath);
+  try {
+    db.exec("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE;");
+    try {
+      if (snapshot.storeTableExisted) {
+        if (snapshot.storeRow) {
+          db.prepare(
+            `INSERT INTO auth_profile_store (store_key, store_json, updated_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(store_key) DO UPDATE SET store_json = excluded.store_json, updated_at = excluded.updated_at`,
+          ).run("primary", snapshot.storeRow.json, snapshot.storeRow.updatedAt);
+        } else {
+          db.prepare("DELETE FROM auth_profile_store WHERE store_key = ?").run("primary");
+        }
+      } else {
+        db.exec("DROP TABLE IF EXISTS auth_profile_store;");
+      }
+      if (snapshot.stateTableExisted) {
+        if (snapshot.stateRow) {
+          db.prepare(
+            `INSERT INTO auth_profile_state (state_key, state_json, updated_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(state_key) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at`,
+          ).run("primary", snapshot.stateRow.json, snapshot.stateRow.updatedAt);
+        } else {
+          db.prepare("DELETE FROM auth_profile_state WHERE state_key = ?").run("primary");
+        }
+      } else {
+        db.exec("DROP TABLE IF EXISTS auth_profile_state;");
+      }
+      db.exec("COMMIT;");
+    } catch (error) {
+      db.exec("ROLLBACK;");
+      throw error;
+    }
+  } finally {
+    db.close();
+  }
+}
+
 async function readCodexAuthSyncState(): Promise<CodexAuthSyncState | null> {
   try {
     const parsed: unknown = JSON.parse(await fs.readFile(resolveCodexAuthSyncStatePath(), "utf8"));
@@ -1046,10 +1171,10 @@ async function applyCodexAuthBundle(input: {
   if (canonicalProfileId !== input.bundle.profileId) {
     throw new Error("OpenAI auth bundle profile does not match its signed token identity.");
   }
+  const runtimeAuthSnapshot = await snapshotCodexRuntimeAuthStore(input.configPath);
   const snapshots = await snapshotFiles([
     input.configPath,
     ...resolveCodexAuthStorePaths(input.configPath),
-    resolveCodexAuthProfileDatabasePath(input.configPath),
     resolveCodexCliAuthPath(),
     ...(input.syncState ? [resolveCodexAuthSyncStatePath()] : []),
   ]);
@@ -1091,6 +1216,7 @@ async function applyCodexAuthBundle(input: {
     };
   } catch (error) {
     await restoreFileSnapshots(snapshots);
+    await restoreCodexRuntimeAuthStore(input.configPath, runtimeAuthSnapshot);
     throw error;
   }
 }
@@ -1340,6 +1466,7 @@ export async function syncCodexAuthBundle(
   const status = await readPersistedCodexStatus("codex.login.status", configPath);
   if (
     syncState &&
+    syncState.profileId === bundle.profileId &&
     syncState.bundleVersion >= bundleVersion &&
     status.state === "connected" &&
     status.profileId === syncState.profileId

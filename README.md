@@ -208,9 +208,11 @@ Agent control supports backend-only `codex.auth.export`, `codex.auth.import`, an
 `codex.auth.sync` actions. Export returns one canonical ChatGPT OAuth bundle assembled from the
 managed Codex cache and OpenClaw auth stores. Import validates signed-token identity and expiry,
 then updates `~/.codex/auth.json`, both OpenClaw `auth-profiles.json` files, OpenClaw config, and the
-runtime SQLite auth store with rollback on failure. Sync adds a non-secret local monotonic version
-marker at `~/.codex/golem-auth-sync.json`, so stale backend versions cannot replace newer
-credentials. JSON credential writes use mode `0600` and atomic rename.
+runtime SQLite auth store with rollback on failure. Sync adds a non-secret local version marker at
+`~/.codex/golem-auth-sync.json`. Versions are monotonic within one OpenAI profile; switching to a
+different profile applies even when its account-local version is lower. JSON credential writes use
+mode `0600` and atomic rename. Runtime SQLite rollback snapshots only two authorization rows, so
+sync does not copy or buffer the agent's potentially multi-gigabyte conversation database.
 
 - `OPENCLAW_GATEWAY_WS_URL=ws://127.0.0.1:18789`
 - `OPENCLAW_GATEWAY_TOKEN=<secret>` (or `OPENCLAW_GATEWAY_PASSWORD=<secret>`)

@@ -880,6 +880,24 @@ describe("executeAgentControl Codex login", () => {
       chatgptPlanType: null,
     };
 
+    const originalReadFile = fs.readFile.bind(fs);
+    vi.spyOn(fs, "readFile").mockImplementation(async (filePath, ...args) => {
+      const normalizedPath =
+        typeof filePath === "string"
+          ? filePath
+          : Buffer.isBuffer(filePath)
+            ? filePath.toString("utf8")
+            : filePath instanceof URL
+              ? filePath.pathname
+              : "";
+      if (normalizedPath.endsWith("openclaw-agent.sqlite")) {
+        throw Object.assign(new Error("File size is greater than 2 GiB"), {
+          code: "ERR_FS_FILE_TOO_LARGE",
+        });
+      }
+      return await originalReadFile(filePath, ...args);
+    });
+
     const applied = await executeAgentControl({
       action: { kind: "codex.auth.sync", bundleVersion: 7, bundle },
       configPath,
@@ -903,9 +921,49 @@ describe("executeAgentControl Codex login", () => {
       reason: "up_to_date",
       bundleVersion: 7,
     });
+
+    const switchedPayload = {
+      exp: 4_700_000_000,
+      "https://api.openai.com/profile": { email: "second@example.com" },
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "acct-456",
+      },
+    };
+    const switchedToken = [
+      Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url"),
+      Buffer.from(JSON.stringify(switchedPayload)).toString("base64url"),
+      "signature",
+    ].join(".");
+    const switched = await executeAgentControl({
+      action: {
+        kind: "codex.auth.sync",
+        bundleVersion: 1,
+        bundle: {
+          ...bundle,
+          profileId: "openai:second@example.com",
+          accessToken: switchedToken,
+          refreshToken: "refresh-token-second",
+          idToken: switchedToken,
+          email: "second@example.com",
+          accountId: "acct-456",
+        },
+      },
+      configPath,
+      gateway: noopGateway,
+    });
+    expect(switched).toMatchObject({
+      kind: "codex.auth.sync",
+      applied: true,
+      reason: "applied",
+      bundleVersion: 1,
+      profileId: "openai:second@example.com",
+      accountId: "acct-456",
+    });
+
     const syncStateText = await fs.readFile(path.join(codexHome, "golem-auth-sync.json"), "utf8");
-    expect(syncStateText).toContain('"bundleVersion": 7');
-    expect(syncStateText).not.toContain("refresh-token-sync");
+    expect(syncStateText).toContain('"bundleVersion": 1');
+    expect(syncStateText).toContain('"profileId": "openai:second@example.com"');
+    expect(syncStateText).not.toContain("refresh-token-second");
 
     const cleared = await executeAgentControl({
       action: { kind: "codex.auth.clear" },
