@@ -279,7 +279,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     },
     authorizationUsage: {
       enabled: parsed.RELAY_AUTHORIZATION_USAGE_ENABLED ?? true,
-      intervalMs: parsed.RELAY_AUTHORIZATION_USAGE_INTERVAL_MS ?? 300_000,
+      intervalMs: parsed.RELAY_AUTHORIZATION_USAGE_INTERVAL_MS ?? 3_600_000,
       lookbackDays: parsed.RELAY_AUTHORIZATION_USAGE_LOOKBACK_DAYS ?? 30,
     },
     concurrency: parsed.RELAY_CONCURRENCY ?? parsed.RELAY_PUSH_MAX_CONCURRENT_REQUESTS ?? 100,
@@ -434,7 +434,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     },
     authorizationUsage: {
       enabled: true,
-      intervalMs: 300_000,
+      intervalMs: 3_600_000,
       lookbackDays: 30,
     },
     concurrency: 100,

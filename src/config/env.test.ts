@@ -63,6 +63,25 @@ describe("loadRelayConfig", () => {
     expect(custom.selfNudgeTaskTimeoutMs).toBe(45_000);
   });
 
+  it("reports authorization usage hourly by default and allows override", () => {
+    const def = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+    });
+    expect(def.authorizationUsage).toEqual({
+      enabled: true,
+      intervalMs: 3_600_000,
+      lookbackDays: 30,
+    });
+
+    const custom = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+      RELAY_AUTHORIZATION_USAGE_INTERVAL_MS: "7200000",
+    });
+    expect(custom.authorizationUsage.intervalMs).toBe(7_200_000);
+  });
+
   it("processes relay messages concurrently by default and allows override", () => {
     const def = loadRelayConfig({
       RELAY_TOKEN: "t",
