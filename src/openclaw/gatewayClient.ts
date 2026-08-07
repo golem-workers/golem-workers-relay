@@ -196,6 +196,7 @@ export class GatewayClient {
   private tickIntervalMs = 30_000;
   private tickTimeoutMultiplier = 10;
   private tickTimer: NodeJS.Timeout | null = null;
+  private lastTickWatchdogCheckMs: number | null = null;
   private connectReadyTimeout: NodeJS.Timeout | null = null;
 
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -234,6 +235,7 @@ export class GatewayClient {
     this.reconnectTimer = null;
     if (this.tickTimer) clearInterval(this.tickTimer);
     this.tickTimer = null;
+    this.lastTickWatchdogCheckMs = null;
     this.clearConnectReadyTimeout();
     this.ws?.close();
     this.ws = null;
@@ -564,10 +566,32 @@ export class GatewayClient {
   private startTickWatchdog(intervalMs: number): void {
     this.tickIntervalMs = intervalMs;
     if (this.tickTimer) clearInterval(this.tickTimer);
+    this.lastTickWatchdogCheckMs = Date.now();
+    const watchdogPollIntervalMs = Math.max(250, Math.min(1000, Math.floor(intervalMs / 2)));
+    const runtimePauseThresholdMs = Math.max(5000, Math.min(15_000, intervalMs));
     this.tickTimer = setInterval(() => {
       if (!this.ws) return;
       if (!this.lastTickMs) return;
-      const elapsed = Date.now() - this.lastTickMs;
+      const nowMs = Date.now();
+      const watchdogGapMs = this.lastTickWatchdogCheckMs == null ? 0 : nowMs - this.lastTickWatchdogCheckMs;
+      this.lastTickWatchdogCheckMs = nowMs;
+      if (watchdogGapMs > runtimePauseThresholdMs) {
+        logger.warn(
+          {
+            watchdogGapMs,
+            runtimePauseThresholdMs,
+            tickIntervalMs: this.tickIntervalMs,
+          },
+          "Runtime pause detected, terminating stale gateway socket"
+        );
+        try {
+          this.ws.terminate();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      const elapsed = nowMs - this.lastTickMs;
       const timeoutMs = this.tickIntervalMs * this.tickTimeoutMultiplier;
       if (elapsed > timeoutMs) {
         logger.warn(
@@ -585,7 +609,7 @@ export class GatewayClient {
           // ignore
         }
       }
-    }, Math.max(1000, Math.floor(intervalMs / 2)));
+    }, watchdogPollIntervalMs);
   }
 
   private armConnectReadyTimeout(): void {

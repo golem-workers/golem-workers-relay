@@ -432,6 +432,62 @@ describe("GatewayClient", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("reconnects immediately after a runtime pause instead of waiting for the tick timeout", async () => {
+    const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
+
+    let connections = 0;
+    const { wss, port } = startServer((ws) => {
+      connections += 1;
+      const connectionNo = connections;
+      ws.send(
+        JSON.stringify({
+          type: "event",
+          event: "connect.challenge",
+          payload: { nonce: `nonce${connectionNo}`, ts: 1 },
+        })
+      );
+      ws.on("message", (data) => {
+        const frame = JSON.parse(rawDataToString(data)) as { type: string; id: string; method: string };
+        if (frame.type !== "req" || frame.method !== "connect") return;
+        ws.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              type: "hello-ok",
+              protocol: 3,
+              policy: { tickIntervalMs: 1000, maxPayload: 1, maxBufferedBytes: 1 },
+              server: { version: "x", connId: `c${connectionNo}` },
+              snapshot: {},
+              features: { methods: [], events: [] },
+            },
+          })
+        );
+      });
+    });
+
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      tickTimeoutMultiplier: 300,
+    });
+    await client.start();
+    (client as unknown as { lastTickWatchdogCheckMs: number }).lastTickWatchdogCheckMs = Date.now() - 10_000;
+
+    await vi.waitFor(
+      () => {
+        expect(connections).toBe(2);
+        expect(client.isReady()).toBe(true);
+      },
+      { timeout: 3000, interval: 25 }
+    );
+
+    client.stop();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+
   it("uses the configured tick timeout multiplier before closing the socket", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
