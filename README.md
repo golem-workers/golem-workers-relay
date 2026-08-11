@@ -214,7 +214,12 @@ different profile applies even when its account-local version is lower. JSON cre
 mode `0600` and atomic rename. Runtime SQLite rollback snapshots only two authorization rows, so
 sync does not copy or buffer the agent's potentially multi-gigabyte conversation database. Sync
 also replaces older OpenAI OAuth profiles and retargets existing session auth pins to the assigned
-profile, preventing long-lived Telegram or cron sessions from continuing on a previous login.
+profile. Import, sync, clear, auth-mode selection, and the final device-login persistence step stop
+the OpenClaw gateway before changing auth stores and restart it only after the session pins and
+credentials agree. This prevents the live gateway session cache from retaining a deleted profile or
+briefly falling through to the managed relay API-key stub during a profile switch. Clear and
+auth-mode selection remove OpenAI session pins as needed, so long-lived Telegram and cron sessions
+can resolve the next configured auth mode instead of referencing a deleted login.
 
 - `OPENCLAW_GATEWAY_WS_URL=ws://127.0.0.1:18789`
 - `OPENCLAW_GATEWAY_TOKEN=<secret>` (or `OPENCLAW_GATEWAY_PASSWORD=<secret>`)

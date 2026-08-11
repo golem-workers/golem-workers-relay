@@ -30,6 +30,7 @@ const CHANNELS_STATUS_TIMEOUT_MS = 15_000;
 const FILE_LOCK_RETRY_ATTEMPTS = 50;
 const FILE_LOCK_RETRY_DELAY_MS = 100;
 const VALID_THINKING_DEFAULTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive"]);
+let codexAuthMutationQueue: Promise<void> = Promise.resolve();
 
 type GatewayLike = {
   request(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
@@ -112,23 +113,23 @@ export async function executeAgentControl(input: {
               : input.action.kind === "whatsapp.login.wait"
                 ? await waitForWhatsAppLogin(input.gateway, input.action)
               : input.action.kind === "codex.login.start"
-                ? await startCodexLogin(input.configPath, { forceRelink: input.action.forceRelink })
+                ? await startCodexLogin(
+                    input.configPath,
+                    { forceRelink: input.action.forceRelink },
+                    runCodexAuthMutationWithGatewayPaused,
+                  )
               : input.action.kind === "codex.login.status"
                 ? await getCodexLoginStatus(input.configPath)
               : input.action.kind === "codex.auth.set"
-                ? await setCodexAuthMode(input.configPath, input.action.mode)
+                ? await setCodexAuthWithGatewayPaused(input.configPath, input.action)
               : input.action.kind === "codex.auth.export"
                 ? await exportCodexAuthBundle(input.configPath)
               : input.action.kind === "codex.auth.import"
-                ? await importCodexAuthBundle(input.configPath, input.action.bundle)
+                ? await importCodexAuthWithGatewayPaused(input.configPath, input.action)
               : input.action.kind === "codex.auth.sync"
-                ? await syncCodexAuthBundle(
-                    input.configPath,
-                    input.action.bundleVersion,
-                    input.action.bundle,
-                  )
+                ? await syncCodexAuthWithGatewayPaused(input.configPath, input.action)
               : input.action.kind === "codex.auth.clear"
-                ? await clearCodexAuth(input.configPath)
+                ? await runCodexAuthMutationWithGatewayPaused(() => clearCodexAuth(input.configPath))
               : input.action.kind === "github.auth.configure"
                 ? await configureGitHubAuth(input.action)
               : input.action.kind === "github.oauth.status"
@@ -895,6 +896,90 @@ async function restartGatewayService(): Promise<Extract<AgentControlResult, { ki
   }
   const state = await readGatewayState();
   throw new AgentControlError("GATEWAY_RESTART_FAILED", "OpenClaw gateway did not become healthy after restart", state);
+}
+
+function runCodexAuthMutationWithGatewayPaused<T>(operation: () => Promise<T>): Promise<T> {
+  const queued = codexAuthMutationQueue.then(
+    () => runCodexAuthMutationWithGatewayPausedNow(operation),
+    () => runCodexAuthMutationWithGatewayPausedNow(operation),
+  );
+  codexAuthMutationQueue = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  return queued;
+}
+
+async function importCodexAuthWithGatewayPaused(
+  configPath: string,
+  action: Extract<AgentControlAction, { kind: "codex.auth.import" }>,
+): Promise<AgentControlResult> {
+  return await runCodexAuthMutationWithGatewayPaused(() => importCodexAuthBundle(configPath, action.bundle));
+}
+
+async function setCodexAuthWithGatewayPaused(
+  configPath: string,
+  action: Extract<AgentControlAction, { kind: "codex.auth.set" }>,
+): Promise<AgentControlResult> {
+  return await runCodexAuthMutationWithGatewayPaused(() =>
+    setCodexAuthMode(configPath, action.mode),
+  );
+}
+
+async function syncCodexAuthWithGatewayPaused(
+  configPath: string,
+  action: Extract<AgentControlAction, { kind: "codex.auth.sync" }>,
+): Promise<AgentControlResult> {
+  return await runCodexAuthMutationWithGatewayPaused(() =>
+    syncCodexAuthBundle(configPath, action.bundleVersion, action.bundle),
+  );
+}
+
+function describeUnknownError(error: unknown): string | null {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (error === null || error === undefined) return null;
+  if (typeof error === "number" || typeof error === "boolean" || typeof error === "bigint") {
+    return String(error);
+  }
+  return "Non-Error value thrown";
+}
+
+async function runCodexAuthMutationWithGatewayPausedNow<T>(operation: () => Promise<T>): Promise<T> {
+  await execSystemctl(["--user", "stop", "openclaw-gateway.service"]);
+  let operationResult!: T;
+  let operationError: unknown;
+  try {
+    operationResult = await operation();
+  } catch (error) {
+    operationError = error;
+  }
+
+  try {
+    await restartGatewayService();
+  } catch (restartError) {
+    throw new AgentControlError(
+      "CODEX_AUTH_GATEWAY_RECOVERY_FAILED",
+      "OpenClaw gateway did not recover after the Codex authorization update.",
+      {
+        operationError: describeUnknownError(operationError),
+        restartError: describeUnknownError(restartError),
+      },
+      { cause: restartError },
+    );
+  }
+
+  if (operationError) {
+    if (operationError instanceof Error) {
+      throw operationError;
+    }
+    throw new AgentControlError(
+      "CODEX_AUTH_MUTATION_FAILED",
+      "Codex authorization update failed.",
+      { operationError: describeUnknownError(operationError) },
+    );
+  }
+  return operationResult;
 }
 
 async function readGatewayState(): Promise<{ activeState: string; subState: string; result: string | null }> {

@@ -177,6 +177,8 @@ type CodexAuthSyncState = {
   syncedAt: string;
 };
 
+export type CodexAuthPersistenceGuard = <T>(operation: () => Promise<T>) => Promise<T>;
+
 type FileSnapshot = {
   filePath: string;
   contents: Buffer | null;
@@ -491,6 +493,10 @@ function resolveCodexSessionsStorePath(configPath: string): string {
   return path.join(path.dirname(configPath), "agents", MAIN_AGENT_ID, "sessions", "sessions.json");
 }
 
+function isOpenAiProfileId(profileId: string): boolean {
+  return profileId.startsWith("openai:") || profileId.startsWith("openai-codex:");
+}
+
 function replaceOpenAiProfiles(
   profiles: AuthProfilesStore["profiles"],
   profileId: string,
@@ -526,7 +532,7 @@ async function retargetCodexSessionAuthProfiles(
     if (
       !isRecord(entry) ||
       typeof entry.authProfileOverride !== "string" ||
-      !entry.authProfileOverride.startsWith("openai:") ||
+      !isOpenAiProfileId(entry.authProfileOverride) ||
       entry.authProfileOverride === profileId
     ) {
       continue;
@@ -535,6 +541,39 @@ async function retargetCodexSessionAuthProfiles(
     entry.authProfileOverrideSource = "auto";
     entry.authProfileOverrideCompactionCount =
       typeof entry.compactionCount === "number" ? entry.compactionCount : 0;
+    changed = true;
+  }
+  if (changed) {
+    await writeJsonFile(sessionsPath, sessions);
+  }
+}
+
+async function clearCodexSessionAuthProfiles(configPath: string): Promise<void> {
+  const sessionsPath = resolveCodexSessionsStorePath(configPath);
+  let sessions: unknown;
+  try {
+    sessions = JSON.parse(await fs.readFile(sessionsPath, "utf8")) as unknown;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  if (!isRecord(sessions)) {
+    return;
+  }
+  let changed = false;
+  for (const entry of Object.values(sessions)) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.authProfileOverride !== "string" ||
+      !isOpenAiProfileId(entry.authProfileOverride)
+    ) {
+      continue;
+    }
+    delete entry.authProfileOverride;
+    delete entry.authProfileOverrideSource;
+    delete entry.authProfileOverrideCompactionCount;
     changed = true;
   }
   if (changed) {
@@ -1368,7 +1407,10 @@ async function snapshotPendingSession(kind: "codex.login.start" | "codex.login.s
   });
 }
 
-function startPendingCodexLogin(configPath: string): PendingCodexLogin {
+function startPendingCodexLogin(
+  configPath: string,
+  persistenceGuard?: CodexAuthPersistenceGuard,
+): PendingCodexLogin {
   const deferred = createDeferred();
   const session: PendingCodexLogin = {
     state: "pending",
@@ -1407,8 +1449,12 @@ function startPendingCodexLogin(configPath: string): PendingCodexLogin {
         authorizationCode: authorized.authorizationCode,
         codeVerifier: authorized.codeVerifier,
       });
-      const persisted = await persistCodexCredentials({ configPath, creds });
-      await writeCodexCliChatGptAuth(persisted.tokens);
+      const persist = async () => {
+        const persisted = await persistCodexCredentials({ configPath, creds });
+        await writeCodexCliChatGptAuth(persisted.tokens);
+        return persisted;
+      };
+      const persisted = persistenceGuard ? await persistenceGuard(persist) : await persist();
       session.state = "connected";
       session.message = persisted.email ? `Connected as ${persisted.email}.` : "Codex login complete.";
       session.verificationUrl = null;
@@ -1434,6 +1480,7 @@ function startPendingCodexLogin(configPath: string): PendingCodexLogin {
 export async function startCodexLogin(
   configPath: string,
   options?: { forceRelink?: boolean },
+  persistenceGuard?: CodexAuthPersistenceGuard,
 ): Promise<CodexLoginActionResult> {
   const existing = pendingCodexLogin;
   if (options?.forceRelink && existing?.state === "pending") {
@@ -1449,7 +1496,7 @@ export async function startCodexLogin(
     }
     return await snapshotPendingSession("codex.login.start", existing);
   }
-  const session = startPendingCodexLogin(configPath);
+  const session = startPendingCodexLogin(configPath, persistenceGuard);
   await session.ready;
   if (session.state === "pending") {
     return await snapshotPendingSession("codex.login.start", session);
@@ -1465,35 +1512,45 @@ export async function getCodexLoginStatus(configPath: string): Promise<CodexLogi
 }
 
 export async function setCodexAuthMode(configPath: string, mode: CodexAuthMode): Promise<CodexAuthSetActionResult> {
-  const status = await getCodexLoginStatus(configPath);
-  const authJson = await readCodexCliAuthJson();
-  if (mode === "openai_login") {
-    if (!status.authModes.openaiLogin.available) {
-      throw new Error(status.authModes.openaiLogin.message);
+  const snapshots = await snapshotFiles([
+    resolveCodexCliAuthPath(),
+    resolveCodexSessionsStorePath(configPath),
+  ]);
+  try {
+    const status = await getCodexLoginStatus(configPath);
+    const authJson = await readCodexCliAuthJson();
+    if (mode === "openai_login") {
+      if (!status.authModes.openaiLogin.available) {
+        throw new Error(status.authModes.openaiLogin.message);
+      }
+      const tokens = await resolveCodexCliChatGptTokens(configPath);
+      if (!tokens) {
+        throw new Error("Saved OpenAI login is incomplete. Start a new device login.");
+      }
+      await writeCodexCliChatGptAuth(tokens);
+    } else {
+      const apiKey = normalizeString(authJson.OPENAI_API_KEY) || normalizeString(process.env.OPENAI_API_KEY);
+      if (!apiKey) {
+        throw new Error(status.authModes.apiKey.message);
+      }
+      await writeCodexCliAuthJson({
+        ...authJson,
+        auth_mode: "apikey",
+        OPENAI_API_KEY: apiKey,
+      });
     }
-    const tokens = await resolveCodexCliChatGptTokens(configPath);
-    if (!tokens) {
-      throw new Error("Saved OpenAI login is incomplete. Start a new device login.");
-    }
-    await writeCodexCliChatGptAuth(tokens);
-  } else {
-    const apiKey = normalizeString(authJson.OPENAI_API_KEY) || normalizeString(process.env.OPENAI_API_KEY);
-    if (!apiKey) {
-      throw new Error(status.authModes.apiKey.message);
-    }
-    await writeCodexCliAuthJson({
-      ...authJson,
-      auth_mode: "apikey",
-      OPENAI_API_KEY: apiKey,
-    });
+    await clearCodexSessionAuthProfiles(configPath);
+    const nextStatus = await readPersistedCodexStatus("codex.login.status", configPath);
+    return {
+      kind: "codex.auth.set",
+      mode,
+      applied: true,
+      authModes: nextStatus.authModes,
+    };
+  } catch (error) {
+    await restoreFileSnapshots(snapshots);
+    throw error;
   }
-  const nextStatus = await readPersistedCodexStatus("codex.login.status", configPath);
-  return {
-    kind: "codex.auth.set",
-    mode,
-    applied: true,
-    authModes: nextStatus.authModes,
-  };
 }
 
 export async function exportCodexAuthBundle(configPath: string): Promise<CodexAuthExportActionResult> {
@@ -1645,6 +1702,7 @@ export async function clearCodexAuth(configPath: string): Promise<CodexAuthClear
     else delete nextCliAuth.auth_mode;
   }
   await writeCodexCliAuthJson(nextCliAuth);
+  await clearCodexSessionAuthProfiles(configPath);
   await fs.rm(resolveCodexAuthSyncStatePath(), { force: true });
   pendingCodexLogin = null;
   return { kind: "codex.auth.clear", applied: true };

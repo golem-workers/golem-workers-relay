@@ -74,10 +74,15 @@ async function createTempStateDir() {
 async function installFakeSystemctl() {
   const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-systemctl-"));
   const scriptPath = path.join(binDir, "systemctl");
+  const logPath = path.join(binDir, "calls.log");
   await fs.writeFile(
     scriptPath,
     `#!/usr/bin/env bash
 set -eu
+printf '%s\n' "$*" >> ${JSON.stringify(logPath)}
+if [ "$#" -ge 3 ] && [ "$1" = "--user" ] && [ "$2" = "stop" ] && [ "$3" = "openclaw-gateway.service" ]; then
+  exit 0
+fi
 if [ "$#" -ge 3 ] && [ "$1" = "--user" ] && [ "$2" = "restart" ] && [ "$3" = "openclaw-gateway.service" ]; then
   exit 0
 fi
@@ -99,6 +104,7 @@ exit 1
   );
   fsSync.chmodSync(scriptPath, 0o755);
   process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+  return logPath;
 }
 
 async function readAgentRuntimeAuthSqlite(agentDir: string): Promise<{
@@ -457,6 +463,12 @@ describe("executeAgentControl WhatsApp login", () => {
 });
 
 describe("executeAgentControl Codex login", () => {
+  let systemctlLogPath: string;
+
+  beforeEach(async () => {
+    systemctlLogPath = await installFakeSystemctl();
+  });
+
   it("starts device-code login and reports the verification details", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-login-"));
     const configPath = path.join(tempDir, "openclaw.json");
@@ -740,6 +752,8 @@ describe("executeAgentControl Codex login", () => {
     await fs.mkdir(path.join(tempDir, "agents", "main", "agent"), {
       recursive: true,
     });
+    const sessionsPath = path.join(tempDir, "agents", "main", "sessions", "sessions.json");
+    await fs.mkdir(path.dirname(sessionsPath), { recursive: true });
     await fs.mkdir(codexHome, { recursive: true });
     await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
     await fs.writeFile(path.join(codexHome, "auth.json"), JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "stored-relay-token" }, null, 2), "utf8");
@@ -763,6 +777,17 @@ describe("executeAgentControl Codex login", () => {
         null,
         2,
       ),
+      "utf8",
+    );
+    await fs.writeFile(
+      sessionsPath,
+      JSON.stringify({
+        "agent:main:telegram:group:-100": {
+          authProfileOverride: "openai-codex:old@example.com",
+          authProfileOverrideSource: "auto",
+          authProfileOverrideCompactionCount: 2,
+        },
+      }),
       "utf8",
     );
 
@@ -791,6 +816,18 @@ describe("executeAgentControl Codex login", () => {
       account_id: "acct-123",
     });
     expect(typeof authJson.last_refresh).toBe("string");
+    const sessions = JSON.parse(await fs.readFile(sessionsPath, "utf8")) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(sessions["agent:main:telegram:group:-100"]).not.toHaveProperty("authProfileOverride");
+    expect(sessions["agent:main:telegram:group:-100"]).not.toHaveProperty("authProfileOverrideSource");
+    expect(sessions["agent:main:telegram:group:-100"]).not.toHaveProperty(
+      "authProfileOverrideCompactionCount",
+    );
+    const systemctlCalls = (await fs.readFile(systemctlLogPath, "utf8")).trim().split("\n");
+    expect(systemctlCalls.filter((call) => call === "--user stop openclaw-gateway.service")).toHaveLength(1);
+    expect(systemctlCalls.filter((call) => call === "--user restart openclaw-gateway.service")).toHaveLength(1);
   });
 
   it("imports a canonical Codex auth bundle into every runtime auth store", async () => {
@@ -857,6 +894,40 @@ describe("executeAgentControl Codex login", () => {
       kind: "codex.auth.export",
       bundle,
     });
+  });
+
+  it("restarts the gateway when a Codex auth mutation is rejected", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-rejected-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    process.env.CODEX_HOME = path.join(tempDir, ".codex");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+
+    await expect(
+      executeAgentControl({
+        action: {
+          kind: "codex.auth.sync",
+          bundleVersion: 1,
+          bundle: {
+            formatVersion: 1,
+            profileId: "openai:user@example.com",
+            accessToken: "expired-access-token",
+            refreshToken: "expired-refresh-token",
+            idToken: "expired-id-token",
+            expiresAtMs: 1,
+            lastRefresh: null,
+            email: "user@example.com",
+            accountId: null,
+            chatgptPlanType: null,
+          },
+        },
+        configPath,
+        gateway: noopGateway,
+      }),
+    ).rejects.toThrow("Cannot import an expired OpenAI auth bundle.");
+
+    const systemctlCalls = (await fs.readFile(systemctlLogPath, "utf8")).trim().split("\n");
+    expect(systemctlCalls.filter((call) => call === "--user stop openclaw-gateway.service")).toHaveLength(1);
+    expect(systemctlCalls.filter((call) => call === "--user restart openclaw-gateway.service")).toHaveLength(1);
   });
 
   it("syncs Codex auth bundles monotonically and skips an already applied version", async () => {
@@ -1010,6 +1081,15 @@ describe("executeAgentControl Codex login", () => {
       gateway: noopGateway,
     });
     expect(cleared).toEqual({ kind: "codex.auth.clear", applied: true });
+    const clearedSession = JSON.parse(await fs.readFile(sessionsPath, "utf8")) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(clearedSession["agent:main:telegram:group:-100"]).not.toHaveProperty("authProfileOverride");
+    expect(clearedSession["agent:main:telegram:group:-100"]).not.toHaveProperty("authProfileOverrideSource");
+    expect(clearedSession["agent:main:telegram:group:-100"]).not.toHaveProperty(
+      "authProfileOverrideCompactionCount",
+    );
     const afterClear = await executeAgentControl({
       action: { kind: "codex.login.status" },
       configPath,
@@ -1017,6 +1097,9 @@ describe("executeAgentControl Codex login", () => {
     });
     expect(afterClear).toMatchObject({ state: "not_logged_in" });
     await expect(fs.access(path.join(codexHome, "golem-auth-sync.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    const systemctlCalls = (await fs.readFile(systemctlLogPath, "utf8")).trim().split("\n");
+    expect(systemctlCalls.filter((call) => call === "--user stop openclaw-gateway.service")).toHaveLength(4);
+    expect(systemctlCalls.filter((call) => call === "--user restart openclaw-gateway.service")).toHaveLength(4);
   });
 });
 
