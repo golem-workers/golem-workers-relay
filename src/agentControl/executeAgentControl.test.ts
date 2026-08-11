@@ -896,6 +896,57 @@ describe("executeAgentControl Codex login", () => {
     });
   });
 
+  it("prefers the access-token email over a subject-only ID token when importing Codex auth", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-mixed-identity-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    process.env.CODEX_HOME = path.join(tempDir, ".codex");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    const encodeToken = (payload: Record<string, unknown>) =>
+      [
+        Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url"),
+        Buffer.from(JSON.stringify(payload)).toString("base64url"),
+        "signature",
+      ].join(".");
+    const idToken = encodeToken({
+      exp: 4_700_000_000,
+      iss: "https://auth.openai.com",
+      sub: "user-subject",
+    });
+    const accessToken = encodeToken({
+      exp: 4_700_000_000,
+      "https://api.openai.com/profile": { email: "user@example.com" },
+      "https://api.openai.com/auth": { chatgpt_account_id: "acct-123" },
+    });
+
+    const result = await executeAgentControl({
+      action: {
+        kind: "codex.auth.import",
+        bundle: {
+          formatVersion: 1,
+          profileId: "openai:user@example.com",
+          accessToken,
+          refreshToken: "refresh-token-import",
+          idToken,
+          expiresAtMs: 4_700_000_000_000,
+          lastRefresh: null,
+          email: "user@example.com",
+          accountId: "acct-123",
+          chatgptPlanType: null,
+        },
+      },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    expect(result).toMatchObject({
+      kind: "codex.auth.import",
+      applied: true,
+      profileId: "openai:user@example.com",
+      email: "user@example.com",
+      accountId: "acct-123",
+    });
+  });
+
   it("restarts the gateway when a Codex auth mutation is rejected", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-rejected-"));
     const configPath = path.join(tempDir, "openclaw.json");

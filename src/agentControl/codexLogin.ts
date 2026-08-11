@@ -688,6 +688,7 @@ async function persistCodexCredentials(input: {
   configPath: string;
   creds: DeviceCodeCredentials;
   identityToken?: string;
+  identity?: ReturnType<typeof resolveCodexAuthIdentity>;
   profileId?: string;
 }): Promise<{
   profileId: string;
@@ -695,7 +696,7 @@ async function persistCodexCredentials(input: {
   accountId: string | null;
   tokens: CodexCliChatGptTokens;
 }> {
-  const identity = resolveCodexAuthIdentity(input.identityToken ?? input.creds.access);
+  const identity = input.identity ?? resolveCodexAuthIdentity(input.identityToken ?? input.creds.access);
   const profileId = input.profileId ?? buildAuthProfileId("openai", identity.profileName);
   const credential = buildOAuthCredential({ creds: input.creds, identity });
   const tokens = buildCodexCliChatGptTokens(credential);
@@ -1006,11 +1007,12 @@ function resolveJwtExpiryMs(token: string): number | null {
 function mergeCodexAuthIdentity(primaryToken: string, fallbackToken: string): ReturnType<typeof resolveCodexAuthIdentity> {
   const primary = resolveCodexAuthIdentity(primaryToken);
   const fallback = resolveCodexAuthIdentity(fallbackToken);
+  const email = primary.email ?? fallback.email;
   return {
-    email: primary.email ?? fallback.email,
+    email,
     accountId: primary.accountId ?? fallback.accountId,
     chatgptPlanType: primary.chatgptPlanType ?? fallback.chatgptPlanType,
-    profileName: primary.profileName ?? fallback.profileName,
+    profileName: email ?? primary.profileName ?? fallback.profileName,
   };
 }
 
@@ -1280,7 +1282,7 @@ async function applyCodexAuthBundle(input: {
         refresh: input.bundle.refreshToken,
         expires: input.bundle.expiresAtMs,
       },
-      identityToken: input.bundle.idToken,
+      identity,
       profileId: input.bundle.profileId,
     });
     await writeCodexCliChatGptAuth(
