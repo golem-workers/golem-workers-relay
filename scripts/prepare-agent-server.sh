@@ -735,7 +735,16 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     echo "Unable to resolve installed OpenClaw version from ${OPENCLAW_PACKAGE_DIR}/package.json" >&2
     exit 1
   fi
-  CODEX_PLUGIN_NPM_SPEC="@openclaw/codex@${OPENCLAW_INSTALLED_VERSION}"
+  if [[ -n "${OPENCLAW_CODEX_PLUGIN_SPEC:-}" ]]; then
+    CODEX_PLUGIN_NPM_SPEC="${OPENCLAW_CODEX_PLUGIN_SPEC}"
+  else
+    CODEX_PLUGIN_VERSION="$(
+      node "${RELAY_REPO_DIR}/scripts/resolve-openclaw-codex-plugin-version.mjs" \
+        "${OPENCLAW_INSTALLED_VERSION}"
+    )"
+    CODEX_PLUGIN_NPM_SPEC="@openclaw/codex@${CODEX_PLUGIN_VERSION}"
+  fi
+  echo "Using compatible Codex plugin: ${CODEX_PLUGIN_NPM_SPEC}"
   test -x "${GLOBAL_PNPM_ROOT}/.bin/codex"
   test -x "${GLOBAL_PNPM_ROOT}/.bin/openclaw"
   ln -sfn "${GLOBAL_PNPM_ROOT}/.bin/codex" /usr/local/bin/codex

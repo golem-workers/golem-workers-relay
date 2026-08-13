@@ -5,6 +5,15 @@ import { describe, expect, it } from "vitest";
 const prepareAgentServerScriptPath = resolve(process.cwd(), "scripts/prepare-agent-server.sh");
 
 describe("prepare-agent-server snapshot preparation", () => {
+  it("resolves the Codex plugin from its own compatible npm revision stream", () => {
+    const script = readFileSync(prepareAgentServerScriptPath, "utf8");
+
+    expect(script).toContain('if [[ -n "${OPENCLAW_CODEX_PLUGIN_SPEC:-}" ]]');
+    expect(script).toContain("resolve-openclaw-codex-plugin-version.mjs");
+    expect(script).toContain('CODEX_PLUGIN_NPM_SPEC="@openclaw/codex@${CODEX_PLUGIN_VERSION}"');
+    expect(script).not.toContain('CODEX_PLUGIN_NPM_SPEC="@openclaw/codex@${OPENCLAW_INSTALLED_VERSION}"');
+  });
+
   it("bakes Google Meet browser and PulseAudio dependencies into provider snapshots", () => {
     const script = readFileSync(prepareAgentServerScriptPath, "utf8");
 
