@@ -12,9 +12,10 @@ const modelAssignmentPurposeSchema = z.enum([
   "pdf",
 ]);
 const thinkingDefaultSchema = z
-  .enum(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive"])
+  .enum(["off", "minimal", "low", "medium", "high", "xhigh", "max", "adaptive"])
   .nullable()
   .optional();
+const fastModeSchema = z.union([z.boolean(), z.literal("auto")]).nullable().optional();
 const modelFallbacksSchema = z.array(z.string().min(1));
 const modelRefStringSchema = z.string().min(1).nullable();
 const codexAuthModeStatusSchema = z.object({
@@ -91,6 +92,7 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     fallbacks: modelFallbacksSchema,
     contextTokens: z.number().int().positive().nullable().optional(),
     thinkingDefault: thinkingDefaultSchema,
+    fastMode: fastModeSchema,
   }),
   z.object({
     kind: z.literal("modelAssignments.read"),
@@ -102,6 +104,7 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     fallback: modelRefStringSchema,
     contextTokens: z.number().int().positive().nullable().optional(),
     thinkingDefault: thinkingDefaultSchema,
+    fastMode: fastModeSchema,
   }),
   z.object({
     kind: z.literal("whatsapp.login.start"),
@@ -221,6 +224,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     fallbacks: modelFallbacksSchema,
     contextTokens: z.number().int().positive().nullable(),
     thinkingDefault: thinkingDefaultSchema,
+    fastMode: fastModeSchema,
     activeState: z.string().min(1),
     subState: z.string().min(1),
     result: z.string().nullable(),
@@ -233,6 +237,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
         primary: modelRefStringSchema,
         fallback: modelRefStringSchema,
         thinkingDefault: thinkingDefaultSchema,
+        fastMode: fastModeSchema,
       })
     ),
   }),
@@ -245,6 +250,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     fallback: modelRefStringSchema,
     contextTokens: z.number().int().positive().nullable(),
     thinkingDefault: thinkingDefaultSchema,
+    fastMode: fastModeSchema,
     activeState: z.string().min(1),
     subState: z.string().min(1),
     result: z.string().nullable(),

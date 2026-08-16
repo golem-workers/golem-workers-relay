@@ -1368,6 +1368,49 @@ describe("executeAgentControl model set", () => {
     expect(config.agents?.defaults?.thinkingDefault).toBeUndefined();
   });
 
+  it("writes max thinking and Fast Mode for a Codex GPT-5.6 assignment", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-fast-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await installFakeSystemctl();
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+
+    const result = await executeAgentControl({
+      action: {
+        kind: "modelAssignment.set",
+        purpose: "main",
+        primary: "codex/gpt-5.6-sol",
+        fallback: null,
+        contextTokens: 400000,
+        thinkingDefault: "max",
+        fastMode: "auto",
+      },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+      agents?: {
+        defaults?: {
+          thinkingDefault?: string;
+          models?: Record<string, {
+            agentRuntime?: { id?: string };
+            params?: { fastMode?: boolean | "auto" };
+          }>;
+        };
+      };
+    };
+    expect(result).toMatchObject({
+      kind: "modelAssignment.set",
+      thinkingDefault: "max",
+      fastMode: "auto",
+    });
+    expect(config.agents?.defaults?.thinkingDefault).toBe("max");
+    expect(config.agents?.defaults?.models?.["openai/gpt-5.6-sol"]).toMatchObject({
+      agentRuntime: { id: "codex" },
+      params: { fastMode: "auto" },
+    });
+  });
+
   it("keeps public codex model refs when a Codex OAuth login is saved", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-codex-oauth-"));
     const configPath = path.join(tempDir, "openclaw.json");

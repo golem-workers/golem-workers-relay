@@ -29,7 +29,7 @@ const GATEWAY_RESTART_CHECK_DELAY_MS = 500;
 const CHANNELS_STATUS_TIMEOUT_MS = 15_000;
 const FILE_LOCK_RETRY_ATTEMPTS = 50;
 const FILE_LOCK_RETRY_DELAY_MS = 100;
-const VALID_THINKING_DEFAULTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive"]);
+const VALID_THINKING_DEFAULTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "adaptive"]);
 let codexAuthMutationQueue: Promise<void> = Promise.resolve();
 
 type GatewayLike = {
@@ -52,6 +52,7 @@ type StatusNudgeRunner = {
 
 type ModelAssignmentPurpose = Extract<AgentControlAction, { kind: "modelAssignment.set" }>["purpose"];
 type ModelSetThinkingDefault = Extract<AgentControlAction, { kind: "model.set" }>["thinkingDefault"];
+type ModelSetFastMode = Extract<AgentControlAction, { kind: "model.set" }>["fastMode"];
 type ModelSetFallbacks = Extract<AgentControlAction, { kind: "model.set" }>["fallbacks"];
 
 export class AgentControlError extends Error {
@@ -72,6 +73,10 @@ function readThinkingDefault(value: unknown): ModelSetThinkingDefault {
   }
   const normalized = value.trim();
   return VALID_THINKING_DEFAULTS.has(normalized) ? (normalized as NonNullable<ModelSetThinkingDefault>) : null;
+}
+
+function readFastMode(value: unknown): ModelSetFastMode {
+  return value === true || value === false || value === "auto" ? value : null;
 }
 
 export async function executeAgentControl(input: {
@@ -152,6 +157,7 @@ export async function executeAgentControl(input: {
                     fallback: input.action.fallback,
                     contextTokens: input.action.contextTokens ?? null,
                     thinkingDefault: input.action.thinkingDefault,
+                    fastMode: input.action.fastMode,
                   })
                 : input.action.kind === "chat.abortTask"
                   ? (() => {
@@ -166,6 +172,7 @@ export async function executeAgentControl(input: {
                     fallbacks: input.action.fallbacks,
                     contextTokens: input.action.contextTokens ?? null,
                     thinkingDefault: input.action.thinkingDefault,
+                    fastMode: input.action.fastMode,
                   });
   return agentControlResultSchema.parse(result);
 }
@@ -685,7 +692,8 @@ async function setModel(input: {
   model: string;
   fallbacks: ModelSetFallbacks;
   contextTokens: number | null;
-  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive" | null;
+  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "adaptive" | null;
+  fastMode?: boolean | "auto" | null;
 }): Promise<AgentControlResult> {
   const fallbacks = input.fallbacks
     .filter((item): item is string => typeof item === "string")
@@ -704,6 +712,7 @@ async function setModel(input: {
   for (const fallbackModel of storedFallbacks) {
     ensureModelRegistryEntry(defaultsCfg, fallbackModel.modelRef, fallbackModel.agentRuntimeId);
   }
+  applyModelFastMode(defaultsCfg, storedPrimaryModel.modelRef, input.fastMode);
   if (typeof input.contextTokens === "number" && Number.isFinite(input.contextTokens) && input.contextTokens > 0) {
     defaultsCfg.contextTokens = Math.floor(input.contextTokens);
   }
@@ -722,6 +731,7 @@ async function setModel(input: {
     fallbacks,
     contextTokens: input.contextTokens,
     thinkingDefault: readThinkingDefault(defaultsCfg.thinkingDefault),
+    fastMode: readModelFastMode(defaultsCfg, storedPrimaryModel.modelRef),
     activeState: restart.activeState,
     subState: restart.subState,
     result: restart.result,
@@ -797,6 +807,37 @@ function ensureModelRegistryEntry(
   modelsCfg[trimmed] = nextModel;
 }
 
+function readModelFastMode(defaultsCfg: Record<string, unknown>, modelRef: string | null): ModelSetFastMode {
+  const trimmed = String(modelRef ?? "").trim();
+  if (!trimmed) return null;
+  const modelsCfg = ensureOptionalRecord(defaultsCfg.models);
+  const modelCfg = ensureOptionalRecord(modelsCfg?.[trimmed]);
+  const paramsCfg = ensureOptionalRecord(modelCfg?.params);
+  return readFastMode(paramsCfg?.fastMode ?? paramsCfg?.fast_mode);
+}
+
+function applyModelFastMode(
+  defaultsCfg: Record<string, unknown>,
+  modelRef: string | null,
+  fastMode: boolean | "auto" | null | undefined,
+): void {
+  const trimmed = String(modelRef ?? "").trim();
+  if (!trimmed || fastMode === undefined) return;
+  ensureModelRegistryEntry(defaultsCfg, trimmed);
+  const modelsCfg = ensureRecord(defaultsCfg, "models");
+  const modelCfg = ensureRecord(modelsCfg, trimmed);
+  const paramsCfg = ensureRecord(modelCfg, "params");
+  delete paramsCfg.fast_mode;
+  if (fastMode === null) {
+    delete paramsCfg.fastMode;
+  } else {
+    paramsCfg.fastMode = fastMode;
+  }
+  if (Object.keys(paramsCfg).length === 0) {
+    delete modelCfg.params;
+  }
+}
+
 async function readModelAssignments(configPath: string): Promise<AgentControlResult> {
   const { config } = await readConfigFile(configPath);
   const agentsCfg = ensureOptionalRecord(config.agents);
@@ -820,15 +861,19 @@ async function readModelAssignments(configPath: string): Promise<AgentControlRes
       primary: mapPublicModelRef(typeof entry?.primary === "string" ? entry.primary : null, defaultsCfg),
       fallback: mapPublicModelRef(fallbackValues[0] ?? null, defaultsCfg),
       thinkingDefault: purpose === "main" ? readThinkingDefault(defaultsCfg?.thinkingDefault) : null,
+      fastMode: purpose === "main"
+        ? readModelFastMode(defaultsCfg ?? {}, typeof entry?.primary === "string" ? entry.primary : null)
+        : null,
     };
   });
   return {
     kind: "modelAssignments.read",
-    assignments: assignments.map(({ purpose, primary, fallback, thinkingDefault }) => ({
+    assignments: assignments.map(({ purpose, primary, fallback, thinkingDefault, fastMode }) => ({
       purpose,
       primary,
       fallback,
       thinkingDefault,
+      ...(fastMode !== null ? { fastMode } : {}),
     })),
   };
 }
@@ -839,7 +884,8 @@ async function setModelAssignment(input: {
   primary: string;
   fallback: string | null;
   contextTokens: number | null;
-  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive" | null;
+  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "adaptive" | null;
+  fastMode?: boolean | "auto" | null;
 }): Promise<AgentControlResult> {
   const { config } = await readConfigFile(input.configPath);
   const nextConfig = structuredClone(config);
@@ -853,6 +899,9 @@ async function setModelAssignment(input: {
   ensureModelRegistryEntry(defaultsCfg, storedPrimaryModel.modelRef, storedPrimaryModel.agentRuntimeId);
   if (storedFallback) {
     ensureModelRegistryEntry(defaultsCfg, storedFallback.modelRef, storedFallback.agentRuntimeId);
+  }
+  if (input.purpose === "main") {
+    applyModelFastMode(defaultsCfg, storedPrimaryModel.modelRef, input.fastMode);
   }
   if (input.purpose === "main" && typeof input.contextTokens === "number" && Number.isFinite(input.contextTokens) && input.contextTokens > 0) {
     defaultsCfg.contextTokens = Math.floor(input.contextTokens);
@@ -873,6 +922,9 @@ async function setModelAssignment(input: {
     fallback: input.fallback,
     contextTokens: input.contextTokens,
     thinkingDefault: input.purpose === "main" ? readThinkingDefault(defaultsCfg.thinkingDefault) : null,
+    fastMode: input.purpose === "main"
+      ? readModelFastMode(defaultsCfg, storedPrimaryModel.modelRef)
+      : null,
     activeState: restart.activeState,
     subState: restart.subState,
     result: restart.result,
