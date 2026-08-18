@@ -30,6 +30,12 @@ describe("prepare-agent-server snapshot preparation", () => {
     expect(script).toContain("command -v pacat");
   });
 
+  it("bakes sqlite3 into provider snapshots", () => {
+    const script = readFileSync(prepareAgentServerScriptPath, "utf8");
+
+    expect(script).toContain("sqlite3 \\");
+  });
+
   it("bakes the WhatsApp plugin into provider snapshots before channel warmup", () => {
     const script = readFileSync(prepareAgentServerScriptPath, "utf8");
 

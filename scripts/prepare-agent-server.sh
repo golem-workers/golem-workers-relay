@@ -591,6 +591,7 @@ main() {
     ufw \
     python3 \
     python3-pip \
+    sqlite3 \
     util-linux \
     unzip \
     ffmpeg \
