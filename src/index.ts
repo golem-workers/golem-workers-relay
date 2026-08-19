@@ -63,6 +63,12 @@ import {
 import { deliverSystemNotificationFromRelay } from "./conversation/systemNotificationDelivery.js";
 import { createRelayDiagnosticNotifier } from "./diagnostics/errorDiagnostics.js";
 import { createAuthorizationUsageReporter } from "./openclaw/authorizationUsageReporter.js";
+import { createAgentLifecycleBackend } from "./agentLifecycle/backendClient.js";
+import { createAgentLifecycleOutbox } from "./agentLifecycle/outbox.js";
+import { createAgentLifecyclePublisher } from "./agentLifecycle/publisher.js";
+import { createAgentLifecycleRelay } from "./agentLifecycle/relay.js";
+import { createAgentLifecycleSourceStore } from "./agentLifecycle/sourceStore.js";
+import { readOpenClawActiveRuns } from "./agentLifecycle/reconciliation.js";
 
 async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
@@ -133,11 +139,36 @@ async function main(): Promise<void> {
     relayToken: cfg.relayToken,
     devLogEnabled: cfg.devLogEnabled,
   });
+  let gateway: GatewayClient | null = null;
+  const agentLifecycleBackend = createAgentLifecycleBackend({
+    baseUrl: cfg.backendBaseUrl,
+    relayToken: cfg.relayToken,
+  });
+  const agentLifecycleOutbox = createAgentLifecycleOutbox();
+  const agentLifecyclePublisher = createAgentLifecyclePublisher({
+    backend: agentLifecycleBackend,
+    outbox: agentLifecycleOutbox,
+  });
+  const agentLifecycleRelay = createAgentLifecycleRelay({
+    backend: agentLifecycleBackend,
+    outbox: agentLifecycleOutbox,
+    publisher: agentLifecyclePublisher,
+    sourceStore: createAgentLifecycleSourceStore(),
+    queryActiveRuns: async () => {
+      if (!gateway) throw new Error("OpenClaw gateway is not initialized");
+      return readOpenClawActiveRuns(
+        await gateway.request(
+          "sessions.list",
+          { agentId: "main", limit: 200 },
+          { timeoutMs: 5_000 },
+        ),
+      );
+    },
+  });
   const inFlightTaskStore = createInFlightTaskStore();
   const activityIndex = createConversationActivityIndex();
   await activityIndex.load();
 
-  let gateway: GatewayClient | null = null;
   let reportOpenclawConnectionStatus: ReturnType<
     typeof createOpenclawConnectionStatusReporter
   > | null = null;
@@ -258,6 +289,7 @@ async function main(): Promise<void> {
       nodePairingAutoApprover?.handleEvent(evt);
       execApprovalAutoApprover?.handleEvent(evt);
       chatRunner?.handleEvent(evt);
+      agentLifecycleRelay.handleGatewayEvent(evt);
       void forwardGatewayEvent(evt);
     },
     onHelloOk: (hello) => {
@@ -267,6 +299,7 @@ async function main(): Promise<void> {
     },
     onConnectionStateChange: (state) => {
       chatRunner?.handleGatewayConnectionStateChange(state);
+      agentLifecycleRelay.handleGatewayConnectionStateChange(state);
       void reportOpenclawConnectionStatus(state);
     },
     devLogEnabled: cfg.devLogEnabled,

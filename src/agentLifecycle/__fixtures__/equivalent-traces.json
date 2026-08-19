@@ -1,0 +1,65 @@
+{
+  "codex": {
+    "idle": [{ "event": "thread/status/changed", "status": "idle" }],
+    "success": [
+      { "event": "turn/started", "status": "inProgress" },
+      {
+        "event": "thread/status/changed",
+        "status": "active",
+        "activeFlags": ["waitingOnApproval"]
+      },
+      {
+        "event": "thread/status/changed",
+        "status": "active",
+        "activeFlags": []
+      },
+      { "event": "turn/completed", "status": "completed" }
+    ],
+    "failure": [
+      { "event": "turn/started", "status": "inProgress" },
+      { "event": "turn/completed", "status": "failed" }
+    ],
+    "cancel": [
+      { "event": "turn/started", "status": "inProgress" },
+      { "event": "turn/completed", "status": "interrupted" }
+    ]
+  },
+  "openclaw": {
+    "idle": [{ "event": "active_run", "hasActiveRun": false }],
+    "success": [
+      { "event": "lifecycle", "phase": "start" },
+      { "event": "approval", "phase": "requested", "status": "pending" },
+      { "event": "approval", "phase": "resolved", "status": "approved" },
+      { "event": "lifecycle", "phase": "end", "livenessState": "completed" }
+    ],
+    "failure": [
+      { "event": "lifecycle", "phase": "start" },
+      { "event": "lifecycle", "phase": "error", "livenessState": "blocked" }
+    ],
+    "cancel": [
+      { "event": "lifecycle", "phase": "start" },
+      { "event": "lifecycle", "phase": "end", "aborted": true }
+    ]
+  },
+  "claude_code": {
+    "idle": [{ "event": "active_query", "active": false }],
+    "success": [
+      { "event": "hook", "hook": "UserPromptSubmit" },
+      { "event": "hook", "hook": "PermissionRequest" },
+      { "event": "hook", "hook": "PreToolUse" },
+      { "event": "hook", "hook": "Stop" }
+    ],
+    "failure": [
+      { "event": "sdk", "kind": "query_accepted" },
+      { "event": "sdk", "kind": "result", "subtype": "error_during_execution" }
+    ],
+    "cancel": [
+      { "event": "sdk", "kind": "query_accepted" },
+      {
+        "event": "sdk",
+        "kind": "interrupt",
+        "terminalReason": "aborted_streaming"
+      }
+    ]
+  }
+}
