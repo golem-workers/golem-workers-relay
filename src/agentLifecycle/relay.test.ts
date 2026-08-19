@@ -67,6 +67,7 @@ describe("agent lifecycle relay", () => {
       outbox,
       publisher,
       sourceStore,
+      subscribeLifecycleEvents: vi.fn(() => Promise.resolve()),
       generationId: () => "generation-1",
       now: () => new Date("2026-08-19T10:00:00.000Z"),
     });
@@ -93,6 +94,67 @@ describe("agent lifecycle relay", () => {
       "COMPLETED",
     ]);
     expect(pending.map((entry) => entry.event.sequence)).toEqual([1, 2]);
+  });
+
+  it("subscribes before generation activation and retries a rejected subscription", async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    const subscribeLifecycleEvents = vi
+      .fn<() => Promise<void>>()
+      .mockImplementationOnce(() => {
+        calls.push("subscribe-failed");
+        return Promise.reject(new Error("not ready"));
+      })
+      .mockImplementation(() => {
+        calls.push("subscribe");
+        return Promise.resolve();
+      });
+    const registerGeneration = vi.fn<AgentLifecycleBackend["registerGeneration"]>(
+      ({ sourceGeneration }) => {
+        calls.push("register");
+        return Promise.resolve({
+          accepted: true,
+          disposition: "ACTIVATED",
+          serverId: "server-1",
+          sourceGeneration,
+          generationOrdinal: 1,
+          activeRuns: [],
+        });
+      },
+    );
+    const relay = createAgentLifecycleRelay({
+      backend: {
+        registerGeneration,
+        submitEvent: vi.fn<AgentLifecycleBackend["submitEvent"]>(),
+      },
+      outbox: {
+        enqueue: vi.fn<AgentLifecycleOutbox["enqueue"]>(),
+        list: () => Promise.resolve([]),
+        acknowledge: vi.fn<AgentLifecycleOutbox["acknowledge"]>(),
+        quarantine: vi.fn<AgentLifecycleOutbox["quarantine"]>(),
+      },
+      publisher: {
+        publish: vi.fn(),
+        drain: () =>
+          Promise.resolve({ acknowledged: 0, pending: 0, blocked: false }),
+      },
+      sourceStore: {
+        load: () => Promise.resolve(null),
+        save: () => Promise.resolve(),
+      },
+      subscribeLifecycleEvents,
+      generationId: () => "generation-1",
+    });
+
+    relay.handleGatewayConnectionStateChange({ connected: true });
+    await relay.flush();
+    expect(registerGeneration).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await relay.flush();
+
+    expect(calls).toEqual(["subscribe-failed", "subscribe", "register"]);
+    expect(registerGeneration).toHaveBeenCalledOnce();
   });
 
   it("reconciles a disappeared run once on connection without polling", async () => {

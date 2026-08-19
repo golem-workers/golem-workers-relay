@@ -154,6 +154,21 @@ async function main(): Promise<void> {
     outbox: agentLifecycleOutbox,
     publisher: agentLifecyclePublisher,
     sourceStore: createAgentLifecycleSourceStore(),
+    subscribeLifecycleEvents: async () => {
+      if (!gateway) throw new Error("OpenClaw gateway is not initialized");
+      const response = await gateway.request(
+        "sessions.subscribe",
+        {},
+        { timeoutMs: 5_000 },
+      );
+      if (
+        !response ||
+        typeof response !== "object" ||
+        (response as { subscribed?: unknown }).subscribed !== true
+      ) {
+        throw new Error("OpenClaw session lifecycle subscription was rejected");
+      }
+    },
     queryActiveRuns: async () => {
       if (!gateway) throw new Error("OpenClaw gateway is not initialized");
       return readOpenClawActiveRuns(

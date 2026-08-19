@@ -16,6 +16,31 @@ const agentEventPayloadSchema = z
   })
   .passthrough();
 
+const sessionsChangedPayloadSchema = z
+  .object({
+    sessionKey: z.string().min(1),
+    sessionId: z.string().min(1).optional(),
+    agentId: z.string().min(1).optional(),
+    phase: z.enum(["start", "end", "error"]),
+    runId: z.string().min(1),
+    ts: z.number().finite().optional(),
+    status: z
+      .enum(["running", "done", "failed", "killed", "timeout"])
+      .optional(),
+    abortedLastRun: z.boolean().optional(),
+    session: z
+      .object({
+        sessionId: z.string().min(1).optional(),
+        status: z
+          .enum(["running", "done", "failed", "killed", "timeout"])
+          .optional(),
+        abortedLastRun: z.boolean().optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
 export type OpenClawLifecycleSignal = Readonly<{
   signal: unknown;
   sessionId: string;
@@ -27,6 +52,9 @@ export type OpenClawLifecycleSignal = Readonly<{
 export function observeOpenClawLifecycleFrame(
   frame: EventFrame,
 ): OpenClawLifecycleSignal | null {
+  if (frame.event === "sessions.changed") {
+    return observeSessionsChangedFrame(frame);
+  }
   if (frame.event !== "agent") return null;
   const parsed = agentEventPayloadSchema.safeParse(frame.payload);
   if (!parsed.success) return null;
@@ -96,6 +124,42 @@ export function observeOpenClawLifecycleFrame(
   }
 
   return null;
+}
+
+function observeSessionsChangedFrame(
+  frame: EventFrame,
+): OpenClawLifecycleSignal | null {
+  const parsed = sessionsChangedPayloadSchema.safeParse(frame.payload);
+  if (!parsed.success) return null;
+  const payload = parsed.data;
+  const persistedStatus = payload.status ?? payload.session?.status;
+  const waiting = payload.phase !== "start" && persistedStatus === "running";
+  const occurredAt = new Date(
+    typeof payload.ts === "number" && Number.isFinite(payload.ts)
+      ? payload.ts
+      : Date.now(),
+  ).toISOString();
+
+  return {
+    sessionId: boundedIdentifier(
+      payload.sessionId ?? payload.session?.sessionId ?? payload.sessionKey,
+    ),
+    runId: boundedIdentifier(payload.runId),
+    ...(payload.agentId
+      ? { agentId: boundedIdentifier(payload.agentId) }
+      : {}),
+    occurredAt,
+    signal: {
+      event: "lifecycle",
+      phase: payload.phase,
+      ...(payload.abortedLastRun === true ||
+      payload.session?.abortedLastRun === true
+        ? { aborted: true }
+        : {}),
+      ...(waiting ? { yielded: true, paused: true } : {}),
+      ...(persistedStatus ? { persistedStatus } : {}),
+    },
+  };
 }
 
 function readPersistedStatus(

@@ -31,6 +31,7 @@ export function createAgentLifecycleRelay(input: {
   outbox: AgentLifecycleOutbox;
   publisher: AgentLifecyclePublisher;
   sourceStore: AgentLifecycleSourceStore;
+  subscribeLifecycleEvents?: () => Promise<void>;
   queryActiveRuns?: () => Promise<AgentLifecycleActiveRun[]>;
   now?: () => Date;
   generationId?: () => string;
@@ -83,10 +84,30 @@ export function createAgentLifecycleRelay(input: {
       retryTimer = null;
       const nextTrigger = retryTrigger ?? "ANOMALY";
       retryTrigger = null;
-      enqueue(() => activateGeneration(nextTrigger));
+      enqueue(() => activateConnected(nextTrigger));
     }, delay);
     retryTimer.unref?.();
   };
+
+  async function activateConnected(
+    trigger: ActivationTrigger = "STARTUP_OR_RECONNECT",
+  ): Promise<void> {
+    if (!connected) return;
+    try {
+      await input.subscribeLifecycleEvents?.();
+    } catch (error) {
+      logger.warn(
+        {
+          event: "agent_lifecycle_subscription_failed",
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "OpenClaw lifecycle subscription deferred",
+      );
+      scheduleActivationRetry(trigger);
+      return;
+    }
+    await activateGeneration(trigger);
+  }
 
   const markActivationConverged = (): void => {
     retryAttempt = 0;
@@ -339,7 +360,7 @@ export function createAgentLifecycleRelay(input: {
       if (state.connected === connected) return;
       connected = state.connected;
       if (state.connected) {
-        enqueue(activateGeneration);
+        enqueue(activateConnected);
       }
     },
 

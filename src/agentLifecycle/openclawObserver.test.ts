@@ -60,4 +60,91 @@ describe("OpenClaw lifecycle frame observer", () => {
     });
     expect(chatter).toBeNull();
   });
+
+  it("extracts subscribed session lifecycle start and terminal events", () => {
+    const start = observeOpenClawLifecycleFrame({
+      type: "event",
+      event: "sessions.changed",
+      payload: {
+        sessionKey: "agent:main:telegram:group:1",
+        sessionId: "session-1",
+        agentId: "main",
+        phase: "start",
+        runId: "run-1",
+        ts: Date.parse("2026-08-19T10:00:00.000Z"),
+        status: "running",
+      },
+    });
+    const terminal = observeOpenClawLifecycleFrame({
+      type: "event",
+      event: "sessions.changed",
+      payload: {
+        sessionKey: "agent:main:telegram:group:1",
+        agentId: "main",
+        phase: "end",
+        runId: "run-1",
+        ts: Date.parse("2026-08-19T10:00:05.000Z"),
+        status: "done",
+        session: { sessionId: "session-1", status: "done" },
+      },
+    });
+
+    expect(start).toEqual({
+      runId: "run-1",
+      sessionId: "session-1",
+      agentId: "main",
+      occurredAt: "2026-08-19T10:00:00.000Z",
+      signal: {
+        event: "lifecycle",
+        phase: "start",
+        persistedStatus: "running",
+      },
+    });
+    expect(terminal).toEqual({
+      runId: "run-1",
+      sessionId: "session-1",
+      agentId: "main",
+      occurredAt: "2026-08-19T10:00:05.000Z",
+      signal: {
+        event: "lifecycle",
+        phase: "end",
+        persistedStatus: "done",
+      },
+    });
+  });
+
+  it("maps a yielded subscribed session event to the native waiting signal", () => {
+    const result = observeOpenClawLifecycleFrame({
+      type: "event",
+      event: "sessions.changed",
+      payload: {
+        sessionKey: "agent:main:main",
+        phase: "end",
+        runId: "run-waiting",
+        status: "running",
+      },
+    });
+
+    expect(result?.signal).toEqual({
+      event: "lifecycle",
+      phase: "end",
+      yielded: true,
+      paused: true,
+      persistedStatus: "running",
+    });
+  });
+
+  it("ignores non-lifecycle session changes", () => {
+    const result = observeOpenClawLifecycleFrame({
+      type: "event",
+      event: "sessions.changed",
+      payload: {
+        sessionKey: "agent:main:main",
+        phase: "message",
+        runId: "run-1",
+      },
+    });
+
+    expect(result).toBeNull();
+  });
 });
