@@ -42,6 +42,11 @@ const envSchema = z.object({
   RELAY_AUTHORIZATION_USAGE_ENABLED: envBooleanSchema.optional(),
   RELAY_AUTHORIZATION_USAGE_INTERVAL_MS: z.coerce.number().int().min(60_000).max(86_400_000).optional(),
   RELAY_AUTHORIZATION_USAGE_LOOKBACK_DAYS: z.coerce.number().int().min(1).max(365).optional(),
+  RELAY_CRON_INVENTORY_ENABLED: envBooleanSchema.optional(),
+  RELAY_CRON_INVENTORY_INTERVAL_MS: z.coerce.number().int().min(60_000).max(86_400_000).optional(),
+  RELAY_CRON_INVENTORY_INITIAL_JITTER_MS: z.coerce.number().int().min(0).max(300_000).optional(),
+  RELAY_CRON_INVENTORY_RETRY_BASE_MS: z.coerce.number().int().min(100).max(300_000).optional(),
+  RELAY_CRON_INVENTORY_RETRY_MAX_MS: z.coerce.number().int().min(1_000).max(86_400_000).optional(),
   RELAY_CONCURRENCY: z.coerce.number().int().min(1).max(10_000).optional(),
   RELAY_PUSH_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_PUSH_PATH: z.string().min(1).optional(),
@@ -141,6 +146,14 @@ export type RelayConfig = {
     enabled: boolean;
     intervalMs: number;
     lookbackDays: number;
+  };
+  cronInventory: {
+    enabled: boolean;
+    intervalMs: number;
+    initialJitterMs: number;
+    retryBaseMs: number;
+    retryMaxMs: number;
+    collectorVersion: string;
   };
   concurrency: number;
   pushPort: number;
@@ -281,6 +294,14 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
       enabled: parsed.RELAY_AUTHORIZATION_USAGE_ENABLED ?? true,
       intervalMs: parsed.RELAY_AUTHORIZATION_USAGE_INTERVAL_MS ?? 3_600_000,
       lookbackDays: parsed.RELAY_AUTHORIZATION_USAGE_LOOKBACK_DAYS ?? 30,
+    },
+    cronInventory: {
+      enabled: parsed.RELAY_CRON_INVENTORY_ENABLED ?? true,
+      intervalMs: parsed.RELAY_CRON_INVENTORY_INTERVAL_MS ?? 300_000,
+      initialJitterMs: parsed.RELAY_CRON_INVENTORY_INITIAL_JITTER_MS ?? 30_000,
+      retryBaseMs: parsed.RELAY_CRON_INVENTORY_RETRY_BASE_MS ?? 5_000,
+      retryMaxMs: parsed.RELAY_CRON_INVENTORY_RETRY_MAX_MS ?? 300_000,
+      collectorVersion: parsed.APP_GIT_REF?.trim() || "golem-workers-relay",
     },
     concurrency: parsed.RELAY_CONCURRENCY ?? parsed.RELAY_PUSH_MAX_CONCURRENT_REQUESTS ?? 100,
     pushPort: parsed.RELAY_PUSH_PORT ?? 18790,
@@ -437,6 +458,14 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
       intervalMs: 3_600_000,
       lookbackDays: 30,
     },
+    cronInventory: {
+      enabled: true,
+      intervalMs: 300_000,
+      initialJitterMs: 30_000,
+      retryBaseMs: 5_000,
+      retryMaxMs: 300_000,
+      collectorVersion: "test",
+    },
     concurrency: 100,
     pushPort: 18790,
     pushPath: "/relay/messages",
@@ -531,6 +560,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     openrouterProxy: { ...base.openrouterProxy, ...(overrides.openrouterProxy ?? {}) },
     diagnosticNotifier: { ...base.diagnosticNotifier, ...(overrides.diagnosticNotifier ?? {}) },
     authorizationUsage: { ...base.authorizationUsage, ...(overrides.authorizationUsage ?? {}) },
+    cronInventory: { ...base.cronInventory, ...(overrides.cronInventory ?? {}) },
     openaiProxy: { ...base.openaiProxy, ...(overrides.openaiProxy ?? {}) },
     jinaProxy: { ...base.jinaProxy, ...(overrides.jinaProxy ?? {}) },
     googleAiProxy: { ...base.googleAiProxy, ...(overrides.googleAiProxy ?? {}) },

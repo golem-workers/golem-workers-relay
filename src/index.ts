@@ -54,7 +54,10 @@ import {
 import { startRelayChannelControlPlane } from "./relayChannel/startControlPlaneServer.js";
 import { createRelayChannelTransportDeliveryTracker } from "./relayChannel/transportDeliveryTracker.js";
 import { abortActiveChatTaskByBackendMessageId } from "./agentControl/abortActiveChatTask.js";
-import { executeAgentControl } from "./agentControl/executeAgentControl.js";
+import {
+  AgentControlError,
+  executeAgentControl,
+} from "./agentControl/executeAgentControl.js";
 import {
   createConversationActivityIndex,
   inferConversationChannel,
@@ -69,6 +72,12 @@ import { createAgentLifecyclePublisher } from "./agentLifecycle/publisher.js";
 import { createAgentLifecycleRelay } from "./agentLifecycle/relay.js";
 import { createAgentLifecycleSourceStore } from "./agentLifecycle/sourceStore.js";
 import { readOpenClawActiveRuns } from "./agentLifecycle/reconciliation.js";
+import { createCronInventoryCollector } from "./cronInventory/collector.js";
+import { createCronInventoryStateStore } from "./cronInventory/stateStore.js";
+import {
+  createCronInventorySync,
+  type CronInventorySync,
+} from "./cronInventory/sync.js";
 
 async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
@@ -130,6 +139,8 @@ async function main(): Promise<void> {
       diagnosticNotifierEnabled: cfg.diagnosticNotifier.enabled,
       authorizationUsageEnabled: cfg.authorizationUsage.enabled,
       authorizationUsageIntervalMs: cfg.authorizationUsage.intervalMs,
+      cronInventoryEnabled: cfg.cronInventory.enabled,
+      cronInventoryIntervalMs: cfg.cronInventory.intervalMs,
     },
     "Relay starting",
   );
@@ -140,6 +151,7 @@ async function main(): Promise<void> {
     devLogEnabled: cfg.devLogEnabled,
   });
   let gateway: GatewayClient | null = null;
+  let cronInventorySync: CronInventorySync | null = null;
   const agentLifecycleBackend = createAgentLifecycleBackend({
     baseUrl: cfg.backendBaseUrl,
     relayToken: cfg.relayToken,
@@ -207,7 +219,9 @@ async function main(): Promise<void> {
       backend,
       transportDeliveryTracker,
       executeAgentControl: (action) =>
-        executeAgentControl({
+        action.kind === "cron.inventory.refresh"
+          ? executeCronInventoryRefresh(cronInventorySync, action.requestId)
+          : executeAgentControl({
           action,
           configPath: openclaw.configPath,
           gateway: gateway ?? {
@@ -366,6 +380,21 @@ async function main(): Promise<void> {
 
   const stop = createStopSignal();
   await ensureGatewayConnected(gateway, stop);
+  if (cfg.cronInventory.enabled) {
+    cronInventorySync = createCronInventorySync({
+      collector: createCronInventoryCollector({
+        gateway,
+        collectorVersion: cfg.cronInventory.collectorVersion,
+      }),
+      backend,
+      store: createCronInventoryStateStore(),
+      intervalMs: cfg.cronInventory.intervalMs,
+      initialJitterMs: cfg.cronInventory.initialJitterMs,
+      retryBaseMs: cfg.cronInventory.retryBaseMs,
+      retryMaxMs: cfg.cronInventory.retryMaxMs,
+    });
+    await cronInventorySync.start();
+  }
   const authorizationUsageReporter = createAuthorizationUsageReporter({
     ...cfg.authorizationUsage,
     gateway,
@@ -543,6 +572,7 @@ async function main(): Promise<void> {
           backendResilience,
           relayChannel: getRelayChannelHealth(),
           authorizationUsage: authorizationUsageReporter.getState(),
+          cronInventory: cronInventorySync?.getState() ?? { enabled: false },
         },
       };
     },
@@ -645,6 +675,12 @@ async function main(): Promise<void> {
           reason: message.input.action.reason ?? "backend_abort",
         });
         return { kind: "chat.abortTask", aborted };
+      }
+      if (message.input.action.kind === "cron.inventory.refresh") {
+        return executeCronInventoryRefresh(
+          cronInventorySync,
+          message.input.action.requestId,
+        );
       }
       return executeAgentControl({
         action: message.input.action,
@@ -996,6 +1032,7 @@ async function main(): Promise<void> {
 
   await waitForStop(stop);
   shuttingDown = true;
+  cronInventorySync?.stop();
   authorizationUsageReporter.stop();
   diagnosticNotifier.stop();
   selfNudgeRunner?.stop();
@@ -1046,6 +1083,31 @@ async function main(): Promise<void> {
   nodePairingAutoApprover.stop();
   execApprovalAutoApprover.stop();
   logger.info("Relay stopped");
+}
+
+async function executeCronInventoryRefresh(
+  sync: CronInventorySync | null,
+  requestId: string,
+) {
+  if (!sync) {
+    throw new AgentControlError(
+      "CRON_INVENTORY_DISABLED",
+      "Cron inventory synchronization is disabled",
+    );
+  }
+  const snapshot = await sync.runOnce({ force: true, requestId });
+  if (!snapshot || sync.getState().pendingHash === snapshot.configHash) {
+    throw new AgentControlError(
+      "CRON_INVENTORY_NOT_ACKNOWLEDGED",
+      "Cron inventory snapshot was not acknowledged by backend",
+    );
+  }
+  return {
+    kind: "cron.inventory.refresh" as const,
+    acceptedHash: snapshot.configHash,
+    observedAt: snapshot.observedAt,
+    collectionStatus: snapshot.collectionStatus,
+  };
 }
 
 main().catch((err) => {

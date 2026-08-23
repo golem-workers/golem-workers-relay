@@ -167,6 +167,10 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     backendMessageId: z.string().min(1),
     reason: z.string().min(1).optional(),
   }),
+  z.object({
+    kind: z.literal("cron.inventory.refresh"),
+    requestId: z.string().min(1).max(200),
+  }),
 ]);
 
 export type AgentControlAction = z.infer<typeof agentControlActionSchema>;
@@ -358,6 +362,12 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("chat.abortTask"),
     aborted: z.boolean(),
+  }),
+  z.object({
+    kind: z.literal("cron.inventory.refresh"),
+    acceptedHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    observedAt: z.string().datetime({ offset: true }),
+    collectionStatus: z.enum(["COMPLETE", "PARTIAL", "FAILED"]),
   }),
 ]);
 

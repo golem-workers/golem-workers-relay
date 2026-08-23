@@ -166,6 +166,13 @@ export async function executeAgentControl(input: {
                         "chat.abortTask must be handled by relay ingress"
                       );
                     })()
+                : input.action.kind === "cron.inventory.refresh"
+                  ? (() => {
+                      throw new AgentControlError(
+                        "CRON_INVENTORY_REFRESH_UNSUPPORTED",
+                        "cron.inventory.refresh must be handled by relay ingress"
+                      );
+                    })()
                 : await setModel({
                     configPath: input.configPath,
                     model: input.action.model,

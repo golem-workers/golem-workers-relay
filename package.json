@@ -25,6 +25,7 @@
     "openclaw:reset": "docker compose --env-file openclaw.env down --remove-orphans && rm -rf .openclaw openclaw-workspace"
   },
   "dependencies": {
+    "cron-parser": "^5.10.0",
     "dotenv": "^17.3.1",
     "json5": "^2.2.3",
     "pino": "^10.3.1",

@@ -26,6 +26,12 @@ import {
   type SystemNotificationDeliveryRequest,
   type SystemNotificationDeliveryResponse,
 } from "./types.js";
+import {
+  cronInventoryAckSchema,
+  cronInventorySnapshotSchema,
+  type CronInventoryAck,
+  type CronInventorySnapshot,
+} from "../cronInventory/contract.js";
 
 export type BackendClientOptions = {
   baseUrl: string;
@@ -161,6 +167,21 @@ export class BackendClient {
       .parse(value);
   }
 
+  async submitCronInventory(input: {
+    snapshot: CronInventorySnapshot;
+  }): Promise<CronInventoryAck> {
+    const url = `${this.opts.baseUrl}/api/v1/relays/cron-inventory`;
+    const body = cronInventorySnapshotSchema.parse(input.snapshot);
+    const value = await requestJson(
+      "PUT",
+      url,
+      this.opts.relayToken,
+      body,
+      30_000,
+    );
+    return cronInventoryAckSchema.parse(value);
+  }
+
   async sendTelegramTransportAction(input: TelegramTransportActionRequest): Promise<{
     transportMessageId?: string;
     transportMessageIds?: string[];
@@ -268,11 +289,21 @@ export class BackendClient {
 }
 
 async function postJson(url: string, token: string, body: unknown, timeoutMs: number): Promise<unknown> {
+  return requestJson("POST", url, token, body, timeoutMs);
+}
+
+async function requestJson(
+  method: "POST" | "PUT",
+  url: string,
+  token: string,
+  body: unknown,
+  timeoutMs: number,
+): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const resp = await fetch(url, {
-      method: "POST",
+      method,
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${token}`,

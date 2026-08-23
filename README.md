@@ -17,6 +17,15 @@ The relay also reports the current OpenClaw connectivity state back to backend:
 - keeps retrying with backoff when a restarting gateway temporarily rejects a reconnect
 - sends `CONNECTED` immediately after the gateway connection is restored
 
+Relay owns cron inventory synchronization. It reads all OpenClaw jobs through
+the local Gateway plus supported system cron files, removes command/payload
+contents, calculates a runtime-independent canonical hash, and stores one
+durable pending snapshot until backend returns a matching ACK. Collection runs
+every five minutes with startup jitter; unchanged configuration causes no full
+push. Backend can request one address-scoped forced refresh through existing
+agent control. System cron commands, OpenClaw prompt text, delivery targets,
+tokens, and environment values never leave guest.
+
 For `relay_channel_v2`, relay startup also checks the installed `relay-channel`
 plugin version against the current plugin repo ref and automatically rebuilds /
 reinstalls the plugin when the installed version is behind.
@@ -230,6 +239,11 @@ can resolve the next configured auth mode instead of referencing a deleted login
 - `STT_TIMEOUT_MS=15000` (optional, transcription timeout)
 
 Push transport settings:
+- `RELAY_CRON_INVENTORY_ENABLED=1` (enable relay-owned OpenClaw + system cron inventory)
+- `RELAY_CRON_INVENTORY_INTERVAL_MS=300000` (configuration collection interval)
+- `RELAY_CRON_INVENTORY_INITIAL_JITTER_MS=30000` (fleet startup jitter before first collection)
+- `RELAY_CRON_INVENTORY_RETRY_BASE_MS=5000` (initial snapshot retry backoff)
+- `RELAY_CRON_INVENTORY_RETRY_MAX_MS=300000` (maximum snapshot retry backoff)
 - `RELAY_PUSH_PORT=18790` (HTTP port where backend sends push messages)
 - `RELAY_PUSH_PATH=/relay/messages` (HTTP path for backend push endpoint)
 - `RELAY_TASK_TIMEOUT_MS=43200000` (default twelve-hour sliding timeout for a chat task to produce a terminal callback; OpenClaw chat activity refreshes the timeout before relay aborts it and reports `RELAY_TASK_TIMEOUT`)
