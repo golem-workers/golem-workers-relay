@@ -132,7 +132,11 @@ export async function executeAgentControl(input: {
               : input.action.kind === "codex.auth.import"
                 ? await importCodexAuthWithGatewayPaused(input.configPath, input.action)
               : input.action.kind === "codex.auth.sync"
-                ? await syncCodexAuthWithGatewayPaused(input.configPath, input.action)
+                ? await syncCodexAuthWithoutGatewayRestart(
+                    input.configPath,
+                    input.action,
+                    input.gateway,
+                  )
               : input.action.kind === "codex.auth.clear"
                 ? await runCodexAuthMutationWithGatewayPaused(() => clearCodexAuth(input.configPath))
               : input.action.kind === "github.auth.configure"
@@ -958,9 +962,13 @@ async function restartGatewayService(): Promise<Extract<AgentControlResult, { ki
 }
 
 function runCodexAuthMutationWithGatewayPaused<T>(operation: () => Promise<T>): Promise<T> {
+  return enqueueCodexAuthMutation(() => runCodexAuthMutationWithGatewayPausedNow(operation));
+}
+
+function enqueueCodexAuthMutation<T>(operation: () => Promise<T>): Promise<T> {
   const queued = codexAuthMutationQueue.then(
-    () => runCodexAuthMutationWithGatewayPausedNow(operation),
-    () => runCodexAuthMutationWithGatewayPausedNow(operation),
+    operation,
+    operation,
   );
   codexAuthMutationQueue = queued.then(
     () => undefined,
@@ -985,12 +993,24 @@ async function setCodexAuthWithGatewayPaused(
   );
 }
 
-async function syncCodexAuthWithGatewayPaused(
+async function syncCodexAuthWithoutGatewayRestart(
   configPath: string,
   action: Extract<AgentControlAction, { kind: "codex.auth.sync" }>,
+  gateway: GatewayLike,
 ): Promise<AgentControlResult> {
-  return await runCodexAuthMutationWithGatewayPaused(() =>
-    syncCodexAuthBundle(configPath, action.bundleVersion, action.bundle),
+  // Keep auth mutations serialized, but do not pause the gateway. OpenClaw can
+  // reload its persisted auth store and provider cache while active runs keep
+  // using the credential snapshot with which they started.
+  return await enqueueCodexAuthMutation(() =>
+    syncCodexAuthBundle(configPath, action.bundleVersion, action.bundle, {
+      refreshRuntimeAuth: async () => {
+        await gateway.request(
+          "models.authStatus",
+          { refresh: true },
+          { timeoutMs: CHANNELS_STATUS_TIMEOUT_MS },
+        );
+      },
+    }),
   );
 }
 

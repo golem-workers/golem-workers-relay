@@ -107,6 +107,18 @@ exit 1
   return logPath;
 }
 
+async function readSystemctlCalls(logPath: string): Promise<string[]> {
+  try {
+    const raw = await fs.readFile(logPath, "utf8");
+    return raw.trim() ? raw.trim().split("\n") : [];
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
 async function readAgentRuntimeAuthSqlite(agentDir: string): Promise<{
   store: {
     version?: number;
@@ -947,7 +959,7 @@ describe("executeAgentControl Codex login", () => {
     });
   });
 
-  it("restarts the gateway when a Codex auth mutation is rejected", async () => {
+  it("does not restart the gateway when a Codex auth sync is rejected", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-rejected-"));
     const configPath = path.join(tempDir, "openclaw.json");
     process.env.CODEX_HOME = path.join(tempDir, ".codex");
@@ -976,17 +988,32 @@ describe("executeAgentControl Codex login", () => {
       }),
     ).rejects.toThrow("Cannot import an expired OpenAI auth bundle.");
 
-    const systemctlCalls = (await fs.readFile(systemctlLogPath, "utf8")).trim().split("\n");
-    expect(systemctlCalls.filter((call) => call === "--user stop openclaw-gateway.service")).toHaveLength(1);
-    expect(systemctlCalls.filter((call) => call === "--user restart openclaw-gateway.service")).toHaveLength(1);
+    expect(await readSystemctlCalls(systemctlLogPath)).toEqual([]);
   });
 
-  it("syncs Codex auth bundles monotonically and skips an already applied version", async () => {
+  it("syncs Codex auth live, keeps config stable, and makes an applied version a true no-op", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-sync-"));
     const configPath = path.join(tempDir, "openclaw.json");
     const codexHome = path.join(tempDir, ".codex");
     process.env.CODEX_HOME = codexHome;
-    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    const initialConfig = {
+      agents: { defaults: { models: { "codex/gpt-5.4": { agentRuntime: { id: "codex" } } } } },
+      auth: {
+        profiles: {
+          "openai:previous@example.com": {
+            provider: "openai",
+            mode: "oauth",
+            email: "previous@example.com",
+          },
+        },
+        order: { openai: ["openai:previous@example.com"] },
+      },
+    };
+    const initialConfigText = `${JSON.stringify(initialConfig, null, 2)}\n`;
+    await fs.writeFile(configPath, initialConfigText, "utf8");
+    const gateway = {
+      request: vi.fn().mockResolvedValue({ ts: Date.now(), providers: [] }),
+    };
     const accessToken =
       "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQ3MDAwMDAwMDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3QtMTIzIn19.signature";
     const bundle = {
@@ -1023,12 +1050,12 @@ describe("executeAgentControl Codex login", () => {
     const applied = await executeAgentControl({
       action: { kind: "codex.auth.sync", bundleVersion: 7, bundle },
       configPath,
-      gateway: noopGateway,
+      gateway,
     });
     const skipped = await executeAgentControl({
       action: { kind: "codex.auth.sync", bundleVersion: 7, bundle },
       configPath,
-      gateway: noopGateway,
+      gateway,
     });
 
     expect(applied).toMatchObject({
@@ -1043,6 +1070,13 @@ describe("executeAgentControl Codex login", () => {
       reason: "up_to_date",
       bundleVersion: 7,
     });
+    expect(gateway.request).toHaveBeenCalledTimes(1);
+    expect(gateway.request).toHaveBeenCalledWith(
+      "models.authStatus",
+      { refresh: true },
+      { timeoutMs: 15_000 },
+    );
+    expect(await readSystemctlCalls(systemctlLogPath)).toEqual([]);
 
     const sessionsPath = path.join(tempDir, "agents", "main", "sessions", "sessions.json");
     await fs.mkdir(path.dirname(sessionsPath), { recursive: true });
@@ -1087,7 +1121,7 @@ describe("executeAgentControl Codex login", () => {
         },
       },
       configPath,
-      gateway: noopGateway,
+      gateway,
     });
     expect(switched).toMatchObject({
       kind: "codex.auth.sync",
@@ -1107,11 +1141,8 @@ describe("executeAgentControl Codex login", () => {
       await fs.readFile(path.join(tempDir, "agents", "main", "agent", "auth-profiles.json"), "utf8"),
     ) as { profiles: Record<string, unknown> };
     expect(Object.keys(authStore.profiles)).toEqual(["openai:second@example.com"]);
-    const switchedConfig = JSON.parse(await fs.readFile(configPath, "utf8")) as {
-      auth: { profiles: Record<string, unknown>; order: { openai: string[] } };
-    };
-    expect(Object.keys(switchedConfig.auth.profiles)).toEqual(["openai:second@example.com"]);
-    expect(switchedConfig.auth.order.openai).toEqual(["openai:second@example.com"]);
+    expect(await fs.readFile(configPath, "utf8")).toBe(initialConfigText);
+    expect(gateway.request).toHaveBeenCalledTimes(2);
     const runtimeAuth = await readAgentRuntimeAuthSqlite(path.join(tempDir, "agents", "main", "agent"));
     expect(Object.keys(runtimeAuth.store?.profiles ?? {})).toEqual(["openai:second@example.com"]);
     expect(runtimeAuth.state?.order?.openai).toEqual(["openai:second@example.com"]);
@@ -1148,9 +1179,58 @@ describe("executeAgentControl Codex login", () => {
     });
     expect(afterClear).toMatchObject({ state: "not_logged_in" });
     await expect(fs.access(path.join(codexHome, "golem-auth-sync.json"))).rejects.toMatchObject({ code: "ENOENT" });
-    const systemctlCalls = (await fs.readFile(systemctlLogPath, "utf8")).trim().split("\n");
-    expect(systemctlCalls.filter((call) => call === "--user stop openclaw-gateway.service")).toHaveLength(4);
-    expect(systemctlCalls.filter((call) => call === "--user restart openclaw-gateway.service")).toHaveLength(4);
+    const systemctlCalls = await readSystemctlCalls(systemctlLogPath);
+    expect(systemctlCalls.filter((call) => call === "--user stop openclaw-gateway.service")).toHaveLength(1);
+    expect(systemctlCalls.filter((call) => call === "--user restart openclaw-gateway.service")).toHaveLength(1);
+  });
+
+  it("rolls back persisted Codex auth when live runtime refresh fails", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-rollback-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    const codexHome = path.join(tempDir, ".codex");
+    process.env.CODEX_HOME = codexHome;
+    const initialConfigText = `${JSON.stringify({ agents: { defaults: {} } }, null, 2)}\n`;
+    await fs.writeFile(configPath, initialConfigText, "utf8");
+    const accessToken =
+      "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQ3MDAwMDAwMDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3QtMTIzIn19.signature";
+    const gateway = {
+      request: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("runtime refresh failed"))
+        .mockResolvedValueOnce({ ts: Date.now(), providers: [] }),
+    };
+
+    await expect(
+      executeAgentControl({
+        action: {
+          kind: "codex.auth.sync",
+          bundleVersion: 1,
+          bundle: {
+            formatVersion: 1,
+            profileId: "openai:user@example.com",
+            accessToken,
+            refreshToken: "refresh-token",
+            idToken: accessToken,
+            expiresAtMs: 4_700_000_000_000,
+            lastRefresh: null,
+            email: "user@example.com",
+            accountId: "acct-123",
+            chatgptPlanType: null,
+          },
+        },
+        configPath,
+        gateway,
+      }),
+    ).rejects.toThrow("runtime refresh failed");
+
+    expect(gateway.request).toHaveBeenCalledTimes(2);
+    expect(await fs.readFile(configPath, "utf8")).toBe(initialConfigText);
+    await expect(fs.access(path.join(codexHome, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(path.join(codexHome, "golem-auth-sync.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      fs.access(path.join(tempDir, "agents", "main", "agent", "openclaw-agent.sqlite")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readSystemctlCalls(systemctlLogPath)).toEqual([]);
   });
 });
 

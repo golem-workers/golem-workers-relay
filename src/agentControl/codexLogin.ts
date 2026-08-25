@@ -690,6 +690,7 @@ async function persistCodexCredentials(input: {
   identityToken?: string;
   identity?: ReturnType<typeof resolveCodexAuthIdentity>;
   profileId?: string;
+  persistConfig?: boolean;
 }): Promise<{
   profileId: string;
   email: string | null;
@@ -714,56 +715,58 @@ async function persistCodexCredentials(input: {
     credential,
   });
 
-  const currentConfig = await readConfigObject(input.configPath);
-  const currentAuth = isRecord(currentConfig.auth) ? currentConfig.auth : {};
-  const currentProfiles = isRecord(currentAuth.profiles) ? currentAuth.profiles : {};
-  const currentOrder = isRecord(currentAuth.order) ? currentAuth.order : {};
-  const currentAgents = isRecord(currentConfig.agents) ? currentConfig.agents : {};
-  const currentDefaults = isRecord(currentAgents.defaults) ? currentAgents.defaults : {};
-  const currentModels = isRecord(currentDefaults.models) ? currentDefaults.models : {};
-  const retainedProfiles = Object.fromEntries(
-    Object.entries(currentProfiles).filter(
-      ([, profile]) =>
-        !(
-          isRecord(profile) &&
-          (profile.provider === "openai" || profile.provider === "openai-codex") &&
-          profile.mode === "oauth"
-        ),
-    ),
-  );
+  if (input.persistConfig !== false) {
+    const currentConfig = await readConfigObject(input.configPath);
+    const currentAuth = isRecord(currentConfig.auth) ? currentConfig.auth : {};
+    const currentProfiles = isRecord(currentAuth.profiles) ? currentAuth.profiles : {};
+    const currentOrder = isRecord(currentAuth.order) ? currentAuth.order : {};
+    const currentAgents = isRecord(currentConfig.agents) ? currentConfig.agents : {};
+    const currentDefaults = isRecord(currentAgents.defaults) ? currentAgents.defaults : {};
+    const currentModels = isRecord(currentDefaults.models) ? currentDefaults.models : {};
+    const retainedProfiles = Object.fromEntries(
+      Object.entries(currentProfiles).filter(
+        ([, profile]) =>
+          !(
+            isRecord(profile) &&
+            (profile.provider === "openai" || profile.provider === "openai-codex") &&
+            profile.mode === "oauth"
+          ),
+      ),
+    );
 
-  const nextConfig = {
-    ...currentConfig,
-    auth: {
-      ...currentAuth,
-      profiles: {
-        ...retainedProfiles,
-        [profileId]: {
-          provider: "openai",
-          mode: "oauth",
-          ...(identity.email ? { email: identity.email } : {}),
+    const nextConfig = {
+      ...currentConfig,
+      auth: {
+        ...currentAuth,
+        profiles: {
+          ...retainedProfiles,
+          [profileId]: {
+            provider: "openai",
+            mode: "oauth",
+            ...(identity.email ? { email: identity.email } : {}),
+          },
+        },
+        order: {
+          ...currentOrder,
+          openai: [profileId],
         },
       },
-      order: {
-        ...currentOrder,
-        openai: [profileId],
-      },
-    },
-    agents: {
-      ...currentAgents,
-      defaults: {
-        ...currentDefaults,
-        models: {
-          ...currentModels,
-          [OPENAI_CODEX_DEFAULT_MODEL]: {
-            ...(isRecord(currentModels[OPENAI_CODEX_DEFAULT_MODEL]) ? currentModels[OPENAI_CODEX_DEFAULT_MODEL] : {}),
-            agentRuntime: { id: "codex" },
+      agents: {
+        ...currentAgents,
+        defaults: {
+          ...currentDefaults,
+          models: {
+            ...currentModels,
+            [OPENAI_CODEX_DEFAULT_MODEL]: {
+              ...(isRecord(currentModels[OPENAI_CODEX_DEFAULT_MODEL]) ? currentModels[OPENAI_CODEX_DEFAULT_MODEL] : {}),
+              agentRuntime: { id: "codex" },
+            },
           },
         },
       },
-    },
-  };
-  await writeJsonFile(input.configPath, nextConfig);
+    };
+    await writeJsonFile(input.configPath, nextConfig);
+  }
   await retargetCodexSessionAuthProfiles(input.configPath, profileId);
   return {
     profileId,
@@ -1257,6 +1260,8 @@ async function applyCodexAuthBundle(input: {
   configPath: string;
   bundle: CodexAuthBundle;
   syncState?: CodexAuthSyncState;
+  persistConfig?: boolean;
+  refreshRuntimeAuth?: () => Promise<void>;
 }): Promise<CodexAuthImportActionResult> {
   if (input.bundle.expiresAtMs <= Date.now()) {
     throw new Error("Cannot import an expired OpenAI auth bundle.");
@@ -1268,12 +1273,13 @@ async function applyCodexAuthBundle(input: {
   }
   const runtimeAuthSnapshot = await snapshotCodexRuntimeAuthStore(input.configPath);
   const snapshots = await snapshotFiles([
-    input.configPath,
+    ...(input.persistConfig === false ? [] : [input.configPath]),
     ...resolveCodexAuthStorePaths(input.configPath),
     resolveCodexSessionsStorePath(input.configPath),
     resolveCodexCliAuthPath(),
     ...(input.syncState ? [resolveCodexAuthSyncStatePath()] : []),
   ]);
+  let runtimeRefreshAttempted = false;
   try {
     const persisted = await persistCodexCredentials({
       configPath: input.configPath,
@@ -1284,6 +1290,7 @@ async function applyCodexAuthBundle(input: {
       },
       identity,
       profileId: input.bundle.profileId,
+      persistConfig: input.persistConfig,
     });
     await writeCodexCliChatGptAuth(
       {
@@ -1301,6 +1308,10 @@ async function applyCodexAuthBundle(input: {
     if (status.state !== "connected") {
       throw new Error(status.lastError ?? status.message);
     }
+    if (input.refreshRuntimeAuth) {
+      runtimeRefreshAttempted = true;
+      await input.refreshRuntimeAuth();
+    }
     return {
       kind: "codex.auth.import",
       applied: true,
@@ -1313,6 +1324,16 @@ async function applyCodexAuthBundle(input: {
   } catch (error) {
     await restoreFileSnapshots(snapshots);
     await restoreCodexRuntimeAuthStore(input.configPath, runtimeAuthSnapshot);
+    if (runtimeRefreshAttempted && input.refreshRuntimeAuth) {
+      try {
+        await input.refreshRuntimeAuth();
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          "Codex authorization update failed and runtime auth rollback could not be reloaded.",
+        );
+      }
+    }
     throw error;
   }
 }
@@ -1575,6 +1596,7 @@ export async function syncCodexAuthBundle(
   configPath: string,
   bundleVersion: number,
   bundle: CodexAuthBundle,
+  options?: { refreshRuntimeAuth?: () => Promise<void> },
 ): Promise<CodexAuthSyncActionResult> {
   const syncState = await readCodexAuthSyncState();
   const status = await readPersistedCodexStatus("codex.login.status", configPath);
@@ -1602,6 +1624,11 @@ export async function syncCodexAuthBundle(
   const imported = await applyCodexAuthBundle({
     configPath,
     bundle,
+    // Rewriting auth.* in openclaw.json triggers config-level restart rules.
+    // SQLite/auth-profiles.json are canonical; the relay refreshes their live
+    // runtime snapshot after commit instead.
+    persistConfig: false,
+    refreshRuntimeAuth: options?.refreshRuntimeAuth,
     syncState: {
       formatVersion: 1,
       bundleVersion,
