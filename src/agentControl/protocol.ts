@@ -62,6 +62,9 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     configText: z.string().min(1),
   }),
   z.object({
+    kind: z.literal("config.validate"),
+  }),
+  z.object({
     kind: z.literal("gateway.restart"),
   }),
   z.object({
@@ -188,6 +191,10 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("config.apply"),
     applied: z.literal(true),
+  }),
+  z.object({
+    kind: z.literal("config.validate"),
+    valid: z.literal(true),
   }),
   z.object({
     kind: z.literal("gateway.restart"),

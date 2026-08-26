@@ -213,6 +213,13 @@ Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 
 ### Shared Codex authorization
 
+Backend-only agent control also supports `config.validate`. It validates the
+configured `OPENCLAW_CONFIG_PATH` with `openclaw config validate --json` and
+returns success only for a valid effective config. Validation errors use the
+stable `OPENCLAW_CONFIG_VALIDATE_FAILED` code with bounded output; config content
+and secrets are never returned. Backend config workflows call this after atomic
+`config.apply` and before gateway restart.
+
 Agent control supports backend-only `codex.auth.export`, `codex.auth.import`, and
 `codex.auth.sync` actions. Export returns one canonical ChatGPT OAuth bundle assembled from the
 managed Codex cache and OpenClaw auth stores. Import validates signed-token identity and expiry,

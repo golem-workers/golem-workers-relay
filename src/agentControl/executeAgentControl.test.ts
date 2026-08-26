@@ -107,6 +107,28 @@ exit 1
   return logPath;
 }
 
+async function installFakeOpenclaw(input?: { fail?: boolean }) {
+  const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-openclaw-"));
+  const scriptPath = path.join(binDir, "openclaw");
+  const logPath = path.join(binDir, "calls.log");
+  await fs.writeFile(
+    scriptPath,
+    `#!/usr/bin/env bash
+set -eu
+printf '%s|%s\n' "$*" "\${OPENCLAW_CONFIG_PATH:-}" >> ${JSON.stringify(logPath)}
+if [ "$*" != "config validate --json" ]; then
+  printf 'unexpected arguments\n' >&2
+  exit 2
+fi
+${input?.fail ? "printf 'invalid operator config\\n' >&2\nexit 1" : "printf '{\"valid\":true}\\n'"}
+`,
+    "utf8",
+  );
+  fsSync.chmodSync(scriptPath, 0o755);
+  process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+  return logPath;
+}
+
 async function readSystemctlCalls(logPath: string): Promise<string[]> {
   try {
     const raw = await fs.readFile(logPath, "utf8");
@@ -1366,6 +1388,42 @@ describe("executeAgentControl channels status", () => {
           ],
         },
       },
+    });
+  });
+});
+
+describe("executeAgentControl config validation", () => {
+  it("validates the canonical candidate through OpenClaw CLI", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-config-validate-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await fs.writeFile(configPath, JSON.stringify({ channels: {} }), "utf8");
+    const logPath = await installFakeOpenclaw();
+
+    const result = await executeAgentControl({
+      action: { kind: "config.validate" },
+      configPath,
+      gateway: noopGateway,
+    });
+
+    expect(result).toEqual({ kind: "config.validate", valid: true });
+    await expect(fs.readFile(logPath, "utf8")).resolves.toContain(`config validate --json|${configPath}`);
+  });
+
+  it("returns a stable error when OpenClaw rejects the config", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-config-invalid-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await fs.writeFile(configPath, JSON.stringify({ channels: {} }), "utf8");
+    await installFakeOpenclaw({ fail: true });
+
+    await expect(
+      executeAgentControl({
+        action: { kind: "config.validate" },
+        configPath,
+        gateway: noopGateway,
+      }),
+    ).rejects.toMatchObject({
+      code: "OPENCLAW_CONFIG_VALIDATE_FAILED",
+      details: { stderr: "invalid operator config" },
     });
   });
 });
