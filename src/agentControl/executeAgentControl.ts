@@ -98,6 +98,8 @@ export async function executeAgentControl(input: {
             configPath: input.configPath,
             configText: input.action.configText,
           })
+      : input.action.kind === "config.validate"
+        ? await validateConfig(input.configPath)
       : input.action.kind === "gateway.restart"
         ? await restartGatewayService()
         : input.action.kind === "relay.selfNudge.set"
@@ -323,6 +325,46 @@ async function applyConfig(input: {
     kind: "config.apply",
     applied: true,
   };
+}
+
+function boundedCommandOutput(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+  return normalized.length <= 2_000 ? normalized : `${normalized.slice(0, 2_000)}...[truncated]`;
+}
+
+async function validateConfig(configPath: string): Promise<Extract<AgentControlResult, { kind: "config.validate" }>> {
+  await readConfigFile(configPath);
+  try {
+    await execFile("openclaw", ["config", "validate", "--json"], {
+      env: {
+        ...process.env,
+        HOME: process.env.HOME || "/root",
+        OPENCLAW_CONFIG_PATH: configPath,
+      },
+      maxBuffer: 1024 * 1024,
+    });
+  } catch (error) {
+    const output = error as {
+      code?: unknown;
+      stdout?: unknown;
+      stderr?: unknown;
+      message?: unknown;
+    };
+    throw new AgentControlError(
+      "OPENCLAW_CONFIG_VALIDATE_FAILED",
+      "OpenClaw config validation failed.",
+      {
+        exitCode: typeof output.code === "number" || typeof output.code === "string" ? output.code : null,
+        stdout: boundedCommandOutput(output.stdout),
+        stderr: boundedCommandOutput(output.stderr),
+        message: typeof output.message === "string" ? output.message : null,
+      },
+      { cause: error },
+    );
+  }
+  return { kind: "config.validate", valid: true };
 }
 
 async function setRelaySelfNudgeSettings(input: {
