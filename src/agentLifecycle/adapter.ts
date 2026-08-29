@@ -52,6 +52,7 @@ function scopeKey(
 export class AgentLifecycleTransitionEncoder {
   private readonly currentByScope = new Map<string, ScopedRunState>();
   private readonly sequenceByGeneration = new Map<string, number>();
+  private readonly terminalRuns = new Set<string>();
 
   seedActiveRun(
     adapter: ProviderLifecycleAdapter,
@@ -72,6 +73,17 @@ export class AgentLifecycleTransitionEncoder {
   ): AgentLifecycleEvent | null {
     const observation = adapter.observe(signal);
     if (!observation || observation.status === "IDLE") {
+      return null;
+    }
+
+    const terminalKey = [
+      adapter.provider,
+      context.serverId,
+      context.agentId ?? "",
+      context.runId,
+      context.sourceGeneration,
+    ].join("\u0000");
+    if (this.terminalRuns.has(terminalKey)) {
       return null;
     }
 
@@ -116,6 +128,9 @@ export class AgentLifecycleTransitionEncoder {
       sourceGeneration: context.sourceGeneration,
     });
     this.sequenceByGeneration.set(context.sourceGeneration, sequence);
+    if (["COMPLETED", "FAILED", "CANCELLED"].includes(observation.status)) {
+      this.terminalRuns.add(terminalKey);
+    }
     return event;
   }
 }

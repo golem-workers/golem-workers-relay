@@ -58,6 +58,9 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("channels.status"),
   }),
   z.object({
+    kind: z.literal("lifecycle.activeRuns"),
+  }),
+  z.object({
     kind: z.literal("config.apply"),
     configText: z.string().min(1),
   }),
@@ -187,6 +190,19 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("channels.status"),
     snapshot: jsonRecordSchema,
+  }),
+  z.object({
+    kind: z.literal("lifecycle.activeRuns"),
+    observedAt: z.string().datetime({ offset: true }),
+    runs: z.array(
+      z.object({
+        provider: z.string().min(1),
+        agentId: z.string().min(1).optional(),
+        sessionId: z.string().min(1),
+        runId: z.string().min(1),
+        status: z.enum(["RUNNING", "WAITING"]),
+      }),
+    ),
   }),
   z.object({
     kind: z.literal("config.apply"),

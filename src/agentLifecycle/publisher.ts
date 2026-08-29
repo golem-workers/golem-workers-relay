@@ -10,7 +10,7 @@ export type AgentLifecycleDrainResult = Readonly<{
   acknowledged: number;
   pending: number;
   blocked: boolean;
-  anomaly?: "SEQUENCE_GAP";
+  anomaly?: "SEQUENCE_GAP" | "GENERATION_CONFLICT";
 }>;
 
 export type AgentLifecyclePublisher = {
@@ -42,9 +42,16 @@ export function createAgentLifecyclePublisher(input: {
         await input.outbox.acknowledge(entry);
         acknowledged += 1;
       } catch (error) {
+        const generationConflict =
+          error instanceof AgentLifecycleBackendHttpError &&
+          error.status === 409 &&
+          [
+            "AGENT_LIFECYCLE_TRANSITION_CONFLICT",
+            "AGENT_LIFECYCLE_IDEMPOTENCY_CONFLICT",
+          ].includes(error.code ?? "");
         const permanent =
           error instanceof AgentLifecycleBackendHttpError &&
-          [400, 422].includes(error.status);
+          ([400, 422].includes(error.status) || generationConflict);
         if (permanent) {
           await input.outbox.quarantine(
             entry,
@@ -59,15 +66,20 @@ export function createAgentLifecyclePublisher(input: {
             "Agent lifecycle event quarantined",
           );
         }
+        if (permanent && !generationConflict) {
+          continue;
+        }
         const pending = (await input.outbox.list()).length;
         return {
           acknowledged,
           pending,
           blocked: true,
-          ...(error instanceof AgentLifecycleBackendHttpError &&
-          error.code === "AGENT_LIFECYCLE_SEQUENCE_GAP"
-            ? { anomaly: "SEQUENCE_GAP" as const }
-            : {}),
+          ...(generationConflict
+            ? { anomaly: "GENERATION_CONFLICT" as const }
+            : error instanceof AgentLifecycleBackendHttpError &&
+                error.code === "AGENT_LIFECYCLE_SEQUENCE_GAP"
+              ? { anomaly: "SEQUENCE_GAP" as const }
+              : {}),
         };
       }
     }

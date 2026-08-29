@@ -160,6 +160,13 @@ describe("provider-neutral lifecycle adapters", () => {
         ctx,
       ),
     ).toBeNull();
+    expect(
+      encoder.observe(
+        openClawLifecycleAdapter,
+        { event: "lifecycle", phase: "end" },
+        { ...ctx, sessionId: "session-alias" },
+      ),
+    ).toBeNull();
   });
 
   it("supports a future adapter without expanding the canonical enum", () => {

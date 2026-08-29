@@ -82,7 +82,7 @@ describe("agent lifecycle publisher", () => {
     });
   });
 
-  it("quarantines a permanently rejected event and stops the ordered drain", async () => {
+  it("quarantines a permanently rejected event and continues the ordered drain", async () => {
     const test = harness();
     test.submitEvent.mockRejectedValue(
       new AgentLifecycleBackendHttpError(422, "invalid"),
@@ -90,7 +90,7 @@ describe("agent lifecycle publisher", () => {
     const publisher = createAgentLifecyclePublisher(test);
 
     const result = await publisher.publish(lifecycleEvent);
-    expect(result).toMatchObject({ pending: 0, blocked: true });
+    expect(result).toMatchObject({ pending: 0, blocked: false });
     expect(test.quarantined).toHaveLength(1);
   });
 
@@ -125,5 +125,23 @@ describe("agent lifecycle publisher", () => {
       anomaly: "SEQUENCE_GAP",
     });
     expect(test.entries).toHaveLength(1);
+  });
+
+  it.each([
+    "AGENT_LIFECYCLE_TRANSITION_CONFLICT",
+    "AGENT_LIFECYCLE_IDEMPOTENCY_CONFLICT",
+  ])("quarantines %s and requests generation rotation", async (code) => {
+    const test = harness();
+    test.submitEvent.mockRejectedValue(
+      new AgentLifecycleBackendHttpError(409, "conflict", code),
+    );
+    const publisher = createAgentLifecyclePublisher(test);
+
+    await expect(publisher.publish(lifecycleEvent)).resolves.toMatchObject({
+      pending: 0,
+      blocked: true,
+      anomaly: "GENERATION_CONFLICT",
+    });
+    expect(test.quarantined).toHaveLength(1);
   });
 });

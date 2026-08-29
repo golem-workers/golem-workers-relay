@@ -9,7 +9,10 @@ import type {
 } from "./backendClient.js";
 import { openClawLifecycleAdapter } from "./openclawAdapter.js";
 import { observeOpenClawLifecycleFrame } from "./openclawObserver.js";
-import type { AgentLifecycleOutbox } from "./outbox.js";
+import {
+  AgentLifecycleOutboxIdentityConflictError,
+  type AgentLifecycleOutbox,
+} from "./outbox.js";
 import type { AgentLifecyclePublisher } from "./publisher.js";
 import {
   planAgentLifecycleReconciliation,
@@ -39,6 +42,7 @@ export function createAgentLifecycleRelay(input: {
   type ActivationTrigger =
     | "STARTUP_OR_RECONNECT"
     | "SEQUENCE_GAP"
+    | "GENERATION_CONFLICT"
     | "ANOMALY";
   const now = input.now ?? (() => new Date());
   const generationId = input.generationId ?? randomUUID;
@@ -68,6 +72,7 @@ export function createAgentLifecycleRelay(input: {
     STARTUP_OR_RECONNECT: 1,
     ANOMALY: 2,
     SEQUENCE_GAP: 3,
+    GENERATION_CONFLICT: 4,
   };
 
   const scheduleActivationRetry = (trigger: ActivationTrigger): void => {
@@ -232,6 +237,22 @@ export function createAgentLifecycleRelay(input: {
       initialized = true;
     }
 
+    if (trigger === "GENERATION_CONFLICT" && current) {
+      const quarantined = await input.outbox.quarantineGeneration?.(
+        current.sourceGeneration,
+        "lifecycle generation abandoned after transition or idempotency conflict",
+      );
+      logger.error(
+        {
+          event: "agent_lifecycle_generation_quarantined",
+          sourceGeneration: current.sourceGeneration,
+          quarantined: quarantined ?? 0,
+        },
+        "Agent lifecycle generation rotated after conflict",
+      );
+      current = { ...current, registered: true };
+    }
+
     if (current && !current.registered) {
       const response = await registerCurrent();
       if (!response) {
@@ -239,7 +260,10 @@ export function createAgentLifecycleRelay(input: {
         return;
       }
       const replay = await input.publisher.drain();
-      if (replay.anomaly === "SEQUENCE_GAP") {
+      if (replay.anomaly === "GENERATION_CONFLICT") {
+        await activateGeneration("GENERATION_CONFLICT");
+        return;
+      } else if (replay.anomaly === "SEQUENCE_GAP") {
         trigger = "SEQUENCE_GAP";
       } else if (replay.pending > 0) {
         scheduleActivationRetry(trigger);
@@ -250,9 +274,12 @@ export function createAgentLifecycleRelay(input: {
       return;
     }
 
-    if (current) {
+    if (current && trigger !== "GENERATION_CONFLICT") {
       const replay = await input.publisher.drain();
-      if (replay.anomaly === "SEQUENCE_GAP") {
+      if (replay.anomaly === "GENERATION_CONFLICT") {
+        await activateGeneration("GENERATION_CONFLICT");
+        return;
+      } else if (replay.anomaly === "SEQUENCE_GAP") {
         trigger = "SEQUENCE_GAP";
       } else if (replay.pending > 0) {
         scheduleActivationRetry(trigger);
@@ -338,7 +365,15 @@ export function createAgentLifecycleRelay(input: {
     });
     if (!event) return;
 
-    await input.outbox.enqueue(event);
+    try {
+      await input.outbox.enqueue(event);
+    } catch (error) {
+      if (error instanceof AgentLifecycleOutboxIdentityConflictError) {
+        await activateGeneration("GENERATION_CONFLICT");
+        return;
+      }
+      throw error;
+    }
     if (!current.registered && !(await registerCurrent())) {
       scheduleActivationRetry("ANOMALY");
       return;
@@ -346,6 +381,8 @@ export function createAgentLifecycleRelay(input: {
     const result = await input.publisher.drain();
     if (result.anomaly === "SEQUENCE_GAP") {
       await activateGeneration("SEQUENCE_GAP");
+    } else if (result.anomaly === "GENERATION_CONFLICT") {
+      await activateGeneration("GENERATION_CONFLICT");
     } else if (result.pending > 0) {
       scheduleActivationRetry("ANOMALY");
     }

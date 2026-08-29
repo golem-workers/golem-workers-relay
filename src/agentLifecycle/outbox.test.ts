@@ -82,4 +82,16 @@ describe("agent lifecycle durable outbox", () => {
     );
     expect(quarantine.some((name) => name.includes("broken.json"))).toBe(true);
   });
+
+  it("quarantines every pending event from an abandoned generation", async () => {
+    const stateDir = await temporaryDirectory();
+    const outbox = createAgentLifecycleOutbox({ stateDir });
+    await outbox.enqueue(event(1));
+    await outbox.enqueue(event(2));
+
+    await expect(
+      outbox.quarantineGeneration?.("generation-1", "generation conflict"),
+    ).resolves.toBe(2);
+    expect(await outbox.list()).toEqual([]);
+  });
 });
