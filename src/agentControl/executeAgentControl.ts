@@ -22,6 +22,7 @@ import {
 import { configureGitHubAuth, getGitHubOauthStatus } from "./githubAuth.js";
 import type { ChatRunResult } from "../openclaw/chatRunner.js";
 import type { RelayInboundMessageRequest } from "../backend/types.js";
+import { readOpenClawActiveRuns } from "../agentLifecycle/reconciliation.js";
 
 const execFile = promisify(execFileCallback);
 const GATEWAY_RESTART_CHECK_ATTEMPTS = 20;
@@ -93,6 +94,8 @@ export async function executeAgentControl(input: {
       ? await readConfig(input.configPath)
       : input.action.kind === "channels.status"
         ? await readChannelsStatus(input.gateway)
+      : input.action.kind === "lifecycle.activeRuns"
+        ? await readLifecycleActiveRuns(input.gateway)
       : input.action.kind === "config.apply"
         ? await applyConfig({
             configPath: input.configPath,
@@ -188,6 +191,21 @@ export async function executeAgentControl(input: {
                     fastMode: input.action.fastMode,
                   });
   return agentControlResultSchema.parse(result);
+}
+
+async function readLifecycleActiveRuns(
+  gateway: GatewayLike,
+): Promise<AgentControlResult> {
+  const payload = await gateway.request(
+    "sessions.list",
+    { agentId: "main", limit: 200 },
+    { timeoutMs: 5_000 },
+  );
+  return {
+    kind: "lifecycle.activeRuns",
+    observedAt: new Date().toISOString(),
+    runs: readOpenClawActiveRuns(payload),
+  };
 }
 
 function getChatRunResultRunId(result: ChatRunResult): string | null {

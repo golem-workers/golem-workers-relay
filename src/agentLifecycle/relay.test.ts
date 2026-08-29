@@ -290,6 +290,67 @@ describe("agent lifecycle relay", () => {
     await relay.flush();
     expect(drain).toHaveBeenCalledTimes(3);
   });
+
+  it("quarantines a conflicted generation, rotates it, and reconciles", async () => {
+    const quarantineGeneration = vi.fn(() => Promise.resolve(3));
+    const registerGeneration = vi.fn<AgentLifecycleBackend["registerGeneration"]>(
+      ({ sourceGeneration }) => Promise.resolve({
+        accepted: true,
+        disposition: "ACTIVATED",
+        serverId: "server-1",
+        sourceGeneration,
+        generationOrdinal: 3,
+        activeRuns: [],
+      }),
+    );
+    const relay = createAgentLifecycleRelay({
+      backend: {
+        registerGeneration,
+        submitEvent: vi.fn<AgentLifecycleBackend["submitEvent"]>(),
+      },
+      outbox: {
+        enqueue: vi.fn<AgentLifecycleOutbox["enqueue"]>(),
+        list: () => Promise.resolve([]),
+        acknowledge: vi.fn<AgentLifecycleOutbox["acknowledge"]>(),
+        quarantine: vi.fn<AgentLifecycleOutbox["quarantine"]>(),
+        quarantineGeneration,
+      },
+      publisher: {
+        publish: vi.fn(),
+        drain: vi
+          .fn<AgentLifecyclePublisher["drain"]>()
+          .mockResolvedValueOnce({
+            acknowledged: 0,
+            pending: 0,
+            blocked: true,
+            anomaly: "GENERATION_CONFLICT",
+          })
+          .mockResolvedValue({ acknowledged: 0, pending: 0, blocked: false }),
+      },
+      sourceStore: {
+        load: () => Promise.resolve({
+          schemaVersion: 1,
+          serverId: "server-1",
+          sourceGeneration: "generation-old",
+          registered: true,
+          updatedAt: "2026-08-19T09:59:00.000Z",
+        }),
+        save: () => Promise.resolve(),
+      },
+      generationId: () => "generation-new",
+    });
+
+    relay.handleGatewayConnectionStateChange({ connected: true });
+    await relay.flush();
+
+    expect(quarantineGeneration).toHaveBeenCalledWith(
+      "generation-old",
+      expect.stringContaining("generation abandoned"),
+    );
+    expect(registerGeneration).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceGeneration: "generation-new" }),
+    );
+  });
 });
 
 function frame(phase: "start" | "end", seq: number) {

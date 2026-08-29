@@ -28,7 +28,18 @@ export type AgentLifecycleOutbox = {
   list(): Promise<PendingAgentLifecycleEvent[]>;
   acknowledge(entry: PendingAgentLifecycleEvent): Promise<void>;
   quarantine(entry: PendingAgentLifecycleEvent, reason: string): Promise<void>;
+  quarantineGeneration?(
+    sourceGeneration: string,
+    reason: string,
+  ): Promise<number>;
 };
+
+export class AgentLifecycleOutboxIdentityConflictError extends Error {
+  constructor(readonly sourceGeneration: string) {
+    super("Lifecycle outbox event identity conflict");
+    this.name = "AgentLifecycleOutboxIdentityConflictError";
+  }
+}
 
 export function createAgentLifecycleOutbox(input?: {
   stateDir?: string;
@@ -93,7 +104,9 @@ export function createAgentLifecycleOutbox(input?: {
       );
       if (existing) {
         if (JSON.stringify(existing.event) !== JSON.stringify(event)) {
-          throw new Error("Lifecycle outbox event identity conflict");
+          throw new AgentLifecycleOutboxIdentityConflictError(
+            event.sourceGeneration,
+          );
         }
         return existing;
       }
@@ -160,6 +173,16 @@ export function createAgentLifecycleOutbox(input?: {
       await fs.writeFile(`${target}.reason.txt`, `${reason}\n`, "utf8");
       await syncDirectory(quarantineDir);
       await syncDirectory(pendingDir);
+    },
+
+    async quarantineGeneration(sourceGeneration, reason) {
+      const entries = (await list()).filter(
+        (entry) => entry.event.sourceGeneration === sourceGeneration,
+      );
+      for (const entry of entries) {
+        await this.quarantine(entry, reason);
+      }
+      return entries.length;
     },
   };
 }
