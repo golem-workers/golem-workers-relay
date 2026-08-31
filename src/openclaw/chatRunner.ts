@@ -149,6 +149,8 @@ const OPENCLAW_SLASH_COMMAND_FINAL_WAIT_TIMEOUT_MS = 15_000;
 const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_TIMEOUT_MS = 10_000;
 const OPENCLAW_DISCONNECT_TRANSCRIPT_RECOVERY_TIMEOUT_MS = 1_500;
 const OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_POLL_INTERVAL_MS = 250;
+const OPENCLAW_GATEWAY_HISTORY_REQUEST_TIMEOUT_MS = 1_500;
+const OPENCLAW_GATEWAY_HISTORY_POLL_INTERVAL_MS = 1_000;
 const OPENCLAW_EMPTY_FINAL_CONTINUATION_TIMEOUT_MS = 10 * 60_000;
 const OPENCLAW_TRANSCRIPT_FINAL_STABILITY_MS = 1_000;
 const OPENCLAW_TRANSCRIPT_COMPLETION_SETTLE_MS = 3_000;
@@ -612,27 +614,68 @@ async function readLatestAssistantMessageFromResolvedSessionTranscript(input: {
   return latestAssistantMessage;
 }
 
-async function waitForAssistantMessageFromSessionTranscript(input: {
-  sessionKey: string;
-  requestMessage: GatewayChatMessage;
-  timeoutMs: number;
-  pollIntervalMs?: number;
-  sessionState?: ResolvedSessionTranscriptState | null;
-}): Promise<unknown> {
-  const deadline = Date.now() + input.timeoutMs;
-  const pollIntervalMs = Math.max(50, Math.trunc(input.pollIntervalMs ?? OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_POLL_INTERVAL_MS));
-  while (Date.now() < deadline) {
-    const transcriptMessage = await readLatestAssistantMessageFromSessionTranscript({
-      sessionKey: input.sessionKey,
-      requestMessage: input.requestMessage,
-      sessionState: input.sessionState,
-    }).catch(() => undefined);
-    if (transcriptMessage !== undefined) {
-      return transcriptMessage;
-    }
-    await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
+function readMessageRunId(message: unknown): string | null {
+  if (!isPlainObject(message)) return null;
+  if (typeof message.runId === "string" && message.runId.trim().length > 0) {
+    return message.runId.trim();
   }
-  return undefined;
+  const metadata = isPlainObject(message.__openclaw) ? message.__openclaw : null;
+  return metadata && typeof metadata.runId === "string" && metadata.runId.trim().length > 0
+    ? metadata.runId.trim()
+    : null;
+}
+
+function readLatestAssistantMessageFromGatewayHistory(input: {
+  history: unknown;
+  requestMessage: GatewayChatMessage;
+  runId: string;
+}): unknown {
+  if (!isPlainObject(input.history)) {
+    return undefined;
+  }
+  const messagesValue: unknown = input.history.messages;
+  if (!Array.isArray(messagesValue)) {
+    return undefined;
+  }
+  const messages = Array.from<unknown>(messagesValue);
+  const hasRunMetadata = messages.some((message) => readMessageRunId(message) !== null);
+  if (hasRunMetadata) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const candidate = messages[index];
+      if (readMessageRole(candidate) !== "assistant") continue;
+      if (readMessageRunId(candidate) !== input.runId) continue;
+      if (messageContainsToolActivity(candidate)) continue;
+      if (!extractTextFromMessage(candidate)) continue;
+      return candidate;
+    }
+    return undefined;
+  }
+
+  const requestText = normalizeComparableText(extractTextFromMessage(input.requestMessage));
+  if (!requestText) return undefined;
+  let matchingUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const candidate = messages[index];
+    if (readMessageRole(candidate) !== "user") continue;
+    const candidateText = extractTextFromMessage(candidate);
+    if (candidateText && matchesTranscriptUserMessage(candidateText, requestText)) {
+      matchingUserIndex = index;
+      break;
+    }
+  }
+  if (matchingUserIndex < 0) return undefined;
+
+  let latestAssistantMessage: unknown = undefined;
+  for (let index = matchingUserIndex + 1; index < messages.length; index += 1) {
+    const candidate = messages[index];
+    const role = readMessageRole(candidate);
+    if (role === "user") break;
+    if (role !== "assistant") continue;
+    if (messageContainsToolActivity(candidate)) continue;
+    if (!extractTextFromMessage(candidate)) continue;
+    latestAssistantMessage = candidate;
+  }
+  return latestAssistantMessage;
 }
 
 async function collectReplyArtifacts(input: {
@@ -985,6 +1028,58 @@ export class ChatRunner {
   private gatewaySupportsMethod(method: string): boolean {
     const methods = this.gateway.getHello()?.features?.methods;
     return !Array.isArray(methods) || methods.includes(method);
+  }
+
+  private async readLatestAssistantMessageFromAvailableTranscript(input: {
+    sessionKey: string;
+    requestMessage: GatewayChatMessage;
+    runId: string;
+    sessionState?: ResolvedSessionTranscriptState | null;
+  }): Promise<unknown> {
+    const fileMessage = await readLatestAssistantMessageFromSessionTranscript({
+      sessionKey: input.sessionKey,
+      requestMessage: input.requestMessage,
+      sessionState: input.sessionState,
+    }).catch(() => undefined);
+    if (fileMessage !== undefined || !this.gatewaySupportsMethod("chat.history")) {
+      return fileMessage;
+    }
+
+    const history = await this.gateway
+      .request(
+        "chat.history",
+        { sessionKey: input.sessionKey, limit: 100 },
+        { timeoutMs: OPENCLAW_GATEWAY_HISTORY_REQUEST_TIMEOUT_MS }
+      )
+      .catch(() => undefined);
+    return readLatestAssistantMessageFromGatewayHistory({
+      history,
+      requestMessage: input.requestMessage,
+      runId: input.runId,
+    });
+  }
+
+  private async waitForAssistantMessageFromAvailableTranscript(input: {
+    sessionKey: string;
+    requestMessage: GatewayChatMessage;
+    runId: string;
+    timeoutMs: number;
+    pollIntervalMs?: number;
+    sessionState?: ResolvedSessionTranscriptState | null;
+  }): Promise<unknown> {
+    const deadline = Date.now() + input.timeoutMs;
+    const pollIntervalMs = Math.max(
+      50,
+      Math.trunc(input.pollIntervalMs ?? OPENCLAW_GATEWAY_HISTORY_POLL_INTERVAL_MS)
+    );
+    while (Date.now() < deadline) {
+      const transcriptMessage = await this.readLatestAssistantMessageFromAvailableTranscript(input);
+      if (transcriptMessage !== undefined) {
+        return transcriptMessage;
+      }
+      await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
+    }
+    return undefined;
   }
 
   private async abortTranscriptCompletedRun(input: {
@@ -1553,9 +1648,10 @@ export class ChatRunner {
           const gatewayFinalMessage = finalEvt.message ?? readLatestUserFacingMessage(openclawEvents);
           let transcriptFinalMessage =
             finalAttemptMessage !== null
-              ? await readLatestAssistantMessageFromSessionTranscript({
+              ? await this.readLatestAssistantMessageFromAvailableTranscript({
                   sessionKey: input.sessionKey,
                   requestMessage: finalAttemptMessage,
+                  runId,
                   sessionState: transcriptSessionState,
                 }).catch(() => undefined)
               : undefined;
@@ -1564,9 +1660,10 @@ export class ChatRunner {
             gatewayFinalMessage === undefined &&
             finalAttemptMessage !== null
           ) {
-            transcriptFinalMessage = await waitForAssistantMessageFromSessionTranscript({
+            transcriptFinalMessage = await this.waitForAssistantMessageFromAvailableTranscript({
               sessionKey: input.sessionKey,
               requestMessage: finalAttemptMessage,
+              runId,
               timeoutMs: Math.min(1_000, Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))),
               sessionState: transcriptSessionState,
             }).catch(() => undefined);
@@ -1757,9 +1854,10 @@ export class ChatRunner {
           const gatewayFinalMessage = finalEvt.message ?? readLatestUserFacingMessage(openclawEvents);
           let transcriptFinalMessage =
             finalAttemptMessage !== null
-              ? await readLatestAssistantMessageFromSessionTranscript({
+              ? await this.readLatestAssistantMessageFromAvailableTranscript({
                   sessionKey: input.sessionKey,
                   requestMessage: finalAttemptMessage,
+                  runId,
                   sessionState: transcriptSessionState,
                 }).catch(() => undefined)
               : undefined;
@@ -1768,9 +1866,10 @@ export class ChatRunner {
             gatewayFinalMessage === undefined &&
             finalAttemptMessage !== null
           ) {
-            transcriptFinalMessage = await waitForAssistantMessageFromSessionTranscript({
+            transcriptFinalMessage = await this.waitForAssistantMessageFromAvailableTranscript({
               sessionKey: input.sessionKey,
               requestMessage: finalAttemptMessage,
+              runId,
               timeoutMs: Math.min(1_000, Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))),
               sessionState: transcriptSessionState,
             }).catch(() => undefined);
@@ -1863,9 +1962,10 @@ export class ChatRunner {
         if (!retryable) {
           const transcriptFinalMessage =
             finalAttemptMessage !== null
-              ? await waitForAssistantMessageFromSessionTranscript({
+              ? await this.waitForAssistantMessageFromAvailableTranscript({
                   sessionKey: input.sessionKey,
                   requestMessage: finalAttemptMessage,
+                  runId,
                   timeoutMs: Math.min(
                     OPENCLAW_DISCONNECT_TRANSCRIPT_RECOVERY_TIMEOUT_MS,
                     Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))
@@ -1965,9 +2065,10 @@ export class ChatRunner {
           );
           const transcriptFinalMessage =
             finalAttemptMessage !== null
-              ? await waitForAssistantMessageFromSessionTranscript({
+              ? await this.waitForAssistantMessageFromAvailableTranscript({
                   sessionKey: input.sessionKey,
                   requestMessage: finalAttemptMessage,
+                  runId,
                   timeoutMs: Math.min(
                     OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_TIMEOUT_MS,
                     Math.max(0, input.timeoutMs - (Date.now() - startedAtMs))
@@ -2043,9 +2144,10 @@ export class ChatRunner {
         const timeoutMessage = err instanceof Error ? err.message : "Timed out waiting for final";
         const transcriptFinalMessage =
           finalAttemptMessage !== null
-            ? await readLatestAssistantMessageFromSessionTranscript({
+            ? await this.readLatestAssistantMessageFromAvailableTranscript({
                 sessionKey: input.sessionKey,
                 requestMessage: finalAttemptMessage,
+                runId,
                 sessionState: transcriptSessionState,
               }).catch(() => undefined)
             : undefined;
@@ -2196,9 +2298,10 @@ export class ChatRunner {
         openclawMeta: { method: "chat.restart_recovery", runId: input.runId },
       };
     }
-    const transcriptMessage = await waitForAssistantMessageFromSessionTranscript({
+    const transcriptMessage = await this.waitForAssistantMessageFromAvailableTranscript({
       sessionKey: input.sessionKey,
       requestMessage: input.requestMessage as GatewayChatMessage,
+      runId: input.runId,
       timeoutMs: Math.max(1, Math.trunc(input.timeoutMs)),
     }).catch(() => undefined);
     if (transcriptMessage === undefined) {
@@ -2370,9 +2473,10 @@ export class ChatRunner {
           }
           activeWaiter.transcriptPolling = true;
           try {
-            const transcriptMessage = await readLatestAssistantMessageFromSessionTranscript({
+            const transcriptMessage = await this.readLatestAssistantMessageFromAvailableTranscript({
               sessionKey: opts.sessionKey!,
               requestMessage: opts.requestMessage!,
+              runId,
               sessionState: opts.sessionState,
             }).catch(() => undefined);
             if (transcriptMessage === undefined) {
@@ -2406,7 +2510,15 @@ export class ChatRunner {
             activeWaiter.transcriptPolling = false;
           }
         };
-        const transcriptPollIntervalMs = Math.max(100, Math.trunc(opts.transcriptPollIntervalMs ?? 250));
+        const transcriptPollIntervalMs = Math.max(
+          100,
+          Math.trunc(
+            opts.transcriptPollIntervalMs ??
+              (opts.sessionState
+                ? OPENCLAW_ERROR_TRANSCRIPT_RECOVERY_POLL_INTERVAL_MS
+                : OPENCLAW_GATEWAY_HISTORY_POLL_INTERVAL_MS)
+          )
+        );
         waiter.transcriptPoll = setInterval(() => {
           void pollTranscript();
         }, transcriptPollIntervalMs);

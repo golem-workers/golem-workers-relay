@@ -2519,6 +2519,116 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("recovers a transcript-only reply from OpenClaw gateway history", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-gateway-history-final-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    const sessionKey = "tg:7278830001:gateway-history-final";
+    const runId = "run_gateway_history_final";
+    let historyCalls = 0;
+    const { wss, port } = startServer((ws) => {
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
+      ws.on("message", (data) => {
+        const frame = JSON.parse(rawDataToString(data)) as {
+          type: string;
+          id: string;
+          method: string;
+          params?: unknown;
+        };
+        if (maybeHandleSessionsUsage(ws, frame)) return;
+        if (frame.type === "req" && frame.method === "connect") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 4,
+                policy: { tickIntervalMs: 5000 },
+                features: {
+                  methods: ["chat.send", "chat.history", "chat.abort", "sessions.usage"],
+                  events: ["chat"],
+                },
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.send") {
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.history") {
+          historyCalls += 1;
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                sessionKey,
+                messages: [
+                  { role: "user", content: "same request" },
+                  {
+                    role: "assistant",
+                    content: [{ type: "text", text: "stale reply" }],
+                    __openclaw: { runId: "run_old" },
+                  },
+                  { role: "user", content: "same request", __openclaw: { idempotencyKey: `${runId}:user` } },
+                  {
+                    role: "assistant",
+                    content: [{ type: "text", text: "fresh gateway-history reply" }],
+                    __openclaw: { runId },
+                  },
+                ],
+              },
+            })
+          );
+          return;
+        }
+        if (frame.type === "req" && frame.method === "chat.abort") {
+          ws.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: { aborted: false, runIds: [] },
+            })
+          );
+        }
+      });
+    });
+
+    let runner: ChatRunner | null = null;
+    const client = new GatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      token: "t",
+      onEvent: (evt) => runner?.handleEvent(evt),
+    });
+    runner = new ChatRunner(client, { transcriptCompletionSettleMs: 0 });
+
+    await client.start();
+    const { result } = await runner.runChatTask({
+      taskId: "task_gateway_history_final",
+      sessionKey,
+      messageText: "same request",
+      deliverySystem: "relay_channel_v2",
+      timeoutMs: 4_000,
+    });
+    expect(result.outcome).toBe("reply");
+    if (result.outcome !== "reply") throw new Error("expected reply");
+    expect(result.reply.message).toMatchObject({
+      role: "assistant",
+      content: [{ type: "text", text: "fresh gateway-history reply" }],
+      __openclaw: { runId },
+    });
+    expect(historyCalls).toBeGreaterThanOrEqual(2);
+
+    client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
   it("does not recover a stale reply quoted by a status nudge when the transcript baseline is unavailable", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-stale-nudge-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
