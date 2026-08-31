@@ -17,6 +17,7 @@ type QueueOptions<T> = {
   concurrency: number;
   maxQueue: number;
   processor: (item: T) => Promise<void>;
+  getConcurrencyKey?: (item: T) => string | null;
 };
 
 export class InMemoryTaskQueue<T> {
@@ -26,11 +27,14 @@ export class InMemoryTaskQueue<T> {
   private readonly concurrency: number;
   private readonly maxQueue: number;
   private readonly processor: (item: T) => Promise<void>;
+  private readonly getConcurrencyKey?: (item: T) => string | null;
+  private readonly activeConcurrencyKeys = new Set<string>();
 
   constructor(opts: QueueOptions<T>) {
     this.concurrency = Math.max(1, Math.trunc(opts.concurrency));
     this.maxQueue = Math.max(1, Math.trunc(opts.maxQueue));
     this.processor = opts.processor;
+    this.getConcurrencyKey = opts.getConcurrencyKey;
   }
 
   enqueue(item: T): void {
@@ -83,10 +87,22 @@ export class InMemoryTaskQueue<T> {
 
   private pump(): void {
     while (this.inFlight < this.concurrency && this.queue.length > 0) {
-      const next = this.queue.shift();
+      const nextIndex = this.queue.findIndex((item) => {
+        const key = this.getConcurrencyKey?.(item) ?? null;
+        return key === null || !this.activeConcurrencyKeys.has(key);
+      });
+      if (nextIndex < 0) return;
+      const [next] = this.queue.splice(nextIndex, 1);
       if (!next) return;
+      const concurrencyKey = this.getConcurrencyKey?.(next) ?? null;
+      if (concurrencyKey !== null) {
+        this.activeConcurrencyKeys.add(concurrencyKey);
+      }
       this.inFlight += 1;
       void this.processor(next).finally(() => {
+        if (concurrencyKey !== null) {
+          this.activeConcurrencyKeys.delete(concurrencyKey);
+        }
         this.inFlight = Math.max(0, this.inFlight - 1);
         this.pump();
       });
