@@ -75,6 +75,38 @@ describe("InMemoryTaskQueue", () => {
     expect(drained).toBe(true);
     expect(processed).toEqual([1, 3]);
   });
+
+  it("serializes one key while processing different keys in parallel", async () => {
+    const started: string[] = [];
+    const releases = new Map<string, () => void>();
+    const queue = new InMemoryTaskQueue<{ id: string; sessionKey: string }>({
+      concurrency: 3,
+      maxQueue: 10,
+      processor: (item) =>
+        new Promise<void>((resolve) => {
+          started.push(item.id);
+          releases.set(item.id, resolve);
+        }),
+      getConcurrencyKey: (item) => item.sessionKey,
+    });
+
+    queue.enqueue({ id: "same-1", sessionKey: "same" });
+    queue.enqueue({ id: "same-2", sessionKey: "same" });
+    queue.enqueue({ id: "other-1", sessionKey: "other" });
+    await Promise.resolve();
+
+    expect(started).toEqual(["same-1", "other-1"]);
+    expect(queue.getState()).toMatchObject({ queueLength: 1, inFlight: 2 });
+
+    releases.get("same-1")?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toEqual(["same-1", "other-1", "same-2"]);
+
+    releases.get("other-1")?.();
+    releases.get("same-2")?.();
+    await expect(queue.drain(1_000)).resolves.toBe(true);
+  });
 });
 
 function sleep(ms: number): Promise<void> {

@@ -454,6 +454,8 @@ async function main(): Promise<void> {
     concurrency: cfg.concurrency,
     maxQueue: cfg.pushMaxQueue,
     processor: processOne,
+    getConcurrencyKey: (message) =>
+      message.input.kind === "chat" ? message.input.sessionKey : null,
   });
   const preemptSessionForUserOwnedTurn = (input: {
     message: ChatPushMessage;
