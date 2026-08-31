@@ -28,6 +28,8 @@ NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 PNPM_HOME_DIR="/root/.local/share/pnpm"
 OPENCLAW_MIN_NODE_VERSION="22.22.3"
 OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-}"
+OPENCLAW_MOONSHOT_PLUGIN_SPEC="${OPENCLAW_MOONSHOT_PLUGIN_SPEC:-}"
+OPENCLAW_PERPLEXITY_PLUGIN_SPEC="${OPENCLAW_PERPLEXITY_PLUGIN_SPEC:-}"
 OPENCLAW_PLUGIN_CAPABILITY_ARGS=()
 OPENCLAW_AUTHORED_PLUGIN_INSTALLS=1
 OPENCLAW_SAFE_SKILL_SPECS=(
@@ -517,10 +519,10 @@ channelsCfg.whatsapp = {
 const pluginsCfg = ensureRecord(parsed, "plugins")
 pluginsCfg.enabled = true
 pluginsCfg.allow = Array.from(
-  new Set([...normalizeStringArray(pluginsCfg.allow), "telegram", "whatsapp"])
+  new Set([...normalizeStringArray(pluginsCfg.allow), "telegram", "whatsapp", "moonshot", "perplexity"])
 )
 const nextDeny = normalizeStringArray(pluginsCfg.deny).filter(
-  (item) => item !== "telegram" && item !== "whatsapp"
+  (item) => item !== "telegram" && item !== "whatsapp" && item !== "moonshot" && item !== "perplexity"
 )
 if (nextDeny.length > 0) {
   pluginsCfg.deny = nextDeny
@@ -553,6 +555,19 @@ install_openclaw_whatsapp_plugin() {
   fi
   openclaw plugins enable "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" whatsapp
   openclaw plugins inspect whatsapp --runtime --json >/dev/null
+}
+
+install_openclaw_capability_plugin() {
+  local plugin_id="$1"
+  local install_spec="$2"
+
+  if openclaw plugins inspect "${plugin_id}" --runtime --json >/dev/null 2>&1; then
+    echo "OpenClaw ${plugin_id} plugin already installed."
+  else
+    openclaw plugins install "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" "${install_spec}"
+  fi
+  openclaw plugins enable "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" "${plugin_id}"
+  openclaw plugins inspect "${plugin_id}" --runtime --json >/dev/null
 }
 
 preinstall_openclaw_safe_skills() {
@@ -807,6 +822,28 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     WHATSAPP_PLUGIN_INSTALL_SPEC="clawhub:@openclaw/whatsapp@${WHATSAPP_PLUGIN_VERSION}"
   fi
   echo "Using compatible WhatsApp plugin: ${WHATSAPP_PLUGIN_INSTALL_SPEC}"
+  if [[ -n "${OPENCLAW_MOONSHOT_PLUGIN_SPEC}" ]]; then
+    MOONSHOT_PLUGIN_INSTALL_SPEC="${OPENCLAW_MOONSHOT_PLUGIN_SPEC}"
+  else
+    MOONSHOT_PLUGIN_VERSION="$(
+      node "${RELAY_REPO_DIR}/scripts/resolve-openclaw-official-plugin-version.mjs" \
+        "@openclaw/moonshot-provider" \
+        "${OPENCLAW_INSTALLED_VERSION}"
+    )"
+    MOONSHOT_PLUGIN_INSTALL_SPEC="clawhub:@openclaw/moonshot-provider@${MOONSHOT_PLUGIN_VERSION}"
+  fi
+  echo "Using compatible Moonshot plugin: ${MOONSHOT_PLUGIN_INSTALL_SPEC}"
+  if [[ -n "${OPENCLAW_PERPLEXITY_PLUGIN_SPEC}" ]]; then
+    PERPLEXITY_PLUGIN_INSTALL_SPEC="${OPENCLAW_PERPLEXITY_PLUGIN_SPEC}"
+  else
+    PERPLEXITY_PLUGIN_VERSION="$(
+      node "${RELAY_REPO_DIR}/scripts/resolve-openclaw-official-plugin-version.mjs" \
+        "@openclaw/perplexity-plugin" \
+        "${OPENCLAW_INSTALLED_VERSION}"
+    )"
+    PERPLEXITY_PLUGIN_INSTALL_SPEC="clawhub:@openclaw/perplexity-plugin@${PERPLEXITY_PLUGIN_VERSION}"
+  fi
+  echo "Using compatible Perplexity plugin: ${PERPLEXITY_PLUGIN_INSTALL_SPEC}"
   test -x "${GLOBAL_PNPM_ROOT}/.bin/codex"
   test -x "${GLOBAL_PNPM_ROOT}/.bin/openclaw"
   ln -sfn "${GLOBAL_PNPM_ROOT}/.bin/codex" /usr/local/bin/codex
@@ -1269,6 +1306,10 @@ NODE
   set_step "openclaw_whatsapp_plugin_install"
   install_openclaw_whatsapp_plugin
 
+  set_step "openclaw_external_provider_plugins_install"
+  install_openclaw_capability_plugin moonshot "${MOONSHOT_PLUGIN_INSTALL_SPEC}"
+  install_openclaw_capability_plugin perplexity "${PERPLEXITY_PLUGIN_INSTALL_SPEC}"
+
   set_step "openclaw_snapshot_channels_warmup_start"
   warm_openclaw_snapshot_channels
 
@@ -1290,7 +1331,7 @@ import path from "node:path"
 
 const configDir = path.join(os.homedir(), ".openclaw")
 const configPath = path.join(configDir, "openclaw.json")
-const requiredPluginIds = ["relay-channel", "codex", "whatsapp"]
+const requiredPluginIds = ["relay-channel", "codex", "whatsapp", "moonshot", "perplexity"]
 const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram"]
 const stalePluginIds = ["memory-lancedb-pro", "memory-lancedb"]
 const defaultExtensionsDir = path.join(configDir, "extensions")
