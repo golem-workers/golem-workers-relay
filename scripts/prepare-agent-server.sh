@@ -20,7 +20,8 @@ if [[ -z "${RELAY_CHANNEL_PLUGIN_GIT_REF:-}" ]]; then
   fi
 fi
 NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
-OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS="--max-old-space-size=768 --enable-source-maps"
+OPENCLAW_GATEWAY_SNAPSHOT_HEAP_MIB="768"
+OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS="--max-old-space-size=${OPENCLAW_GATEWAY_SNAPSHOT_HEAP_MIB} --enable-source-maps"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 PNPM_HOME_DIR="/root/.local/share/pnpm"
 OPENCLAW_MIN_NODE_VERSION="22.22.3"
@@ -385,6 +386,31 @@ wait_for_openclaw_gateway_ready() {
   return 1
 }
 
+configure_openclaw_gateway_snapshot_heap() {
+  local unit_path="${1:-/root/.config/systemd/user/openclaw-gateway.service}"
+
+  if grep -Eq '^Environment="?NODE_OPTIONS=' "${unit_path}"; then
+    sed -i -E \
+      "s|^Environment=\"?NODE_OPTIONS=.*$|Environment=\"NODE_OPTIONS=${OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS}\"|" \
+      "${unit_path}"
+  else
+    sed -i \
+      "/^\[Service\]$/a Environment=\"NODE_OPTIONS=${OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS}\"" \
+      "${unit_path}"
+  fi
+
+  sed -i -E \
+    "s|--max-old-space-size=[0-9]+|--max-old-space-size=${OPENCLAW_GATEWAY_SNAPSHOT_HEAP_MIB}|g" \
+    "${unit_path}"
+
+  grep -qF -- "--max-old-space-size=${OPENCLAW_GATEWAY_SNAPSHOT_HEAP_MIB}" "${unit_path}"
+  if grep -Eo -- '--max-old-space-size=[0-9]+' "${unit_path}" | \
+    grep -vqF -- "--max-old-space-size=${OPENCLAW_GATEWAY_SNAPSHOT_HEAP_MIB}"; then
+    echo "OpenClaw gateway unit still contains an undersized heap override: ${unit_path}" >&2
+    return 1
+  fi
+}
+
 run_openclaw_onboard_and_verify() {
   local onboard_exit=0
 
@@ -403,11 +429,8 @@ run_openclaw_onboard_and_verify() {
     return 1
   fi
 
-  sed -i -E \
-    "s|^Environment=\"?NODE_OPTIONS=.*$|Environment=\"NODE_OPTIONS=${OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS}\"|" \
-    /root/.config/systemd/user/openclaw-gateway.service
-  grep -qF "Environment=\"NODE_OPTIONS=${OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS}\"" \
-    /root/.config/systemd/user/openclaw-gateway.service
+  configure_openclaw_gateway_snapshot_heap
+  systemctl --user daemon-reload
 
   systemctl --user enable openclaw-gateway.service || true
   systemctl --user restart openclaw-gateway.service

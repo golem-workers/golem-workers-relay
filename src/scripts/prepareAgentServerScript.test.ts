@@ -59,12 +59,17 @@ describe("prepare-agent-server snapshot preparation", () => {
   it("raises the generated gateway unit heap floor before readiness recovery", () => {
     const script = readFileSync(prepareAgentServerScriptPath, "utf8");
 
+    expect(script).toContain('OPENCLAW_GATEWAY_SNAPSHOT_HEAP_MIB="768"');
     expect(script).toContain(
-      'OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS="--max-old-space-size=768 --enable-source-maps"'
+      'OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS="--max-old-space-size=${OPENCLAW_GATEWAY_SNAPSHOT_HEAP_MIB} --enable-source-maps"'
     );
     expect(script).toContain(
       'Environment=\\"NODE_OPTIONS=${OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS}\\"'
     );
+    expect(script).toContain(
+      's|--max-old-space-size=[0-9]+|--max-old-space-size=${OPENCLAW_GATEWAY_SNAPSHOT_HEAP_MIB}|g'
+    );
+    expect(script).toContain("configure_openclaw_gateway_snapshot_heap");
     expect(script.indexOf("OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS")).toBeLessThan(
       script.indexOf("systemctl --user restart openclaw-gateway.service")
     );

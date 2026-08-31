@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -29,6 +30,20 @@ install_openclaw_nodejs
 printf 'installed:%s\\n' "$NODE_VERSION"
 `
   });
+}
+
+function patchGatewayUnit(unit: string) {
+  const tempDir = mkdtempSync(resolve(tmpdir(), "openclaw-gateway-unit-"));
+  const unitPath = resolve(tempDir, "openclaw-gateway.service");
+  writeFileSync(unitPath, unit);
+  const scriptWithoutMain = script.replace(/\nmain "\$@"\s*$/, "");
+  const result = spawnSync("bash", ["-s", "--", unitPath], {
+    encoding: "utf8",
+    input: `${scriptWithoutMain}\nconfigure_openclaw_gateway_snapshot_heap "$1"\n`,
+  });
+  const patched = readFileSync(unitPath, "utf8");
+  rmSync(tempDir, { recursive: true, force: true });
+  return { result, patched };
 }
 
 describe("prepare-agent-server.sh", () => {
@@ -64,5 +79,25 @@ describe("prepare-agent-server.sh", () => {
     expect(insufficient.stderr).toContain(
       "Node.js 22.22.3+ on major 22 is required; got v22.22.2"
     );
+  });
+
+  it("raises both inline and environment gateway heap limits before readiness recovery", () => {
+    const inline = patchGatewayUnit(
+      "[Service]\nExecStart=/usr/bin/node --max-old-space-size=178 /opt/openclaw gateway\n"
+    );
+    expect(inline.result.status).toBe(0);
+    expect(inline.patched).toContain(
+      'Environment="NODE_OPTIONS=--max-old-space-size=768 --enable-source-maps"'
+    );
+    expect(inline.patched).toContain("ExecStart=/usr/bin/node --max-old-space-size=768");
+    expect(inline.patched).not.toContain("--max-old-space-size=178");
+
+    const environment = patchGatewayUnit(
+      '[Service]\nEnvironment="NODE_OPTIONS=--max-old-space-size=256 --enable-source-maps"\nExecStart=/usr/bin/node /opt/openclaw gateway\n'
+    );
+    expect(environment.result.status).toBe(0);
+    expect(environment.patched.match(/Environment="NODE_OPTIONS=/g)).toHaveLength(1);
+    expect(environment.patched).toContain("--max-old-space-size=768");
+    expect(environment.patched).not.toContain("--max-old-space-size=256");
   });
 });
