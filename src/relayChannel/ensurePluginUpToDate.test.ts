@@ -2,7 +2,11 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import { comparePluginVersions, ensureRelayChannelPluginUpToDate } from "./ensurePluginUpToDate.js";
+import {
+  buildOpenclawPluginInstallArgs,
+  comparePluginVersions,
+  ensureRelayChannelPluginUpToDate,
+} from "./ensurePluginUpToDate.js";
 
 const originalHome = process.env.HOME;
 
@@ -20,6 +24,32 @@ describe("comparePluginVersions", () => {
     expect(comparePluginVersions("1.0.12", "1.0.13")).toBeLessThan(0);
     expect(comparePluginVersions("1.0.14", "1.0.13")).toBeGreaterThan(0);
     expect(comparePluginVersions("1.2", "1.2.0")).toBe(0);
+  });
+});
+
+describe("buildOpenclawPluginInstallArgs", () => {
+  it("forces replacement of a local bundle on legacy OpenClaw", () => {
+    expect(buildOpenclawPluginInstallArgs("/tmp/relay-channel.tgz", "Usage: openclaw plugins install")).toEqual([
+      "plugins",
+      "install",
+      "--force",
+      "/tmp/relay-channel.tgz",
+    ]);
+  });
+
+  it("accepts declared plugin capabilities when supported", () => {
+    expect(
+      buildOpenclawPluginInstallArgs(
+        "/tmp/relay-channel.tgz",
+        "Options:\n  --accept-capabilities  Accept plugin capability declarations"
+      )
+    ).toEqual([
+      "plugins",
+      "install",
+      "--force",
+      "--accept-capabilities",
+      "/tmp/relay-channel.tgz",
+    ]);
   });
 });
 
@@ -341,7 +371,10 @@ describe("ensureRelayChannelPluginUpToDate", () => {
     });
     expect(commands).toContain("npm ci --include=dev");
     expect(commands).toContain("openclaw plugins uninstall relay-channel --force");
-    expect(commands).toContain("openclaw plugins install " + path.join(repoDir, ".artifacts", "relay-channel", "relay-channel-bundle.tgz"));
+    expect(commands).toContain(
+      "openclaw plugins install --force " +
+        path.join(repoDir, ".artifacts", "relay-channel", "relay-channel-bundle.tgz")
+    );
     expect(commands).not.toContain("systemctl --user stop openclaw-gateway.service");
     expect(commands).not.toContain("systemctl --user restart openclaw-gateway.service");
   });
@@ -474,7 +507,10 @@ describe("ensureRelayChannelPluginUpToDate", () => {
       }
     );
 
-    expect(commands).toContain("openclaw plugins install " + path.join(repoDir, ".artifacts", "relay-channel", "relay-channel-bundle.tgz"));
+    expect(commands).toContain(
+      "openclaw plugins install --force " +
+        path.join(repoDir, ".artifacts", "relay-channel", "relay-channel-bundle.tgz")
+    );
     expect(commands).not.toContain("systemctl --user stop openclaw-gateway.service");
     expect(commands).not.toContain("systemctl --user restart openclaw-gateway.service");
   });
@@ -609,7 +645,10 @@ describe("ensureRelayChannelPluginUpToDate", () => {
       }
     );
 
-    expect(commands).toContain("openclaw plugins install " + path.join(repoDir, ".artifacts", "relay-channel", "relay-channel-bundle.tgz"));
+    expect(commands).toContain(
+      "openclaw plugins install --force " +
+        path.join(repoDir, ".artifacts", "relay-channel", "relay-channel-bundle.tgz")
+    );
     expect(commands).not.toContain("systemctl --user stop openclaw-gateway.service");
     expect(commands).not.toContain("systemctl --user restart openclaw-gateway.service");
   });
