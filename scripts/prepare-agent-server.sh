@@ -20,6 +20,7 @@ if [[ -z "${RELAY_CHANNEL_PLUGIN_GIT_REF:-}" ]]; then
   fi
 fi
 NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
+OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS="--max-old-space-size=768 --enable-source-maps"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 PNPM_HOME_DIR="/root/.local/share/pnpm"
 OPENCLAW_MIN_NODE_VERSION="22.22.3"
@@ -401,6 +402,12 @@ run_openclaw_onboard_and_verify() {
     echo "OpenClaw onboard did not install /root/.config/systemd/user/openclaw-gateway.service"
     return 1
   fi
+
+  sed -i -E \
+    "s|^Environment=\"?NODE_OPTIONS=.*$|Environment=\"NODE_OPTIONS=${OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS}\"|" \
+    /root/.config/systemd/user/openclaw-gateway.service
+  grep -qF "Environment=\"NODE_OPTIONS=${OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS}\"" \
+    /root/.config/systemd/user/openclaw-gateway.service
 
   systemctl --user enable openclaw-gateway.service || true
   systemctl --user restart openclaw-gateway.service

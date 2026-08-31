@@ -56,6 +56,20 @@ describe("prepare-agent-server snapshot preparation", () => {
     expect(script).toContain("command -v pacat");
   });
 
+  it("raises the generated gateway unit heap floor before readiness recovery", () => {
+    const script = readFileSync(prepareAgentServerScriptPath, "utf8");
+
+    expect(script).toContain(
+      'OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS="--max-old-space-size=768 --enable-source-maps"'
+    );
+    expect(script).toContain(
+      'Environment=\\"NODE_OPTIONS=${OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS}\\"'
+    );
+    expect(script.indexOf("OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS")).toBeLessThan(
+      script.indexOf("systemctl --user restart openclaw-gateway.service")
+    );
+  });
+
   it("bakes sqlite3 into provider snapshots", () => {
     const script = readFileSync(prepareAgentServerScriptPath, "utf8");
 
