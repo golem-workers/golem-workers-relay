@@ -5,6 +5,27 @@ import { describe, expect, it } from "vitest";
 const prepareAgentServerScriptPath = resolve(process.cwd(), "scripts/prepare-agent-server.sh");
 
 describe("prepare-agent-server snapshot preparation", () => {
+  it("accepts plugin capabilities only when the installed OpenClaw CLI supports it", () => {
+    const script = readFileSync(prepareAgentServerScriptPath, "utf8");
+
+    expect(script).toContain("configure_openclaw_plugin_cli_args() {");
+    expect(script).toContain('if [[ "${install_help}" == *"--accept-capabilities"* ]]');
+    expect(script).toContain("OPENCLAW_PLUGIN_CAPABILITY_ARGS=(--accept-capabilities)");
+    expect(script).toContain("configure_openclaw_plugin_cli_args");
+    expect(script).toContain(
+      'openclaw plugins install --force "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" "${RELAY_CHANNEL_BUNDLE_TGZ}"'
+    );
+    expect(script).toContain(
+      'openclaw plugins install "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" "${CODEX_PLUGIN_NPM_SPEC}"'
+    );
+    expect(script).toContain(
+      'openclaw plugins install "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" "${WHATSAPP_PLUGIN_INSTALL_SPEC}"'
+    );
+    expect(script).toContain(
+      'openclaw plugins enable "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" whatsapp'
+    );
+  });
+
   it("resolves the Codex plugin from its own compatible npm revision stream", () => {
     const script = readFileSync(prepareAgentServerScriptPath, "utf8");
 
@@ -48,8 +69,12 @@ describe("prepare-agent-server snapshot preparation", () => {
       'WHATSAPP_PLUGIN_INSTALL_SPEC="clawhub:@openclaw/whatsapp@${WHATSAPP_PLUGIN_VERSION}"'
     );
     expect(script).toContain("install_openclaw_whatsapp_plugin() {");
-    expect(script).toContain('openclaw plugins install "${WHATSAPP_PLUGIN_INSTALL_SPEC}"');
-    expect(script).toContain("openclaw plugins enable whatsapp");
+    expect(script).toContain(
+      'openclaw plugins install "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" "${WHATSAPP_PLUGIN_INSTALL_SPEC}"'
+    );
+    expect(script).toContain(
+      'openclaw plugins enable "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" whatsapp'
+    );
     expect(script).toContain('dmPolicy: "allowlist"');
     expect(script).toContain('groupPolicy: "disabled"');
     expect(script).toContain("sendReadReceipts: true");

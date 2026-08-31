@@ -24,6 +24,7 @@ NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 PNPM_HOME_DIR="/root/.local/share/pnpm"
 OPENCLAW_MIN_NODE_VERSION="22.22.3"
 OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-}"
+OPENCLAW_PLUGIN_CAPABILITY_ARGS=()
 OPENCLAW_SAFE_SKILL_SPECS=(
   "@steipete/github"
   "@matrixy/agent-browser-clawdbot"
@@ -163,6 +164,19 @@ install_openclaw_nodejs() {
   if ! node_22_meets_openclaw_floor "${installed_node_version}"; then
     echo "Node.js ${OPENCLAW_MIN_NODE_VERSION}+ on major ${OPENCLAW_MIN_NODE_VERSION%%.*} is required; got ${installed_node_version:-missing}" >&2
     return 1
+  fi
+}
+
+configure_openclaw_plugin_cli_args() {
+  local install_help
+
+  install_help="$(openclaw plugins install --help 2>&1 || true)"
+  if [[ "${install_help}" == *"--accept-capabilities"* ]]; then
+    OPENCLAW_PLUGIN_CAPABILITY_ARGS=(--accept-capabilities)
+    echo "OpenClaw plugin capability consent flag enabled for noninteractive installs."
+  else
+    OPENCLAW_PLUGIN_CAPABILITY_ARGS=()
+    echo "OpenClaw plugin capability consent flag is not supported by this release."
   fi
 }
 
@@ -499,9 +513,9 @@ install_openclaw_whatsapp_plugin() {
   if openclaw plugins inspect whatsapp --runtime --json >/dev/null 2>&1; then
     echo "OpenClaw WhatsApp plugin already installed."
   else
-    openclaw plugins install "${WHATSAPP_PLUGIN_INSTALL_SPEC}"
+    openclaw plugins install "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" "${WHATSAPP_PLUGIN_INSTALL_SPEC}"
   fi
-  openclaw plugins enable whatsapp
+  openclaw plugins enable "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" whatsapp
   openclaw plugins inspect whatsapp --runtime --json >/dev/null
 }
 
@@ -736,6 +750,7 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     echo "Unable to resolve installed OpenClaw version from ${OPENCLAW_PACKAGE_DIR}/package.json" >&2
     exit 1
   fi
+  configure_openclaw_plugin_cli_args
   if [[ -n "${OPENCLAW_CODEX_PLUGIN_SPEC:-}" ]]; then
     CODEX_PLUGIN_NPM_SPEC="${OPENCLAW_CODEX_PLUGIN_SPEC}"
   else
@@ -876,7 +891,7 @@ entriesCfg[pluginId] = {
 fs.mkdirSync(configDir, { recursive: true })
 fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`)
 NODE
-  openclaw plugins install "${RELAY_CHANNEL_BUNDLE_TGZ}"
+  openclaw plugins install --force "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" "${RELAY_CHANNEL_BUNDLE_TGZ}"
   RELAY_CHANNEL_INSTALL_DIR="$(node --input-type=module - <<'NODE'
 import fs from "node:fs"
 import os from "node:os"
@@ -1001,7 +1016,7 @@ NODE
   set_step "openclaw_codex_plugin_install"
   openclaw plugins uninstall codex --force >/dev/null 2>&1 || true
   rm -rf /root/.openclaw/extensions/codex
-  openclaw plugins install "${CODEX_PLUGIN_NPM_SPEC}"
+  openclaw plugins install "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" "${CODEX_PLUGIN_NPM_SPEC}"
   CODEX_PLUGIN_INSTALL_DIR="$(node --input-type=module - <<'NODE'
 import fs from "node:fs"
 import os from "node:os"
