@@ -162,10 +162,32 @@ function readLatestMediaPathsFromCurrentReply(input: { message?: unknown; opencl
 function normalizeArtifactKind(value: unknown): TranscriptArtifactKind | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase();
+  if (normalized === "document") return "file";
   if (normalized === "image" || normalized === "video" || normalized === "audio" || normalized === "file") {
     return normalized;
   }
   return undefined;
+}
+
+function normalizeStructuredArtifact(item: unknown): TranscriptArtifactRequest | null {
+  if (!looksLikePlainObject(item)) return null;
+  const artifactPath = typeof item.path === "string" ? item.path.trim() : "";
+  const fileNameValue = item.fileName ?? item.label;
+  const fileName = typeof fileNameValue === "string" ? fileNameValue.trim() : "";
+  const contentTypeValue = item.contentType ?? item.mimeType;
+  const contentType = typeof contentTypeValue === "string" ? contentTypeValue.trim() : "";
+  const sizeBytes =
+    typeof item.sizeBytes === "number" && Number.isFinite(item.sizeBytes)
+      ? Math.trunc(item.sizeBytes)
+      : undefined;
+  return {
+    source: "structured_artifact",
+    ...(artifactPath ? { path: artifactPath } : {}),
+    ...(fileName ? { fileName } : {}),
+    ...(normalizeArtifactKind(item.kind) ? { kind: normalizeArtifactKind(item.kind) } : {}),
+    ...(contentType ? { contentType } : {}),
+    ...(sizeBytes && sizeBytes > 0 ? { sizeBytes } : {}),
+  };
 }
 
 function readStructuredArtifactsFromCurrentReply(input: {
@@ -175,27 +197,16 @@ function readStructuredArtifactsFromCurrentReply(input: {
   const candidates = readReplyCandidates(input);
   for (const candidate of candidates) {
     if (!looksLikePlainObject(candidate)) continue;
-    const artifacts = Array.isArray(candidate.artifacts) ? candidate.artifacts : null;
-    if (!artifacts || artifacts.length === 0) continue;
-    const normalized: TranscriptArtifactRequest[] = artifacts
-      .map((item) => {
-        if (!looksLikePlainObject(item)) return null;
-        const artifactPath = typeof item.path === "string" ? item.path.trim() : "";
-        const fileName = typeof item.fileName === "string" ? item.fileName.trim() : "";
-        const contentType = typeof item.contentType === "string" ? item.contentType.trim() : "";
-        const sizeBytes =
-          typeof item.sizeBytes === "number" && Number.isFinite(item.sizeBytes)
-            ? Math.trunc(item.sizeBytes)
-            : undefined;
-        return {
-          source: "structured_artifact" as const,
-          ...(artifactPath ? { path: artifactPath } : {}),
-          ...(fileName ? { fileName } : {}),
-          ...(normalizeArtifactKind(item.kind) ? { kind: normalizeArtifactKind(item.kind) } : {}),
-          ...(contentType ? { contentType } : {}),
-          ...(sizeBytes && sizeBytes > 0 ? { sizeBytes } : {}),
-        };
-      })
+    const artifacts: unknown[] = Array.isArray(candidate.artifacts)
+      ? Array.from<unknown>(candidate.artifacts)
+      : [];
+    const attachments: unknown[] = Array.isArray(candidate.content)
+      ? Array.from<unknown>(candidate.content)
+          .filter((part) => looksLikePlainObject(part) && part.type === "attachment")
+          .map((part) => (looksLikePlainObject(part) ? part.attachment : undefined))
+      : [];
+    const normalized: TranscriptArtifactRequest[] = [...artifacts, ...attachments]
+      .map(normalizeStructuredArtifact)
       .filter((item): item is NonNullable<typeof item> => item !== null);
     if (normalized.length > 0) return normalized;
   }

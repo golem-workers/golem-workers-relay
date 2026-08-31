@@ -8,6 +8,20 @@ const prepareAgentServerScriptPath = resolve(
 );
 
 describe("prepare-agent-server snapshot preparation", () => {
+  it("patches the OpenClaw 2026.8.1 assistant attachment replay crash", () => {
+    const script = readFileSync(prepareAgentServerScriptPath, "utf8");
+    const patchIndex = script.indexOf("patch-openclaw-ai-attachment-replay.mjs");
+
+    expect(script).toContain("patch-openclaw-ai-attachment-replay.mjs");
+    expect(script).toContain('"${GLOBAL_PNPM_ROOT}/@openclaw/ai"');
+    expect(patchIndex).toBeGreaterThan(
+      script.indexOf("OPENCLAW_INSTALLED_VERSION="),
+    );
+    expect(patchIndex).toBeLessThan(
+      script.indexOf("  configure_openclaw_plugin_cli_args", patchIndex),
+    );
+  });
+
   it("accepts plugin capabilities only when the installed OpenClaw CLI supports it", () => {
     const script = readFileSync(prepareAgentServerScriptPath, "utf8");
 
