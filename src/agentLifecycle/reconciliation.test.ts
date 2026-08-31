@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  describeOpenClawActiveRunsPayload,
   planAgentLifecycleReconciliation,
   readOpenClawActiveRuns,
 } from "./reconciliation.js";
@@ -30,6 +31,51 @@ describe("agent lifecycle exceptional reconciliation", () => {
       },
     ]);
     expect(readOpenClawActiveRuns({ sessions: [] })).toEqual([]);
+  });
+
+  it("describes the exact session fields used by hibernation safety", () => {
+    expect(
+      describeOpenClawActiveRunsPayload({
+        sessions: [
+          {
+            key: "agent:main:telegram:group:1",
+            sessionId: "session-1",
+            agentId: "main",
+            hasActiveRun: false,
+            activeRunIds: [],
+            status: "idle",
+            updatedAt: "2026-08-31T10:29:47.000Z",
+            lastActivityAt: "2026-08-31T10:29:47.000Z",
+            sourceGeneration: "generation-7",
+          },
+        ],
+      }),
+    ).toEqual({
+      payloadValid: true,
+      sessionCount: 1,
+      activeSessionCount: 0,
+      activeRunIdCount: 0,
+      sessions: [
+        {
+          key: "agent:main:telegram:group:1",
+          sessionId: "session-1",
+          agentId: "main",
+          hasActiveRun: false,
+          activeRunIds: [],
+          status: "idle",
+          updatedAt: "2026-08-31T10:29:47.000Z",
+          lastActivityAt: "2026-08-31T10:29:47.000Z",
+          sourceGeneration: "generation-7",
+        },
+      ],
+    });
+    expect(describeOpenClawActiveRunsPayload({ invalid: true })).toEqual({
+      payloadValid: false,
+      sessionCount: 0,
+      activeSessionCount: 0,
+      activeRunIdCount: 0,
+      sessions: [],
+    });
   });
 
   it("plans rebinds, newly observed runs, and disappeared runs deterministically", () => {

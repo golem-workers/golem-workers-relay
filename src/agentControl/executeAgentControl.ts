@@ -22,7 +22,11 @@ import {
 import { configureGitHubAuth, getGitHubOauthStatus } from "./githubAuth.js";
 import type { ChatRunResult } from "../openclaw/chatRunner.js";
 import type { RelayInboundMessageRequest } from "../backend/types.js";
-import { readOpenClawActiveRuns } from "../agentLifecycle/reconciliation.js";
+import {
+  describeOpenClawActiveRunsPayload,
+  readOpenClawActiveRuns,
+} from "../agentLifecycle/reconciliation.js";
+import { logger } from "../logger.js";
 
 const execFile = promisify(execFileCallback);
 const GATEWAY_RESTART_CHECK_ATTEMPTS = 20;
@@ -95,7 +99,10 @@ export async function executeAgentControl(input: {
       : input.action.kind === "channels.status"
         ? await readChannelsStatus(input.gateway)
       : input.action.kind === "lifecycle.activeRuns"
-        ? await readLifecycleActiveRuns(input.gateway)
+        ? await readLifecycleActiveRuns(input.gateway, {
+            backendMessageId: input.backendMessageId,
+            relayInstanceId: input.relayInstanceId,
+          })
       : input.action.kind === "config.apply"
         ? await applyConfig({
             configPath: input.configPath,
@@ -195,16 +202,52 @@ export async function executeAgentControl(input: {
 
 async function readLifecycleActiveRuns(
   gateway: GatewayLike,
+  context: {
+    backendMessageId?: string;
+    relayInstanceId?: string;
+  },
 ): Promise<AgentControlResult> {
-  const payload = await gateway.request(
-    "sessions.list",
-    { agentId: "main", limit: 200 },
-    { timeoutMs: 5_000 },
+  const startedAt = Date.now();
+  let payload: unknown;
+  try {
+    payload = await gateway.request(
+      "sessions.list",
+      { agentId: "main", limit: 200 },
+      { timeoutMs: 5_000 },
+    );
+  } catch (error) {
+    logger.warn(
+      {
+        event: "lifecycle_active_runs_observation_failed",
+        backendMessageId: context.backendMessageId ?? null,
+        relayInstanceId: context.relayInstanceId ?? null,
+        gatewayMethod: "sessions.list",
+        gatewayParams: { agentId: "main", limit: 200 },
+        elapsedMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "Failed to read live OpenClaw sessions for hibernation safety",
+    );
+    throw error;
+  }
+  const runs = readOpenClawActiveRuns(payload);
+  logger.info(
+    {
+      event: "lifecycle_active_runs_observed",
+      backendMessageId: context.backendMessageId ?? null,
+      relayInstanceId: context.relayInstanceId ?? null,
+      gatewayMethod: "sessions.list",
+      gatewayParams: { agentId: "main", limit: 200 },
+      elapsedMs: Date.now() - startedAt,
+      observation: describeOpenClawActiveRunsPayload(payload),
+      reportedRuns: runs,
+    },
+    "Observed live OpenClaw sessions for hibernation safety",
   );
   return {
     kind: "lifecycle.activeRuns",
     observedAt: new Date().toISOString(),
-    runs: readOpenClawActiveRuns(payload),
+    runs,
   };
 }
 
