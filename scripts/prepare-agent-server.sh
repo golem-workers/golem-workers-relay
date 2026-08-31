@@ -22,6 +22,8 @@ fi
 NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
 OPENCLAW_GATEWAY_SNAPSHOT_HEAP_MIB="768"
 OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS="--max-old-space-size=${OPENCLAW_GATEWAY_SNAPSHOT_HEAP_MIB} --enable-source-maps"
+OPENCLAW_GATEWAY_READINESS_ATTEMPTS="${OPENCLAW_GATEWAY_READINESS_ATTEMPTS:-360}"
+OPENCLAW_GATEWAY_READINESS_SLEEP_SECONDS="${OPENCLAW_GATEWAY_READINESS_SLEEP_SECONDS:-2}"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 PNPM_HOME_DIR="/root/.local/share/pnpm"
 OPENCLAW_MIN_NODE_VERSION="22.22.3"
@@ -355,8 +357,8 @@ prepare_root_user_systemd() {
 }
 
 wait_for_openclaw_gateway_ready() {
-  local attempts="${1:-120}"
-  local sleep_seconds="${2:-2}"
+  local attempts="${1:-${OPENCLAW_GATEWAY_READINESS_ATTEMPTS}}"
+  local sleep_seconds="${2:-${OPENCLAW_GATEWAY_READINESS_SLEEP_SECONDS}}"
   local attempt
 
   prepare_root_user_systemd

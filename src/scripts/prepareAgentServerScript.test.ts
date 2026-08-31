@@ -75,6 +75,23 @@ describe("prepare-agent-server snapshot preparation", () => {
     );
   });
 
+  it("allows slow first database bootstrap before failing gateway readiness", () => {
+    const script = readFileSync(prepareAgentServerScriptPath, "utf8");
+
+    expect(script).toContain(
+      'OPENCLAW_GATEWAY_READINESS_ATTEMPTS="${OPENCLAW_GATEWAY_READINESS_ATTEMPTS:-360}"'
+    );
+    expect(script).toContain(
+      'OPENCLAW_GATEWAY_READINESS_SLEEP_SECONDS="${OPENCLAW_GATEWAY_READINESS_SLEEP_SECONDS:-2}"'
+    );
+    expect(script).toContain(
+      'local attempts="${1:-${OPENCLAW_GATEWAY_READINESS_ATTEMPTS}}"'
+    );
+    expect(script).toContain(
+      'local sleep_seconds="${2:-${OPENCLAW_GATEWAY_READINESS_SLEEP_SECONDS}}"'
+    );
+  });
+
   it("bakes sqlite3 into provider snapshots", () => {
     const script = readFileSync(prepareAgentServerScriptPath, "utf8");
 
