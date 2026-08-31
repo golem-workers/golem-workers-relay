@@ -40,10 +40,15 @@ describe("prepare-agent-server snapshot preparation", () => {
     const script = readFileSync(prepareAgentServerScriptPath, "utf8");
 
     expect(script).toContain(
-      'OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-clawhub:@openclaw/whatsapp}"'
+      'OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-}"'
+    );
+    expect(script).toContain('if [[ -n "${OPENCLAW_WHATSAPP_PLUGIN_SPEC}" ]]');
+    expect(script).toContain("resolve-openclaw-whatsapp-plugin-version.mjs");
+    expect(script).toContain(
+      'WHATSAPP_PLUGIN_INSTALL_SPEC="clawhub:@openclaw/whatsapp@${WHATSAPP_PLUGIN_VERSION}"'
     );
     expect(script).toContain("install_openclaw_whatsapp_plugin() {");
-    expect(script).toContain('openclaw plugins install "${OPENCLAW_WHATSAPP_PLUGIN_SPEC}"');
+    expect(script).toContain('openclaw plugins install "${WHATSAPP_PLUGIN_INSTALL_SPEC}"');
     expect(script).toContain("openclaw plugins enable whatsapp");
     expect(script).toContain('dmPolicy: "allowlist"');
     expect(script).toContain('groupPolicy: "disabled"');

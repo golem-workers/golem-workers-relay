@@ -23,7 +23,7 @@ NODE_OPTIONS_VALUE="--max-old-space-size=2024 --enable-source-maps"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 PNPM_HOME_DIR="/root/.local/share/pnpm"
 OPENCLAW_MIN_NODE_VERSION="22.22.3"
-OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-clawhub:@openclaw/whatsapp}"
+OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-}"
 OPENCLAW_SAFE_SKILL_SPECS=(
   "@steipete/github"
   "@matrixy/agent-browser-clawdbot"
@@ -499,7 +499,7 @@ install_openclaw_whatsapp_plugin() {
   if openclaw plugins inspect whatsapp --runtime --json >/dev/null 2>&1; then
     echo "OpenClaw WhatsApp plugin already installed."
   else
-    openclaw plugins install "${OPENCLAW_WHATSAPP_PLUGIN_SPEC}"
+    openclaw plugins install "${WHATSAPP_PLUGIN_INSTALL_SPEC}"
   fi
   openclaw plugins enable whatsapp
   openclaw plugins inspect whatsapp --runtime --json >/dev/null
@@ -746,6 +746,16 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     CODEX_PLUGIN_NPM_SPEC="@openclaw/codex@${CODEX_PLUGIN_VERSION}"
   fi
   echo "Using compatible Codex plugin: ${CODEX_PLUGIN_NPM_SPEC}"
+  if [[ -n "${OPENCLAW_WHATSAPP_PLUGIN_SPEC}" ]]; then
+    WHATSAPP_PLUGIN_INSTALL_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC}"
+  else
+    WHATSAPP_PLUGIN_VERSION="$(
+      node "${RELAY_REPO_DIR}/scripts/resolve-openclaw-whatsapp-plugin-version.mjs" \
+        "${OPENCLAW_INSTALLED_VERSION}"
+    )"
+    WHATSAPP_PLUGIN_INSTALL_SPEC="clawhub:@openclaw/whatsapp@${WHATSAPP_PLUGIN_VERSION}"
+  fi
+  echo "Using compatible WhatsApp plugin: ${WHATSAPP_PLUGIN_INSTALL_SPEC}"
   test -x "${GLOBAL_PNPM_ROOT}/.bin/codex"
   test -x "${GLOBAL_PNPM_ROOT}/.bin/openclaw"
   ln -sfn "${GLOBAL_PNPM_ROOT}/.bin/codex" /usr/local/bin/codex
