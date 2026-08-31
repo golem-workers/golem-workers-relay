@@ -11,6 +11,11 @@ describe("prepare-agent-server snapshot preparation", () => {
     expect(script).toContain("configure_openclaw_plugin_cli_args() {");
     expect(script).toContain('if [[ "${install_help}" == *"--accept-capabilities"* ]]');
     expect(script).toContain("OPENCLAW_PLUGIN_CAPABILITY_ARGS=(--accept-capabilities)");
+    expect(script).toContain("OPENCLAW_AUTHORED_PLUGIN_INSTALLS=0");
+    expect(script).toContain(
+      'const authoredPluginInstalls = process.env.OPENCLAW_AUTHORED_PLUGIN_INSTALLS !== "0"'
+    );
+    expect(script).toContain("delete pluginsCfg.installs");
     expect(script).toContain("configure_openclaw_plugin_cli_args");
     expect(script).toContain(
       'openclaw plugins install --force "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" "${RELAY_CHANNEL_BUNDLE_TGZ}"'
