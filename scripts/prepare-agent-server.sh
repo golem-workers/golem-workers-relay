@@ -25,6 +25,7 @@ PNPM_HOME_DIR="/root/.local/share/pnpm"
 OPENCLAW_MIN_NODE_VERSION="22.22.3"
 OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-}"
 OPENCLAW_PLUGIN_CAPABILITY_ARGS=()
+OPENCLAW_AUTHORED_PLUGIN_INSTALLS=1
 OPENCLAW_SAFE_SKILL_SPECS=(
   "@steipete/github"
   "@matrixy/agent-browser-clawdbot"
@@ -173,11 +174,14 @@ configure_openclaw_plugin_cli_args() {
   install_help="$(openclaw plugins install --help 2>&1 || true)"
   if [[ "${install_help}" == *"--accept-capabilities"* ]]; then
     OPENCLAW_PLUGIN_CAPABILITY_ARGS=(--accept-capabilities)
+    OPENCLAW_AUTHORED_PLUGIN_INSTALLS=0
     echo "OpenClaw plugin capability consent flag enabled for noninteractive installs."
   else
     OPENCLAW_PLUGIN_CAPABILITY_ARGS=()
+    OPENCLAW_AUTHORED_PLUGIN_INSTALLS=1
     echo "OpenClaw plugin capability consent flag is not supported by this release."
   fi
+  export OPENCLAW_AUTHORED_PLUGIN_INSTALLS
 }
 
 is_hetzner_host() {
@@ -949,6 +953,7 @@ const expectedInstallDir = fs.realpathSync(process.argv[2])
 const pluginId = "relay-channel"
 const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json")
 const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
+const authoredPluginInstalls = process.env.OPENCLAW_AUTHORED_PLUGIN_INSTALLS !== "0"
 
 function ensureRecord(parent, key) {
   const current = parent?.[key]
@@ -963,13 +968,17 @@ if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
 }
 
 const pluginsCfg = ensureRecord(cfg, "plugins")
-const installsCfg = ensureRecord(pluginsCfg, "installs")
-const installRecord =
-  installsCfg[pluginId] && typeof installsCfg[pluginId] === "object" && !Array.isArray(installsCfg[pluginId])
-    ? installsCfg[pluginId]
-    : {}
-installRecord.installPath = expectedInstallDir
-installsCfg[pluginId] = installRecord
+if (authoredPluginInstalls) {
+  const installsCfg = ensureRecord(pluginsCfg, "installs")
+  const installRecord =
+    installsCfg[pluginId] && typeof installsCfg[pluginId] === "object" && !Array.isArray(installsCfg[pluginId])
+      ? installsCfg[pluginId]
+      : {}
+  installRecord.installPath = expectedInstallDir
+  installsCfg[pluginId] = installRecord
+} else {
+  delete pluginsCfg.installs
+}
 
 const entriesCfg = ensureRecord(pluginsCfg, "entries")
 const existingEntry = entriesCfg[pluginId]
@@ -980,25 +989,17 @@ if (existingEntry && typeof existingEntry === "object" && !Array.isArray(existin
 fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`)
 
 const persisted = JSON.parse(fs.readFileSync(configPath, "utf8"))
-const persistedInstallRecord =
-  persisted?.plugins &&
-  typeof persisted.plugins === "object" &&
-  !Array.isArray(persisted.plugins) &&
-  persisted.plugins.installs &&
-  typeof persisted.plugins.installs === "object" &&
-  !Array.isArray(persisted.plugins.installs)
-    ? persisted.plugins.installs[pluginId]
-    : null
-if (!persistedInstallRecord || typeof persistedInstallRecord !== "object" || Array.isArray(persistedInstallRecord)) {
+const persistedInstallRecord = authoredPluginInstalls ? persisted?.plugins?.installs?.[pluginId] : null
+if (
+  authoredPluginInstalls &&
+  (!persistedInstallRecord || typeof persistedInstallRecord !== "object" || Array.isArray(persistedInstallRecord))
+) {
   throw new Error("Missing relay-channel install record in openclaw.json")
 }
-if (
-  typeof persistedInstallRecord.installPath !== "string" ||
-  persistedInstallRecord.installPath.trim().length === 0
-) {
+if (authoredPluginInstalls && typeof persistedInstallRecord.installPath !== "string") {
   throw new Error("relay-channel install record is missing installPath")
 }
-const installDir = fs.realpathSync(persistedInstallRecord.installPath)
+const installDir = authoredPluginInstalls ? fs.realpathSync(persistedInstallRecord.installPath) : expectedInstallDir
 if (installDir !== expectedInstallDir) {
   throw new Error(`relay-channel installPath mismatch: expected ${expectedInstallDir}, got ${installDir}`)
 }
@@ -1113,6 +1114,7 @@ const expectedInstallDir = fs.realpathSync(process.argv[2])
 const pluginId = "codex"
 const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json")
 const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
+const authoredPluginInstalls = process.env.OPENCLAW_AUTHORED_PLUGIN_INSTALLS !== "0"
 
 function ensureRecord(parent, key) {
   const current = parent?.[key]
@@ -1127,13 +1129,17 @@ if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
 }
 
 const pluginsCfg = ensureRecord(cfg, "plugins")
-const installsCfg = ensureRecord(pluginsCfg, "installs")
-const installRecord =
-  installsCfg[pluginId] && typeof installsCfg[pluginId] === "object" && !Array.isArray(installsCfg[pluginId])
-    ? installsCfg[pluginId]
-    : {}
-installRecord.installPath = expectedInstallDir
-installsCfg[pluginId] = installRecord
+if (authoredPluginInstalls) {
+  const installsCfg = ensureRecord(pluginsCfg, "installs")
+  const installRecord =
+    installsCfg[pluginId] && typeof installsCfg[pluginId] === "object" && !Array.isArray(installsCfg[pluginId])
+      ? installsCfg[pluginId]
+      : {}
+  installRecord.installPath = expectedInstallDir
+  installsCfg[pluginId] = installRecord
+} else {
+  delete pluginsCfg.installs
+}
 
 const entriesCfg = ensureRecord(pluginsCfg, "entries")
 const existingEntry = entriesCfg[pluginId]
@@ -1144,25 +1150,17 @@ if (existingEntry && typeof existingEntry === "object" && !Array.isArray(existin
 fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`)
 
 const persisted = JSON.parse(fs.readFileSync(configPath, "utf8"))
-const persistedInstallRecord =
-  persisted?.plugins &&
-  typeof persisted.plugins === "object" &&
-  !Array.isArray(persisted.plugins) &&
-  persisted.plugins.installs &&
-  typeof persisted.plugins.installs === "object" &&
-  !Array.isArray(persisted.plugins.installs)
-    ? persisted.plugins.installs[pluginId]
-    : null
-if (!persistedInstallRecord || typeof persistedInstallRecord !== "object" || Array.isArray(persistedInstallRecord)) {
+const persistedInstallRecord = authoredPluginInstalls ? persisted?.plugins?.installs?.[pluginId] : null
+if (
+  authoredPluginInstalls &&
+  (!persistedInstallRecord || typeof persistedInstallRecord !== "object" || Array.isArray(persistedInstallRecord))
+) {
   throw new Error("Missing codex install record in openclaw.json")
 }
-if (
-  typeof persistedInstallRecord.installPath !== "string" ||
-  persistedInstallRecord.installPath.trim().length === 0
-) {
+if (authoredPluginInstalls && typeof persistedInstallRecord.installPath !== "string") {
   throw new Error("codex install record is missing installPath")
 }
-const installDir = fs.realpathSync(persistedInstallRecord.installPath)
+const installDir = authoredPluginInstalls ? fs.realpathSync(persistedInstallRecord.installPath) : expectedInstallDir
 if (installDir !== expectedInstallDir) {
   throw new Error(`codex installPath mismatch: expected ${expectedInstallDir}, got ${installDir}`)
 }
@@ -1265,6 +1263,7 @@ const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram"]
 const stalePluginIds = ["memory-lancedb-pro", "memory-lancedb"]
 const defaultExtensionsDir = path.join(configDir, "extensions")
 const pluginIndexPath = path.join(configDir, "plugins", "installs.json")
+const authoredPluginInstalls = process.env.OPENCLAW_AUTHORED_PLUGIN_INSTALLS !== "0"
 
 if (!fs.existsSync(configPath)) {
   throw new Error(`Missing canonical OpenClaw config at ${configPath}`)
@@ -1377,16 +1376,22 @@ for (const pluginId of requiredPluginIds) {
   if (!installDir) {
     throw new Error(`Unable to resolve installed plugin directory for ${pluginId} in ${configPath}`)
   }
-  installs[pluginId] = {
-    ...(installs[pluginId] && typeof installs[pluginId] === "object" && !Array.isArray(installs[pluginId])
-      ? installs[pluginId]
-      : {}),
-    installPath: installDir,
+  if (authoredPluginInstalls) {
+    installs[pluginId] = {
+      ...(installs[pluginId] && typeof installs[pluginId] === "object" && !Array.isArray(installs[pluginId])
+        ? installs[pluginId]
+        : {}),
+      installPath: installDir,
+    }
   }
 }
 
 const pluginsCfg = ensureRecord(parsed, "plugins")
-pluginsCfg.installs = installs
+if (authoredPluginInstalls) {
+  pluginsCfg.installs = installs
+} else {
+  delete pluginsCfg.installs
+}
 const entriesCfg = ensureRecord(pluginsCfg, "entries")
 for (const pluginId of stalePluginIds) {
   delete entriesCfg[pluginId]
