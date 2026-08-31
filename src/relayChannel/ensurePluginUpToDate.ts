@@ -112,7 +112,7 @@ export async function ensureRelayChannelPluginUpToDate(
   });
 
   await uninstallExistingPlugin(plugin.id, installed.installPath, runtime);
-  await runtime.exec("openclaw", ["plugins", "install", bundlePath]);
+  await installPluginBundle(bundlePath, runtime);
   await writePluginRuntimeConfig({
     configPath: input.openclawConfigPath,
     pluginId: plugin.id,
@@ -160,6 +160,15 @@ export function comparePluginVersions(leftRaw: string, rightRaw: string): number
   return 0;
 }
 
+export function buildOpenclawPluginInstallArgs(bundlePath: string, installHelp: string): string[] {
+  const args = ["plugins", "install", "--force"];
+  if (installHelp.includes("--accept-capabilities")) {
+    args.push("--accept-capabilities");
+  }
+  args.push(bundlePath);
+  return args;
+}
+
 function parseNumericVersion(version: string): number[] | null {
   if (!/^\d+(?:\.\d+)*$/.test(version)) {
     return null;
@@ -201,6 +210,17 @@ async function buildPluginBundle(plugin: { id: string; repoDir: string }, deps: 
     throw new Error(`Relay-channel bundle was not produced at ${bundlePath}`);
   }
   return bundlePath;
+}
+
+async function installPluginBundle(bundlePath: string, deps: Deps): Promise<void> {
+  let installHelp = "";
+  try {
+    const result = await deps.exec("openclaw", ["plugins", "install", "--help"]);
+    installHelp = `${result.stdout}\n${result.stderr}`;
+  } catch {
+    // Older OpenClaw builds can reject subcommand help; --force remains supported.
+  }
+  await deps.exec("openclaw", buildOpenclawPluginInstallArgs(bundlePath, installHelp));
 }
 
 async function readInstalledPluginState(configPath: string, pluginId: string): Promise<PluginInstallState> {
