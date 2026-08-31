@@ -801,6 +801,8 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     echo "Unable to resolve installed OpenClaw version from ${OPENCLAW_PACKAGE_DIR}/package.json" >&2
     exit 1
   fi
+  node "${RELAY_REPO_DIR}/scripts/patch-openclaw-ai-attachment-replay.mjs" \
+    "${GLOBAL_PNPM_ROOT}/@openclaw/ai"
   configure_openclaw_plugin_cli_args
   if [[ -n "${OPENCLAW_CODEX_PLUGIN_SPEC:-}" ]]; then
     CODEX_PLUGIN_NPM_SPEC="${OPENCLAW_CODEX_PLUGIN_SPEC}"

@@ -138,6 +138,50 @@ describe("collectTranscriptMedia", () => {
     expect(report.unresolved[0]?.reason).toBe("no_recovery_match");
   });
 
+  it("recovers OpenClaw 2.0 attachment blocks from chat history", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-media-attachment-block-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    const workspaceRoot = path.join(stateDir, "workspace");
+    await fs.mkdir(workspaceRoot, { recursive: true });
+    const fileContents = "# attachment proof";
+    await fs.writeFile(path.join(workspaceRoot, "proof.md"), fileContents, "utf8");
+
+    const report = await collectTranscriptArtifacts({
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Files ready." },
+          {
+            type: "attachment",
+            attachment: {
+              artifactId: "artifact_managed_media_123",
+              url: "/api/chat/media/outgoing/session/123/full",
+              kind: "document",
+              label: "proof.md",
+              mimeType: "text/markdown",
+              sizeBytes: Buffer.byteLength(fileContents),
+            },
+          },
+        ],
+      },
+    });
+
+    expect(report.artifacts).toEqual([
+      {
+        path: "proof.md",
+        fileName: "proof.md",
+        kind: "file",
+        contentType: "application/octet-stream",
+        sizeBytes: Buffer.byteLength(fileContents),
+      },
+    ]);
+    expect(report.requestedCount).toBe(1);
+    expect(report.recoveredCount).toBe(1);
+    expect(report.usedStructuredArtifacts).toBe(true);
+    expect(report.unresolved).toEqual([]);
+  });
+
   it("keeps legacy MEDIA parsing available for backward compatibility", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-media-legacy-compat-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
