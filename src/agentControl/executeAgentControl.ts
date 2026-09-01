@@ -26,6 +26,7 @@ import {
   describeOpenClawActiveRunsPayload,
   readOpenClawActiveRuns,
 } from "../agentLifecycle/reconciliation.js";
+import { readRuntimeWorkloadSnapshot } from "../agentLifecycle/runtimeWorkload.js";
 import { logger } from "../logger.js";
 
 const execFile = promisify(execFileCallback);
@@ -231,6 +232,7 @@ async function readLifecycleActiveRuns(
     throw error;
   }
   const runs = readOpenClawActiveRuns(payload);
+  const runtimeWorkload = await readRuntimeWorkloadSnapshot();
   logger.info(
     {
       event: "lifecycle_active_runs_observed",
@@ -241,6 +243,7 @@ async function readLifecycleActiveRuns(
       elapsedMs: Date.now() - startedAt,
       observation: describeOpenClawActiveRunsPayload(payload),
       reportedRuns: runs,
+      runtimeWorkload,
     },
     "Observed live OpenClaw sessions for hibernation safety",
   );
@@ -248,6 +251,7 @@ async function readLifecycleActiveRuns(
     kind: "lifecycle.activeRuns",
     observedAt: new Date().toISOString(),
     runs,
+    runtimeWorkload,
   };
 }
 
