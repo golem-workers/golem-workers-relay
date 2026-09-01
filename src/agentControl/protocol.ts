@@ -194,6 +194,20 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("lifecycle.activeRuns"),
     observedAt: z.string().datetime({ offset: true }),
+    runtimeWorkload: z.object({
+      probeVersion: z.literal(1),
+      complete: z.literal(true),
+      gatewayProcessFound: z.literal(true),
+      busy: z.boolean(),
+      reasons: z.array(
+        z.object({
+          kind: z.enum(["OPENCLAW_CHILD_PROCESS", "CODEX_PROCESS"]),
+          processId: z.number().int().positive(),
+          parentProcessId: z.number().int().nonnegative(),
+          executable: z.string().min(1).max(80),
+        }),
+      ),
+    }),
     runs: z.array(
       z.object({
         provider: z.string().min(1),
