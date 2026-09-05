@@ -178,6 +178,40 @@ async function readAgentRuntimeAuthSqlite(agentDir: string): Promise<{
   }
 }
 
+async function createSharedAuthStateDatabase(stateDir: string): Promise<string> {
+  const { DatabaseSync } = await import("node:sqlite");
+  const databasePath = path.join(stateDir, "state", "openclaw.sqlite");
+  await fs.mkdir(path.dirname(databasePath), { recursive: true });
+  const db = new DatabaseSync(databasePath);
+  try {
+    db.exec("CREATE TABLE config_machine_state (state_key TEXT NOT NULL PRIMARY KEY, value_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL) STRICT;");
+    db.prepare("INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)").run("auth.sharedStore", JSON.stringify({ location: "state-db" }), Date.now());
+  } finally {
+    db.close();
+  }
+  return databasePath;
+}
+
+async function readSharedAuthStateDatabase(databasePath: string): Promise<{
+  store: { profiles?: Record<string, Record<string, unknown>> } | null;
+  state: { order?: Record<string, string[]>; lastGood?: Record<string, string> } | null;
+}> {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    const readCell = (key: string): unknown => {
+      const row = db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get(key) as { value_json?: string } | undefined;
+      return row?.value_json ? JSON.parse(row.value_json) as unknown : null;
+    };
+    return {
+      store: readCell("authProfiles.store") as { profiles?: Record<string, Record<string, unknown>> } | null,
+      state: readCell("authProfiles.state") as { order?: Record<string, string[]>; lastGood?: Record<string, string> } | null,
+    };
+  } finally {
+    db.close();
+  }
+}
+
 describe("executeAgentControl relay self nudge settings", () => {
   it("writes relay env settings and schedules relay restart", async () => {
     vi.useFakeTimers();
@@ -1253,6 +1287,67 @@ describe("executeAgentControl Codex login", () => {
       fs.access(path.join(tempDir, "agents", "main", "agent", "openclaw-agent.sqlite")),
     ).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readSystemctlCalls(systemctlLogPath)).toEqual([]);
+  });
+
+  it("syncs Codex auth into shared state and retires legacy stores, including on a no-op sync", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-shared-state-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    const agentDir = path.join(tempDir, "agents", "main", "agent");
+    process.env.CODEX_HOME = path.join(tempDir, ".codex");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    const databasePath = await createSharedAuthStateDatabase(tempDir);
+    const legacyStore = JSON.stringify({ version: 1, profiles: {} }, null, 2);
+    await fs.writeFile(path.join(tempDir, "auth-profiles.json"), legacyStore, "utf8");
+    await fs.mkdir(agentDir, { recursive: true });
+    await fs.writeFile(path.join(agentDir, "auth-profiles.json"), legacyStore, "utf8");
+    const accessToken = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQ3MDAwMDAwMDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3QtMTIzIn19.signature";
+    const action = {
+      kind: "codex.auth.sync" as const,
+      bundleVersion: 3,
+      bundle: { formatVersion: 1 as const, profileId: "openai:user@example.com", accessToken, refreshToken: "refresh-token-shared-state", idToken: accessToken, expiresAtMs: 4_700_000_000_000, lastRefresh: null, email: "user@example.com", accountId: "acct-123", chatgptPlanType: null },
+    };
+    const gateway = { request: vi.fn().mockResolvedValue({ ts: Date.now(), providers: [] }) };
+
+    const applied = await executeAgentControl({ action, configPath, gateway });
+    await fs.writeFile(path.join(tempDir, "auth-profiles.json"), legacyStore, "utf8");
+    const skipped = await executeAgentControl({ action, configPath, gateway });
+
+    expect(applied).toMatchObject({ kind: "codex.auth.sync", applied: true, bundleVersion: 3 });
+    expect(skipped).toMatchObject({ kind: "codex.auth.sync", applied: false, reason: "up_to_date" });
+    const sharedAuth = await readSharedAuthStateDatabase(databasePath);
+    expect(Object.keys(sharedAuth.store?.profiles ?? {})).toEqual(["openai:user@example.com"]);
+    expect(sharedAuth.state?.order?.openai).toEqual(["openai:user@example.com"]);
+    expect(sharedAuth.state?.lastGood?.openai).toBe("openai:user@example.com");
+    await expect(fs.access(path.join(tempDir, "auth-profiles.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(path.join(agentDir, "auth-profiles.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await fs.readdir(tempDir)).some((entry) => entry.startsWith("auth-profiles.json.migrated-"))).toBe(true);
+    expect((await fs.readdir(agentDir)).some((entry) => entry.startsWith("auth-profiles.json.migrated-"))).toBe(true);
+    await expect(fs.access(path.join(agentDir, "openclaw-agent.sqlite"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(gateway.request).toHaveBeenCalledTimes(2);
+  });
+
+  it("restores shared auth state and retired stores when live refresh fails", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-shared-rollback-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    const legacyPath = path.join(tempDir, "auth-profiles.json");
+    process.env.CODEX_HOME = path.join(tempDir, ".codex");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    const databasePath = await createSharedAuthStateDatabase(tempDir);
+    const legacyStore = `${JSON.stringify({ version: 1, profiles: {} }, null, 2)}\n`;
+    await fs.writeFile(legacyPath, legacyStore, "utf8");
+    const accessToken = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQ3MDAwMDAwMDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3QtMTIzIn19.signature";
+    const gateway = { request: vi.fn().mockRejectedValueOnce(new Error("runtime refresh failed")).mockResolvedValueOnce({}) };
+
+    await expect(executeAgentControl({
+      action: { kind: "codex.auth.sync", bundleVersion: 1, bundle: { formatVersion: 1, profileId: "openai:user@example.com", accessToken, refreshToken: "refresh-token", idToken: accessToken, expiresAtMs: 4_700_000_000_000, lastRefresh: null, email: "user@example.com", accountId: "acct-123", chatgptPlanType: null } },
+      configPath,
+      gateway,
+    })).rejects.toThrow("runtime refresh failed");
+
+    expect(await fs.readFile(legacyPath, "utf8")).toBe(legacyStore);
+    expect((await fs.readdir(tempDir)).some((entry) => entry.startsWith("auth-profiles.json.migrated-"))).toBe(false);
+    expect(await readSharedAuthStateDatabase(databasePath)).toEqual({ store: null, state: null });
+    expect(gateway.request).toHaveBeenCalledTimes(2);
   });
 });
 
