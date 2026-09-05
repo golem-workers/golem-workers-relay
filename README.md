@@ -231,8 +231,10 @@ and secrets are never returned. Backend config workflows call this after atomic
 Agent control supports backend-only `codex.auth.export`, `codex.auth.import`, and
 `codex.auth.sync` actions. Export returns one canonical ChatGPT OAuth bundle assembled from the
 managed Codex cache and OpenClaw auth stores. Import validates signed-token identity and expiry,
-then updates `~/.codex/auth.json`, both OpenClaw `auth-profiles.json` files, OpenClaw config, and the
-runtime SQLite auth store with rollback on failure. Sync adds a non-secret local version marker at
+then updates `~/.codex/auth.json`, OpenClaw config, and the canonical runtime auth store with rollback
+on failure. Legacy layouts retain their compatibility `auth-profiles.json` files. When OpenClaw owns
+the shared store in `~/.openclaw/state/openclaw.sqlite`, relay writes the `authProfiles.store` and
+`authProfiles.state` rows there and archives retired JSON stores before live refresh. Sync adds a non-secret local version marker at
 `~/.codex/golem-auth-sync.json`. Versions are monotonic within one OpenAI profile; switching to a
 different profile applies even when its account-local version is lower. JSON credential writes use
 mode `0600` and atomic rename. Runtime SQLite rollback snapshots only two authorization rows, so

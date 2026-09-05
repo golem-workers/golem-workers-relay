@@ -190,12 +190,19 @@ type CodexRuntimeAuthRow = {
 };
 
 type CodexRuntimeAuthSnapshot = {
+  target: CodexRuntimeAuthTarget;
   databaseExisted: boolean;
   storeTableExisted: boolean;
   stateTableExisted: boolean;
   storeRow: CodexRuntimeAuthRow | null;
   stateRow: CodexRuntimeAuthRow | null;
 };
+
+type CodexRuntimeAuthTarget =
+  | { kind: "agent"; databasePath: string }
+  | { kind: "shared-state"; databasePath: string };
+
+type RetiredAuthStore = { originalPath: string; archivePath: string };
 
 let pendingCodexLogin: PendingCodexLogin | null = null;
 
@@ -489,6 +496,30 @@ function resolveCodexAuthProfileDatabasePath(configPath: string): string {
   return path.join(resolveCodexAgentDir(configPath), "openclaw-agent.sqlite");
 }
 
+async function resolveCodexRuntimeAuthTarget(configPath: string): Promise<CodexRuntimeAuthTarget> {
+  const sharedDatabasePath = path.join(path.dirname(configPath), "state", "openclaw.sqlite");
+  try {
+    await fs.access(sharedDatabasePath);
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(sharedDatabasePath, { readOnly: true });
+    try {
+      const table = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?").get("config_machine_state");
+      const row = table
+        ? db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("auth.sharedStore") as { value_json?: string } | undefined
+        : undefined;
+      const ownership = parseSqliteJsonCell(row?.value_json);
+      if (isRecord(ownership) && ownership.location === "state-db") {
+        return { kind: "shared-state", databasePath: sharedDatabasePath };
+      }
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
+  }
+  return { kind: "agent", databasePath: resolveCodexAuthProfileDatabasePath(configPath) };
+}
+
 function resolveCodexSessionsStorePath(configPath: string): string {
   return path.join(path.dirname(configPath), "agents", MAIN_AGENT_ID, "sessions", "sessions.json");
 }
@@ -583,10 +614,34 @@ async function clearCodexSessionAuthProfiles(configPath: string): Promise<void> 
 
 async function updateCodexRuntimeAuthStore(input: { configPath: string; profileId: string; credential: OAuthCredential }): Promise<void> {
   const { DatabaseSync } = await import("node:sqlite");
-  const databasePath = resolveCodexAuthProfileDatabasePath(input.configPath);
+  const target = await resolveCodexRuntimeAuthTarget(input.configPath);
+  const databasePath = target.databasePath;
   await fs.mkdir(path.dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
   try {
+    if (target.kind === "shared-state") {
+      const readCell = (key: string) => parseSqliteJsonCell((db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get(key) as { value_json?: string } | undefined)?.value_json);
+      const store = readAuthProfilesStoreFromRaw(readCell("authProfiles.store"));
+      store.profiles = replaceOpenAiProfiles(store.profiles, input.profileId, input.credential);
+      const state = coerceAuthProfileStateStore(readCell("authProfiles.state"));
+      state.order = { ...state.order, openai: [input.profileId] };
+      state.lastGood = { ...state.lastGood, openai: input.profileId };
+      const now = Date.now();
+      db.exec("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE");
+      try {
+        const writeCell = (key: string, value: unknown) => db.prepare(
+          `INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)
+           ON CONFLICT(state_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms`,
+        ).run(key, JSON.stringify(value), now);
+        writeCell("authProfiles.store", store);
+        writeCell("authProfiles.state", state);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return;
+    }
     db.exec(`
       PRAGMA busy_timeout = 5000;
       CREATE TABLE IF NOT EXISTS auth_profile_store (
@@ -654,10 +709,14 @@ function readAuthProfilesStoreFromRaw(value: unknown): AuthProfilesStore {
 async function readRuntimeAuthProfilesStore(configPath: string): Promise<AuthProfilesStore> {
   try {
     const { DatabaseSync } = await import("node:sqlite");
-    const databasePath = resolveCodexAuthProfileDatabasePath(configPath);
-    const db = new DatabaseSync(databasePath, { readOnly: true });
+    const target = await resolveCodexRuntimeAuthTarget(configPath);
+    const db = new DatabaseSync(target.databasePath, { readOnly: true });
     try {
       db.exec("PRAGMA busy_timeout = 5000;");
+      if (target.kind === "shared-state") {
+        const row = db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("authProfiles.store") as { value_json?: string } | undefined;
+        return readAuthProfilesStoreFromRaw(parseSqliteJsonCell(row?.value_json));
+      }
       const rawStore = db.prepare("SELECT store_json FROM auth_profile_store WHERE store_key = ?").get("primary") as { store_json?: string } | undefined;
       return readAuthProfilesStoreFromRaw(parseSqliteJsonCell(rawStore?.store_json));
     } finally {
@@ -704,10 +763,12 @@ async function persistCodexCredentials(input: {
   if (!tokens) {
     throw new Error("OpenAI OAuth token exchange response was incomplete.");
   }
-  for (const authStorePath of resolveCodexAuthStorePaths(input.configPath)) {
-    const authStore = await readAuthProfilesStore(authStorePath);
-    authStore.profiles = replaceOpenAiProfiles(authStore.profiles, profileId, credential);
-    await writeJsonFile(authStorePath, authStore);
+  if ((await resolveCodexRuntimeAuthTarget(input.configPath)).kind === "agent") {
+    for (const authStorePath of resolveCodexAuthStorePaths(input.configPath)) {
+      const authStore = await readAuthProfilesStore(authStorePath);
+      authStore.profiles = replaceOpenAiProfiles(authStore.profiles, profileId, credential);
+      await writeJsonFile(authStorePath, authStore);
+    }
   }
   await updateCodexRuntimeAuthStore({
     configPath: input.configPath,
@@ -942,9 +1003,12 @@ function buildResult(
 
 async function readPersistedCodexOAuthEntries(configPath: string): Promise<Array<[string, Record<string, unknown>]>> {
   const entriesByProfileId = new Map<string, Record<string, unknown>>();
+  const target = await resolveCodexRuntimeAuthTarget(configPath);
   const stores = [
     await readRuntimeAuthProfilesStore(configPath),
-    ...(await Promise.all(resolveCodexAuthStorePaths(configPath).map((authStorePath) => readAuthProfilesStore(authStorePath)))),
+    ...(target.kind === "agent"
+      ? await Promise.all(resolveCodexAuthStorePaths(configPath).map((authStorePath) => readAuthProfilesStore(authStorePath)))
+      : []),
   ];
   for (const store of stores) {
     for (const [profileId, credential] of Object.entries(store.profiles)) {
@@ -1125,12 +1189,14 @@ async function restoreFileSnapshots(snapshots: FileSnapshot[]): Promise<void> {
 async function snapshotCodexRuntimeAuthStore(
   configPath: string,
 ): Promise<CodexRuntimeAuthSnapshot> {
-  const databasePath = resolveCodexAuthProfileDatabasePath(configPath);
+  const target = await resolveCodexRuntimeAuthTarget(configPath);
+  const databasePath = target.databasePath;
   try {
     await fs.access(databasePath);
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
       return {
+        target,
         databaseExisted: false,
         storeTableExisted: false,
         stateTableExisted: false,
@@ -1145,6 +1211,19 @@ async function snapshotCodexRuntimeAuthStore(
   const db = new DatabaseSync(databasePath, { readOnly: true });
   try {
     db.exec("PRAGMA busy_timeout = 5000;");
+    if (target.kind === "shared-state") {
+      const readCell = (key: string) => db.prepare("SELECT value_json, updated_at_ms FROM config_machine_state WHERE state_key = ?").get(key) as { value_json?: string; updated_at_ms?: number } | undefined;
+      const store = readCell("authProfiles.store");
+      const state = readCell("authProfiles.state");
+      return {
+        target,
+        databaseExisted: true,
+        storeTableExisted: true,
+        stateTableExisted: true,
+        storeRow: typeof store?.value_json === "string" && typeof store.updated_at_ms === "number" ? { json: store.value_json, updatedAt: store.updated_at_ms } : null,
+        stateRow: typeof state?.value_json === "string" && typeof state.updated_at_ms === "number" ? { json: state.value_json, updatedAt: state.updated_at_ms } : null,
+      };
+    }
     const tableExists = (name: string) =>
       Boolean(
         db
@@ -1164,6 +1243,7 @@ async function snapshotCodexRuntimeAuthStore(
           .get("primary") as { state_json?: string; updated_at?: number } | undefined)
       : undefined;
     return {
+      target,
       databaseExisted: true,
       storeTableExisted,
       stateTableExisted,
@@ -1182,10 +1262,10 @@ async function snapshotCodexRuntimeAuthStore(
 }
 
 async function restoreCodexRuntimeAuthStore(
-  configPath: string,
+  _configPath: string,
   snapshot: CodexRuntimeAuthSnapshot,
 ): Promise<void> {
-  const databasePath = resolveCodexAuthProfileDatabasePath(configPath);
+  const { databasePath } = snapshot.target;
   if (!snapshot.databaseExisted) {
     await fs.rm(databasePath, { force: true });
     await fs.rm(`${databasePath}-shm`, { force: true });
@@ -1198,6 +1278,19 @@ async function restoreCodexRuntimeAuthStore(
   try {
     db.exec("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE;");
     try {
+      if (snapshot.target.kind === "shared-state") {
+        const restoreCell = (key: string, row: CodexRuntimeAuthRow | null) => {
+          if (!row) return void db.prepare("DELETE FROM config_machine_state WHERE state_key = ?").run(key);
+          db.prepare(
+            `INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)
+             ON CONFLICT(state_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms`,
+          ).run(key, row.json, row.updatedAt);
+        };
+        restoreCell("authProfiles.store", snapshot.storeRow);
+        restoreCell("authProfiles.state", snapshot.stateRow);
+        db.exec("COMMIT;");
+        return;
+      }
       if (snapshot.storeTableExisted) {
         if (snapshot.storeRow) {
           db.prepare(
@@ -1231,6 +1324,38 @@ async function restoreCodexRuntimeAuthStore(
     }
   } finally {
     db.close();
+  }
+}
+
+async function retireLegacyCodexAuthStores(configPath: string): Promise<RetiredAuthStore[]> {
+  if ((await resolveCodexRuntimeAuthTarget(configPath)).kind !== "shared-state") return [];
+  const suffix = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}`;
+  const retired: RetiredAuthStore[] = [];
+  try {
+    for (const originalPath of resolveCodexAuthStorePaths(configPath)) {
+      const archivePath = `${originalPath}.migrated-${suffix}`;
+      try {
+        await fs.rename(originalPath, archivePath);
+        retired.push({ originalPath, archivePath });
+      } catch (error) {
+        if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
+      }
+    }
+    return retired;
+  } catch (error) {
+    await restoreRetiredCodexAuthStores(retired);
+    throw error;
+  }
+}
+
+async function restoreRetiredCodexAuthStores(retired: RetiredAuthStore[]): Promise<void> {
+  for (let index = retired.length - 1; index >= 0; index -= 1) {
+    const entry = retired[index];
+    try {
+      await fs.rename(entry.archivePath, entry.originalPath);
+    } catch (error) {
+      if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
+    }
   }
 }
 
@@ -1280,6 +1405,7 @@ async function applyCodexAuthBundle(input: {
     ...(input.syncState ? [resolveCodexAuthSyncStatePath()] : []),
   ]);
   let runtimeRefreshAttempted = false;
+  let retiredAuthStores: RetiredAuthStore[] = [];
   try {
     const persisted = await persistCodexCredentials({
       configPath: input.configPath,
@@ -1304,6 +1430,7 @@ async function applyCodexAuthBundle(input: {
     if (input.syncState) {
       await writeJsonFile(resolveCodexAuthSyncStatePath(), input.syncState);
     }
+    retiredAuthStores = await retireLegacyCodexAuthStores(input.configPath);
     const status = await readPersistedCodexStatus("codex.login.status", input.configPath);
     if (status.state !== "connected") {
       throw new Error(status.lastError ?? status.message);
@@ -1322,6 +1449,7 @@ async function applyCodexAuthBundle(input: {
       authModes: status.authModes,
     };
   } catch (error) {
+    await restoreRetiredCodexAuthStores(retiredAuthStores);
     await restoreFileSnapshots(snapshots);
     await restoreCodexRuntimeAuthStore(input.configPath, runtimeAuthSnapshot);
     if (runtimeRefreshAttempted && input.refreshRuntimeAuth) {
@@ -1608,6 +1736,15 @@ export async function syncCodexAuthBundle(
     status.profileId === syncState.profileId
   ) {
     const currentBundle = await readCanonicalCodexAuthBundle(configPath);
+    const retiredAuthStores = await retireLegacyCodexAuthStores(configPath);
+    if (retiredAuthStores.length > 0 && options?.refreshRuntimeAuth) {
+      try {
+        await options.refreshRuntimeAuth();
+      } catch (error) {
+        await restoreRetiredCodexAuthStores(retiredAuthStores);
+        throw error;
+      }
+    }
     return {
       kind: "codex.auth.sync",
       applied: false,
@@ -1662,7 +1799,8 @@ function isOpenAiCredential(value: unknown): boolean {
 async function clearCodexRuntimeAuthStore(configPath: string): Promise<void> {
   try {
     const { DatabaseSync } = await import("node:sqlite");
-    const databasePath = resolveCodexAuthProfileDatabasePath(configPath);
+    const target = await resolveCodexRuntimeAuthTarget(configPath);
+    const databasePath = target.databasePath;
     try {
       await fs.access(databasePath);
     } catch {
@@ -1671,6 +1809,22 @@ async function clearCodexRuntimeAuthStore(configPath: string): Promise<void> {
     const db = new DatabaseSync(databasePath);
     try {
       db.exec("PRAGMA busy_timeout = 5000;");
+      if (target.kind === "shared-state") {
+        const storeRow = db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("authProfiles.store") as { value_json?: string } | undefined;
+        if (storeRow?.value_json) {
+          const store = readAuthProfilesStoreFromRaw(parseSqliteJsonCell(storeRow.value_json));
+          store.profiles = Object.fromEntries(Object.entries(store.profiles).filter(([, value]) => !isOpenAiCredential(value)));
+          db.prepare("UPDATE config_machine_state SET value_json = ?, updated_at_ms = ? WHERE state_key = ?").run(JSON.stringify(store), Date.now(), "authProfiles.store");
+        }
+        const stateRow = db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("authProfiles.state") as { value_json?: string } | undefined;
+        if (stateRow?.value_json) {
+          const state = coerceAuthProfileStateStore(parseSqliteJsonCell(stateRow.value_json));
+          if (state.order) delete state.order.openai;
+          if (state.lastGood) delete state.lastGood.openai;
+          db.prepare("UPDATE config_machine_state SET value_json = ?, updated_at_ms = ? WHERE state_key = ?").run(JSON.stringify(state), Date.now(), "authProfiles.state");
+        }
+        return;
+      }
       const rawStore = db.prepare("SELECT store_json FROM auth_profile_store WHERE store_key = ?").get("primary") as { store_json?: string } | undefined;
       if (rawStore?.store_json) {
         const store = readAuthProfilesStoreFromRaw(parseSqliteJsonCell(rawStore.store_json));
@@ -1699,12 +1853,16 @@ async function clearCodexRuntimeAuthStore(configPath: string): Promise<void> {
 }
 
 export async function clearCodexAuth(configPath: string): Promise<CodexAuthClearActionResult> {
-  for (const authStorePath of resolveCodexAuthStorePaths(configPath)) {
-    const store = await readAuthProfilesStore(authStorePath);
-    store.profiles = Object.fromEntries(
-      Object.entries(store.profiles).filter(([, value]) => !isOpenAiCredential(value)),
-    );
-    await writeJsonFile(authStorePath, store);
+  if ((await resolveCodexRuntimeAuthTarget(configPath)).kind === "agent") {
+    for (const authStorePath of resolveCodexAuthStorePaths(configPath)) {
+      const store = await readAuthProfilesStore(authStorePath);
+      store.profiles = Object.fromEntries(
+        Object.entries(store.profiles).filter(([, value]) => !isOpenAiCredential(value)),
+      );
+      await writeJsonFile(authStorePath, store);
+    }
+  } else {
+    await retireLegacyCodexAuthStores(configPath);
   }
   await clearCodexRuntimeAuthStore(configPath);
 
