@@ -620,15 +620,15 @@ async function updateCodexRuntimeAuthStore(input: { configPath: string; profileI
   const db = new DatabaseSync(databasePath);
   try {
     if (target.kind === "shared-state") {
-      const readCell = (key: string) => parseSqliteJsonCell((db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get(key) as { value_json?: string } | undefined)?.value_json);
-      const store = readAuthProfilesStoreFromRaw(readCell("authProfiles.store"));
-      store.profiles = replaceOpenAiProfiles(store.profiles, input.profileId, input.credential);
-      const state = coerceAuthProfileStateStore(readCell("authProfiles.state"));
-      state.order = { ...state.order, openai: [input.profileId] };
-      state.lastGood = { ...state.lastGood, openai: input.profileId };
-      const now = Date.now();
       db.exec("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE");
       try {
+        const readCell = (key: string) => parseSqliteJsonCell((db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get(key) as { value_json?: string } | undefined)?.value_json);
+        const store = readAuthProfilesStoreFromRaw(readCell("authProfiles.store"));
+        store.profiles = replaceOpenAiProfiles(store.profiles, input.profileId, input.credential);
+        const state = coerceAuthProfileStateStore(readCell("authProfiles.state"));
+        state.order = { ...state.order, openai: [input.profileId] };
+        state.lastGood = { ...state.lastGood, openai: input.profileId };
+        const now = Date.now();
         const writeCell = (key: string, value: unknown) => db.prepare(
           `INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)
            ON CONFLICT(state_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms`,
@@ -1810,18 +1810,26 @@ async function clearCodexRuntimeAuthStore(configPath: string): Promise<void> {
     try {
       db.exec("PRAGMA busy_timeout = 5000;");
       if (target.kind === "shared-state") {
-        const storeRow = db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("authProfiles.store") as { value_json?: string } | undefined;
-        if (storeRow?.value_json) {
-          const store = readAuthProfilesStoreFromRaw(parseSqliteJsonCell(storeRow.value_json));
-          store.profiles = Object.fromEntries(Object.entries(store.profiles).filter(([, value]) => !isOpenAiCredential(value)));
-          db.prepare("UPDATE config_machine_state SET value_json = ?, updated_at_ms = ? WHERE state_key = ?").run(JSON.stringify(store), Date.now(), "authProfiles.store");
-        }
-        const stateRow = db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("authProfiles.state") as { value_json?: string } | undefined;
-        if (stateRow?.value_json) {
-          const state = coerceAuthProfileStateStore(parseSqliteJsonCell(stateRow.value_json));
-          if (state.order) delete state.order.openai;
-          if (state.lastGood) delete state.lastGood.openai;
-          db.prepare("UPDATE config_machine_state SET value_json = ?, updated_at_ms = ? WHERE state_key = ?").run(JSON.stringify(state), Date.now(), "authProfiles.state");
+        db.exec("BEGIN IMMEDIATE;");
+        try {
+          const now = Date.now();
+          const storeRow = db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("authProfiles.store") as { value_json?: string } | undefined;
+          if (storeRow?.value_json) {
+            const store = readAuthProfilesStoreFromRaw(parseSqliteJsonCell(storeRow.value_json));
+            store.profiles = Object.fromEntries(Object.entries(store.profiles).filter(([, value]) => !isOpenAiCredential(value)));
+            db.prepare("UPDATE config_machine_state SET value_json = ?, updated_at_ms = ? WHERE state_key = ?").run(JSON.stringify(store), now, "authProfiles.store");
+          }
+          const stateRow = db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("authProfiles.state") as { value_json?: string } | undefined;
+          if (stateRow?.value_json) {
+            const state = coerceAuthProfileStateStore(parseSqliteJsonCell(stateRow.value_json));
+            if (state.order) delete state.order.openai;
+            if (state.lastGood) delete state.lastGood.openai;
+            db.prepare("UPDATE config_machine_state SET value_json = ?, updated_at_ms = ? WHERE state_key = ?").run(JSON.stringify(state), now, "authProfiles.state");
+          }
+          db.exec("COMMIT;");
+        } catch (error) {
+          db.exec("ROLLBACK;");
+          throw error;
         }
         return;
       }
