@@ -306,7 +306,9 @@ describe("loadRelayConfig", () => {
     });
 
     expect(cfg.stt.provider).toBe("openrouter");
-    expect(cfg.stt.baseUrl).toBe("http://127.0.0.1:18080/api/v1");
+    expect(cfg.stt.baseUrl).toBe(
+      "http://127.0.0.1:18080/provider-proxy/openrouter/api/v1"
+    );
     expect(cfg.stt.model).toBe("google/gemini-2.5-flash");
   });
 

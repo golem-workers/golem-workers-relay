@@ -412,7 +412,8 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
       provider: parsed.STT_PROVIDER ?? "openai",
       baseUrl: (
         parsed.STT_PROVIDER === "openrouter"
-          ? parsed.OPENROUTER_STT_BASE_URL ?? "http://127.0.0.1:18080/api/v1"
+          ? parsed.OPENROUTER_STT_BASE_URL ??
+            "http://127.0.0.1:18080/provider-proxy/openrouter/api/v1"
           : parsed.OPENAI_STT_BASE_URL ??
             `${parsed.BACKEND_BASE_URL.replace(/\/+$/, "")}/api/v1/relays/openai`
       ).replace(/\/+$/, ""),

@@ -254,7 +254,7 @@ can resolve the next configured auth mode instead of referencing a deleted login
 - `STT_PROVIDER=openai|openrouter` (optional; defaults to `openai`)
 - `OPENAI_STT_BASE_URL=http://backend.example.com/api/v1/relays/openai` (optional; defaults to the backend relay-auth proxy)
 - `OPENAI_STT_MODEL=gpt-4o-transcribe` (optional; OpenAI transcription model used for voice transcription)
-- `OPENROUTER_STT_BASE_URL=http://127.0.0.1:18080/api/v1` (optional; local authenticated OpenRouter proxy)
+- `OPENROUTER_STT_BASE_URL=http://127.0.0.1:18080/provider-proxy/openrouter/api/v1` (optional; local authenticated OpenRouter proxy)
 - `OPENROUTER_STT_MODEL=google/gemini-2.5-flash` (optional; OpenRouter audio-capable model)
 - `STT_TIMEOUT_MS=15000` (optional, transcription timeout)
 
