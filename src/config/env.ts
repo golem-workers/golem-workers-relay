@@ -116,6 +116,9 @@ const envSchema = z.object({
 
   OPENAI_STT_BASE_URL: z.string().url().optional(),
   OPENAI_STT_MODEL: z.string().min(1).optional(),
+  OPENROUTER_STT_BASE_URL: z.string().url().optional(),
+  OPENROUTER_STT_MODEL: z.string().min(1).optional(),
+  STT_PROVIDER: z.enum(["openai", "openrouter"]).optional(),
   STT_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).optional(),
 });
 
@@ -233,6 +236,7 @@ export type RelayConfig = {
     tickTimeoutMultiplier: number;
   };
   stt: {
+    provider: "openai" | "openrouter";
     baseUrl: string;
     model: string;
     timeoutMs: number;
@@ -405,11 +409,17 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
       tickTimeoutMultiplier: parsed.RELAY_OPENCLAW_TICK_TIMEOUT_MULTIPLIER ?? 10,
     },
     stt: {
+      provider: parsed.STT_PROVIDER ?? "openai",
       baseUrl: (
-        parsed.OPENAI_STT_BASE_URL ??
-        `${parsed.BACKEND_BASE_URL.replace(/\/+$/, "")}/api/v1/relays/openai`
+        parsed.STT_PROVIDER === "openrouter"
+          ? parsed.OPENROUTER_STT_BASE_URL ?? "http://127.0.0.1:18080/api/v1"
+          : parsed.OPENAI_STT_BASE_URL ??
+            `${parsed.BACKEND_BASE_URL.replace(/\/+$/, "")}/api/v1/relays/openai`
       ).replace(/\/+$/, ""),
-      model: parsed.OPENAI_STT_MODEL ?? "gpt-4o-transcribe",
+      model:
+        parsed.STT_PROVIDER === "openrouter"
+          ? parsed.OPENROUTER_STT_MODEL ?? "google/gemini-2.5-flash"
+          : parsed.OPENAI_STT_MODEL ?? "gpt-4o-transcribe",
       timeoutMs: parsed.STT_TIMEOUT_MS ?? 15_000,
     },
     relayChannel: {
@@ -536,6 +546,7 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
     devLogGatewayFrames: false,
     openclaw: { token: "test", scopes: ["operator.admin"], tickTimeoutMultiplier: 10 },
     stt: {
+      provider: "openai",
       baseUrl: "http://localhost:3000/api/v1/relays/openai",
       model: "gpt-4o-transcribe",
       timeoutMs: 15_000,

@@ -281,6 +281,7 @@ describe("loadRelayConfig", () => {
 
     expect(cfg.stt.baseUrl).toBe("https://example.com/api/v1/relays/openai");
     expect(cfg.stt.model).toBe("gpt-4o-transcribe");
+    expect(cfg.stt.provider).toBe("openai");
   });
 
   it("allows explicit OpenAI STT overrides", () => {
@@ -295,6 +296,18 @@ describe("loadRelayConfig", () => {
     expect(cfg.stt.baseUrl).toBe("https://relay.example.com/audio");
     expect(cfg.stt.model).toBe("gpt-4o-transcribe");
     expect(cfg.stt.timeoutMs).toBe(20_000);
+  });
+
+  it("selects the local OpenRouter proxy for OpenRouter STT", () => {
+    const cfg = loadRelayConfig({
+      RELAY_TOKEN: "t",
+      BACKEND_BASE_URL: "https://example.com",
+      STT_PROVIDER: "openrouter",
+    });
+
+    expect(cfg.stt.provider).toBe("openrouter");
+    expect(cfg.stt.baseUrl).toBe("http://127.0.0.1:18080/api/v1");
+    expect(cfg.stt.model).toBe("google/gemini-2.5-flash");
   });
 
   it("uses release-coupled relay-channel plugin auto-update defaults", () => {

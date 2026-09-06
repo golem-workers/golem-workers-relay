@@ -12,6 +12,7 @@ import { type InboundPushMessage } from "./backend/types.js";
 import { GatewayClient } from "./openclaw/gatewayClient.js";
 import { ChatRunner } from "./openclaw/chatRunner.js";
 import { transcribeAudioWithOpenAi } from "./openclaw/openaiTranscription.js";
+import { transcribeAudioWithOpenRouter } from "./openclaw/openrouterTranscription.js";
 import { PushServerHttpError, startPushServer } from "./push/pushServer.js";
 import {
   InMemoryTaskQueue,
@@ -375,7 +376,10 @@ async function main(): Promise<void> {
       model: cfg.stt.model,
       timeoutMs: cfg.stt.timeoutMs,
     },
-    transcribeAudio: transcribeAudioWithOpenAi,
+    transcribeAudio:
+      cfg.stt.provider === "openrouter"
+        ? transcribeAudioWithOpenRouter
+        : transcribeAudioWithOpenAi,
   });
 
   const stop = createStopSignal();
