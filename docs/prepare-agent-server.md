@@ -23,7 +23,8 @@ What it does:
 - installs Google Chrome Stable;
 - configures journald, swap, and DNS;
 - installs Go and Linuxbrew;
-- installs Node 22 separately (Linuxbrew is not used to install Node);
+- installs an OpenClaw-compatible Node runtime (24.16+ on 24.x, or accepts
+  26.1+; Node 25 is rejected) separately from Linuxbrew;
 - pre-pulls and builds `golem-workers-relay` from `release` by default, or from explicit `RELAY_GIT_REF` when exported before running the script;
 - installs `pnpm`, installs the latest OpenClaw and official `@openai/codex` CLI through a hoisted pnpm global package tree, adds stable `/usr/local/bin/openclaw` and `/usr/local/bin/codex` symlinks, writes managed `~/.codex/config.toml`, `~/.codex/auth.json`, and `/usr/local/bin/golem-codex-proxy` files so Codex pins `CODEX_HOME` to `~/.codex`, uses explicit API-key login state, explicit `danger-full-access` / `never` defaults, disabled Codex hooks, and wrapper-level CLI overrides together with the local OpenAI proxy, prepares runtime dependencies (`grammy`, `@grammyjs/runner`, `@grammyjs/transformer-throttler`, `@buape/carbon`, `@larksuiteoapi/node-sdk`, `@slack/bolt` for the current OpenClaw bundled-plugin import bugs), preinstalls `relay-channel` and `@openclaw/codex` through `openclaw plugins install`, preinstalls the curated safe OpenClaw skills used by the agent creation quiz, patches the installed Codex harness default so OpenClaw native hook relay stays disabled, leaves those prepared plugins disabled until backend provisioning wires their runtime config, and installs full `playwright`;
 - clones/builds `golem-workers-openclaw-channel-plugin` during image prep and installs the generated agent bundle through the OpenClaw plugin CLI, using explicit `RELAY_CHANNEL_PLUGIN_GIT_REF` when exported (otherwise defaulting to the existing relay-ref coupling), so future `RELAY_CHANNEL_V2` provisioning can reuse the prepared plugin install from the snapshot;

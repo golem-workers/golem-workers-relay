@@ -11,7 +11,7 @@ function runVersionCheck(version: string) {
   const scriptWithoutMain = script.replace(/\nmain "\$@"\s*$/, "");
   return spawnSync("bash", ["-s", "--", version], {
     encoding: "utf8",
-    input: `${scriptWithoutMain}\nnode_22_meets_openclaw_floor "$1"\n`
+    input: `${scriptWithoutMain}\nnode_meets_openclaw_floor "$1"\n`
   });
 }
 
@@ -54,30 +54,32 @@ describe("prepare-agent-server.sh", () => {
     expect(script).not.toContain('ln -sfn "${PNPM_HOME_DIR}/openclaw" /usr/local/bin/openclaw');
   });
 
-  it("enforces the OpenClaw Node 22.22.3 patch floor", () => {
-    for (const version of ["v22.22.3", "v22.23.1", "22.22.3"]) {
+  it("enforces the Node ranges required by current OpenClaw releases", () => {
+    for (const version of ["v24.16.0", "v24.17.1", "24.16.0", "v26.1.0", "v27.0.0"]) {
       expect(runVersionCheck(version).status, version).toBe(0);
     }
 
-    for (const version of ["v22.22.2", "v21.99.99", "v23.0.0", "v22.22", "invalid", ""]) {
+    for (const version of ["v24.15.9", "v25.99.99", "v26.0.9", "v24.16", "invalid", ""]) {
       expect(runVersionCheck(version).status, version || "empty version").not.toBe(0);
     }
 
-    expect(script).toContain('OPENCLAW_MIN_NODE_VERSION="22.22.3"');
+    expect(script).toContain('OPENCLAW_MIN_NODE_24_VERSION="24.16.0"');
+    expect(script).toContain('OPENCLAW_MIN_NODE_26_VERSION="26.1.0"');
+    expect(script).toContain("https://deb.nodesource.com/setup_24.x");
     expect(script).toContain("install_openclaw_nodejs");
     expect(script).toContain('hash -r');
-    expect(script).toContain('if ! node_22_meets_openclaw_floor "${installed_node_version}"; then');
+    expect(script).toContain('if ! node_meets_openclaw_floor "${installed_node_version}"; then');
   });
 
   it("upgrades an old Node patch and rejects an insufficient installed result", () => {
-    const upgraded = runInstall("v22.22.2", "v22.22.3");
+    const upgraded = runInstall("v22.22.3", "v24.16.0");
     expect(upgraded.status).toBe(0);
-    expect(upgraded.stdout).toContain("installed:v22.22.3");
+    expect(upgraded.stdout).toContain("installed:v24.16.0");
 
-    const insufficient = runInstall("v22.22.2", "v22.22.2");
+    const insufficient = runInstall("v22.22.3", "v24.15.9");
     expect(insufficient.status).not.toBe(0);
     expect(insufficient.stderr).toContain(
-      "Node.js 22.22.3+ on major 22 is required; got v22.22.2"
+      "Node.js 24.16.0 to <25 or 26.1.0+ is required; got v24.15.9"
     );
   });
 
