@@ -54,6 +54,24 @@ describe("prepare-agent-server.sh", () => {
     expect(script).not.toContain('ln -sfn "${PNPM_HOME_DIR}/openclaw" /usr/local/bin/openclaw');
   });
 
+  it("preinstalls the pinned Sidewisp observation plugin without enrollment credentials", () => {
+    expect(script).toContain('SIDEWISP_PLUGIN_VERSION="0.2.18"');
+    expect(script).toContain(
+      'SIDEWISP_PLUGIN_SPEC="${SIDEWISP_PLUGIN_SPEC:-git:github.com/golem-workers/sidewisp-plugin@v${SIDEWISP_PLUGIN_VERSION}}"'
+    );
+    expect(script).toContain('openclaw plugins install --force "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" "${SIDEWISP_PLUGIN_SPEC}"');
+    expect(script).toContain('openclaw plugins enable "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" sidewisp');
+    expect(script).toContain('SIDEWISP_PLUGIN_ENDPOINT="https://api.sidewisp.com"');
+    expect(script).toContain('SIDEWISP_PLUGIN_ENDPOINT="https://staging-api.sidewisp.com"');
+    expect(script).toContain(
+      'openclaw config set plugins.entries.sidewisp.config.endpoint "${SIDEWISP_PLUGIN_ENDPOINT}"'
+    );
+    expect(script).toContain('test ! -e /root/.openclaw/sidewisp/installation.json');
+    expect(script).toContain(
+      'const requiredPluginIds = ["relay-channel", "codex", "whatsapp", "moonshot", "perplexity", "sidewisp"]'
+    );
+  });
+
   it("enforces the Node ranges required by current OpenClaw releases", () => {
     for (const version of ["v24.16.0", "v24.17.1", "24.16.0", "v26.1.0", "v27.0.0"]) {
       expect(runVersionCheck(version).status, version).toBe(0);

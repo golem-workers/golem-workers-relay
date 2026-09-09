@@ -31,6 +31,15 @@ OPENCLAW_MIN_NODE_26_VERSION="26.1.0"
 OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-}"
 OPENCLAW_MOONSHOT_PLUGIN_SPEC="${OPENCLAW_MOONSHOT_PLUGIN_SPEC:-}"
 OPENCLAW_PERPLEXITY_PLUGIN_SPEC="${OPENCLAW_PERPLEXITY_PLUGIN_SPEC:-}"
+SIDEWISP_PLUGIN_VERSION="0.2.18"
+SIDEWISP_PLUGIN_SPEC="${SIDEWISP_PLUGIN_SPEC:-git:github.com/golem-workers/sidewisp-plugin@v${SIDEWISP_PLUGIN_VERSION}}"
+if [[ -z "${SIDEWISP_PLUGIN_ENDPOINT:-}" ]]; then
+  if [[ "${RELAY_GIT_REF}" == "release" ]]; then
+    SIDEWISP_PLUGIN_ENDPOINT="https://api.sidewisp.com"
+  else
+    SIDEWISP_PLUGIN_ENDPOINT="https://staging-api.sidewisp.com"
+  fi
+fi
 OPENCLAW_PLUGIN_CAPABILITY_ARGS=()
 OPENCLAW_AUTHORED_PLUGIN_INSTALLS=1
 OPENCLAW_SAFE_SKILL_SPECS=(
@@ -575,6 +584,49 @@ install_openclaw_capability_plugin() {
   fi
   openclaw plugins enable "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" "${plugin_id}"
   openclaw plugins inspect "${plugin_id}" --runtime --json >/dev/null
+}
+
+install_sidewisp_plugin() {
+  # A fresh agent must be able to consume the native /sidewisp_connect handoff
+  # before it has any Sidewisp credential. Keep only plugin code and capability
+  # consent in the snapshot; enrollment writes the credential later at runtime.
+  openclaw plugins uninstall sidewisp --force >/dev/null 2>&1 || true
+  rm -rf /root/.openclaw/extensions/sidewisp
+  openclaw plugins install --force "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" "${SIDEWISP_PLUGIN_SPEC}"
+  openclaw plugins enable "${OPENCLAW_PLUGIN_CAPABILITY_ARGS[@]}" sidewisp
+  openclaw config set plugins.entries.sidewisp.config.endpoint "${SIDEWISP_PLUGIN_ENDPOINT}"
+
+  local installed_version
+  installed_version="$(
+    openclaw plugins inspect sidewisp --runtime --json | node --input-type=module -e '
+      let input = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => { input += chunk; });
+      process.stdin.on("end", () => {
+        const result = JSON.parse(input);
+        const version = result?.plugin?.packageVersion ?? result?.plugin?.version;
+        if (typeof version !== "string" || version.length === 0) process.exit(1);
+        process.stdout.write(version);
+      });
+    '
+  )"
+  if [[ "${installed_version}" != "${SIDEWISP_PLUGIN_VERSION}" ]]; then
+    echo "Unexpected Sidewisp plugin version: expected ${SIDEWISP_PLUGIN_VERSION}, got ${installed_version:-missing}" >&2
+    exit 1
+  fi
+  local installed_endpoint
+  installed_endpoint="$(openclaw config get plugins.entries.sidewisp.config.endpoint --json | node -e '
+    let input = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { input += chunk; });
+    process.stdin.on("end", () => process.stdout.write(String(JSON.parse(input))));
+  ')"
+  if [[ "${installed_endpoint}" != "${SIDEWISP_PLUGIN_ENDPOINT}" ]]; then
+    echo "Unexpected Sidewisp endpoint after snapshot preparation" >&2
+    exit 1
+  fi
+  test ! -e /root/.openclaw/sidewisp/installation.json
+  echo "Sidewisp plugin prepared without enrollment credential: ${installed_version} (${installed_endpoint})"
 }
 
 preinstall_openclaw_safe_skills() {
@@ -1319,6 +1371,9 @@ NODE
   install_openclaw_capability_plugin moonshot "${MOONSHOT_PLUGIN_INSTALL_SPEC}"
   install_openclaw_capability_plugin perplexity "${PERPLEXITY_PLUGIN_INSTALL_SPEC}"
 
+  set_step "sidewisp_plugin_install"
+  install_sidewisp_plugin
+
   set_step "openclaw_snapshot_channels_warmup_start"
   warm_openclaw_snapshot_channels
 
@@ -1340,7 +1395,7 @@ import path from "node:path"
 
 const configDir = path.join(os.homedir(), ".openclaw")
 const configPath = path.join(configDir, "openclaw.json")
-const requiredPluginIds = ["relay-channel", "codex", "whatsapp", "moonshot", "perplexity"]
+const requiredPluginIds = ["relay-channel", "codex", "whatsapp", "moonshot", "perplexity", "sidewisp"]
 const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram"]
 const stalePluginIds = ["memory-lancedb-pro", "memory-lancedb"]
 const defaultExtensionsDir = path.join(configDir, "extensions")
