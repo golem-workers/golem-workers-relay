@@ -26,7 +26,8 @@ OPENCLAW_GATEWAY_READINESS_ATTEMPTS="${OPENCLAW_GATEWAY_READINESS_ATTEMPTS:-360}
 OPENCLAW_GATEWAY_READINESS_SLEEP_SECONDS="${OPENCLAW_GATEWAY_READINESS_SLEEP_SECONDS:-2}"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
 PNPM_HOME_DIR="/root/.local/share/pnpm"
-OPENCLAW_MIN_NODE_VERSION="22.22.3"
+OPENCLAW_MIN_NODE_24_VERSION="24.16.0"
+OPENCLAW_MIN_NODE_26_VERSION="26.1.0"
 OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-}"
 OPENCLAW_MOONSHOT_PLUGIN_SPEC="${OPENCLAW_MOONSHOT_PLUGIN_SPEC:-}"
 OPENCLAW_PERPLEXITY_PLUGIN_SPEC="${OPENCLAW_PERPLEXITY_PLUGIN_SPEC:-}"
@@ -138,38 +139,44 @@ write_file() {
   printf '%s' "${content}" >"${path}"
 }
 
-node_22_meets_openclaw_floor() {
+node_meets_openclaw_floor() {
   local raw_version="${1#v}"
   local major minor patch extra
-  local required_major required_minor required_patch
 
   raw_version="${raw_version%%[-+]*}"
   IFS=. read -r major minor patch extra <<<"${raw_version}"
-  IFS=. read -r required_major required_minor required_patch <<<"${OPENCLAW_MIN_NODE_VERSION}"
   [[ -z "${extra:-}" ]] || return 1
   [[ "${major:-}" =~ ^[0-9]+$ ]] || return 1
   [[ "${minor:-}" =~ ^[0-9]+$ ]] || return 1
   [[ "${patch:-}" =~ ^[0-9]+$ ]] || return 1
 
-  (( major == required_major && (minor > required_minor || (minor == required_minor && patch >= required_patch)) ))
+  if (( major == 24 )); then
+    (( minor > 16 || (minor == 16 && patch >= 0) ))
+    return
+  fi
+  if (( major >= 26 )); then
+    (( major > 26 || minor > 1 || (minor == 1 && patch >= 0) ))
+    return
+  fi
+  return 1
 }
 
 install_openclaw_nodejs() {
   local installed_node_version
 
   installed_node_version="$(node --version 2>/dev/null || true)"
-  if node_22_meets_openclaw_floor "${installed_node_version}"; then
+  if node_meets_openclaw_floor "${installed_node_version}"; then
     echo "Node.js already meets OpenClaw requirement: ${installed_node_version}"
     return
   fi
 
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
   apt-get install -y nodejs
   hash -r
 
   installed_node_version="$(node --version 2>/dev/null || true)"
-  if ! node_22_meets_openclaw_floor "${installed_node_version}"; then
-    echo "Node.js ${OPENCLAW_MIN_NODE_VERSION}+ on major ${OPENCLAW_MIN_NODE_VERSION%%.*} is required; got ${installed_node_version:-missing}" >&2
+  if ! node_meets_openclaw_floor "${installed_node_version}"; then
+    echo "Node.js ${OPENCLAW_MIN_NODE_24_VERSION} to <25 or ${OPENCLAW_MIN_NODE_26_VERSION}+ is required; got ${installed_node_version:-missing}" >&2
     return 1
   fi
 }
