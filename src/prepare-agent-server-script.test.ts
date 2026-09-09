@@ -74,6 +74,15 @@ describe("prepare-agent-server.sh", () => {
     expect(script).toContain('if (manifest?.id === pluginId) directCandidates.push(candidate)');
   });
 
+  it("keeps apt upgrades from restarting SSH during remote snapshot preparation", () => {
+    expect(script).toContain('SERVICE_RESTART_POLICY_PATH="/usr/sbin/policy-rc.d"');
+    expect(script).toContain("suspend_service_restarts");
+    expect(script).toContain("export NEEDRESTART_MODE=l");
+    expect(script).toContain("trap restore_service_restart_policy EXIT");
+    expect(script).toMatch(/set_step "deps"\s+suspend_service_restarts/);
+    expect(script).toMatch(/imagemagick\s+restore_service_restart_policy/);
+  });
+
   it("enforces the Node ranges required by current OpenClaw releases", () => {
     for (const version of ["v24.16.0", "v24.17.1", "24.16.0", "v26.1.0", "v27.0.0"]) {
       expect(runVersionCheck(version).status, version).toBe(0);

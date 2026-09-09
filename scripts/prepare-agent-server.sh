@@ -63,6 +63,9 @@ UBUNTU_SUITE="${UBUNTU_SUITE:-noble}"
 APT_MIRROR_HINT="${APT_MIRROR_HINT:-}"
 OPENAI_PROXY_BASE_URL="http://127.0.0.1:18084/provider-proxy/openai/v1"
 CODEX_WRAPPER_PATH="/usr/local/bin/golem-codex-proxy"
+SERVICE_RESTART_POLICY_PATH="/usr/sbin/policy-rc.d"
+SERVICE_RESTART_POLICY_BACKUP="/tmp/gw-policy-rc.d.original"
+SERVICE_RESTART_POLICY_ACTIVE=0
 
 usage() {
   cat <<'EOF'
@@ -116,6 +119,31 @@ on_error() {
   echo "Exit code: ${exit_code}"
   echo "See log: ${LOG_FILE}"
   exit "${exit_code}"
+}
+
+suspend_service_restarts() {
+  if [[ -e "${SERVICE_RESTART_POLICY_PATH}" ]]; then
+    cp -a "${SERVICE_RESTART_POLICY_PATH}" "${SERVICE_RESTART_POLICY_BACKUP}"
+  fi
+  install -m 0755 /dev/stdin "${SERVICE_RESTART_POLICY_PATH}" <<'EOF'
+#!/usr/bin/env sh
+exit 101
+EOF
+  SERVICE_RESTART_POLICY_ACTIVE=1
+  export NEEDRESTART_MODE=l
+}
+
+restore_service_restart_policy() {
+  if [[ "${SERVICE_RESTART_POLICY_ACTIVE}" != "1" ]]; then
+    return 0
+  fi
+  if [[ -e "${SERVICE_RESTART_POLICY_BACKUP}" ]]; then
+    cp -a "${SERVICE_RESTART_POLICY_BACKUP}" "${SERVICE_RESTART_POLICY_PATH}"
+    rm -f "${SERVICE_RESTART_POLICY_BACKUP}"
+  else
+    rm -f "${SERVICE_RESTART_POLICY_PATH}"
+  fi
+  SERVICE_RESTART_POLICY_ACTIVE=0
 }
 
 append_line_if_missing() {
@@ -652,6 +680,7 @@ main() {
   chmod 0600 "${LOG_FILE}" || true
   exec > >(tee -a "${LOG_FILE}") 2>&1
   trap on_error ERR
+  trap restore_service_restart_policy EXIT
 
   set_step "git_ref_selection"
   log_git_checkout_state "${RELAY_REPO_DIR}" "relay_before_checkout" "${RELAY_GIT_REF}"
@@ -681,6 +710,7 @@ main() {
   fi
 
   set_step "deps"
+  suspend_service_restarts
   pin_guest_dns_to_gateway
   configure_ubuntu_sources_list
   apt-get update
@@ -722,6 +752,7 @@ main() {
     ripgrep \
     poppler-utils \
     imagemagick
+  restore_service_restart_policy
 
   set_step "chrome"
   wget -q -O "${CHROME_DEB}" "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
