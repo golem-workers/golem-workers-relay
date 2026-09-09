@@ -70,6 +70,8 @@ describe("prepare-agent-server.sh", () => {
     expect(script).toContain(
       'const requiredPluginIds = ["relay-channel", "codex", "whatsapp", "moonshot", "perplexity", "sidewisp"]'
     );
+    expect(script).toContain('const gitInstallRoot = path.join(configDir, "git")');
+    expect(script).toContain('if (manifest?.id === pluginId) directCandidates.push(candidate)');
   });
 
   it("enforces the Node ranges required by current OpenClaw releases", () => {

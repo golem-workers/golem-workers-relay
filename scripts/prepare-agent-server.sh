@@ -1479,6 +1479,16 @@ function resolvePluginInstallDir(pluginId, installRecord) {
   if (pluginId === "codex") {
     directCandidates.push(path.join(configDir, "npm", "node_modules", "@openclaw", "codex"))
   }
+  const gitInstallRoot = path.join(configDir, "git")
+  if (fs.existsSync(gitInstallRoot)) {
+    for (const checkoutName of fs.readdirSync(gitInstallRoot)) {
+      const candidate = path.join(gitInstallRoot, checkoutName, "repo")
+      const manifestPath = path.join(candidate, "openclaw.plugin.json")
+      if (!fs.existsSync(manifestPath)) continue
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+      if (manifest?.id === pluginId) directCandidates.push(candidate)
+    }
+  }
   directCandidates.push(path.join(defaultExtensionsDir, pluginId))
 
   for (const directCandidate of directCandidates) {
