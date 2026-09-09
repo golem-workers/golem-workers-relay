@@ -55,7 +55,7 @@ describe("prepare-agent-server.sh", () => {
   });
 
   it("preinstalls the pinned Sidewisp observation plugin without enrollment credentials", () => {
-    expect(script).toContain('SIDEWISP_PLUGIN_VERSION="0.2.18"');
+    expect(script).toContain('SIDEWISP_PLUGIN_VERSION="0.2.19"');
     expect(script).toContain(
       'SIDEWISP_PLUGIN_SPEC="${SIDEWISP_PLUGIN_SPEC:-git:github.com/golem-workers/sidewisp-plugin@v${SIDEWISP_PLUGIN_VERSION}}"'
     );
