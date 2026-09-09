@@ -83,6 +83,14 @@ describe("prepare-agent-server.sh", () => {
     expect(script).toMatch(/imagemagick\s+restore_service_restart_policy/);
   });
 
+  it("supports a bounded Sidewisp-only patch of an existing prepared snapshot", () => {
+    expect(script).toContain('if [[ "${SIDEWISP_SNAPSHOT_PATCH_ONLY:-0}" == "1" ]]');
+    expect(script).toMatch(
+      /SIDEWISP_SNAPSHOT_PATCH_ONLY[\s\S]*configure_openclaw_plugin_cli_args[\s\S]*stop_openclaw_gateway_if_present[\s\S]*install_sidewisp_plugin[\s\S]*stop_openclaw_gateway_if_present/
+    );
+    expect(script).toContain("Sidewisp snapshot patch completed successfully.");
+  });
+
   it("enforces the Node ranges required by current OpenClaw releases", () => {
     for (const version of ["v24.16.0", "v24.17.1", "24.16.0", "v26.1.0", "v27.0.0"]) {
       expect(runVersionCheck(version).status, version).toBe(0);

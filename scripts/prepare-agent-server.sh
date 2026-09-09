@@ -682,6 +682,20 @@ main() {
   trap on_error ERR
   trap restore_service_restart_policy EXIT
 
+  if [[ "${SIDEWISP_SNAPSHOT_PATCH_ONLY:-0}" == "1" ]]; then
+    set_step "openclaw_mutation_guard"
+    configure_openclaw_plugin_cli_args
+    stop_openclaw_gateway_if_present
+    set_step "sidewisp_plugin_install"
+    install_sidewisp_plugin
+    set_step "openclaw_snapshot_shutdown"
+    stop_openclaw_gateway_if_present
+    set_step "done"
+    echo "__GW_PREPARE_DONE__=1"
+    echo "Sidewisp snapshot patch completed successfully."
+    return 0
+  fi
+
   set_step "git_ref_selection"
   log_git_checkout_state "${RELAY_REPO_DIR}" "relay_before_checkout" "${RELAY_GIT_REF}"
   log_git_checkout_state "${RELAY_CHANNEL_PLUGIN_REPO_DIR}" "relay_channel_plugin_before_checkout" "${RELAY_CHANNEL_PLUGIN_GIT_REF}"
