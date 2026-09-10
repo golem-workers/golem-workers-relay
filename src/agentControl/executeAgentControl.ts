@@ -1048,9 +1048,57 @@ async function setCodexAuthWithGatewayPaused(
   configPath: string,
   action: Extract<AgentControlAction, { kind: "codex.auth.set" }>,
 ): Promise<AgentControlResult> {
-  return await runCodexAuthMutationWithGatewayPaused(() =>
-    setCodexAuthMode(configPath, action.mode),
+  return await runCodexAuthMutationWithGatewayPaused(async () => {
+    const result = await setCodexAuthMode(configPath, action.mode);
+    if (action.mode === "openai_login") {
+      await removeLegacyOpenAiGatewayEnvironment();
+    }
+    return result;
+  });
+}
+
+function removeOpenAiEnvironmentLines(contents: string): string {
+  const legacyEnvironment = /^\s*Environment=(?:"?)(?:OPENAI_API_KEY|OPENAI_BASE_URL)=/;
+  const legacyEnvironmentFile = /^\s*EnvironmentFile=-?\/root\/\.openclaw\/openai-relay\.env\s*$/;
+  const lines = contents.split(/\r?\n/);
+  const filtered = lines.filter(
+    (line) => !legacyEnvironment.test(line) && !legacyEnvironmentFile.test(line),
   );
+  return filtered.join("\n");
+}
+
+async function removeLegacyOpenAiGatewayEnvironment(): Promise<void> {
+  const unitPath = process.env.OPENCLAW_GATEWAY_UNIT_PATH?.trim()
+    || "/root/.config/systemd/user/openclaw-gateway.service";
+  const dropInDir = process.env.OPENCLAW_GATEWAY_DROP_IN_DIR?.trim()
+    || `${unitPath}.d`;
+  const paths = [unitPath];
+  try {
+    const entries = await fs.readdir(dropInDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith(".conf")) {
+        paths.push(path.join(dropInDir, entry.name));
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
+  for (const filePath of paths) {
+    let current: string;
+    try {
+      current = await fs.readFile(filePath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    const next = removeOpenAiEnvironmentLines(current);
+    if (next !== current) {
+      await atomicWriteUtf8(filePath, next);
+    }
+  }
+
+  await execSystemctl(["--user", "daemon-reload"]);
 }
 
 async function syncCodexAuthWithoutGatewayRestart(
