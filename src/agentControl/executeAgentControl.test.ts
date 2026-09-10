@@ -19,6 +19,8 @@ const originalHome = process.env.HOME;
 const originalCodexHome = process.env.CODEX_HOME;
 const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
 const originalRelayEnvPath = process.env.RELAY_ENV_PATH;
+const originalGatewayUnitPath = process.env.OPENCLAW_GATEWAY_UNIT_PATH;
+const originalGatewayDropInDir = process.env.OPENCLAW_GATEWAY_DROP_IN_DIR;
 const originalFetch = global.fetch;
 
 afterEach(() => {
@@ -42,6 +44,10 @@ afterEach(() => {
   } else {
     process.env.RELAY_ENV_PATH = originalRelayEnvPath;
   }
+  if (originalGatewayUnitPath === undefined) delete process.env.OPENCLAW_GATEWAY_UNIT_PATH;
+  else process.env.OPENCLAW_GATEWAY_UNIT_PATH = originalGatewayUnitPath;
+  if (originalGatewayDropInDir === undefined) delete process.env.OPENCLAW_GATEWAY_DROP_IN_DIR;
+  else process.env.OPENCLAW_GATEWAY_DROP_IN_DIR = originalGatewayDropInDir;
   if (originalCodexHome === undefined) {
     delete process.env.CODEX_HOME;
   } else {
@@ -84,6 +90,9 @@ if [ "$#" -ge 3 ] && [ "$1" = "--user" ] && [ "$2" = "stop" ] && [ "$3" = "openc
   exit 0
 fi
 if [ "$#" -ge 3 ] && [ "$1" = "--user" ] && [ "$2" = "restart" ] && [ "$3" = "openclaw-gateway.service" ]; then
+  exit 0
+fi
+if [ "$#" -ge 2 ] && [ "$1" = "--user" ] && [ "$2" = "daemon-reload" ]; then
   exit 0
 fi
 if [ "$#" -ge 2 ] && [ "$1" = "restart" ] && [ "$2" = "golem-workers-relay" ]; then
@@ -815,6 +824,10 @@ describe("executeAgentControl Codex login", () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-set-login-"));
     const configPath = path.join(tempDir, "openclaw.json");
     const codexHome = path.join(tempDir, ".codex");
+    const gatewayUnitPath = path.join(tempDir, "openclaw-gateway.service");
+    const gatewayDropInDir = `${gatewayUnitPath}.d`;
+    process.env.OPENCLAW_GATEWAY_UNIT_PATH = gatewayUnitPath;
+    process.env.OPENCLAW_GATEWAY_DROP_IN_DIR = gatewayDropInDir;
     process.env.CODEX_HOME = codexHome;
     process.env.OPENAI_API_KEY = "env-relay-token";
     await fs.mkdir(path.join(tempDir, "agents", "main", "agent"), {
@@ -823,6 +836,18 @@ describe("executeAgentControl Codex login", () => {
     const sessionsPath = path.join(tempDir, "agents", "main", "sessions", "sessions.json");
     await fs.mkdir(path.dirname(sessionsPath), { recursive: true });
     await fs.mkdir(codexHome, { recursive: true });
+    await fs.mkdir(gatewayDropInDir, { recursive: true });
+    await fs.writeFile(
+      gatewayUnitPath,
+      "[Service]\nEnvironment=OPENAI_API_KEY=legacy\nEnvironment=OPENAI_BASE_URL=http://legacy\nEnvironment=OPENAI_TTS_BASE_URL=http://keep\n",
+      "utf8",
+    );
+    const legacyDropInPath = path.join(gatewayDropInDir, "20-openai-relay.conf");
+    await fs.writeFile(
+      legacyDropInPath,
+      "[Service]\nEnvironmentFile=/root/.openclaw/openai-relay.env\nEnvironment=DISPLAY=:99\n",
+      "utf8",
+    );
     await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
     await fs.writeFile(path.join(codexHome, "auth.json"), JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "stored-relay-token" }, null, 2), "utf8");
     await fs.writeFile(
@@ -884,6 +909,12 @@ describe("executeAgentControl Codex login", () => {
       account_id: "acct-123",
     });
     expect(typeof authJson.last_refresh).toBe("string");
+    expect(await fs.readFile(gatewayUnitPath, "utf8")).toBe(
+      "[Service]\nEnvironment=OPENAI_TTS_BASE_URL=http://keep\n",
+    );
+    expect(await fs.readFile(legacyDropInPath, "utf8")).toBe(
+      "[Service]\nEnvironment=DISPLAY=:99\n",
+    );
     const sessions = JSON.parse(await fs.readFile(sessionsPath, "utf8")) as Record<
       string,
       Record<string, unknown>
@@ -896,6 +927,7 @@ describe("executeAgentControl Codex login", () => {
     const systemctlCalls = (await fs.readFile(systemctlLogPath, "utf8")).trim().split("\n");
     expect(systemctlCalls.filter((call) => call === "--user stop openclaw-gateway.service")).toHaveLength(1);
     expect(systemctlCalls.filter((call) => call === "--user restart openclaw-gateway.service")).toHaveLength(1);
+    expect(systemctlCalls.filter((call) => call === "--user daemon-reload")).toHaveLength(1);
   });
 
   it("imports a canonical Codex auth bundle into every runtime auth store", async () => {
