@@ -17,6 +17,10 @@ The relay also reports the current OpenClaw connectivity state back to backend:
 - keeps retrying with backoff when a restarting gateway temporarily rejects a reconnect
 - sends `CONNECTED` immediately after the gateway connection is restored
 
+Model assignment writes keep a non-empty `agents.defaults.modelPolicy.allow`
+list synchronized with the selected primary and fallback models. Missing or
+empty allow-lists remain unrestricted.
+
 Relay owns cron inventory synchronization. It reads all OpenClaw jobs through
 the local Gateway plus supported system cron files, removes command/payload
 contents, calculates a runtime-independent canonical hash, and stores one

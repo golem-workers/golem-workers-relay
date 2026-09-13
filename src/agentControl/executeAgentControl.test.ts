@@ -1828,7 +1828,17 @@ describe("executeAgentControl model set", () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-assignment-set-"));
     const configPath = path.join(tempDir, "openclaw.json");
     await installFakeSystemctl();
-    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({
+        agents: {
+          defaults: {
+            modelPolicy: { allow: ["openrouter/openai/gpt-5.5"] },
+          },
+        },
+      }, null, 2),
+      "utf8",
+    );
 
     const result = await executeAgentControl({
       action: {
@@ -1848,6 +1858,7 @@ describe("executeAgentControl model set", () => {
         defaults?: {
           videoGenerationModel?: { primary?: string; fallbacks?: string[] };
           models?: Record<string, unknown>;
+          modelPolicy?: { allow?: string[] };
           thinkingDefault?: string;
         };
       };
@@ -1864,6 +1875,11 @@ describe("executeAgentControl model set", () => {
     expect(config.agents?.defaults?.videoGenerationModel?.fallbacks).toEqual(["openai/sora-2"]);
     expect(config.agents?.defaults?.models?.["fal/fal-ai/minimax/video-01-live"]).toEqual({});
     expect(config.agents?.defaults?.models?.["openai/sora-2"]).toEqual({});
+    expect(config.agents?.defaults?.modelPolicy?.allow).toEqual([
+      "openrouter/openai/gpt-5.5",
+      "fal/fal-ai/minimax/video-01-live",
+      "openai/sora-2",
+    ]);
     expect(config.agents?.defaults?.thinkingDefault).toBeUndefined();
   });
 

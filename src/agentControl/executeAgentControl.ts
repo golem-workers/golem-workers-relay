@@ -827,8 +827,10 @@ async function setModel(input: {
   modelCfg.primary = storedPrimaryModel.modelRef;
   modelCfg.fallbacks = storedFallbacks.map((fallback) => fallback.modelRef);
   ensureModelRegistryEntry(defaultsCfg, storedPrimaryModel.modelRef, storedPrimaryModel.agentRuntimeId);
+  ensureAllowedModelEntry(defaultsCfg, storedPrimaryModel.modelRef);
   for (const fallbackModel of storedFallbacks) {
     ensureModelRegistryEntry(defaultsCfg, fallbackModel.modelRef, fallbackModel.agentRuntimeId);
+    ensureAllowedModelEntry(defaultsCfg, fallbackModel.modelRef);
   }
   applyModelFastMode(defaultsCfg, storedPrimaryModel.modelRef, input.fastMode);
   if (typeof input.contextTokens === "number" && Number.isFinite(input.contextTokens) && input.contextTokens > 0) {
@@ -925,6 +927,20 @@ function ensureModelRegistryEntry(
   modelsCfg[trimmed] = nextModel;
 }
 
+function ensureAllowedModelEntry(defaultsCfg: Record<string, unknown>, modelRef: string | null): void {
+  const trimmed = String(modelRef ?? "").trim();
+  if (!trimmed) return;
+  const modelPolicy = ensureOptionalRecord(defaultsCfg.modelPolicy);
+  const allow = readUnknownArray(modelPolicy?.allow)
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  // A missing or empty allow-list already permits every model. Preserve that
+  // semantic instead of turning a model change into a new restriction.
+  if (!modelPolicy || allow.length === 0 || allow.includes(trimmed)) return;
+  modelPolicy.allow = [...allow, trimmed];
+}
+
 function readModelFastMode(defaultsCfg: Record<string, unknown>, modelRef: string | null): ModelSetFastMode {
   const trimmed = String(modelRef ?? "").trim();
   if (!trimmed) return null;
@@ -1015,8 +1031,10 @@ async function setModelAssignment(input: {
   modelCfg.primary = storedPrimaryModel.modelRef;
   modelCfg.fallbacks = storedFallback ? [storedFallback.modelRef] : [];
   ensureModelRegistryEntry(defaultsCfg, storedPrimaryModel.modelRef, storedPrimaryModel.agentRuntimeId);
+  ensureAllowedModelEntry(defaultsCfg, storedPrimaryModel.modelRef);
   if (storedFallback) {
     ensureModelRegistryEntry(defaultsCfg, storedFallback.modelRef, storedFallback.agentRuntimeId);
+    ensureAllowedModelEntry(defaultsCfg, storedFallback.modelRef);
   }
   if (input.purpose === "main") {
     applyModelFastMode(defaultsCfg, storedPrimaryModel.modelRef, input.fastMode);
