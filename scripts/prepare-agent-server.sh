@@ -839,7 +839,7 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
         "@openclaw/moonshot-provider" \
         "${OPENCLAW_INSTALLED_VERSION}"
     )"
-    MOONSHOT_PLUGIN_INSTALL_SPEC="clawhub:@openclaw/moonshot-provider@${MOONSHOT_PLUGIN_VERSION}"
+    MOONSHOT_PLUGIN_INSTALL_SPEC="npm:@openclaw/moonshot-provider@${MOONSHOT_PLUGIN_VERSION}"
   fi
   echo "Using compatible Moonshot plugin: ${MOONSHOT_PLUGIN_INSTALL_SPEC}"
   if [[ -n "${OPENCLAW_PERPLEXITY_PLUGIN_SPEC}" ]]; then
@@ -850,7 +850,7 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
         "@openclaw/perplexity-plugin" \
         "${OPENCLAW_INSTALLED_VERSION}"
     )"
-    PERPLEXITY_PLUGIN_INSTALL_SPEC="clawhub:@openclaw/perplexity-plugin@${PERPLEXITY_PLUGIN_VERSION}"
+    PERPLEXITY_PLUGIN_INSTALL_SPEC="npm:@openclaw/perplexity-plugin@${PERPLEXITY_PLUGIN_VERSION}"
   fi
   echo "Using compatible Perplexity plugin: ${PERPLEXITY_PLUGIN_INSTALL_SPEC}"
   test -x "${GLOBAL_PNPM_ROOT}/.bin/codex"
