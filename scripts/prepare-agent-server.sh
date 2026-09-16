@@ -1345,6 +1345,11 @@ const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram"]
 const stalePluginIds = ["memory-lancedb-pro", "memory-lancedb"]
 const defaultExtensionsDir = path.join(configDir, "extensions")
 const pluginIndexPath = path.join(configDir, "plugins", "installs.json")
+const npmPackageSegmentsByPluginId = new Map([
+  ["codex", ["@openclaw", "codex"]],
+  ["moonshot", ["@openclaw", "moonshot-provider"]],
+  ["perplexity", ["@openclaw", "perplexity-plugin"]],
+])
 const authoredPluginInstalls = process.env.OPENCLAW_AUTHORED_PLUGIN_INSTALLS !== "0"
 
 if (!fs.existsSync(configPath)) {
@@ -1430,14 +1435,15 @@ function resolvePluginInstallDir(pluginId, installRecord) {
     const resolved = validatePluginDir(directCandidate)
     if (resolved) return resolved
   }
-  if (pluginId === "codex") {
-    const projectRoot = path.join(configDir, "npm", "projects")
-    if (fs.existsSync(projectRoot)) {
-      for (const projectName of fs.readdirSync(projectRoot)) {
-        if (!projectName.startsWith("openclaw-codex-")) continue
-        const resolved = validatePluginDir(path.join(projectRoot, projectName, "node_modules", "@openclaw", "codex"))
-        if (resolved) return resolved
-      }
+  const npmPackageSegments = npmPackageSegmentsByPluginId.get(pluginId)
+  const projectRoot = path.join(configDir, "npm", "projects")
+  if (npmPackageSegments && fs.existsSync(projectRoot)) {
+    for (const projectName of fs.readdirSync(projectRoot).sort()) {
+      if (projectName.startsWith(".openclaw-install-stage-")) continue
+      const resolved = validatePluginDir(
+        path.join(projectRoot, projectName, "node_modules", ...npmPackageSegments),
+      )
+      if (resolved) return resolved
     }
   }
   return null

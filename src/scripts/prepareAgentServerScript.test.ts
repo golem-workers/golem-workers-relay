@@ -186,6 +186,15 @@ describe("prepare-agent-server snapshot preparation", () => {
     expect(script).toContain(
       'PERPLEXITY_PLUGIN_INSTALL_SPEC="npm:@openclaw/perplexity-plugin@${PERPLEXITY_PLUGIN_VERSION}"',
     );
+    expect(script).toContain(
+      '["moonshot", ["@openclaw", "moonshot-provider"]]',
+    );
+    expect(script).toContain(
+      '["perplexity", ["@openclaw", "perplexity-plugin"]]',
+    );
+    expect(script).toContain(
+      'path.join(projectRoot, projectName, "node_modules", ...npmPackageSegments)',
+    );
     expect(script).toContain("install_openclaw_capability_plugin() {");
     expect(script).toContain(
       'install_openclaw_capability_plugin moonshot "${MOONSHOT_PLUGIN_INSTALL_SPEC}"',
