@@ -55,6 +55,44 @@ describe("createMessageProcessor", () => {
     return call?.[0].action;
   }
 
+  it("refreshes readiness after a live handshake even when a restored VM retains its hello", async () => {
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const submitOpenclawStatus = vi.fn().mockResolvedValue({ accepted: true });
+    const request = vi.fn().mockResolvedValue({ ok: true });
+    const processor = createMessageProcessor({
+      cfg: { relayInstanceId: "relay_1", taskTimeoutMs: 5_000, chatBatchDebounceMs: 0, devLogEnabled: false, devLogTextMaxLen: 200 },
+      gateway: { start: vi.fn(), getHello: () => ({ type: "hello-ok", protocol: 4 }), request } as never,
+      runner: {} as never,
+      backend: { submitInboundMessage, submitOpenclawStatus } as never,
+    });
+    for (const messageId of ["before-hibernate", "after-restore"]) {
+      await processor({ messageId, input: { kind: "handshake", nonce: messageId } });
+    }
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenLastCalledWith("health", {}, { timeoutMs: 5_000 });
+    expect(submitOpenclawStatus).toHaveBeenCalledTimes(2);
+    const reported = submitOpenclawStatus.mock.calls[1]?.[0] as {
+      body: { relayInstanceId: string; observedAtMs: number; status: string };
+    };
+    expect(reported.body).toMatchObject({ relayInstanceId: "relay_1", status: "CONNECTED" });
+    expect(typeof reported.body.observedAtMs).toBe("number");
+    expect(request.mock.invocationCallOrder[1]).toBeLessThan(submitOpenclawStatus.mock.invocationCallOrder[1]);
+  });
+
+  it("does not refresh readiness from cached hello when the live gateway probe fails", async () => {
+    const submitInboundMessage = vi.fn().mockResolvedValue({ accepted: true });
+    const submitOpenclawStatus = vi.fn();
+    const processor = createMessageProcessor({
+      cfg: { relayInstanceId: "relay_1", taskTimeoutMs: 5_000, chatBatchDebounceMs: 0, devLogEnabled: false, devLogTextMaxLen: 200 },
+      gateway: { start: vi.fn(), getHello: () => ({ type: "hello-ok", protocol: 4 }), request: vi.fn().mockRejectedValue(new Error("gateway unavailable")) } as never,
+      runner: {} as never,
+      backend: { submitInboundMessage, submitOpenclawStatus } as never,
+    });
+    await processor({ messageId: "after-restore", input: { kind: "handshake", nonce: "probe" } });
+    expect(submitOpenclawStatus).not.toHaveBeenCalled();
+    expect(submitInboundMessage.mock.calls[0]?.[0]).toMatchObject({ body: { outcome: "error" } });
+  });
+
   it("delivers relay_channel_v2 telegram replies via backend when SDK did not send", async () => {
     executeTelegramTransportActionViaBackendMock.mockResolvedValueOnce({
       transportMessageId: "tg-direct-1",

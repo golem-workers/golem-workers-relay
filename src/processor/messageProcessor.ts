@@ -778,6 +778,16 @@ async function processSingleMessage(input: {
       if (!hello) {
         throw new Error("Gateway is not ready (missing hello-ok)");
       }
+      // A VM restore can preserve the local websocket and cached hello. Prove
+      // current gateway liveness before refreshing the backend readiness fence.
+      await gateway.request("health", {}, { timeoutMs: cfg.taskTimeoutMs });
+      await backend.submitOpenclawStatus({
+        body: {
+          relayInstanceId: cfg.relayInstanceId,
+          observedAtMs: Date.now(),
+          status: "CONNECTED",
+        },
+      });
       const finishedAtMs = Date.now();
       await backend.submitInboundMessage({
         body: {

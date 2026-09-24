@@ -389,3 +389,7 @@ reported only if no user-facing continuation appears before the grace window or 
 
 When `RELAY_OPENCLAW_FORWARD_FINAL_ONLY=0`, relay keeps the legacy behavior and forwards all raw gateway events as
 `outcome=technical`, while still applying the same bounded recovery path for late user-facing assistant text.
+
+### Readiness after hibernation
+
+A backend handshake performs a live gateway `health` RPC before reporting fresh `CONNECTED` readiness. This also works when a restored VM preserves its local websocket and emits no reconnect event; cached `hello-ok` alone is not liveness evidence. Failed probes do not advance readiness.
