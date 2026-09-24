@@ -47,6 +47,32 @@ function patchGatewayUnit(unit: string) {
 }
 
 describe("prepare-agent-server.sh", () => {
+  it("selects portable filesystem safety before snapshot commands, overriding inherited native mode", () => {
+    const result = spawnSync("bash", ["-s"], {
+      encoding: "utf8",
+      env: { ...process.env, FS_SAFE_NATIVE_MODE: "require", OPENCLAW_FS_SAFE_NATIVE_MODE: "auto" },
+      input: `${script.replace(/\nmain "\$@"\s*$/, "")}\nprintf '%s:%s' "$FS_SAFE_NATIVE_MODE" "$OPENCLAW_FS_SAFE_NATIVE_MODE"\n`,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("off:off");
+  });
+
+  it("passes portable filesystem safety through relay startup to subprocesses on existing agents", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "relay-portable-fs-"));
+    const npm = resolve(dir, "npm");
+    writeFileSync(npm, '#!/bin/sh\nprintf "%s:%s:%s" "$FS_SAFE_NATIVE_MODE" "$OPENCLAW_FS_SAFE_NATIVE_MODE" "$*"\n', { mode: 0o755 });
+    try {
+      const result = spawnSync("bash", [resolve(process.cwd(), "scripts/start.sh")], {
+        encoding: "utf8",
+        env: { ...process.env, NPM_BIN: npm, FS_SAFE_NATIVE_MODE: "require", OPENCLAW_FS_SAFE_NATIVE_MODE: "auto" },
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("off:off:run start");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("links stable OpenClaw and Codex commands to package bin entries instead of pnpm shims", () => {
     expect(script).toContain('ln -sfn "${GLOBAL_PNPM_ROOT}/.bin/codex" /usr/local/bin/codex');
     expect(script).toContain('ln -sfn "${GLOBAL_PNPM_ROOT}/.bin/openclaw" /usr/local/bin/openclaw');
