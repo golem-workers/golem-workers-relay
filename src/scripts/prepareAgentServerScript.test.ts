@@ -142,7 +142,7 @@ describe("prepare-agent-server snapshot preparation", () => {
     expect(script).toContain('if [[ -n "${OPENCLAW_WHATSAPP_PLUGIN_SPEC}" ]]');
     expect(script).toContain("resolve-openclaw-whatsapp-plugin-version.mjs");
     expect(script).toContain(
-      'WHATSAPP_PLUGIN_INSTALL_SPEC="clawhub:@openclaw/whatsapp@${WHATSAPP_PLUGIN_VERSION}"',
+      'WHATSAPP_PLUGIN_INSTALL_SPEC="npm:@openclaw/whatsapp@${WHATSAPP_PLUGIN_VERSION}"',
     );
     expect(script).toContain("install_openclaw_whatsapp_plugin() {");
     expect(script).toContain(

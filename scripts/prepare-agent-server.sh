@@ -842,7 +842,7 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
       node "${RELAY_REPO_DIR}/scripts/resolve-openclaw-whatsapp-plugin-version.mjs" \
         "${OPENCLAW_INSTALLED_VERSION}"
     )"
-    WHATSAPP_PLUGIN_INSTALL_SPEC="clawhub:@openclaw/whatsapp@${WHATSAPP_PLUGIN_VERSION}"
+    WHATSAPP_PLUGIN_INSTALL_SPEC="npm:@openclaw/whatsapp@${WHATSAPP_PLUGIN_VERSION}"
   fi
   echo "Using compatible WhatsApp plugin: ${WHATSAPP_PLUGIN_INSTALL_SPEC}"
   if [[ -n "${OPENCLAW_MOONSHOT_PLUGIN_SPEC}" ]]; then
@@ -1361,6 +1361,7 @@ const defaultExtensionsDir = path.join(configDir, "extensions")
 const pluginIndexPath = path.join(configDir, "plugins", "installs.json")
 const npmPackageSegmentsByPluginId = new Map([
   ["codex", ["@openclaw", "codex"]],
+  ["whatsapp", ["@openclaw", "whatsapp"]],
   ["moonshot", ["@openclaw", "moonshot-provider"]],
   ["perplexity", ["@openclaw", "perplexity-plugin"]],
 ])
@@ -1440,8 +1441,9 @@ function resolvePluginInstallDir(pluginId, installRecord) {
       directCandidates.push(indexedInstallRecord.installPath)
     }
   }
-  if (pluginId === "codex") {
-    directCandidates.push(path.join(configDir, "npm", "node_modules", "@openclaw", "codex"))
+  const npmPackageSegments = npmPackageSegmentsByPluginId.get(pluginId)
+  if (npmPackageSegments) {
+    directCandidates.push(path.join(configDir, "npm", "node_modules", ...npmPackageSegments))
   }
   directCandidates.push(path.join(defaultExtensionsDir, pluginId))
 
@@ -1449,7 +1451,6 @@ function resolvePluginInstallDir(pluginId, installRecord) {
     const resolved = validatePluginDir(directCandidate)
     if (resolved) return resolved
   }
-  const npmPackageSegments = npmPackageSegmentsByPluginId.get(pluginId)
   const projectRoot = path.join(configDir, "npm", "projects")
   if (npmPackageSegments && fs.existsSync(projectRoot)) {
     for (const projectName of fs.readdirSync(projectRoot).sort()) {

@@ -123,6 +123,7 @@ The script:
 - also accepts `APT_MIRROR_HINT=hetzner` so orchestration can force Hetzner mirrors even when the guest itself only sees generic KVM DMI metadata;
 - optionally runs `openclaw onboard --install-daemon`, then explicitly restarts and verifies `openclaw-gateway.service` with an extended readiness window because current OpenClaw releases can come up slowly on small snapshot VMs;
 - writes a temporary snapshot-only warmup config that activates `telegram` and `whatsapp`, performs a mandatory `start -> readiness -> channels status -> stop` cycle to force first-run plugin initialization into snapshot prep, and then seals the snapshot back to a cold config for backend-owned bootstrap;
+- resolves WhatsApp from the same npm registry used by the compatibility version resolver (`npm:@openclaw/whatsapp@<version>`), while preserving `OPENCLAW_WHATSAPP_PLUGIN_SPEC` overrides. Snapshot sealing validates plugin manifests and built entrypoints across legacy install records/extensions, shared npm installs, and per-package npm projects (including WhatsApp), ignoring unfinished install-stage directories;
 - leaves the image ready for backend provisioning to reuse the prepared `relay-channel` and `codex` plugin installs from the snapshot;
 - finishes image preparation by stopping and disabling `openclaw-gateway.service` so prepared images boot with OpenClaw cold and backend provisioning performs the first controlled start.
 
