@@ -1,10 +1,11 @@
+import type { GatewaySessionsUsageParams } from "./gatewayClient.js";
 import type { RelayAuthorizationUsageRequest } from "../backend/types.js";
 import { logger } from "../logger.js";
 
 type GatewayUsageReader = {
   getUsageStatus(): Promise<unknown>;
   getSessionsUsage(
-    params: { startDate: string; endDate: string; limit?: number },
+    params: GatewaySessionsUsageParams,
     options?: { timeoutMs?: number },
   ): Promise<unknown>;
 };
@@ -124,7 +125,7 @@ function sleep(ms: number): Promise<void> {
 
 async function getSettledSessionsUsage(input: {
   gateway: GatewayUsageReader;
-  params: { startDate: string; endDate: string; limit?: number };
+  params: GatewaySessionsUsageParams;
 }): Promise<unknown> {
   const deadline = Date.now() + USAGE_CACHE_SETTLE_TIMEOUT_MS;
   let pollMs = USAGE_CACHE_SETTLE_INITIAL_POLL_MS;
@@ -147,6 +148,24 @@ async function getSettledSessionsUsage(input: {
 
 function dateOnly(date: Date): string {
   return date.toISOString().slice(0, 10);
+}
+
+// Gateway accepts calendar dates, but filters individual usage events by the resulting
+// millisecond bounds. A fixed offset makes its midnight the current UTC minute.
+// Thus one complete date is exactly [windowEnd - 24h, windowEnd), without DST
+// or prorating daily totals. The snapshot explicitly exposes the minute-aligned end.
+function rolling24hQuery(now: Date) {
+  const endMs = Math.floor(now.getTime() / 60_000) * 60_000;
+  const minuteOfDay = new Date(endMs).getUTCHours() * 60 + new Date(endMs).getUTCMinutes();
+  const offset = minuteOfDay <= 720 ? -minuteOfDay : 1440 - minuteOfDay;
+  const absolute = Math.abs(offset);
+  const utcOffset = `UTC${offset < 0 ? "-" : "+"}${Math.floor(absolute / 60)}:${String(absolute % 60).padStart(2, "0")}`;
+  const startDate = dateOnly(new Date(endMs - 86_400_000 + offset * 60_000));
+  return {
+    windowStart: new Date(endMs - 86_400_000).toISOString(),
+    windowEnd: new Date(endMs).toISOString(),
+    params: { startDate, endDate: startDate, mode: "specific", utcOffset, limit: 1 } satisfies GatewaySessionsUsageParams,
+  };
 }
 
 function buildPayload(input: {
@@ -241,8 +260,18 @@ export function createAuthorizationUsageReporter(input: {
           params: { startDate: dateOnly(periodStart), endDate: dateOnly(periodEnd), limit: 1_000 },
         }),
       ]);
+      const window = rolling24hQuery(observedAt);
+      const rollingUsage = await getSettledSessionsUsage({ gateway: input.gateway, params: window.params });
+      if (!isRecord(rollingUsage) || !isRecord(rollingUsage.aggregates) ||
+          !Array.isArray(rollingUsage.aggregates.byProvider)) {
+        throw new Error("Rolling token usage provider aggregates are unavailable");
+      }
+      const rollingPayload = buildPayload({ status, usage: rollingUsage, observedAt,
+        periodStart: new Date(window.windowStart), periodEnd: new Date(window.windowEnd) });
       const result = await input.backend.submitAuthorizationUsage({
-        body: buildPayload({ status, usage, observedAt, periodStart, periodEnd }),
+        body: { ...buildPayload({ status, usage, observedAt, periodStart, periodEnd }),
+          rolling24h: { windowStart: window.windowStart, windowEnd: window.windowEnd,
+            totalTokens: rollingPayload.totals.totalTokens } },
       });
       state.lastSuccessAtMs = Date.now();
       state.lastAssigned = result.assigned;
@@ -279,4 +308,4 @@ export function createAuthorizationUsageReporter(input: {
   };
 }
 
-export const __testing = { buildPayload, isUsageCacheSettled };
+export const __testing = { buildPayload, isUsageCacheSettled, rolling24hQuery };

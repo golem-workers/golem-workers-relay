@@ -1,3 +1,4 @@
+import type { GatewaySessionsUsageParams } from "./gatewayClient.js";
 import { describe, expect, it, vi } from "vitest";
 import type { RelayAuthorizationUsageRequest } from "../backend/types.js";
 import { __testing, createAuthorizationUsageReporter } from "./authorizationUsageReporter.js";
@@ -138,7 +139,7 @@ describe("authorization usage reporter", () => {
       lookbackDays: 30,
       gateway: {
         getUsageStatus: vi.fn().mockResolvedValue({ providers: [] }),
-        getSessionsUsage: vi.fn().mockResolvedValue({ aggregates: {} }),
+        getSessionsUsage: vi.fn().mockResolvedValue({ aggregates: { byProvider: [] } }),
       },
       backend: { submitAuthorizationUsage },
     });
@@ -165,7 +166,7 @@ describe("authorization usage reporter", () => {
           aggregates: {},
           cacheStatus: { status: "refreshing", cachedFiles: 2, pendingFiles: 1, staleFiles: 1 },
         })
-        .mockResolvedValueOnce({
+        .mockResolvedValue({
           aggregates: {
             byProvider: [
               {
@@ -193,7 +194,7 @@ describe("authorization usage reporter", () => {
       await vi.advanceTimersByTimeAsync(250);
       await run;
 
-      expect(getSessionsUsage).toHaveBeenCalledTimes(2);
+      expect(getSessionsUsage).toHaveBeenCalledTimes(3);
       expect(submitAuthorizationUsage).toHaveBeenCalledTimes(1);
       const submitted = submitAuthorizationUsage.mock.calls[0]?.[0];
       expect(submitted?.body.totals).toMatchObject({ totalTokens: 100, requestCount: 1 });
@@ -226,5 +227,54 @@ describe("authorization usage reporter", () => {
       totalTokens: 0,
       requestCount: 0,
     });
+  });
+});
+
+
+describe("rolling 24-hour usage", () => {
+  it("maps every UTC minute to exactly the preceding 24h across year boundaries", () => {
+    for (let minute = 0; minute < 1440; minute++) {
+      const now = new Date(Date.UTC(2027, 0, 1, 0, minute, 59));
+      const query = __testing.rolling24hQuery(now);
+      const match = /^UTC([+-])(\d+):(\d+)$/.exec(query.params.utcOffset)!;
+      const offset = (Number(match[2]) * 60 + Number(match[3])) * (match[1] === '-' ? -1 : 1);
+      expect(offset).toBeGreaterThanOrEqual(-720);
+      expect(offset).toBeLessThanOrEqual(840);
+      // Same inclusive day-boundary calculation used by the gateway.
+      const start = Date.parse(query.params.startDate + 'T00:00:00Z') - offset * 60_000;
+      expect(start).toBe(Date.parse(query.windowStart));
+      expect(start + 86_400_000).toBe(Date.parse(query.windowEnd));
+      expect(Date.parse(query.windowEnd)).toBe(Math.floor(now.getTime() / 60_000) * 60_000);
+      expect(query.params.endDate).toBe(query.params.startDate);
+    }
+  });
+
+  it("submits an independently measured OpenAI window instead of daily or cumulative totals", async () => {
+    const submitAuthorizationUsage = vi.fn().mockResolvedValue({ accepted: true, assigned: true });
+    const getSessionsUsage = vi.fn().mockImplementation((params: GatewaySessionsUsageParams) => Promise.resolve({
+      aggregates: { byProvider: [
+        { provider: 'openai', totals: { totalTokens: params.mode === 'specific' ? 42 : 9000 } },
+        { provider: 'anthropic', totals: { totalTokens: 777 } },
+      ] }, cacheStatus: { status: 'fresh' },
+    }));
+    const reporter = createAuthorizationUsageReporter({ enabled: true, intervalMs: 300000, lookbackDays: 30,
+      gateway: { getUsageStatus: vi.fn().mockResolvedValue({}), getSessionsUsage }, backend: { submitAuthorizationUsage } });
+    await reporter.run();
+    expect((submitAuthorizationUsage.mock.calls[0][0] as { body: RelayAuthorizationUsageRequest }).body).toMatchObject({
+      totals: { totalTokens: 9000 }, rolling24h: { totalTokens: 42 },
+    });
+    expect(getSessionsUsage.mock.calls[1][0]).toMatchObject({ mode: 'specific', limit: 1 });
+  });
+
+  it.each(['unsupported', 'malformed'])("does not publish fake zero for %s window responses", async (kind) => {
+    const submitAuthorizationUsage = vi.fn();
+    const reporter = createAuthorizationUsageReporter({ enabled: true, intervalMs: 300000, lookbackDays: 30,
+      gateway: { getUsageStatus: vi.fn().mockResolvedValue({}), getSessionsUsage: vi.fn().mockImplementation((params: GatewaySessionsUsageParams) => {
+        if (params.mode && kind === 'unsupported') return Promise.reject(new Error('Unsupported offset'));
+        return Promise.resolve({ aggregates: {} });
+      }) }, backend: { submitAuthorizationUsage } });
+    await reporter.run();
+    expect(submitAuthorizationUsage).not.toHaveBeenCalled();
+    expect(reporter.getState().lastError).toBeTruthy();
   });
 });

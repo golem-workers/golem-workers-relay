@@ -58,6 +58,8 @@ export type GatewayUsageCostParams = {
 };
 
 export type GatewaySessionsUsageParams = {
+  mode?: "utc" | "specific";
+  utcOffset?: string;
   key?: string;
   limit?: number;
   startDate?: string;

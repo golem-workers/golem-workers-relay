@@ -393,3 +393,12 @@ When `RELAY_OPENCLAW_FORWARD_FINAL_ONLY=0`, relay keeps the legacy behavior and 
 ### Readiness after hibernation
 
 A backend handshake performs a live gateway `health` RPC before reporting fresh `CONNECTED` readiness. This also works when a restored VM preserves its local websocket and emits no reconnect event; cached `hello-ok` alone is not liveness evidence. Failed probes do not advance readiness.
+
+### Rolling OpenAI token usage
+Authorization usage reports include `rolling24h` (`windowStart`, `windowEnd`, `totalTokens`).
+A separate `sessions.usage` query uses a supported fixed UTC offset so one date covers
+exactly the previous 24 hours ending at the report's current UTC minute. OpenClaw filters
+individual timestamped records; no calendar-day sums are prorated. Only OpenAI provider
+aliases are counted. Fresh caches are required; failures do not publish a fabricated zero.
+Collection retains the configured authorization-usage interval (hourly by default); consumers
+show the window end and data freshness. Deploy backend + its migration before this relay.
