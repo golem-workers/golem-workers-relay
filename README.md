@@ -225,6 +225,16 @@ Notes:
 
 Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
 
+### Messenger sender approvals
+
+Backend-only channel pairing (`channelPairing.list` / `channelPairing.approve`)
+uses the installed OpenClaw `pairing` CLI and the agent's config path. The runtime
+owns pending-request expiry, account scoping and atomic approval, including both
+legacy and SQLite-backed runtimes. Relay must not read or mutate pairing JSON
+files directly. CLI failure or invalid output is an explicit control error, not
+an empty approvals list; command output and approval codes are omitted from errors.
+No additional environment variables are required; `openclaw` must be on Relay's PATH.
+
 ### Shared Codex authorization
 
 Backend-only agent control also supports `config.validate`. It validates the

@@ -385,104 +385,120 @@ describe("executeAgentControl status nudge", () => {
 });
 
 describe("executeAgentControl channel pairing", () => {
-  it("lists pending telegram pairing requests from the OpenClaw pairing store", async () => {
-    const { credentialsDir } = await createTempStateDir();
-    const createdAt = new Date().toISOString();
-    await fs.writeFile(
-      path.join(credentialsDir, "telegram-pairing.json"),
-      JSON.stringify({
-        version: 1,
-        requests: [
-          {
-            id: "449985919",
-            code: "ABCD2345",
-            createdAt,
-            meta: {
-              username: "belbix",
-              accountId: "default",
-            },
-          },
-        ],
-      }),
-      "utf8",
-    );
-
-    const result = await executeAgentControl({
-      action: { kind: "channelPairing.list", channel: "telegram" },
-      configPath: path.join(credentialsDir, "..", "openclaw.json"),
-      gateway: noopGateway,
+  async function setupPairingCli(options: {
+    channel?: string;
+    requests?: unknown[];
+    listOutput?: string;
+    failList?: boolean;
+    failApproval?: boolean;
+  } = {}) {
+    const { tempDir, stateDir, credentialsDir } = await createTempStateDir();
+    const configPath = path.join(stateDir, "openclaw.json");
+    const logPath = path.join(tempDir, "calls.jsonl");
+    const request = {
+      id: "123456789", code: "ABCD2345", createdAt: new Date().toISOString(),
+      meta: { username: "test_sender", accountId: "default" },
+    };
+    const listOutput = options.listOutput ?? JSON.stringify({
+      channel: options.channel ?? "telegram", requests: options.requests ?? [request],
     });
+    // A stale legacy file must never be a fallback or a write target.
+    const legacyPath = path.join(credentialsDir, "telegram-pairing.json");
+    const legacyContents = JSON.stringify({ version: 1, requests: [] });
+    await fs.writeFile(legacyPath, legacyContents);
+    const binDir = path.join(tempDir, "bin");
+    await fs.mkdir(binDir);
+    await fs.writeFile(path.join(binDir, "openclaw"), `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({args, configPath: process.env.OPENCLAW_CONFIG_PATH, stateDir: process.env.OPENCLAW_STATE_DIR}) + "\\n");
+if (args[0] !== "pairing") process.exit(9);
+if (args[1] === "list") {
+  if (${options.failList === true}) { console.error("SECRET_OUTPUT"); process.exit(1); }
+  console.log(${JSON.stringify(listOutput)});
+} else if (args[1] === "approve") {
+  if (${options.failApproval === true}) { console.error("SECRET_OUTPUT " + args.at(-1)); process.exit(1); }
+  console.log("Approved sender.");
+} else process.exit(9);
+`, { mode: 0o755 });
+    process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+    const calls = async () => (await fs.readFile(logPath, "utf8")).trim().split("\n").map(line => JSON.parse(line) as { args: string[]; configPath: string; stateDir: string });
+    const execute = (action: Parameters<typeof executeAgentControl>[0]["action"]) =>
+      executeAgentControl({ action, configPath, gateway: noopGateway });
+    return { execute, calls, configPath, stateDir, request, legacyPath, legacyContents, credentialsDir };
+  }
 
-    expect(result).toEqual({
-      kind: "channelPairing.list",
-      requests: [
-        {
-          id: "449985919",
-          code: "ABCD2345",
-          createdAt,
-          meta: {
-            username: "belbix",
-            accountId: "default",
-          },
-        },
-      ],
+  it("lists runtime requests even when the legacy JSON store is empty", async () => {
+    const test = await setupPairingCli();
+    expect(await test.execute({ kind: "channelPairing.list", channel: "telegram" })).toEqual({
+      kind: "channelPairing.list", requests: [test.request],
     });
+    expect(await test.calls()).toEqual([{
+      args: ["pairing", "list", "--channel", "telegram", "--json"],
+      configPath: test.configPath, stateDir: test.stateDir,
+    }]);
+    expect(await fs.readFile(test.legacyPath, "utf8")).toBe(test.legacyContents);
   });
 
-  it("approves telegram pairing requests and appends the sender to allowFrom", async () => {
-    const { credentialsDir } = await createTempStateDir();
-    const createdAt = new Date().toISOString();
-    await fs.writeFile(
-      path.join(credentialsDir, "telegram-pairing.json"),
-      JSON.stringify({
-        version: 1,
-        requests: [
-          {
-            id: "449985919",
-            code: "ABCD2345",
-            createdAt,
-            meta: {
-              username: "belbix",
-              accountId: "default",
-            },
-          },
-        ],
-      }),
-      "utf8",
-    );
+  it("approves via the runtime in the request account without writing legacy allowlists", async () => {
+    const test = await setupPairingCli();
+    expect(await test.execute({ kind: "channelPairing.approve", channel: "telegram", code: "abcd2345" })).toEqual({
+      kind: "channelPairing.approve", approved: true,
+      payload: { id: test.request.id, code: test.request.code, entry: test.request },
+    });
+    expect((await test.calls())[1].args).toEqual([
+      "pairing", "approve", "--channel", "telegram", "--account", "default", "ABCD2345",
+    ]);
+    expect(await fs.readdir(test.credentialsDir)).toEqual(["telegram-pairing.json"]);
+    expect(await fs.readFile(test.legacyPath, "utf8")).toBe(test.legacyContents);
+  });
 
-    const result = await executeAgentControl({
-      action: {
-        kind: "channelPairing.approve",
-        channel: "telegram",
-        code: "ABCD2345",
-      },
-      configPath: path.join(credentialsDir, "..", "openclaw.json"),
-      gateway: noopGateway,
+  it("passes explicit Discord account scope as a separate argument", async () => {
+    const test = await setupPairingCli({ channel: "discord", requests: [] });
+    expect(await test.execute({ kind: "channelPairing.list", channel: "discord", accountId: "qa-account" })).toEqual({
+      kind: "channelPairing.list", requests: [],
+    });
+    expect((await test.calls())[0].args).toEqual([
+      "pairing", "list", "--channel", "discord", "--json", "--account", "qa-account",
+    ]);
+  });
+
+  it("does not approve unknown or runtime-expired codes", async () => {
+    const test = await setupPairingCli({ requests: [] });
+    await expect(test.execute({ kind: "channelPairing.approve", channel: "telegram", code: "ABCD2345" }))
+      .rejects.toMatchObject({ code: "CHANNEL_PAIRING_UNKNOWN_CODE" });
+    expect(await test.calls()).toHaveLength(1);
+  });
+
+  it("rejects a request returned for a different account", async () => {
+    const test = await setupPairingCli();
+    await expect(test.execute({ kind: "channelPairing.approve", channel: "telegram", accountId: "other", code: "ABCD2345" }))
+      .rejects.toMatchObject({ code: "CHANNEL_PAIRING_INVALID_RESPONSE" });
+    expect(await test.calls()).toHaveLength(1);
+  });
+
+  it.each(["not json", '{"channel":"telegram"}', '{"channel":"discord","requests":[]}', '{"channel":"telegram","requests":[{}]}'])
+    ("fails visibly for an invalid runtime response (%s)", async (listOutput) => {
+      const test = await setupPairingCli({ listOutput });
+      await expect(test.execute({ kind: "channelPairing.list", channel: "telegram" }))
+        .rejects.toMatchObject({ code: "CHANNEL_PAIRING_INVALID_RESPONSE" });
     });
 
-    const pairingStore = JSON.parse(await fs.readFile(path.join(credentialsDir, "telegram-pairing.json"), "utf8")) as { requests: unknown[] };
-    const allowFromStore = JSON.parse(await fs.readFile(path.join(credentialsDir, "telegram-default-allowFrom.json"), "utf8")) as { allowFrom: string[] };
+  it("does not return an empty list when the runtime command fails", async () => {
+    const test = await setupPairingCli({ failList: true });
+    await expect(test.execute({ kind: "channelPairing.list", channel: "telegram" }))
+      .rejects.toMatchObject({ code: "CHANNEL_PAIRING_COMMAND_FAILED" });
+  });
 
-    expect(result).toEqual({
-      kind: "channelPairing.approve",
-      approved: true,
-      payload: {
-        id: "449985919",
-        code: "ABCD2345",
-        entry: {
-          id: "449985919",
-          code: "ABCD2345",
-          createdAt,
-          meta: {
-            username: "belbix",
-            accountId: "default",
-          },
-        },
-      },
-    });
-    expect(pairingStore.requests).toEqual([]);
-    expect(allowFromStore.allowFrom).toEqual(["449985919"]);
+  it("reports approval races/errors without exposing output or approval codes", async () => {
+    const test = await setupPairingCli({ failApproval: true });
+    let error: unknown;
+    try { await test.execute({ kind: "channelPairing.approve", channel: "telegram", code: "ABCD2345" }); }
+    catch (caught) { error = caught; }
+    expect(error).toMatchObject({ code: "CHANNEL_PAIRING_COMMAND_FAILED" });
+    expect(String(error)).not.toMatch(/SECRET_OUTPUT|ABCD2345/);
+    expect(error).not.toHaveProperty("cause");
+    expect(await fs.readFile(test.legacyPath, "utf8")).toBe(test.legacyContents);
   });
 });
 
