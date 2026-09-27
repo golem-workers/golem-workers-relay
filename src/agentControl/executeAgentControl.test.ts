@@ -1013,7 +1013,7 @@ describe("executeAgentControl Codex login", () => {
     expect(await readSystemctlCalls(systemctlLogPath)).toEqual([]);
   });
 
-  it("syncs Codex auth live, keeps config stable, and makes an applied version a true no-op", async () => {
+  it.each([0, 16_000])("syncs auth with %i ms runtime latency without restart or duplicate mutation", async (latencyMs) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-sync-"));
     const configPath = path.join(tempDir, "openclaw.json");
     const codexHome = path.join(tempDir, ".codex");
@@ -1034,7 +1034,13 @@ describe("executeAgentControl Codex login", () => {
     const initialConfigText = `${JSON.stringify(initialConfig, null, 2)}\n`;
     await fs.writeFile(configPath, initialConfigText, "utf8");
     const gateway = {
-      request: vi.fn().mockResolvedValue({ ts: Date.now(), providers: [] }),
+      request: vi.fn().mockImplementation((_method: string, _params: unknown, options: { timeoutMs: number }) => new Promise((resolve, reject) => {
+        const deadline = setTimeout(() => reject(new Error("Gateway request timed out: models.authStatus")), options.timeoutMs);
+        setTimeout(() => {
+          clearTimeout(deadline);
+          resolve({ ts: Date.now(), providers: [] });
+        }, latencyMs);
+      })),
     };
     const accessToken =
       "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQ3MDAwMDAwMDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3QtMTIzIn19.signature";
@@ -1096,7 +1102,7 @@ describe("executeAgentControl Codex login", () => {
     expect(gateway.request).toHaveBeenCalledWith(
       "models.authStatus",
       { refresh: true },
-      { timeoutMs: 15_000 },
+      { timeoutMs: 120_000 },
     );
     expect(await readSystemctlCalls(systemctlLogPath)).toEqual([]);
 
@@ -1204,7 +1210,7 @@ describe("executeAgentControl Codex login", () => {
     const systemctlCalls = await readSystemctlCalls(systemctlLogPath);
     expect(systemctlCalls.filter((call) => call === "--user stop openclaw-gateway.service")).toHaveLength(1);
     expect(systemctlCalls.filter((call) => call === "--user restart openclaw-gateway.service")).toHaveLength(1);
-  });
+  }, 45_000);
 
   it("rolls back persisted Codex auth when live runtime refresh fails", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-rollback-"));

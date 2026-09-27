@@ -371,3 +371,12 @@ reported only if no user-facing continuation appears before the grace window or 
 
 When `RELAY_OPENCLAW_FORWARD_FINAL_ONLY=0`, relay keeps the legacy behavior and forwards all raw gateway events as
 `outcome=technical`, while still applying the same bounded recovery path for late user-facing assistant text.
+
+### Authorization cold-start handling
+
+Authorization assignment checks the latest Codex version, canonical pnpm entrypoint,
+managed config and executable wrapper before skipping installation/restart. Explicit
+runtime Update retains its repair behavior. Relay live auth refresh has a dedicated
+120-second budget (independent of channel status); assignment allows 300 seconds
+for refresh and possible rollback. Credential mutations are not blindly retried.
+A successful Gateway health probe alone does not prove authorization readiness.

@@ -28,6 +28,8 @@ const execFile = promisify(execFileCallback);
 const GATEWAY_RESTART_CHECK_ATTEMPTS = 20;
 const GATEWAY_RESTART_CHECK_DELAY_MS = 500;
 const CHANNELS_STATUS_TIMEOUT_MS = 15_000;
+// Cold Codex startup is lazy and may outlast channel status polling.
+const CODEX_AUTH_REFRESH_TIMEOUT_MS = 120_000;
 const FILE_LOCK_RETRY_ATTEMPTS = 50;
 const FILE_LOCK_RETRY_DELAY_MS = 100;
 const VALID_THINKING_DEFAULTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "adaptive"]);
@@ -1067,7 +1069,7 @@ async function syncCodexAuthWithoutGatewayRestart(
         await gateway.request(
           "models.authStatus",
           { refresh: true },
-          { timeoutMs: CHANNELS_STATUS_TIMEOUT_MS },
+          { timeoutMs: CODEX_AUTH_REFRESH_TIMEOUT_MS },
         );
       },
     }),
