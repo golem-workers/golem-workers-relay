@@ -145,6 +145,10 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     bundle: codexAuthBundleSchema,
   }),
   z.object({
+    kind: z.literal("model.verify"),
+    model: z.string().min(1),
+  }),
+  z.object({
     kind: z.literal("codex.auth.clear"),
   }),
   z.object({
@@ -363,6 +367,11 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     accountId: z.string().min(1).nullable(),
     expiresAtMs: z.number().int().positive(),
     authModes: codexAuthModesSchema,
+  }),
+  z.object({
+    kind: z.literal("model.verify"),
+    model: z.string().min(1),
+    verified: z.literal(true),
   }),
   z.object({
     kind: z.literal("codex.auth.clear"),

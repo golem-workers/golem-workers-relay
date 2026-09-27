@@ -81,6 +81,8 @@ async function installFakeSystemctl() {
   const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-systemctl-"));
   const scriptPath = path.join(binDir, "systemctl");
   const logPath = path.join(binDir, "calls.log");
+  process.env.OPENCLAW_GATEWAY_UNIT_PATH = path.join(binDir, "gateway.service");
+  process.env.OPENCLAW_GATEWAY_DROP_IN_DIR = path.join(binDir, "gateway.service.d");
   await fs.writeFile(
     scriptPath,
     `#!/usr/bin/env bash
@@ -120,6 +122,8 @@ async function installFakeOpenclaw(input?: { fail?: boolean }) {
   const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-openclaw-"));
   const scriptPath = path.join(binDir, "openclaw");
   const logPath = path.join(binDir, "calls.log");
+  process.env.OPENCLAW_GATEWAY_UNIT_PATH = path.join(binDir, "gateway.service");
+  process.env.OPENCLAW_GATEWAY_DROP_IN_DIR = path.join(binDir, "gateway.service.d");
   await fs.writeFile(
     scriptPath,
     `#!/usr/bin/env bash
@@ -848,7 +852,7 @@ describe("executeAgentControl Codex login", () => {
       "[Service]\nEnvironmentFile=/root/.openclaw/openai-relay.env\nEnvironment=DISPLAY=:99\n",
       "utf8",
     );
-    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} }, env: { vars: { OPENAI_API_KEY: "legacy", OPENAI_BASE_URL: "https://old", OPENAI_TTS_BASE_URL: "keep" } }, models: { providers: { openai: { baseUrl: "https://old", models: [] } } } }, null, 2), "utf8");
     await fs.writeFile(path.join(codexHome, "auth.json"), JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "stored-relay-token" }, null, 2), "utf8");
     await fs.writeFile(
       path.join(tempDir, "agents", "main", "agent", "auth-profiles.json"),
@@ -900,6 +904,9 @@ describe("executeAgentControl Codex login", () => {
         apiKey: { available: true, active: false },
       },
     });
+    const cleaned = JSON.parse(await fs.readFile(configPath, "utf8")) as { env: { vars: Record<string, unknown> }; models: { providers: Record<string, unknown> } };
+    expect(cleaned.env.vars).toEqual({ OPENAI_TTS_BASE_URL: "keep" });
+    expect(cleaned.models.providers).not.toHaveProperty("openai");
     expect(authJson.auth_mode).toBe("chatgpt");
     expect(authJson.OPENAI_API_KEY).toBeUndefined();
     expect(authJson.tokens).toEqual({
@@ -1079,12 +1086,103 @@ describe("executeAgentControl Codex login", () => {
     expect(await readSystemctlCalls(systemctlLogPath)).toEqual([]);
   });
 
+  it.each([{ failRefresh: false, version: 3 }, { failRefresh: true, version: 3 }, { failRefresh: false, version: 4 }, { failRefresh: true, version: 4 }])("repairs ChatGPT routing transactionally: %j", async ({ failRefresh, version }) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-chatgpt-route-"));
+    const configPath = path.join(dir, "openclaw.json");
+    process.env.CODEX_HOME = path.join(dir, "codex");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }));
+    const token = `${Buffer.from("{}").toString("base64url")}.${Buffer.from(JSON.stringify({
+      exp: 4700000000,
+      "https://api.openai.com/profile": { email: "route@example.com" },
+      "https://api.openai.com/auth": { chatgpt_account_id: "acct-route" },
+    })).toString("base64url")}.signature`;
+    const action = { kind: "codex.auth.sync" as const, bundleVersion: 3, bundle: {
+      formatVersion: 1 as const, profileId: "openai:route@example.com", accessToken: token,
+      idToken: token, refreshToken: "refresh", expiresAtMs: 4700000000000,
+      lastRefresh: null, email: "route@example.com", accountId: "acct-route", chatgptPlanType: null,
+    } };
+    await executeAgentControl({ configPath, action, gateway: { request: () => Promise.resolve({}) } });
+    const authBefore = await fs.readFile(path.join(process.env.CODEX_HOME, "auth.json"), "utf8");
+    const dirty = {
+      agents: { defaults: {} },
+      env: { OPENAI_BASE_URL: "https://old", OPENAI_API_KEY: "old-key", vars: {
+        OPENAI_API_KEY: "old-nested-key", OPENAI_BASE_URL: "https://old-nested",
+        OPENAI_TTS_BASE_URL: "https://tts-keep", OTHER: "keep",
+      } },
+      models: { providers: {
+        openai: { baseUrl: "https://old", apiKey: "old-key", models: [{ id: "gpt-6-astra", name: "Keep metadata" }] },
+        anthropic: { baseUrl: "https://keep", apiKey: "keep" },
+      } },
+    };
+    const dirtyText = JSON.stringify(dirty);
+    await fs.writeFile(configPath, dirtyText);
+    const unit = process.env.OPENCLAW_GATEWAY_UNIT_PATH!;
+    const dirtyUnit = '[Service]\nEnvironment="OPENAI_API_KEY=old" "OPENAI_TTS_BASE_URL=keep" OTHER=keep\n';
+    await fs.writeFile(unit, dirtyUnit);
+    const gateway = { request: vi.fn(async () => {
+      const config = JSON.parse(await fs.readFile(configPath, "utf8")) as { env: { vars: Record<string, unknown> }; models: { providers: Record<string, unknown> } };
+      if (failRefresh && gateway.request.mock.calls.length === 1) {
+        expect(config.env.vars).not.toHaveProperty("OPENAI_API_KEY");
+        throw new Error("runtime refresh failed");
+      }
+      return {};
+    }) };
+    action.bundleVersion = version;
+    const run = executeAgentControl({ configPath, action, gateway });
+    if (failRefresh) {
+      await expect(run).rejects.toThrow("runtime refresh failed");
+      expect(await fs.readFile(configPath, "utf8")).toBe(dirtyText);
+      expect(await fs.readFile(unit, "utf8")).toBe(dirtyUnit);
+      expect(gateway.request).toHaveBeenCalledTimes(2);
+    } else {
+      await expect(run).resolves.toMatchObject({ reason: version === 3 ? "up_to_date" : "applied", applied: version !== 3 });
+      const config = JSON.parse(await fs.readFile(configPath, "utf8")) as { env: { vars: Record<string, unknown> }; models: { providers: Record<string, unknown> } };
+      expect(config.env).toEqual({ vars: { OPENAI_TTS_BASE_URL: "https://tts-keep", OTHER: "keep" } });
+      expect(config.models.providers).toEqual({
+        openai: { models: dirty.models.providers.openai.models },
+        anthropic: dirty.models.providers.anthropic,
+      });
+      expect(await fs.readFile(unit, "utf8")).toBe('[Service]\nEnvironment="OPENAI_TTS_BASE_URL=keep" OTHER=keep\n');
+      expect(gateway.request).toHaveBeenCalledTimes(1);
+      const callsBefore = await readSystemctlCalls(systemctlLogPath);
+      await executeAgentControl({ configPath, action, gateway });
+      expect(await readSystemctlCalls(systemctlLogPath)).toEqual(callsBefore);
+      expect(gateway.request).toHaveBeenCalledTimes(1);
+    }
+    const authAfter = await fs.readFile(path.join(process.env.CODEX_HOME, "auth.json"), "utf8");
+    if (failRefresh || version === 3) expect(authAfter).toBe(authBefore);
+    else expect((JSON.parse(authAfter) as { tokens: unknown }).tokens).toEqual((JSON.parse(authBefore) as { tokens: unknown }).tokens);
+    expect((await readSystemctlCalls(systemctlLogPath)).filter((call) => call === "--user restart openclaw-gateway.service"))
+      .toHaveLength(failRefresh ? 2 : 1);
+  });
+
+  it.each(["ok", "wrong-model", "wrong-answer", "failure"])("verifies actual isolated model output: %s", async (mode) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-model-verify-"));
+    const configPath = path.join(dir, "openclaw.json");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: { model: { primary: "openai/gpt-6-astra" } } } }));
+    const binary = path.join(dir, "openclaw");
+    await fs.writeFile(binary, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes('--deliver') || !args.includes('--session-key') || !args.includes('--session-id')) process.exit(4);
+const prompt = args[args.indexOf('--message') + 1];
+console.log(JSON.stringify({status: ${JSON.stringify(mode === "failure" ? "error" : "ok")}, result: {
+  payloads: [{text: ${mode === "wrong-answer" ? "'not the marker'" : "prompt.split(' ')[2].slice(0, -1)"}}],
+  meta: {agentMeta: {model: ${JSON.stringify(mode === "wrong-model" ? "another-model" : "gpt-6-astra")}}}
+}}));
+`, { mode: 0o700 });
+    process.env.PATH = `${dir}:${process.env.PATH}`;
+    const run = executeAgentControl({ configPath, action: { kind: "model.verify", model: "codex/gpt-6-astra" }, gateway: noopGateway });
+    if (mode === "ok") await expect(run).resolves.toEqual({ kind: "model.verify", model: "codex/gpt-6-astra", verified: true });
+    else await expect(run).rejects.toMatchObject({ code: "MODEL_VERIFY_FAILED" });
+  });
+
   it.each([0, 16_000])("syncs auth with %i ms runtime latency without restart or duplicate mutation", async (latencyMs) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-sync-"));
     const configPath = path.join(tempDir, "openclaw.json");
     const codexHome = path.join(tempDir, ".codex");
     process.env.CODEX_HOME = codexHome;
     const initialConfig = {
+      models: { providers: { openai: { models: [] } } },
       agents: { defaults: { models: { "codex/gpt-5.4": { agentRuntime: { id: "codex" } } } } },
       auth: {
         profiles: {
