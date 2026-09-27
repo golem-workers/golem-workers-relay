@@ -402,3 +402,12 @@ individual timestamped records; no calendar-day sums are prorated. Only OpenAI p
 aliases are counted. Fresh caches are required; failures do not publish a fabricated zero.
 Collection retains the configured authorization-usage interval (hourly by default); consumers
 show the window end and data freshness. Deploy backend + its migration before this relay.
+
+### Authorization cold-start handling
+
+Authorization assignment checks the latest Codex version, canonical pnpm entrypoint,
+managed config and executable wrapper before skipping installation/restart. Explicit
+runtime Update retains its repair behavior. Relay live auth refresh has a dedicated
+120-second budget (independent of channel status); assignment allows 300 seconds
+for refresh and possible rollback. Credential mutations are not blindly retried.
+A successful Gateway health probe alone does not prove authorization readiness.
