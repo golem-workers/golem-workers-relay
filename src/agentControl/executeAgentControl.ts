@@ -14,6 +14,7 @@ import {
   exportCodexAuthBundle,
   clearCodexAuth,
   getCodexLoginStatus,
+  hasChatGptRouteOverrides,
   importCodexAuthBundle,
   setCodexAuthMode,
   startCodexLogin,
@@ -35,6 +36,9 @@ const GATEWAY_RESTART_CHECK_DELAY_MS = 500;
 const CHANNELS_STATUS_TIMEOUT_MS = 15_000;
 // Cold Codex startup is lazy and may outlast channel status polling.
 const CODEX_AUTH_REFRESH_TIMEOUT_MS = 120_000;
+// Gateway.request starts its RPC timer only after connecting. Bound cold-start
+// readiness too, so a dead Gateway cannot hold the auth transaction forever.
+const CODEX_AUTH_READY_AND_REFRESH_TIMEOUT_MS = 240_000;
 const FILE_LOCK_RETRY_ATTEMPTS = 50;
 const FILE_LOCK_RETRY_DELAY_MS = 100;
 const VALID_THINKING_DEFAULTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "adaptive"]);
@@ -136,10 +140,12 @@ export async function executeAgentControl(input: {
                 ? await startCodexLogin(
                     input.configPath,
                     { forceRelink: input.action.forceRelink },
-                    runCodexAuthMutationWithGatewayPaused,
+                    (operation) => runCodexAuthMutationWithGatewayPaused(() => withCleanOpenAiGatewayEnvironment(operation)),
                   )
               : input.action.kind === "codex.login.status"
                 ? await getCodexLoginStatus(input.configPath)
+              : input.action.kind === "model.verify"
+                ? await verifyConfiguredModel(input.configPath, input.action.model)
               : input.action.kind === "codex.auth.set"
                 ? await setCodexAuthWithGatewayPaused(input.configPath, input.action)
               : input.action.kind === "codex.auth.export"
@@ -1069,6 +1075,47 @@ async function setModelAssignment(input: {
   };
 }
 
+async function verifyConfiguredModel(configPath: string, model: string): Promise<AgentControlResult> {
+  const { config } = await readConfigFile(configPath);
+  const agents = isRecord(config.agents) ? config.agents : {};
+  const defaults = isRecord(agents.defaults) ? agents.defaults : {};
+  const configured = isRecord(defaults.model) ? defaults.model.primary : defaults.model;
+  const expected = mapStoredModelRef(model);
+  if (configured !== expected.modelRef) {
+    throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Configured model changed before authorization verification.");
+  }
+  const marker = `AUTH_CHECK_${randomUUID().replaceAll("-", "")}`;
+  try {
+    // A fresh session, no --deliver: never publish diagnostic text to a customer
+    // channel, reuse their conversation or accept mere authStatus as success.
+    const { stdout } = await execFile("openclaw", [
+      "agent", "--agent", "main", "--session-id", `authorization-check-${randomUUID()}`,
+      "--session-key", `agent:main:authorization-check:${randomUUID()}`,
+      "--message", `Reply exactly ${marker}. Do not use tools.`,
+      "--json", "--timeout", "90",
+    ], {
+      env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath },
+      timeout: 120_000,
+      maxBuffer: 1024 * 1024,
+    });
+    const response: unknown = JSON.parse(stdout);
+    const result = isRecord(response) && isRecord(response.result) ? response.result : null;
+    const meta = result && isRecord(result.meta) ? result.meta : null;
+    const agentMeta = meta && isRecord(meta.agentMeta) ? meta.agentMeta : null;
+    const expectedModel = expected.modelRef.slice(expected.modelRef.indexOf("/") + 1);
+    const payloads = result && Array.isArray(result.payloads) ? result.payloads : [];
+    if (!isRecord(response) || response.status !== "ok"
+      || agentMeta?.model !== expectedModel
+      || !payloads.some((payload: unknown) => isRecord(payload) && typeof payload.text === "string" && payload.text.trim() === marker)) {
+      throw new Error("Model response did not pass authorization verification.");
+    }
+    return { kind: "model.verify", model, verified: true };
+  } catch {
+    // CLI output may contain private runtime data. Do not return it to the UI.
+    throw new AgentControlError("MODEL_VERIFY_FAILED", "Authorization was saved, but the selected model did not pass an isolated response check. Retry after checking model availability and routing.");
+  }
+}
+
 async function restartGatewayService(): Promise<Extract<AgentControlResult, { kind: "gateway.restart" }>> {
   await execSystemctl(["--user", "restart", "openclaw-gateway.service"]);
   for (let attempt = 0; attempt < GATEWAY_RESTART_CHECK_ATTEMPTS; attempt += 1) {
@@ -1108,33 +1155,36 @@ async function importCodexAuthWithGatewayPaused(
   configPath: string,
   action: Extract<AgentControlAction, { kind: "codex.auth.import" }>,
 ): Promise<AgentControlResult> {
-  return await runCodexAuthMutationWithGatewayPaused(() => importCodexAuthBundle(configPath, action.bundle));
+  return await runCodexAuthMutationWithGatewayPaused(() => withCleanOpenAiGatewayEnvironment(() => importCodexAuthBundle(configPath, action.bundle)));
 }
 
 async function setCodexAuthWithGatewayPaused(
   configPath: string,
   action: Extract<AgentControlAction, { kind: "codex.auth.set" }>,
 ): Promise<AgentControlResult> {
-  return await runCodexAuthMutationWithGatewayPaused(async () => {
-    const result = await setCodexAuthMode(configPath, action.mode);
-    if (action.mode === "openai_login") {
-      await removeLegacyOpenAiGatewayEnvironment();
-    }
-    return result;
-  });
+  return await runCodexAuthMutationWithGatewayPaused(() => action.mode === "openai_login"
+    ? withCleanOpenAiGatewayEnvironment(() => setCodexAuthMode(configPath, action.mode))
+    : setCodexAuthMode(configPath, action.mode));
 }
 
 function removeOpenAiEnvironmentLines(contents: string): string {
-  const legacyEnvironment = /^\s*Environment=(?:"?)(?:OPENAI_API_KEY|OPENAI_BASE_URL)=/;
-  const legacyEnvironmentFile = /^\s*EnvironmentFile=-?\/root\/\.openclaw\/openai-relay\.env\s*$/;
-  const lines = contents.split(/\r?\n/);
-  const filtered = lines.filter(
-    (line) => !legacyEnvironment.test(line) && !legacyEnvironmentFile.test(line),
-  );
-  return filtered.join("\n");
+  return contents.split(/\r?\n/).flatMap((line) => {
+    if (/^\s*EnvironmentFile=-?["']?\/root\/\.openclaw\/openai-relay\.env["']?\s*$/.test(line)) return [];
+    const match = /^(\s*Environment=)(.*)$/.exec(line);
+    if (!match) return [line];
+    // systemd permits several quoted assignments on one Environment= line.
+    // Remove only the OpenAI route tokens, never a neighbouring TTS/other key.
+    const tokens = match[2].match(/(?:[^\s"'\\]|\\.|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')+/g) ?? [];
+    const retained = tokens.filter((token) => !/^["']?(?:OPENAI_API_KEY|OPENAI_BASE_URL)=/.test(token));
+    if (retained.length === tokens.length) return [line];
+    return retained.length ? [`${match[1]}${retained.join(" ")}`] : [];
+  }).join("\n");
 }
 
-async function removeLegacyOpenAiGatewayEnvironment(): Promise<void> {
+type GatewayEnvironmentEdit = { filePath: string; current: string; next: string };
+
+async function planOpenAiGatewayEnvironmentCleanup(): Promise<GatewayEnvironmentEdit[]> {
+  const edits: GatewayEnvironmentEdit[] = [];
   const unitPath = process.env.OPENCLAW_GATEWAY_UNIT_PATH?.trim()
     || "/root/.config/systemd/user/openclaw-gateway.service";
   const dropInDir = process.env.OPENCLAW_GATEWAY_DROP_IN_DIR?.trim()
@@ -1161,11 +1211,40 @@ async function removeLegacyOpenAiGatewayEnvironment(): Promise<void> {
     }
     const next = removeOpenAiEnvironmentLines(current);
     if (next !== current) {
-      await atomicWriteUtf8(filePath, next);
+      edits.push({ filePath, current, next });
     }
   }
+  return edits;
+}
 
-  await execSystemctl(["--user", "daemon-reload"]);
+async function writeGatewayEnvironment(edits: GatewayEnvironmentEdit[], rollback = false): Promise<void> {
+  for (const edit of edits) await atomicWriteUtf8(edit.filePath, rollback ? edit.current : edit.next);
+  if (edits.length) await execSystemctl(["--user", "daemon-reload"]);
+}
+
+async function withCleanOpenAiGatewayEnvironment<T>(operation: () => Promise<T>): Promise<T> {
+  const edits = await planOpenAiGatewayEnvironmentCleanup();
+  try {
+    await writeGatewayEnvironment(edits);
+    return await operation();
+  } catch (error) {
+    await writeGatewayEnvironment(edits, true);
+    throw error;
+  }
+}
+
+async function refreshCodexRuntimeAuth(gateway: GatewayLike): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      gateway.request("models.authStatus", { refresh: true }, { timeoutMs: CODEX_AUTH_REFRESH_TIMEOUT_MS }),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Gateway did not become ready for authorization refresh.")), CODEX_AUTH_READY_AND_REFRESH_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function syncCodexAuthWithoutGatewayRestart(
@@ -1173,20 +1252,34 @@ async function syncCodexAuthWithoutGatewayRestart(
   action: Extract<AgentControlAction, { kind: "codex.auth.sync" }>,
   gateway: GatewayLike,
 ): Promise<AgentControlResult> {
-  // Keep auth mutations serialized, but do not pause the gateway. OpenClaw can
-  // reload its persisted auth store and provider cache while active runs keep
-  // using the credential snapshot with which they started.
-  return await enqueueCodexAuthMutation(() =>
-    syncCodexAuthBundle(configPath, action.bundleVersion, action.bundle, {
-      refreshRuntimeAuth: async () => {
-        await gateway.request(
-          "models.authStatus",
-          { refresh: true },
-          { timeoutMs: CODEX_AUTH_REFRESH_TIMEOUT_MS },
-        );
-      },
-    }),
-  );
+  return await enqueueCodexAuthMutation(async () => {
+    const edits = await planOpenAiGatewayEnvironmentCleanup();
+    const restartNeeded = edits.length > 0 || await hasChatGptRouteOverrides(configPath);
+    // Only legacy route repairs need a restart. Ordinary credential rotation
+    // still refreshes live, without interrupting active runs.
+    if (restartNeeded) await execSystemctl(["--user", "stop", "openclaw-gateway.service"]);
+    let refreshCalls = 0;
+    try {
+      await writeGatewayEnvironment(edits);
+      return await syncCodexAuthBundle(configPath, action.bundleVersion, action.bundle, {
+        forceRuntimeRefresh: restartNeeded,
+        refreshRuntimeAuth: async () => {
+          refreshCalls += 1;
+          // The auth transaction restores credentials/config before its second
+          // callback. Restore service environment before loading that rollback.
+          if (refreshCalls > 1) await writeGatewayEnvironment(edits, true);
+          if (restartNeeded) await restartGatewayService();
+          await refreshCodexRuntimeAuth(gateway);
+        },
+      });
+    } catch (error) {
+      if (refreshCalls === 0) {
+        await writeGatewayEnvironment(edits, true);
+        if (restartNeeded) await restartGatewayService();
+      }
+      throw error;
+    }
+  });
 }
 
 function describeUnknownError(error: unknown): string | null {

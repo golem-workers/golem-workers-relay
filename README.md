@@ -408,6 +408,31 @@ show the window end and data freshness. Deploy backend + its migration before th
 Authorization assignment checks the latest Codex version, canonical pnpm entrypoint,
 managed config and executable wrapper before skipping installation/restart. Explicit
 runtime Update retains its repair behavior. Relay live auth refresh has a dedicated
-120-second budget (independent of channel status); assignment allows 300 seconds
+120-second budget (independent of channel status); assignment allows 600 seconds
 for refresh and possible rollback. Credential mutations are not blindly retried.
 A successful Gateway health probe alone does not prove authorization readiness.
+
+### ChatGPT authorization route reconciliation
+
+Installing or reselecting ChatGPT authorization removes conflicting OpenAI
+`baseUrl`/`apiKey` provider overrides and `OPENAI_API_KEY`/`OPENAI_BASE_URL`
+from both root `env` and `env.vars`. Other providers, model metadata and TTS
+settings are retained. Relay also removes legacy managed systemd API routing.
+Only a stale-route repair restarts Gateway during shared-auth sync; a clean
+same-version sync remains a no-op. Refresh failure restores auth, config and
+service environment before reloading the previous state. API-key mode is not
+subject to ChatGPT cleanup.
+
+Enterprise assignment always invokes this idempotent reconciliation, including
+for an already ACTIVE account. Before reporting ACTIVE it runs `model.verify`: an
+isolated CLI session with a unique response marker, expected-model validation
+and no channel delivery. A valid saved login alone is insufficient. Verification
+failure is reported as FAILED (credentials may already be installed); retrying
+reconciles and verifies again. Background token rotation does not run paid model
+probes. Roll out the Relay action support before this backend change.
+
+Each sync refresh phase bounds connection readiness plus auth refresh to 240
+seconds (the RPC itself remains 120 seconds). Sync allows 600 seconds for
+repair/restart/refresh and rollback; the isolated
+model probe uses a 90-second model deadline, 120-second process deadline and
+150-second backend request deadline. No new environment settings are required.

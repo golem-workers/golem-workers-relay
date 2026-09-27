@@ -743,6 +743,49 @@ function buildOAuthCredential(input: { creds: DeviceCodeCredentials; identity: R
   };
 }
 
+// ChatGPT credentials cannot reproduce API-key/custom-baseURL routes. Keep
+// model metadata, other providers and TTS settings; only remove route overrides.
+export async function hasChatGptRouteOverrides(configPath: string): Promise<boolean> {
+  const config = await readConfigObject(configPath);
+  return clearChatGptRouteOverrides(config);
+}
+
+function clearChatGptRouteOverrides(config: Record<string, unknown>): boolean {
+  let changed = false;
+  const remove = (record: unknown, keys: string[]) => {
+    if (!isRecord(record)) return;
+    for (const key of keys) {
+      if (Object.hasOwn(record, key)) {
+        delete record[key];
+        changed = true;
+      }
+    }
+  };
+  const env = config.env;
+  remove(env, ["OPENAI_API_KEY", "OPENAI_BASE_URL"]);
+  if (isRecord(env)) remove(env.vars, ["OPENAI_API_KEY", "OPENAI_BASE_URL"]);
+  const models = config.models;
+  const providers = isRecord(models) ? models.providers : undefined;
+  if (isRecord(providers)) {
+    const provider = providers.openai;
+    const hadProviderOverride = isRecord(provider) && (Object.hasOwn(provider, "baseUrl") || Object.hasOwn(provider, "apiKey"));
+    remove(provider, ["baseUrl", "apiKey"]);
+    if (hadProviderOverride && isRecord(provider) && Object.keys(provider).every((key) =>
+      key === "models" && Array.isArray(provider.models) && provider.models.length === 0)) {
+      delete providers.openai;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+async function reconcileChatGptRoute(configPath: string): Promise<boolean> {
+  const config = await readConfigObject(configPath);
+  if (!clearChatGptRouteOverrides(config)) return false;
+  await writeJsonFile(configPath, config);
+  return true;
+}
+
 async function persistCodexCredentials(input: {
   configPath: string;
   creds: DeviceCodeCredentials;
@@ -828,6 +871,7 @@ async function persistCodexCredentials(input: {
     };
     await writeJsonFile(input.configPath, nextConfig);
   }
+  await reconcileChatGptRoute(input.configPath);
   await retargetCodexSessionAuthProfiles(input.configPath, profileId);
   return {
     profileId,
@@ -1398,7 +1442,7 @@ async function applyCodexAuthBundle(input: {
   }
   const runtimeAuthSnapshot = await snapshotCodexRuntimeAuthStore(input.configPath);
   const snapshots = await snapshotFiles([
-    ...(input.persistConfig === false ? [] : [input.configPath]),
+    input.configPath, // Route reconciliation is transactional even for live auth sync.
     ...resolveCodexAuthStorePaths(input.configPath),
     resolveCodexSessionsStorePath(input.configPath),
     resolveCodexCliAuthPath(),
@@ -1664,6 +1708,7 @@ export async function getCodexLoginStatus(configPath: string): Promise<CodexLogi
 
 export async function setCodexAuthMode(configPath: string, mode: CodexAuthMode): Promise<CodexAuthSetActionResult> {
   const snapshots = await snapshotFiles([
+    configPath,
     resolveCodexCliAuthPath(),
     resolveCodexSessionsStorePath(configPath),
   ]);
@@ -1679,6 +1724,7 @@ export async function setCodexAuthMode(configPath: string, mode: CodexAuthMode):
         throw new Error("Saved OpenAI login is incomplete. Start a new device login.");
       }
       await writeCodexCliChatGptAuth(tokens);
+      await reconcileChatGptRoute(configPath);
     } else {
       const apiKey = normalizeString(authJson.OPENAI_API_KEY) || normalizeString(process.env.OPENAI_API_KEY);
       if (!apiKey) {
@@ -1724,7 +1770,7 @@ export async function syncCodexAuthBundle(
   configPath: string,
   bundleVersion: number,
   bundle: CodexAuthBundle,
-  options?: { refreshRuntimeAuth?: () => Promise<void> },
+  options?: { refreshRuntimeAuth?: () => Promise<void>; forceRuntimeRefresh?: boolean },
 ): Promise<CodexAuthSyncActionResult> {
   const syncState = await readCodexAuthSyncState();
   const status = await readPersistedCodexStatus("codex.login.status", configPath);
@@ -1736,14 +1782,29 @@ export async function syncCodexAuthBundle(
     status.profileId === syncState.profileId
   ) {
     const currentBundle = await readCanonicalCodexAuthBundle(configPath);
-    const retiredAuthStores = await retireLegacyCodexAuthStores(configPath);
-    if (retiredAuthStores.length > 0 && options?.refreshRuntimeAuth) {
-      try {
+    const snapshots = await snapshotFiles([configPath, resolveCodexCliAuthPath(), resolveCodexSessionsStorePath(configPath)]);
+    let retiredAuthStores: RetiredAuthStore[] = [];
+    let refreshAttempted = false;
+    try {
+      const modeChanged = !status.authModes.openaiLogin.active;
+      if (modeChanged) await setCodexAuthMode(configPath, "openai_login");
+      const routeChanged = await reconcileChatGptRoute(configPath);
+      retiredAuthStores = await retireLegacyCodexAuthStores(configPath);
+      if ((modeChanged || routeChanged || retiredAuthStores.length > 0 || options?.forceRuntimeRefresh) && options?.refreshRuntimeAuth) {
+        refreshAttempted = true;
         await options.refreshRuntimeAuth();
-      } catch (error) {
-        await restoreRetiredCodexAuthStores(retiredAuthStores);
-        throw error;
       }
+    } catch (error) {
+      await restoreRetiredCodexAuthStores(retiredAuthStores);
+      await restoreFileSnapshots(snapshots);
+      if (refreshAttempted && options?.refreshRuntimeAuth) {
+        try {
+          await options.refreshRuntimeAuth();
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], "ChatGPT route repair failed and rollback could not be reloaded.");
+        }
+      }
+      throw error;
     }
     return {
       kind: "codex.auth.sync",
@@ -1754,7 +1815,7 @@ export async function syncCodexAuthBundle(
       email: currentBundle.email,
       accountId: currentBundle.accountId,
       expiresAtMs: currentBundle.expiresAtMs,
-      authModes: status.authModes,
+      authModes: (await readPersistedCodexStatus("codex.login.status", configPath)).authModes,
     };
   }
 
