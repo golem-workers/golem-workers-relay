@@ -9,7 +9,7 @@ const run = {
   runId: "run-1",
   status: "WAITING" as const,
 };
-function fixture(query = vi.fn<() => Promise<unknown>>()) {
+function fixture(query = vi.fn<() => Promise<unknown>>(), activeRuns = [run]) {
   const events: AgentLifecycleEvent[] = [];
   const registerGeneration = vi.fn(
     ({ sourceGeneration }: { sourceGeneration: string }) =>
@@ -19,7 +19,7 @@ function fixture(query = vi.fn<() => Promise<unknown>>()) {
         serverId: "server-1",
         sourceGeneration,
         generationOrdinal: 1,
-        activeRuns: [run],
+        activeRuns,
       }),
   );
   const drain = vi.fn(() =>
@@ -136,6 +136,125 @@ describe("local WAITING reconciliation", () => {
       "WAITING",
       "COMPLETED",
     ]);
+  });
+  it.each([false, true])(
+    "retains older WAITING after a new run (new run paused: %s)",
+    async (paused) => {
+      vi.useFakeTimers();
+      const f = fixture();
+      await f.relay.flush();
+      const emit = (data: Record<string, unknown>) =>
+        f.relay.handleGatewayEvent({
+          type: "event",
+          event: "agent",
+          payload: {
+            agentId: "main",
+            sessionId: run.sessionId,
+            runId: "run-2",
+            stream: "lifecycle",
+            data,
+          },
+        });
+      emit({ phase: "start" });
+      emit({
+        phase: "end",
+        ...(paused ? { yielded: true, paused: true } : {}),
+      });
+      await f.relay.flush();
+      f.query.mockResolvedValue(payload("running"));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(f.events.filter((e) => e.runId === run.runId)).toEqual([]);
+      f.query.mockResolvedValue(payload("done"));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(
+        f.events
+          .filter((e) => e.status === "COMPLETED")
+          .map((e) => e.runId)
+          .sort(),
+      ).toEqual(["run-1", "run-2"]);
+      const count = f.events.length;
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(f.events).toHaveLength(count);
+    },
+  );
+  it("discards old session evidence when a different run starts during the poll", async () => {
+    vi.useFakeTimers();
+    let resolve!: (value: unknown) => void;
+    const f = fixture();
+    f.query.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    await f.relay.flush();
+    await vi.advanceTimersByTimeAsync(1000);
+    f.relay.handleGatewayEvent({
+      type: "event",
+      event: "agent",
+      payload: {
+        agentId: "main",
+        sessionId: run.sessionId,
+        runId: "run-2",
+        stream: "lifecycle",
+        data: { phase: "start" },
+      },
+    });
+    await f.relay.flush();
+    resolve(payload("done"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.events.map((e) => e.status)).toEqual(["RUNNING"]);
+    f.query.mockResolvedValue(payload("done", { hasActiveRun: true }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.events.map((e) => e.status)).toEqual(["RUNNING"]);
+  });
+  it("restores and closes multiple older waits from the backend checkpoint", async () => {
+    vi.useFakeTimers();
+    const query = vi
+      .fn<() => Promise<unknown>>()
+      .mockResolvedValue(payload("done"));
+    const f = fixture(query, [run, { ...run, runId: "run-2" }]);
+    await f.relay.flush();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.events.map((e) => [e.runId, e.status])).toEqual([
+      ["run-1", "COMPLETED"],
+      ["run-2", "COMPLETED"],
+    ]);
+  });
+  it("accepts a late terminal for an older wait without losing the newer pause", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    await f.relay.flush();
+    for (const [runId, data] of [
+      ["run-2", { phase: "start" }],
+      ["run-2", { phase: "end", yielded: true, paused: true }],
+      ["run-1", { phase: "end" }],
+    ] as const) {
+      f.relay.handleGatewayEvent({
+        type: "event",
+        event: "agent",
+        payload: {
+          agentId: "main",
+          sessionId: run.sessionId,
+          runId,
+          stream: "lifecycle",
+          data,
+        },
+      });
+    }
+    await f.relay.flush();
+    expect(f.events.map((e) => [e.runId, e.status])).toEqual([
+      ["run-2", "RUNNING"],
+      ["run-2", "WAITING"],
+      ["run-1", "COMPLETED"],
+    ]);
+    f.query.mockResolvedValue(payload("running"));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.events).toHaveLength(3);
+    f.query.mockResolvedValue(payload("done"));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.events.at(-1)?.runId).toBe("run-2");
+    expect(f.events.at(-1)?.status).toBe("COMPLETED");
   });
   it("retries local errors and stops polling on disconnect", async () => {
     vi.useFakeTimers();

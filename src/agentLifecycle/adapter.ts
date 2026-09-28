@@ -37,6 +37,7 @@ type ScopedRunState = AgentLifecycleRunState & {
   sourceGeneration: string;
 };
 
+// Concurrent and resumed turns in one session retain independent transitions.
 function scopeKey(
   adapter: ProviderLifecycleAdapter,
   context: AgentLifecycleEventContext,
@@ -46,6 +47,7 @@ function scopeKey(
     context.serverId,
     context.agentId ?? "",
     context.sessionId,
+    context.runId,
   ].join("\u0000");
 }
 
