@@ -446,3 +446,17 @@ seconds (the RPC itself remains 120 seconds). Sync allows 600 seconds for
 repair/restart/refresh and rollback; the isolated
 model probe uses a 90-second model deadline, 120-second process deadline and
 150-second backend request deadline. No new environment settings are required.
+
+### Waiting-session reconciliation
+
+While lifecycle runs are `WAITING`, Relay checks the local Gateway's
+`sessions.list` every 30 seconds. Unchanged observations produce no backend
+requests. Explicit `done`, `failed`, `timeout`, or `killed` status for the same
+session, with no active run, is published through the lifecycle outbox once.
+Live events continue to handle resumption and approval changes; a newer live
+event wins over an in-flight poll. Polling stops on Gateway disconnect and when
+no waiting runs remain, and resumes from the backend checkpoint on reconnect.
+
+Missing sessions (including those outside the 200-row list window), unknown
+status, failed requests, or active runs are not evidence of completion. Those
+cases remain waiting for a subsequent observation; there is no age-based expiry.
