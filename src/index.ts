@@ -182,6 +182,10 @@ async function main(): Promise<void> {
         throw new Error("OpenClaw session lifecycle subscription was rejected");
       }
     },
+    querySessionStates: async () => {
+      if (!gateway) throw new Error("OpenClaw gateway is not initialized");
+      return gateway.request("sessions.list", { limit: 200 }, { timeoutMs: 5_000 });
+    },
     queryActiveRuns: async () => {
       if (!gateway) throw new Error("OpenClaw gateway is not initialized");
       return readOpenClawActiveRuns(
@@ -1084,6 +1088,7 @@ async function main(): Promise<void> {
       "Relay drain timeout reached; forcing shutdown",
     );
   }
+  agentLifecycleRelay.handleGatewayConnectionStateChange({ connected: false });
   gateway.stop();
   devicePairingAutoApprover.stop();
   nodePairingAutoApprover.stop();
