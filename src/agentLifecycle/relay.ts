@@ -72,8 +72,11 @@ export function createAgentLifecycleRelay(input: {
         },
   ): void => {
     for (const [key, old] of waiting) {
-      if (old.sessionId === run.sessionId && old.agentId === run.agentId)
-        waiting.delete(key);
+      if (old.sessionId === run.sessionId && old.agentId === run.agentId) {
+        // Invalidate in-flight session evidence, but retain other paused runs.
+        if (old.runId === run.runId) waiting.delete(key);
+        else waiting.set(key, { ...old });
+      }
     }
     if (run.status === "WAITING")
       waiting.set(run.runId, { ...run, status: "WAITING" });

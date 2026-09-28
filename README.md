@@ -460,3 +460,8 @@ no waiting runs remain, and resumes from the backend checkpoint on reconnect.
 Missing sessions (including those outside the 200-row list window), unknown
 status, failed requests, or active runs are not evidence of completion. Those
 cases remain waiting for a subsequent observation; there is no age-based expiry.
+
+Waiting runs are tracked independently by run identity. A later turn in the same
+session does not discard an older wait; verified terminal session state closes
+all retained waits. Live activity invalidates in-flight evidence for that session.
+Backend checkpoint recovery also retains multiple waits from the same session.
