@@ -78,6 +78,14 @@ does not serialize chat turns globally; OpenClaw is responsible for resolving
 ordering for concurrent messages in the same session. Set `RELAY_CONCURRENCY=1`
 only when reproducing legacy FIFO behavior.
 
+OpenClaw 2026.9.6 stores reply file paths in canonical SQLite transcript
+`openclawDelivery.mediaUrls`, not in the public `chat.history` display projection.
+On SQLite-based agents (Node 24+), relay reads the exact selected assistant event
+read-only, validating its message ID, session key, and run ID before collecting
+files. Identity and compressed-size failures stop delivery; display error labels
+are never used to guess attachments. Legacy file-based agents keep their existing
+transcript path. File containment, size, and ambiguity checks still apply.
+
 Generated artifact delivery uses the native relay channel directive form,
 `[[media:relative/path.ext]]`.
 

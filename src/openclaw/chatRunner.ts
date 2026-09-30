@@ -9,6 +9,7 @@ import type {
   TranscriptMediaFile,
 } from "./mediaDirectives.js";
 import { collectTranscriptArtifacts } from "./mediaDirectives.js";
+import { restoreReplyDeliveryMetadata } from "./replyDeliveryMetadata.js";
 import { saveUploadedFiles } from "./fileUploads.js";
 import { makeTextPreview } from "../common/utils/text.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
@@ -1052,11 +1053,12 @@ export class ChatRunner {
         { timeoutMs: OPENCLAW_GATEWAY_HISTORY_REQUEST_TIMEOUT_MS }
       )
       .catch(() => undefined);
-    return readLatestAssistantMessageFromGatewayHistory({
+    const message = readLatestAssistantMessageFromGatewayHistory({
       history,
       requestMessage: input.requestMessage,
       runId: input.runId,
     });
+    return await restoreReplyDeliveryMetadata({ message, sessionKey: input.sessionKey, runId: input.runId });
   }
 
   private async waitForAssistantMessageFromAvailableTranscript(input: {

@@ -208,6 +208,14 @@ function readStructuredArtifactsFromCurrentReply(input: {
     const normalized: TranscriptArtifactRequest[] = [...artifacts, ...attachments]
       .map(normalizeStructuredArtifact)
       .filter((item): item is NonNullable<typeof item> => item !== null);
+    const delivery = looksLikePlainObject(candidate.openclawDelivery) ? candidate.openclawDelivery : null;
+    if (Array.isArray(delivery?.mediaUrls)) {
+      for (const mediaPath of delivery.mediaUrls) {
+        if (typeof mediaPath === "string" && mediaPath.trim()) {
+          normalized.push({ source: "structured_artifact", path: mediaPath.trim() });
+        }
+      }
+    }
     if (normalized.length > 0) return normalized;
   }
   return [];
