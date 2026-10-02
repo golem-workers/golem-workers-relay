@@ -1872,6 +1872,10 @@ describe("executeAgentControl model set", () => {
           agents: {
             defaults: {
               thinkingDefault: "xhigh",
+              models: {
+                "openai/gpt-image-2": { agentRuntime: { id: "openclaw" } },
+                "openai/sora-2": { agentRuntime: { id: "openclaw" } },
+              },
               model: {
                 primary: "openrouter/google/gemini-2.5-flash",
                 fallbacks: ["openrouter/openai/gpt-oss-120b"],
