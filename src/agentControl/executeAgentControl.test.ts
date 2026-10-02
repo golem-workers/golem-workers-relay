@@ -1753,7 +1753,7 @@ describe("executeAgentControl model set", () => {
     expect(config.agents?.defaults?.thinkingDefault).toBeUndefined();
   });
 
-  it("writes max thinking and Fast Mode for a Codex GPT-5.6 assignment", async () => {
+  it.each(["gpt-5.6-sol", "gpt-6.1-sol"])("writes max thinking and Fast Mode for subscription %s with Pi", async (modelId) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-fast-"));
     const configPath = path.join(tempDir, "openclaw.json");
     await installFakeSystemctl();
@@ -1763,7 +1763,7 @@ describe("executeAgentControl model set", () => {
       action: {
         kind: "modelAssignment.set",
         purpose: "main",
-        primary: "codex/gpt-5.6-sol",
+        primary: `codex/${modelId}`,
         fallback: null,
         contextTokens: 400000,
         thinkingDefault: "max",
@@ -1790,7 +1790,7 @@ describe("executeAgentControl model set", () => {
       fastMode: "auto",
     });
     expect(config.agents?.defaults?.thinkingDefault).toBe("max");
-    expect(config.agents?.defaults?.models?.["openai/gpt-5.6-sol"]).toMatchObject({
+    expect(config.agents?.defaults?.models?.[`openai/${modelId}`]).toMatchObject({
       agentRuntime: { id: "openclaw" },
       params: { fastMode: "auto" },
     });

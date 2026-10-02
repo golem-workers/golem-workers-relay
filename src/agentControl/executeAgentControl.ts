@@ -1,3 +1,4 @@
+import { ensureNativePiModelCompatibility } from "./nativePiModelCompatibility.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback, spawn } from "node:child_process";
@@ -699,6 +700,7 @@ async function setModel(input: {
   } else if (input.thinkingDefault === null) {
     delete defaultsCfg.thinkingDefault;
   }
+  ensureNativePiModelCompatibility(nextConfig, [input.model, ...fallbacks].some((ref) => /^(?:codex|openai-codex)\//i.test(ref)));
   await atomicWriteUtf8(input.configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
   const restart = await restartGatewayService();
   return {
@@ -906,6 +908,7 @@ async function setModelAssignment(input: {
   } else if (input.purpose === "main" && input.thinkingDefault === null) {
     delete defaultsCfg.thinkingDefault;
   }
+  ensureNativePiModelCompatibility(nextConfig, [input.primary, input.fallback ?? ""].some((ref) => /^(?:codex|openai-codex)\//i.test(ref)));
   await atomicWriteUtf8(input.configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
   const restart = await restartGatewayService();
   return {
