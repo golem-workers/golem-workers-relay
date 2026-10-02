@@ -473,3 +473,9 @@ Waiting runs are tracked independently by run identity. A later turn in the same
 session does not discard an older wait; verified terminal session state closes
 all retained waits. Live activity invalidates in-flight evidence for that session.
 Backend checkpoint recovery also retains multiple waits from the same session.
+## Managed agent harness
+
+Model assignments and OpenAI OAuth provisioning select the native OpenClaw (Pi)
+harness (`agentRuntime.id = "openclaw"`). Public `codex/` subscription model aliases
+remain accepted and resolve to the same OpenAI model; they do not select Codex CLI.
+Existing model parameters, credentials, and primary/fallback choices are preserved.
