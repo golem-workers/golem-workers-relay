@@ -479,3 +479,7 @@ Model assignments and OpenAI OAuth provisioning select the native OpenClaw (Pi)
 harness (`agentRuntime.id = "openclaw"`). Public `codex/` subscription model aliases
 remain accepted and resolve to the same OpenAI model; they do not select Codex CLI.
 Existing model parameters, credentials, and primary/fallback choices are preserved.
+
+GPT-6.1-Sol native Pi compatibility registers model metadata missing from OpenClaw
+2026.9.7. Subscription aliases keep the ChatGPT Responses transport; platform model
+assignments retain OpenAI Responses. No model ID, credential or endpoint is replaced.
