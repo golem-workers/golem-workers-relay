@@ -739,21 +739,22 @@ function mapStoredModelRef(modelRef: string): { modelRef: string; agentRuntimeId
   if (lower.startsWith("openai-codex/")) {
     return {
       modelRef: `openai/${trimmed.slice("openai-codex/".length)}`,
-      agentRuntimeId: "codex",
+      agentRuntimeId: "openclaw",
     };
   }
   if (lower.startsWith("codex/")) {
     return {
       modelRef: `openai/${trimmed.slice("codex/".length)}`,
-      agentRuntimeId: "codex",
+      agentRuntimeId: "openclaw",
     };
   }
-  return { modelRef: trimmed, agentRuntimeId: null };
+  return { modelRef: trimmed, agentRuntimeId: "openclaw" };
 }
 
 function mapPublicModelRef(
   modelRef: string | null | undefined,
   defaultsCfg?: Record<string, unknown> | null,
+  subscriptionPurpose = true,
 ): string | null {
   const trimmed = String(modelRef ?? "").trim();
   if (!trimmed) return null;
@@ -763,7 +764,7 @@ function mapPublicModelRef(
   const modelsCfg = ensureOptionalRecord(defaultsCfg?.models);
   const modelCfg = ensureOptionalRecord(modelsCfg?.[trimmed]);
   const agentRuntime = ensureOptionalRecord(modelCfg?.agentRuntime);
-  if (agentRuntime?.id === "codex" && trimmed.toLowerCase().startsWith("openai/")) {
+  if ((agentRuntime?.id === "codex" || (subscriptionPurpose && agentRuntime?.id === "openclaw")) && trimmed.toLowerCase().startsWith("openai/")) {
     return `codex/${trimmed.slice("openai/".length)}`;
   }
   return trimmed;
@@ -850,8 +851,8 @@ async function readModelAssignments(configPath: string): Promise<AgentControlRes
     return {
       kind: "assignment" as const,
       purpose,
-      primary: mapPublicModelRef(typeof entry?.primary === "string" ? entry.primary : null, defaultsCfg),
-      fallback: mapPublicModelRef(fallbackValues[0] ?? null, defaultsCfg),
+      primary: mapPublicModelRef(typeof entry?.primary === "string" ? entry.primary : null, defaultsCfg, !purpose.endsWith("Generation")),
+      fallback: mapPublicModelRef(fallbackValues[0] ?? null, defaultsCfg, !purpose.endsWith("Generation")),
       thinkingDefault: purpose === "main" ? readThinkingDefault(defaultsCfg?.thinkingDefault) : null,
       fastMode: purpose === "main"
         ? readModelFastMode(defaultsCfg ?? {}, typeof entry?.primary === "string" ? entry.primary : null)

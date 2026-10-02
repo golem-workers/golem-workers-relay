@@ -863,7 +863,7 @@ async function persistCodexCredentials(input: {
             ...currentModels,
             [OPENAI_CODEX_DEFAULT_MODEL]: {
               ...(isRecord(currentModels[OPENAI_CODEX_DEFAULT_MODEL]) ? currentModels[OPENAI_CODEX_DEFAULT_MODEL] : {}),
-              agentRuntime: { id: "codex" },
+              agentRuntime: { id: "openclaw" },
             },
           },
         },

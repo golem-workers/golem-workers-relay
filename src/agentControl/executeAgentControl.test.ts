@@ -745,7 +745,7 @@ describe("executeAgentControl Codex login", () => {
     });
     expect(config.auth?.order?.openai).toEqual(["openai:user@example.com"]);
     expect(config.agents?.defaults?.models?.["openai/gpt-5.5"]).toEqual({
-      agentRuntime: { id: "codex" },
+      agentRuntime: { id: "openclaw" },
     });
 
     const runtimeAuth = await readAgentRuntimeAuthSqlite(path.join(tempDir, "agents", "main", "agent"));
@@ -1716,9 +1716,9 @@ describe("executeAgentControl model set", () => {
     });
     expect(config.agents?.defaults?.model?.primary).toBe("openrouter/google/gemini-3.1-pro-preview");
     expect(config.agents?.defaults?.model?.fallbacks).toEqual(["openrouter/google/gemini-3-flash-preview", "openrouter/meta-llama/llama-4-scout"]);
-    expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3.1-pro-preview"]).toEqual({});
-    expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3-flash-preview"]).toEqual({});
-    expect(config.agents?.defaults?.models?.["openrouter/meta-llama/llama-4-scout"]).toEqual({});
+    expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3.1-pro-preview"]).toEqual({ agentRuntime: { id: "openclaw" } });
+    expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3-flash-preview"]).toEqual({ agentRuntime: { id: "openclaw" } });
+    expect(config.agents?.defaults?.models?.["openrouter/meta-llama/llama-4-scout"]).toEqual({ agentRuntime: { id: "openclaw" } });
     expect(config.agents?.defaults?.contextTokens).toBe(300000);
     expect(config.agents?.defaults?.thinkingDefault).toBe("minimal");
   });
@@ -1791,7 +1791,7 @@ describe("executeAgentControl model set", () => {
     });
     expect(config.agents?.defaults?.thinkingDefault).toBe("max");
     expect(config.agents?.defaults?.models?.["openai/gpt-5.6-sol"]).toMatchObject({
-      agentRuntime: { id: "codex" },
+      agentRuntime: { id: "openclaw" },
       params: { fastMode: "auto" },
     });
   });
@@ -1854,12 +1854,12 @@ describe("executeAgentControl model set", () => {
     expect(config.agents?.defaults?.model?.primary).toBe("openai/gpt-5.3-codex");
     expect(config.agents?.defaults?.model?.fallbacks).toEqual(["openai/gpt-5.4", "openrouter/google/gemini-3-flash-preview"]);
     expect(config.agents?.defaults?.models?.["openai/gpt-5.3-codex"]).toEqual({
-      agentRuntime: { id: "codex" },
+      agentRuntime: { id: "openclaw" },
     });
     expect(config.agents?.defaults?.models?.["openai/gpt-5.4"]).toEqual({
-      agentRuntime: { id: "codex" },
+      agentRuntime: { id: "openclaw" },
     });
-    expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3-flash-preview"]).toEqual({});
+    expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3-flash-preview"]).toEqual({ agentRuntime: { id: "openclaw" } });
   });
 
   it("reads all model assignments from config", async () => {
@@ -1872,6 +1872,10 @@ describe("executeAgentControl model set", () => {
           agents: {
             defaults: {
               thinkingDefault: "xhigh",
+              models: {
+                "openai/gpt-image-2": { agentRuntime: { id: "openclaw" } },
+                "openai/sora-2": { agentRuntime: { id: "openclaw" } },
+              },
               model: {
                 primary: "openrouter/google/gemini-2.5-flash",
                 fallbacks: ["openrouter/openai/gpt-oss-120b"],
@@ -1993,8 +1997,8 @@ describe("executeAgentControl model set", () => {
     });
     expect(config.agents?.defaults?.videoGenerationModel?.primary).toBe("fal/fal-ai/minimax/video-01-live");
     expect(config.agents?.defaults?.videoGenerationModel?.fallbacks).toEqual(["openai/sora-2"]);
-    expect(config.agents?.defaults?.models?.["fal/fal-ai/minimax/video-01-live"]).toEqual({});
-    expect(config.agents?.defaults?.models?.["openai/sora-2"]).toEqual({});
+    expect(config.agents?.defaults?.models?.["fal/fal-ai/minimax/video-01-live"]).toEqual({ agentRuntime: { id: "openclaw" } });
+    expect(config.agents?.defaults?.models?.["openai/sora-2"]).toEqual({ agentRuntime: { id: "openclaw" } });
     expect(config.agents?.defaults?.modelPolicy?.allow).toEqual([
       "openrouter/openai/gpt-5.5",
       "fal/fal-ai/minimax/video-01-live",
@@ -2063,10 +2067,10 @@ describe("executeAgentControl model set", () => {
     expect(config.agents?.defaults?.model?.primary).toBe("openai/gpt-5.5");
     expect(config.agents?.defaults?.model?.fallbacks).toEqual(["openai/gpt-5.4"]);
     expect(config.agents?.defaults?.models?.["openai/gpt-5.5"]).toEqual({
-      agentRuntime: { id: "codex" },
+      agentRuntime: { id: "openclaw" },
     });
     expect(config.agents?.defaults?.models?.["openai/gpt-5.4"]).toEqual({
-      agentRuntime: { id: "codex" },
+      agentRuntime: { id: "openclaw" },
     });
   });
 });
