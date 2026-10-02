@@ -739,16 +739,16 @@ function mapStoredModelRef(modelRef: string): { modelRef: string; agentRuntimeId
   if (lower.startsWith("openai-codex/")) {
     return {
       modelRef: `openai/${trimmed.slice("openai-codex/".length)}`,
-      agentRuntimeId: "codex",
+      agentRuntimeId: "openclaw",
     };
   }
   if (lower.startsWith("codex/")) {
     return {
       modelRef: `openai/${trimmed.slice("codex/".length)}`,
-      agentRuntimeId: "codex",
+      agentRuntimeId: "openclaw",
     };
   }
-  return { modelRef: trimmed, agentRuntimeId: null };
+  return { modelRef: trimmed, agentRuntimeId: "openclaw" };
 }
 
 function mapPublicModelRef(
@@ -763,7 +763,7 @@ function mapPublicModelRef(
   const modelsCfg = ensureOptionalRecord(defaultsCfg?.models);
   const modelCfg = ensureOptionalRecord(modelsCfg?.[trimmed]);
   const agentRuntime = ensureOptionalRecord(modelCfg?.agentRuntime);
-  if (agentRuntime?.id === "codex" && trimmed.toLowerCase().startsWith("openai/")) {
+  if ((agentRuntime?.id === "codex" || agentRuntime?.id === "openclaw") && trimmed.toLowerCase().startsWith("openai/")) {
     return `codex/${trimmed.slice("openai/".length)}`;
   }
   return trimmed;
