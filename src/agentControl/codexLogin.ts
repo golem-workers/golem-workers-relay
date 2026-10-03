@@ -1070,6 +1070,14 @@ async function readPersistedCodexOAuthEntries(configPath: string): Promise<Array
   return Array.from(entriesByProfileId.entries());
 }
 
+/** Route identity is independent of token expiry/readiness. Read the runtime
+ * authority (including shared machine state), not config.auth or CLI mode. */
+export async function hasPersistedChatGptSubscription(configPath: string): Promise<boolean> {
+  const entries = await readPersistedCodexOAuthEntries(configPath);
+  return entries.some(([, credential]) =>
+    credential.authFlow !== "chatgpt-identity" && credential.authFlow !== "chatgpt-token-sharing");
+}
+
 function pickLiveCodexOAuthEntry(entries: Array<[string, Record<string, unknown>]>): [string, Record<string, unknown>] | null {
   if (entries.length === 0) {
     return null;

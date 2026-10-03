@@ -15,6 +15,7 @@ import {
   clearCodexAuth,
   getCodexLoginStatus,
   hasChatGptRouteOverrides,
+  hasPersistedChatGptSubscription,
   importCodexAuthBundle,
   setCodexAuthMode,
   startCodexLogin,
@@ -664,6 +665,20 @@ async function approveChannelPairing(
   };
 }
 
+async function applyNativePiModelCompatibility(
+  config: Record<string, unknown>,
+  configPath: string,
+  requestedModels: string[],
+): Promise<void> {
+  const defaults = ensureOptionalRecord(ensureOptionalRecord(config.agents)?.defaults);
+  if (!ensureOptionalRecord(ensureOptionalRecord(defaults?.models)?.["openai/gpt-6.1-sol"])) return;
+  // Only a Sol subscription alias is evidence about Sol's route. A Codex
+  // fallback for another model must not change its transport.
+  const subscriptionRoute = requestedModels.some((ref) => /^(?:codex|openai-codex)\/gpt-6\.1-sol$/i.test(ref.trim()))
+    || await hasPersistedChatGptSubscription(configPath);
+  ensureNativePiModelCompatibility(config, subscriptionRoute);
+}
+
 async function setModel(input: {
   configPath: string;
   model: string;
@@ -700,7 +715,7 @@ async function setModel(input: {
   } else if (input.thinkingDefault === null) {
     delete defaultsCfg.thinkingDefault;
   }
-  ensureNativePiModelCompatibility(nextConfig, [input.model, ...fallbacks].some((ref) => /^(?:codex|openai-codex)\//i.test(ref)));
+  await applyNativePiModelCompatibility(nextConfig, input.configPath, [input.model, ...fallbacks]);
   await atomicWriteUtf8(input.configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
   const restart = await restartGatewayService();
   return {
@@ -908,7 +923,7 @@ async function setModelAssignment(input: {
   } else if (input.purpose === "main" && input.thinkingDefault === null) {
     delete defaultsCfg.thinkingDefault;
   }
-  ensureNativePiModelCompatibility(nextConfig, [input.primary, input.fallback ?? ""].some((ref) => /^(?:codex|openai-codex)\//i.test(ref)));
+  await applyNativePiModelCompatibility(nextConfig, input.configPath, [input.primary, input.fallback ?? ""]);
   await atomicWriteUtf8(input.configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
   const restart = await restartGatewayService();
   return {

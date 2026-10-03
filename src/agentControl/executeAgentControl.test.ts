@@ -1676,6 +1676,96 @@ describe("executeAgentControl config validation", () => {
 });
 
 describe("executeAgentControl model set", () => {
+  it.each([
+    ["model.set", "shared", false],
+    ["modelAssignment.set", "shared", false],
+    ["model.set", "legacy", false],
+    ["model.set", "agent-sqlite", false],
+    ["model.set", "shared", true],
+  ] as const)("preserves subscription route for native Sol via %s (%s, expired=%s)", async (kind, storage, expired) => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-native-sol-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await installFakeSystemctl();
+    await fs.writeFile(configPath, JSON.stringify({ auth: {}, agents: { defaults: {} } }));
+    const store = { version: 1, profiles: { "openai:test": {
+      type: "oauth", provider: "openai", access: "test-access", refresh: "test-refresh",
+      expires: Date.now() + (expired ? -60_000 : 60_000),
+    } } };
+    if (storage === "shared") {
+      const databasePath = await createSharedAuthStateDatabase(tempDir);
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(databasePath);
+      try {
+        db.prepare("INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)")
+          .run("authProfiles.store", JSON.stringify(store), Date.now());
+      } finally { db.close(); }
+    } else if (storage === "agent-sqlite") {
+      const agentDir = path.join(tempDir, "agents", "main", "agent");
+      await fs.mkdir(agentDir, { recursive: true });
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(path.join(agentDir, "openclaw-agent.sqlite"));
+      try {
+        db.exec("CREATE TABLE auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT)");
+        db.prepare("INSERT INTO auth_profile_store VALUES (?, ?)").run("primary", JSON.stringify(store));
+      } finally { db.close(); }
+    } else {
+      await fs.writeFile(path.join(tempDir, "auth-profiles.json"), JSON.stringify(store));
+    }
+    const action = kind === "model.set"
+      ? { kind, model: "openai/gpt-6.1-sol", fallbacks: [] as string[] } as const
+      : { kind, purpose: "main", primary: "openai/gpt-6.1-sol", fallback: null } as const;
+    await executeAgentControl({ action: { ...action }, configPath, gateway: noopGateway });
+    const config: unknown = JSON.parse(await fs.readFile(configPath, "utf8"));
+    expect(config).toMatchObject({
+      models: { providers: { openai: { models: [{
+        id: "gpt-6.1-sol", api: "openai-chatgpt-responses", agentRuntime: { id: "openclaw" },
+      }] } } },
+      auth: {},
+      agents: { defaults: { model: { primary: "openai/gpt-6.1-sol" } } },
+    });
+    await executeAgentControl({ action: { ...action }, configPath, gateway: noopGateway });
+    expect(JSON.parse(await fs.readFile(configPath, "utf8"))).toEqual(config);
+  });
+
+  it.each(["no-profile", "identity", "token-sharing"])("does not infer subscription from retired JSON, another Codex fallback, or %s", async (mode) => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-native-sol-api-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await installFakeSystemctl();
+    await fs.writeFile(configPath, JSON.stringify({ auth: {}, agents: { defaults: {} } }));
+    const store = { version: 1, profiles: { "openai:stale": { type: "oauth", provider: "openai" } } };
+    await fs.writeFile(path.join(tempDir, "auth-profiles.json"), JSON.stringify(store));
+    const databasePath = await createSharedAuthStateDatabase(tempDir);
+    if (mode !== "no-profile") {
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(databasePath);
+      try {
+        db.prepare("INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)")
+          .run("authProfiles.store", JSON.stringify({ version: 1, profiles: { "openai:test": {
+            type: "oauth", provider: "openai", authFlow: `chatgpt-${mode}`,
+          } } }), Date.now());
+      } finally { db.close(); }
+    }
+    await executeAgentControl({
+      action: { kind: "model.set", model: "openai/gpt-6.1-sol", fallbacks: ["codex/gpt-5.5"] },
+      configPath, gateway: noopGateway,
+    });
+    const config: unknown = JSON.parse(await fs.readFile(configPath, "utf8"));
+    expect(config).toMatchObject({ models: { providers: { openai: { models: [{ api: "openai-responses" }] } } } });
+  });
+
+  it("keeps the explicit Sol subscription alias when used as a fallback", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-sol-fallback-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await installFakeSystemctl();
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }));
+    await executeAgentControl({
+      action: { kind: "model.set", model: "openrouter/test/model", fallbacks: ["openai-codex/gpt-6.1-sol"] },
+      configPath, gateway: noopGateway,
+    });
+    const config: unknown = JSON.parse(await fs.readFile(configPath, "utf8"));
+    expect(config).toMatchObject({ models: { providers: { openai: { models: [{ api: "openai-chatgpt-responses" }] } } } });
+  });
+
   it("writes thinkingDefault for reasoning-capable models", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-set-"));
     const configPath = path.join(tempDir, "openclaw.json");
