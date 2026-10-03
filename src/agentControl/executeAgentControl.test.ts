@@ -3,9 +3,13 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { __testing as codexLoginTesting } from "./codexLogin.js";
+import { __testing as codexLoginTesting, hasChatGptRouteOverrides } from "./codexLogin.js";
 import { __testing as githubAuthTesting } from "./githubAuth.js";
 import { executeAgentControl } from "./executeAgentControl.js";
+
+vi.mock("./runtimeAuthWriter.js", async () => ({
+  writeRuntimeAuth: (await import("./__tests__/runtimeAuthWriter.fixture.js")).legacyRuntimeAuthWriter,
+}));
 
 const noopGateway = {
   request: () => {
@@ -1435,9 +1439,8 @@ console.log(JSON.stringify({status: ${JSON.stringify(mode === "failure" ? "error
     expect(await fs.readFile(configPath, "utf8")).toBe(initialConfigText);
     await expect(fs.access(path.join(codexHome, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.access(path.join(codexHome, "golem-auth-sync.json"))).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(
-      fs.access(path.join(tempDir, "agents", "main", "agent", "openclaw-agent.sqlite")),
-    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readAgentRuntimeAuthSqlite(path.join(tempDir, "agents", "main", "agent")))
+      .toEqual({ store: null, state: null });
     expect(await readSystemctlCalls(systemctlLogPath)).toEqual([]);
   });
 
@@ -1676,6 +1679,186 @@ describe("executeAgentControl config validation", () => {
 });
 
 describe("executeAgentControl model set", () => {
+  it.each(["generated", "custom", "extended"])("auth reconciliation detects only generated stale alias (%s)", async (mode) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-auth-route-alias-"));
+    const configPath = path.join(dir, "openclaw.json");
+    const previous = { BACKEND_BASE_URL: process.env.BACKEND_BASE_URL, OPENAI_BASE_URL: process.env.OPENAI_BASE_URL, OPENAI_API_KEY: process.env.OPENAI_API_KEY, CODEX_API_KEY: process.env.CODEX_API_KEY };
+    process.env.BACKEND_BASE_URL = "https://dev-api.golemworkers.com";
+    delete process.env.OPENAI_BASE_URL; delete process.env.OPENAI_API_KEY; delete process.env.CODEX_API_KEY;
+    try {
+      const codex = { baseUrl: mode === "custom" ? "https://custom.test/v1" : process.env.BACKEND_BASE_URL + "/api/v1/relays/openai/v1", models: [], ...(mode === "extended" ? { headers: { "x-authored": "keep" } } : {}) };
+      await fs.writeFile(configPath, JSON.stringify({ models: { providers: { codex } } }));
+      expect(await hasChatGptRouteOverrides(configPath)).toBe(mode === "generated");
+    } finally {
+      for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+  it.each(["model", "pdfModel", "imageGenerationModel"])("normalizes generated route via config.apply %s without auth writes", async (assignment) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-config-subscription-"));
+    const configPath = path.join(dir, "openclaw.json");
+    const previous = { BACKEND_BASE_URL: process.env.BACKEND_BASE_URL, OPENAI_BASE_URL: process.env.OPENAI_BASE_URL, OPENAI_API_KEY: process.env.OPENAI_API_KEY, CODEX_API_KEY: process.env.CODEX_API_KEY };
+    process.env.BACKEND_BASE_URL = "https://dev-api.golemworkers.com";
+    delete process.env.OPENAI_BASE_URL; delete process.env.OPENAI_API_KEY; delete process.env.CODEX_API_KEY;
+    try {
+      await fs.writeFile(configPath, "{}");
+      const dbPath = await createSharedAuthStateDatabase(dir);
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(dbPath);
+      db.prepare("INSERT INTO config_machine_state VALUES (?, ?, ?)").run("authProfiles.store", JSON.stringify({ version: 1, profiles: { "openai:test": { type: "oauth", provider: "openai", access: "synthetic", refresh: "synthetic", expires: 4700000000000 } } }), Date.now());
+      db.close();
+      const before = await fs.readFile(dbPath);
+      const row = { baseUrl: process.env.BACKEND_BASE_URL + "/api/v1/relays/openai/v1", models: [] };
+      const cfg = { auth: { order: { openai: ["openai:test"] } }, agents: { defaults: { [assignment]: { primary: "openai/gpt-5.4" } } }, models: { providers: { openai: row, codex: row } } };
+      await executeAgentControl({ action: { kind: "config.apply", configText: JSON.stringify(cfg) }, configPath, gateway: noopGateway });
+      const after = JSON.parse(await fs.readFile(configPath, "utf8")) as { models: { providers: Record<string, unknown> }; auth: unknown };
+      expect(after.models.providers).toEqual({});
+      expect(after.auth).toEqual(cfg.auth);
+      expect(await fs.readFile(dbPath)).toEqual(before);
+    } finally {
+      for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+  it.each([
+    ["model.set", "openai/gpt-5.4", "both"],
+    ["model.set", "openai/gpt-6.1-sol", "migrated"],
+    ["modelAssignment.set", "openai/gpt-6.1-sol", "legacy"],
+    ["model.set", "openai/gpt-6.1-sol", "api-key"],
+    ["model.set", "openai/gpt-5.4", "identity"],
+    ["model.set", "openai/gpt-5.4", "missing"],
+  ] as const)("normalizes generated proxy via %s %s (%s), without auth writes", async (kind, model, mode) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-managed-route-"));
+    const configPath = path.join(dir, "openclaw.json");
+    const systemctl = await installFakeSystemctl();
+    const previous = { BACKEND_BASE_URL: process.env.BACKEND_BASE_URL, OPENAI_BASE_URL: process.env.OPENAI_BASE_URL, OPENAI_API_KEY: process.env.OPENAI_API_KEY, CODEX_API_KEY: process.env.CODEX_API_KEY };
+    process.env.BACKEND_BASE_URL = "https://dev-api.golemworkers.com";
+    delete process.env.OPENAI_BASE_URL; delete process.env.OPENAI_API_KEY; delete process.env.CODEX_API_KEY;
+    try {
+      const row = { baseUrl: process.env.BACKEND_BASE_URL + "/api/v1/relays/openai/v1", models: [] };
+      const providers = { ...(mode !== "legacy" ? { openai: row } : {}), ...(mode !== "migrated" ? { codex: row } : {}), anthropic: { baseUrl: "https://keep.test", models: [] } };
+      await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} }, models: { providers }, auth: { order: { openai: ["openai:test"] } } }));
+      const dbPath = await createSharedAuthStateDatabase(dir);
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(dbPath);
+      const profiles = mode === "missing" ? {} : { "openai:test": { type: "oauth", provider: "openai", access: "synthetic", refresh: "synthetic-refresh", expires: 4_700_000_000_000, ...(mode === "identity" ? { authFlow: "chatgpt-identity" } : {}) }, ...(mode === "api-key" ? { "openai:key": { type: "api_key", provider: "openai", key: "synthetic-key" } } : {}) };
+      db.prepare("INSERT INTO config_machine_state VALUES (?, ?, ?)").run("authProfiles.store", JSON.stringify({ version: 1, profiles }), Date.now());
+      db.close();
+      const authBefore = await fs.readFile(dbPath);
+      const action = kind === "model.set" ? { kind, model, fallbacks: [], thinkingDefault: "high" as const } : { kind, purpose: "main" as const, primary: model, fallback: null, thinkingDefault: "high" as const };
+      await executeAgentControl({ action, configPath, gateway: noopGateway });
+      const after = JSON.parse(await fs.readFile(configPath, "utf8")) as { auth: unknown; models: { providers: Record<string, { baseUrl?: string; models?: Array<{ api?: string }> }> } };
+      expect(await fs.readFile(dbPath)).toEqual(authBefore);
+      expect(after.auth).toEqual({ order: { openai: ["openai:test"] } });
+      expect(after.models.providers.anthropic).toEqual(providers.anthropic);
+      if (["missing", "identity", "api-key"].includes(mode)) {
+        expect(after.models.providers.codex).toEqual(row);
+        expect(after.models.providers.openai.baseUrl).toEqual(row.baseUrl);
+      } else {
+        expect(after.models.providers).not.toHaveProperty("codex");
+        expect(after.models.providers.openai?.baseUrl).toBeUndefined();
+        if (model.endsWith("sol")) expect(after.models.providers.openai.models?.[0].api).toBe("openai-chatgpt-responses");
+      }
+      await executeAgentControl({ action, configPath, gateway: noopGateway });
+      expect(JSON.parse(await fs.readFile(configPath, "utf8"))).toEqual(after);
+      expect(await fs.readFile(dbPath)).toEqual(authBefore);
+      expect(await fs.readFile(systemctl, "utf8")).toContain("restart openclaw-gateway.service");
+    } finally {
+      for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["model.set", "shared", false],
+    ["modelAssignment.set", "shared", false],
+    ["model.set", "legacy", false],
+    ["model.set", "agent-sqlite", false],
+    ["model.set", "shared", true],
+  ] as const)("preserves subscription route for native Sol via %s (%s, expired=%s)", async (kind, storage, expired) => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-native-sol-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await installFakeSystemctl();
+    await fs.writeFile(configPath, JSON.stringify({ auth: {}, agents: { defaults: {} } }));
+    const store = { version: 1, profiles: { "openai:test": {
+      type: "oauth", provider: "openai", access: "test-access", refresh: "test-refresh",
+      expires: Date.now() + (expired ? -60_000 : 60_000),
+    } } };
+    if (storage === "shared") {
+      const databasePath = await createSharedAuthStateDatabase(tempDir);
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(databasePath);
+      try {
+        db.prepare("INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)")
+          .run("authProfiles.store", JSON.stringify(store), Date.now());
+      } finally { db.close(); }
+    } else if (storage === "agent-sqlite") {
+      const agentDir = path.join(tempDir, "agents", "main", "agent");
+      await fs.mkdir(agentDir, { recursive: true });
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(path.join(agentDir, "openclaw-agent.sqlite"));
+      try {
+        db.exec("CREATE TABLE auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT)");
+        db.prepare("INSERT INTO auth_profile_store VALUES (?, ?)").run("primary", JSON.stringify(store));
+      } finally { db.close(); }
+    } else {
+      await fs.writeFile(path.join(tempDir, "auth-profiles.json"), JSON.stringify(store));
+    }
+    const action = kind === "model.set"
+      ? { kind, model: "openai/gpt-6.1-sol", fallbacks: [] as string[] } as const
+      : { kind, purpose: "main", primary: "openai/gpt-6.1-sol", fallback: null } as const;
+    await executeAgentControl({ action: { ...action }, configPath, gateway: noopGateway });
+    const config: unknown = JSON.parse(await fs.readFile(configPath, "utf8"));
+    expect(config).toMatchObject({
+      models: { providers: { openai: { models: [{
+        id: "gpt-6.1-sol", api: "openai-chatgpt-responses", agentRuntime: { id: "openclaw" },
+      }] } } },
+      auth: {},
+      agents: { defaults: { model: { primary: "openai/gpt-6.1-sol" } } },
+    });
+    await executeAgentControl({ action: { ...action }, configPath, gateway: noopGateway });
+    expect(JSON.parse(await fs.readFile(configPath, "utf8"))).toEqual(config);
+  });
+
+  it.each(["no-profile", "identity", "token-sharing"])("does not infer subscription from retired JSON, another Codex fallback, or %s", async (mode) => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-native-sol-api-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await installFakeSystemctl();
+    await fs.writeFile(configPath, JSON.stringify({ auth: {}, agents: { defaults: {} } }));
+    const store = { version: 1, profiles: { "openai:stale": { type: "oauth", provider: "openai" } } };
+    await fs.writeFile(path.join(tempDir, "auth-profiles.json"), JSON.stringify(store));
+    const databasePath = await createSharedAuthStateDatabase(tempDir);
+    if (mode !== "no-profile") {
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(databasePath);
+      try {
+        db.prepare("INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)")
+          .run("authProfiles.store", JSON.stringify({ version: 1, profiles: { "openai:test": {
+            type: "oauth", provider: "openai", authFlow: `chatgpt-${mode}`,
+          } } }), Date.now());
+      } finally { db.close(); }
+    }
+    await executeAgentControl({
+      action: { kind: "model.set", model: "openai/gpt-6.1-sol", fallbacks: ["codex/gpt-5.5"] },
+      configPath, gateway: noopGateway,
+    });
+    const config: unknown = JSON.parse(await fs.readFile(configPath, "utf8"));
+    expect(config).toMatchObject({ models: { providers: { openai: { models: [{ api: "openai-responses" }] } } } });
+  });
+
+  it("keeps the explicit Sol subscription alias when used as a fallback", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-sol-fallback-"));
+    const configPath = path.join(tempDir, "openclaw.json");
+    await installFakeSystemctl();
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }));
+    await executeAgentControl({
+      action: { kind: "model.set", model: "openrouter/test/model", fallbacks: ["openai-codex/gpt-6.1-sol"] },
+      configPath, gateway: noopGateway,
+    });
+    const config: unknown = JSON.parse(await fs.readFile(configPath, "utf8"));
+    expect(config).toMatchObject({ models: { providers: { openai: { models: [{ api: "openai-chatgpt-responses" }] } } } });
+  });
+
   it("writes thinkingDefault for reasoning-capable models", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-set-"));
     const configPath = path.join(tempDir, "openclaw.json");

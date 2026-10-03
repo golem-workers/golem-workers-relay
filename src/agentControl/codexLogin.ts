@@ -4,6 +4,8 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import JSON5 from "json5";
 import type { CodexAuthBundle } from "./protocol.js";
+import { writeRuntimeAuth } from "./runtimeAuthWriter.js";
+import { normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
 
 const OPENAI_AUTH_BASE_URL = "https://auth.openai.com";
 const OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -613,84 +615,7 @@ async function clearCodexSessionAuthProfiles(configPath: string): Promise<void> 
 }
 
 async function updateCodexRuntimeAuthStore(input: { configPath: string; profileId: string; credential: OAuthCredential }): Promise<void> {
-  const { DatabaseSync } = await import("node:sqlite");
-  const target = await resolveCodexRuntimeAuthTarget(input.configPath);
-  const databasePath = target.databasePath;
-  await fs.mkdir(path.dirname(databasePath), { recursive: true });
-  const db = new DatabaseSync(databasePath);
-  try {
-    if (target.kind === "shared-state") {
-      db.exec("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE");
-      try {
-        const readCell = (key: string) => parseSqliteJsonCell((db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get(key) as { value_json?: string } | undefined)?.value_json);
-        const store = readAuthProfilesStoreFromRaw(readCell("authProfiles.store"));
-        store.profiles = replaceOpenAiProfiles(store.profiles, input.profileId, input.credential);
-        const state = coerceAuthProfileStateStore(readCell("authProfiles.state"));
-        state.order = { ...state.order, openai: [input.profileId] };
-        state.lastGood = { ...state.lastGood, openai: input.profileId };
-        const now = Date.now();
-        const writeCell = (key: string, value: unknown) => db.prepare(
-          `INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)
-           ON CONFLICT(state_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms`,
-        ).run(key, JSON.stringify(value), now);
-        writeCell("authProfiles.store", store);
-        writeCell("authProfiles.state", state);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-      return;
-    }
-    db.exec(`
-      PRAGMA busy_timeout = 5000;
-      CREATE TABLE IF NOT EXISTS auth_profile_store (
-        store_key TEXT NOT NULL PRIMARY KEY,
-        store_json TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS auth_profile_state (
-        state_key TEXT NOT NULL PRIMARY KEY,
-        state_json TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-    `);
-    const now = Date.now();
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const rawStore = db.prepare("SELECT store_json FROM auth_profile_store WHERE store_key = ?").get("primary") as { store_json?: string } | undefined;
-      const store = readAuthProfilesStoreFromRaw(parseSqliteJsonCell(rawStore?.store_json));
-      store.profiles = replaceOpenAiProfiles(store.profiles, input.profileId, input.credential);
-
-      const rawState = db.prepare("SELECT state_json FROM auth_profile_state WHERE state_key = ?").get("primary") as { state_json?: string } | undefined;
-      const state = coerceAuthProfileStateStore(parseSqliteJsonCell(rawState?.state_json));
-      state.order = {
-        ...state.order,
-        openai: [input.profileId],
-      };
-      state.lastGood = {
-        ...state.lastGood,
-        openai: input.profileId,
-      };
-
-      db.prepare(
-        `INSERT INTO auth_profile_store (store_key, store_json, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(store_key) DO UPDATE SET store_json = excluded.store_json, updated_at = excluded.updated_at`,
-      ).run("primary", JSON.stringify(store), now);
-      db.prepare(
-        `INSERT INTO auth_profile_state (state_key, state_json, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(state_key) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at`,
-      ).run("primary", JSON.stringify(state), now);
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.close();
-  }
+  await writeRuntimeAuth(input);
 }
 
 function readAuthProfilesStoreFromRaw(value: unknown): AuthProfilesStore {
@@ -776,7 +701,10 @@ function clearChatGptRouteOverrides(config: Record<string, unknown>): boolean {
       changed = true;
     }
   }
-  return changed;
+  // Auth import/sync/login explicitly selects subscription. Clear only exact
+  // generated aliases too, or a later doctor migration can restore their proxy
+  // after this action has reported up_to_date. Authored alias rows stay intact.
+  return normalizeManagedSubscriptionRoute(config, true) || changed;
 }
 
 async function reconcileChatGptRoute(configPath: string): Promise<boolean> {
@@ -806,6 +734,9 @@ async function persistCodexCredentials(input: {
   if (!tokens) {
     throw new Error("OpenAI OAuth token exchange response was incomplete.");
   }
+  // OpenClaw must select/initialize its owner BEFORE legacy JSON is written.
+  // Creating legacy files first suppresses fresh shared-store admission.
+  await updateCodexRuntimeAuthStore({ configPath: input.configPath, profileId, credential });
   if ((await resolveCodexRuntimeAuthTarget(input.configPath)).kind === "agent") {
     for (const authStorePath of resolveCodexAuthStorePaths(input.configPath)) {
       const authStore = await readAuthProfilesStore(authStorePath);
@@ -813,11 +744,6 @@ async function persistCodexCredentials(input: {
       await writeJsonFile(authStorePath, authStore);
     }
   }
-  await updateCodexRuntimeAuthStore({
-    configPath: input.configPath,
-    profileId,
-    credential,
-  });
 
   if (input.persistConfig !== false) {
     const currentConfig = await readConfigObject(input.configPath);
@@ -1070,6 +996,27 @@ async function readPersistedCodexOAuthEntries(configPath: string): Promise<Array
   return Array.from(entriesByProfileId.entries());
 }
 
+/** Route identity is independent of token expiry/readiness. Read the runtime
+ * authority (including shared machine state), not config.auth or CLI mode. */
+export async function hasPersistedChatGptSubscription(configPath: string): Promise<boolean> {
+  const entries = await readPersistedCodexOAuthEntries(configPath);
+  return entries.some(([, credential]) =>
+    credential.authFlow !== "chatgpt-identity" && credential.authFlow !== "chatgpt-token-sharing");
+}
+
+/** A persisted API key is explicit intent even alongside a subscription. */
+export async function hasPersistedOpenAiApiKey(configPath: string): Promise<boolean> {
+  const target = await resolveCodexRuntimeAuthTarget(configPath);
+  const stores = [
+    await readRuntimeAuthProfilesStore(configPath),
+    ...(target.kind === "agent"
+      ? await Promise.all(resolveCodexAuthStorePaths(configPath).map((storePath) => readAuthProfilesStore(storePath)))
+      : []),
+  ];
+  return stores.some((store) => Object.values(store.profiles).some((value) =>
+    isRecord(value) && ["openai", "openai-codex", "codex"].includes(String(value.provider)) && value.type === "api_key"));
+}
+
 function pickLiveCodexOAuthEntry(entries: Array<[string, Record<string, unknown>]>): [string, Record<string, unknown>] | null {
   if (entries.length === 0) {
     return null;
@@ -1306,16 +1253,20 @@ async function snapshotCodexRuntimeAuthStore(
 }
 
 async function restoreCodexRuntimeAuthStore(
-  _configPath: string,
+  configPath: string,
   snapshot: CodexRuntimeAuthSnapshot,
 ): Promise<void> {
-  const { databasePath } = snapshot.target;
-  if (!snapshot.databaseExisted) {
-    await fs.rm(databasePath, { force: true });
-    await fs.rm(`${databasePath}-shm`, { force: true });
-    await fs.rm(`${databasePath}-wal`, { force: true });
+  const currentTarget = await resolveCodexRuntimeAuthTarget(configPath);
+  if (currentTarget.kind === "shared-state" && snapshot.target.kind === "agent") {
+    // The runtime initialized a fresh shared owner. Roll back credentials, not
+    // its schema/ownership or an entire global database.
+    await restoreCodexRuntimeAuthStore(configPath, { ...snapshot, target: currentTarget, databaseExisted: true, storeRow: null, stateRow: null });
     return;
   }
+  const { databasePath } = snapshot.target;
+  try { await fs.access(databasePath); } catch { return; }
+  // Runtime-created schemas belong to OpenClaw, even if this auth transaction
+  // fails. Never unlink its database or remove schema-owned tables.
 
   const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(databasePath);
@@ -1346,7 +1297,8 @@ async function restoreCodexRuntimeAuthStore(
           db.prepare("DELETE FROM auth_profile_store WHERE store_key = ?").run("primary");
         }
       } else {
-        db.exec("DROP TABLE IF EXISTS auth_profile_store;");
+        const table = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'auth_profile_store'").get();
+        if (table) db.prepare("DELETE FROM auth_profile_store WHERE store_key = ?").run("primary");
       }
       if (snapshot.stateTableExisted) {
         if (snapshot.stateRow) {
@@ -1359,7 +1311,8 @@ async function restoreCodexRuntimeAuthStore(
           db.prepare("DELETE FROM auth_profile_state WHERE state_key = ?").run("primary");
         }
       } else {
-        db.exec("DROP TABLE IF EXISTS auth_profile_state;");
+        const table = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'auth_profile_state'").get();
+        if (table) db.prepare("DELETE FROM auth_profile_state WHERE state_key = ?").run("primary");
       }
       db.exec("COMMIT;");
     } catch (error) {

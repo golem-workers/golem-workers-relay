@@ -1,3 +1,4 @@
+import { normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
 import { ensureNativePiModelCompatibility } from "./nativePiModelCompatibility.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -15,6 +16,8 @@ import {
   clearCodexAuth,
   getCodexLoginStatus,
   hasChatGptRouteOverrides,
+  hasPersistedChatGptSubscription,
+  hasPersistedOpenAiApiKey,
   importCodexAuthBundle,
   setCodexAuthMode,
   startCodexLogin,
@@ -391,6 +394,16 @@ async function applyConfig(input: {
   configText: string;
 }): Promise<AgentControlResult> {
   const parsed = parseConfigText(input.configText);
+  const defaults = ensureOptionalRecord(ensureOptionalRecord(parsed.agents)?.defaults);
+  const requestedModels = ["model", "imageModel", "imageGenerationModel", "videoGenerationModel", "musicGenerationModel", "pdfModel"]
+    .flatMap((key) => {
+      const value = defaults?.[key];
+      if (typeof value === "string") return [value];
+      const assignment = ensureOptionalRecord(value);
+      return [assignment?.primary, ...readUnknownArray(assignment?.fallbacks)]
+        .filter((ref): ref is string => typeof ref === "string");
+    });
+  await applyNativePiModelCompatibility(parsed, input.configPath, requestedModels);
   await atomicWriteUtf8(input.configPath, `${JSON.stringify(parsed, null, 2)}\n`);
   return {
     kind: "config.apply",
@@ -664,6 +677,26 @@ async function approveChannelPairing(
   };
 }
 
+async function applyNativePiModelCompatibility(
+  config: Record<string, unknown>,
+  configPath: string,
+  requestedModels: string[],
+): Promise<void> {
+  const requestsOpenAi = requestedModels.some((ref) => /^(?:openai|codex|openai-codex)\//i.test(ref.trim()));
+  const defaults = ensureOptionalRecord(ensureOptionalRecord(config.agents)?.defaults);
+  const hasSol = Boolean(ensureOptionalRecord(ensureOptionalRecord(defaults?.models)?.["openai/gpt-6.1-sol"]));
+  const hasSubscription = (requestsOpenAi || hasSol) && await hasPersistedChatGptSubscription(configPath);
+  if (requestsOpenAi && hasSubscription && !await hasPersistedOpenAiApiKey(configPath)) {
+    normalizeManagedSubscriptionRoute(config, true);
+  }
+  if (!hasSol) return;
+  // Only a Sol subscription alias is evidence about Sol's route. A Codex
+  // fallback for another model must not change its transport.
+  const subscriptionRoute = requestedModels.some((ref) => /^(?:codex|openai-codex)\/gpt-6\.1-sol$/i.test(ref.trim()))
+    || hasSubscription;
+  ensureNativePiModelCompatibility(config, subscriptionRoute);
+}
+
 async function setModel(input: {
   configPath: string;
   model: string;
@@ -700,7 +733,7 @@ async function setModel(input: {
   } else if (input.thinkingDefault === null) {
     delete defaultsCfg.thinkingDefault;
   }
-  ensureNativePiModelCompatibility(nextConfig, [input.model, ...fallbacks].some((ref) => /^(?:codex|openai-codex)\//i.test(ref)));
+  await applyNativePiModelCompatibility(nextConfig, input.configPath, [input.model, ...fallbacks]);
   await atomicWriteUtf8(input.configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
   const restart = await restartGatewayService();
   return {
@@ -908,7 +941,7 @@ async function setModelAssignment(input: {
   } else if (input.purpose === "main" && input.thinkingDefault === null) {
     delete defaultsCfg.thinkingDefault;
   }
-  ensureNativePiModelCompatibility(nextConfig, [input.primary, input.fallback ?? ""].some((ref) => /^(?:codex|openai-codex)\//i.test(ref)));
+  await applyNativePiModelCompatibility(nextConfig, input.configPath, [input.primary, input.fallback ?? ""]);
   await atomicWriteUtf8(input.configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
   const restart = await restartGatewayService();
   return {
