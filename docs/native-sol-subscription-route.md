@@ -13,8 +13,8 @@ with exactly `{baseUrl: BACKEND_BASE_URL + "/api/v1/relays/openai/v1", models: [
 OpenClaw doctor can migrate that codex row into openai. The resulting provider
 endpoint alone forces API auth, even with valid saved subscription credentials.
 
-Both model.set and modelAssignment.set now reconcile these exact empty generated
-rows before adding Sol compatibility metadata whenever an OpenAI model is requested
+Both model.set and modelAssignment.set reconcile these exact generated
+routes before adding Sol compatibility metadata whenever an OpenAI model is requested
 and the authoritative runtime store contains a subscription. They inspect both
 openai and codex so subsequent alias migration cannot recreate the override.
 No token, profile order, auth database, CLI auth or environment is rewritten.
@@ -22,18 +22,24 @@ No token, profile order, auth database, CLI auth or environment is rewritten.
 Ownership is deliberately narrow: the endpoint must equal the current relay
 BACKEND_BASE_URL (trimmed, without trailing slashes) plus the backend's exact
 /api/v1/relays/openai/v1 suffix. No host substring matching or public-host allowlist
-is used. The provider must contain ONLY baseUrl and an empty models array.
-Custom URLs, headers, API/auth fields, model rows, unknown provider fields and
+is used. The provider must contain ONLY baseUrl and an empty models array, or exactly
+match the generated Sol subscription catalog plus that endpoint. In the latter
+case only baseUrl is removed; the catalog remains. Any catalog deviation is
+preserved. Custom URLs, headers, API/auth fields, authored model rows, unknown provider fields and
 local-proxy rows are preserved in full. Any OpenAI/Codex API key in the authoritative
 store, config auth profiles or environment blocks cleanup; environment base URL
 settings also block it. Other providers are untouched. A historical backend URL,
 missing deployment authority or any ambiguous row needs explicit operator review,
 not speculative cleanup. A model alias alone does not prove a saved subscription.
 
-This is model-action reconciliation, not a background watcher. Later backend
-reprovisioning can reintroduce a generated row; reapplying a model action safely
-reconciles it again. Existing nonempty generated model rows are not inferred to be
-owned: explicit per-model APIs remain authoritative.
+This is action-time reconciliation, not a background watcher. config.apply uses
+the same protection for primary, fallback and auxiliary model assignments.
+Explicit login/import/sync reconciliation also removes exact generated aliases,
+including during same-version repair, so a subsequent doctor migration cannot
+resurrect them. Authored alias rows remain untouched. Later backend provisioning
+can still introduce routing/environment conflicts; its writers need their own
+preservation guards. Arbitrary nonempty catalogs are not inferred to be owned:
+explicit per-model APIs remain authoritative.
 
 ## Existing affected model rows
 
