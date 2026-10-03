@@ -36,8 +36,46 @@ What it does:
 - explicitly enables and starts the root user-systemd manager before OpenClaw daemon install (`loginctl enable-linger root`, `systemctl start user@0.service`, `XDG_RUNTIME_DIR=/run/user/0`, `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus`);
 - optionally runs `OPENCLAW_SKIP_CANVAS_HOST=1 OPENCLAW_LOG_LEVEL=debug systemctl --user import-environment OPENCLAW_SKIP_CANVAS_HOST OPENCLAW_LOG_LEVEL && openclaw onboard --install-daemon --non-interactive --accept-risk`; on current OpenClaw releases this step may return before its own gateway probe stabilizes on small snapshot VMs, so the script explicitly restarts `openclaw-gateway.service` and waits longer for port `18789` after onboarding instead of trusting the raw `onboard` exit code alone; the script exports `NODE_OPTIONS=--max-old-space-size=2024 --enable-source-maps` before this so one-shot OpenClaw/Node commands also inherit the larger heap;
 - writes a temporary snapshot-only OpenClaw warmup config that activates `telegram` and `whatsapp` surfaces just enough for plugin auto-enable / first-run initialization, then performs a mandatory `gateway start -> readiness wait -> channels status -> stop` cycle during snapshot preparation;
-- seals the final snapshot config back to a cold baseline by removing temporary `channels.telegram` / `channels.whatsapp` config and leaving those plugins disabled for the later backend-owned bootstrap path;
+- seals the final snapshot config back to a cold baseline by removing temporary Telegram/relay-channel configuration and leaving backend-owned plugins disabled; the prepared WhatsApp plugin and its neutral configuration remain;
+- after confirmed gateway shutdown, performs an offline identity seal that removes credentials, backups, device/signing identity and runtime state while preserving validated plugin provenance and payloads;
 - finishes by stopping, disabling, and resetting `openclaw-gateway.service` so the snapshot stays cold and backend provisioning owns the first gateway start.
+
+## Snapshot identity seal contract
+
+The final seal is for **fresh disposable bake servers only**, never existing agents.
+For modern SQLite-backed OpenClaw it reconstructs a new database from the installed
+schema and retains only global schema metadata and the sanitized
+`config_machine_state` row `plugins.installedIndex`. Plugin install records
+(including package integrity/provenance) remain; source-admission inode receipts,
+diagnostics, workspace binding and generated timestamps are cleared. All other
+tables are empty, including device keys, config signing keys, cron and session
+runtime. SQLite virtual-table shadows are recreated by SQLite, not copied. The
+runtime may regenerate instance-local state only during provisioning/startup.
+
+Supported legacy no-database releases retain canonical `plugins.installs` and,
+when present, only `plugins/installs.json` install records. A missing modern DB,
+missing required plugin provenance, unfamiliar schema metadata, corrupt DB,
+unsupported SQLite schema/features, unexpected retained-path symlinks or any
+fsync failure aborts the bake; there is no silent legacy fallback. SQLite-backed
+sealing requires Python's SQLite 3.37+ (including the schema's extension support).
+Required plugin installs must resolve within the retained `npm/` or
+`extensions/` trees. The config/database are staged, checked and fsynced before
+replacement; an interrupted/failed seal must not be snapshotted or promoted.
+This is logical filesystem/database sanitization, **not forensic erasure of freed
+disk blocks**, swap or arbitrary build/package caches outside this allowlist.
+
+The snapshot caller must preserve the seal: do not start the gateway or run
+stateful OpenClaw commands between sealing and poweroff. The backend currently
+runs a cold probe afterward; its gateway check is `systemctl --user status`,
+not `openclaw gateway status`, but its version probe still invokes
+`openclaw --version` (with `openclaw version` fallback). For a version-independent
+no-regeneration guarantee, use package metadata for that cold version check or
+perform a final offline seal/audit after all probes. Changing that backend
+pipeline is outside this relay script. Before promoting an image, independently
+audit a raw unprovisioned clone and exercise provisioning/startup.
+
+Focused regression command:
+`npx vitest run src/scripts/snapshotIdentitySeal.test.ts src/scripts/snapshotConfigSeal.test.ts`
 
 Provisioning warning for 256 MiB snapshots:
 
@@ -66,7 +104,7 @@ openclaw devices list --json
 
 Warmup checkpoints during snapshot preparation:
 
-- In `/var/log/golem-workers/prepare-agent-server.log`, confirm these step markers appear in order: `openclaw_onboard`, `openclaw_snapshot_channels_warmup_config`, `openclaw_snapshot_channels_warmup_start`, `openclaw_snapshot_channels_warmup_status`, `openclaw_snapshot_shutdown`, `openclaw_snapshot_config_seal`.
+- In `/var/log/golem-workers/prepare-agent-server.log`, confirm these step markers appear in order: `openclaw_onboard`, `openclaw_snapshot_channels_warmup_config`, `openclaw_snapshot_channels_warmup_start`, `openclaw_snapshot_channels_warmup_status`, `openclaw_snapshot_shutdown`, `openclaw_snapshot_config_seal`, `openclaw_snapshot_identity_seal`, `done`.
 - The timestamp gap from `openclaw_snapshot_channels_warmup_start` to `openclaw_snapshot_shutdown` is the one-time warmup cost that should move out of future live server creation.
 - The `openclaw channels status --json` output in that log should show both `telegram` and `whatsapp` surfaces present during warmup, even if they are not fully linked to real external credentials yet.
 
@@ -80,7 +118,7 @@ Script source:
 
 - `scripts/prepare-agent-server.sh`
 
-After script execution without onboard use:
+After provisioning (not between sealing and snapshot creation), manual onboarding examples follow. Running these commands invalidates the cold identity seal:
 
 Default non-interactive run used by the script:
 

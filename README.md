@@ -133,7 +133,10 @@ The script:
 - writes a temporary snapshot-only warmup config that activates `telegram` and `whatsapp`, performs a mandatory `start -> readiness -> channels status -> stop` cycle to force first-run plugin initialization into snapshot prep, and then seals the snapshot back to a cold config for backend-owned bootstrap;
 - resolves WhatsApp from the same npm registry used by the compatibility version resolver (`npm:@openclaw/whatsapp@<version>`), while preserving `OPENCLAW_WHATSAPP_PLUGIN_SPEC` overrides. Snapshot sealing validates plugin manifests and built entrypoints across legacy install records/extensions, shared npm installs, and per-package npm projects (including WhatsApp), ignoring unfinished install-stage directories;
 - leaves the image ready for backend provisioning to reuse the prepared `relay-channel` and `codex` plugin installs from the snapshot;
+- performs an offline identity seal after confirming the gateway is stopped: removes gateway token/password, config backups, device/signing identity, runtime databases/sidecars, generated workspace files, histories and Go telemetry. Only neutral config, installed plugin payloads/provenance, authored skills and the Control UI asset cache remain; no OpenClaw CLI command runs after this seal in the prepare script;
 - finishes image preparation by stopping and disabling `openclaw-gateway.service` so prepared images boot with OpenClaw cold and backend provisioning performs the first controlled start.
+
+See the [snapshot identity seal contract](docs/prepare-agent-server.md#snapshot-identity-seal-contract) for the retained paths, legacy compatibility, fail-closed checks and post-seal probe restrictions.
 
 Execution logs are written to:
 

@@ -1567,6 +1567,201 @@ console.log(`sealed canonical openclaw config at ${configPath}`)
 NODE
   test -f /root/.openclaw/openclaw.json
 
+  # Offline only: config CLI writes can regenerate tokens, signing keys and journals.
+  set_step "openclaw_snapshot_identity_seal"
+  local seal_gateway_state
+  seal_gateway_state="$(systemctl --user show openclaw-gateway.service --property=ActiveState --value)"
+  case "$seal_gateway_state" in
+    inactive|failed) ;;
+    *) echo "Refusing to seal without a confirmed stopped gateway" >&2; exit 1 ;;
+  esac
+  python3 - <<'SEAL_PY'
+import json
+import os
+import pathlib
+import shutil
+import sqlite3
+import tempfile
+
+# This is a fresh bake only, never a cleanup tool for an existing agent.
+root = pathlib.Path('/root')
+state = root / '.openclaw'
+db = state / 'state/openclaw.sqlite'
+required = {'codex', 'whatsapp', 'moonshot', 'perplexity', 'relay-channel'}
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+def plain(path, directory=False):
+    require(not path.is_symlink(), 'Refusing symlink: ' + str(path))
+    if path.exists():
+        require(path.is_dir() if directory else path.is_file(), 'Unexpected path type: ' + str(path))
+
+def remove(path):
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+def fsync(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+def retain_only(directory, names):
+    if directory.exists():
+        for path in directory.iterdir():
+            if path.name not in names:
+                remove(path)
+        fsync(directory)
+
+def validate_records(records):
+    require(isinstance(records, dict) and required <= records.keys(), 'Missing required plugin provenance')
+    for plugin_id in required:
+        record = records[plugin_id]
+        require(isinstance(record, dict) and isinstance(record.get('installPath'), str),
+                'Invalid plugin install record: ' + plugin_id)
+        install = pathlib.Path(record['installPath']).resolve(strict=True)
+        require(any(install.is_relative_to(state / name) for name in ('npm', 'extensions')),
+                'Plugin install outside retained paths: ' + plugin_id)
+        manifest = json.loads((install / 'openclaw.plugin.json').read_text())
+        require(manifest.get('id') == plugin_id and (install / 'dist/index.js').is_file(),
+                'Invalid plugin payload: ' + plugin_id)
+
+# Do not follow retained top-level links or links on paths traversed for deletion.
+plain(state, True)
+for name in ('state', 'npm', 'extensions', 'plugin-skills', 'cache', 'workspace', 'plugins'):
+    plain(state / name, True)
+for rel in ('cache/control-ui-assets', 'workspace/skills'):
+    plain(state / rel, True)
+for rel in ('.config', '.config/go', '.cache', '.cache/go'):
+    plain(root / rel, True)
+plain(state / 'openclaw.json')
+plain(db)
+for suffix in ('-wal', '-shm', '-journal'):
+    plain(pathlib.Path(str(db) + suffix))
+config = json.loads((state / 'openclaw.json').read_text())
+require(isinstance(config, dict), 'Invalid canonical config')
+auth = config.get('gateway', {}).get('auth', {})
+require(isinstance(auth, dict), 'Invalid gateway auth config')
+auth.pop('token', None)
+auth.pop('password', None)
+
+# Build and validate before discarding any old state. SQL/schema incompatibility,
+# unsupported SQLite features, missing provenance or fsync errors abort the bake.
+stage = pathlib.Path(tempfile.mkdtemp(prefix='.snapshot-seal-', dir=state))
+try:
+    new_state = stage / 'state'
+    new_state.mkdir(mode=0o700)
+    legacy_index = None
+    if db.exists():
+        with sqlite3.connect(db.as_uri() + '?mode=ro', uri=True) as source:
+            source.execute('BEGIN')
+            require(source.execute('PRAGMA integrity_check').fetchone() == ('ok',), 'Source database integrity failed')
+            schema = source.execute("SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid").fetchall()
+            # Replaying virtual-table shadow DDL would duplicate their internal tables.
+            table_list = source.execute('PRAGMA table_list').fetchall()
+            require(bool(table_list), 'SQLite 3.37+ is required to reconstruct runtime state')
+            shadows = {row[1] for row in table_list if row[2] == 'shadow'}
+            rows = source.execute("SELECT value_json FROM config_machine_state WHERE state_key='plugins.installedIndex'").fetchall()
+            require(len(rows) == 1, 'Missing required plugin provenance')
+            payload = json.loads(rows[0][0])
+            require(isinstance(payload, dict) and isinstance(payload.get('index'), dict), 'Invalid installed plugin index')
+            index = payload['index']
+            validate_records(index.get('installRecords'))
+            require(isinstance(index.get('plugins'), list) and all(isinstance(p, dict) for p in index['plugins']), 'Invalid installed plugins')
+            for plugin in index['plugins']:
+                plugin.pop('sourceAdmissions', None)
+            index['diagnostics'] = []
+            index.pop('workspaceDir', None)
+            index['generatedAtMs'] = 0
+            index['refreshReason'] = 'snapshot-seal'
+            # Only the known envelope is retained, not future machine-specific fields.
+            payload = {'revision': 1, 'index': index}
+            meta_columns = [row[1] for row in source.execute('PRAGMA table_info(schema_meta)')]
+            require(meta_columns == ['meta_key', 'role', 'schema_version', 'agent_id', 'app_version', 'created_at', 'updated_at'], 'Unsupported schema metadata')
+            meta = source.execute('SELECT meta_key,role,schema_version,agent_id,app_version FROM schema_meta').fetchall()
+            require(len(meta) == 1 and meta[0][0:2] == ('primary', 'global') and meta[0][3] is None, 'Unsupported global schema metadata')
+            version = source.execute('PRAGMA user_version').fetchone()[0]
+        source.close()
+        fresh_db = new_state / 'openclaw.sqlite'
+        with sqlite3.connect(fresh_db) as target:
+            # Tables first, secondary objects last; insert before triggers are installed.
+            for kind, name, sql in schema:
+                if kind == 'table' and name not in shadows:
+                    target.execute(sql)
+            target.execute('INSERT INTO schema_meta VALUES (?,?,?,?,?,?,?)', (*meta[0], 0, 0))
+            target.execute('INSERT INTO config_machine_state(state_key,value_json,updated_at_ms) VALUES (?,?,0)',
+                           ('plugins.installedIndex', json.dumps(payload, separators=(',', ':'))))
+            for kind, name, sql in schema:
+                if kind != 'table':
+                    require(kind in ('index', 'view', 'trigger'), 'Unsupported schema object')
+                    target.execute(sql)
+            target.execute('PRAGMA user_version=' + str(version))
+            target.commit()
+            require(target.execute('PRAGMA integrity_check').fetchone() == ('ok',), 'Sealed database integrity failed')
+            require(not target.execute('PRAGMA foreign_key_check').fetchall(), 'Sealed database foreign keys failed')
+            for kind, name, sql in schema:
+                if kind == 'table' and name not in shadows and name not in ('schema_meta', 'config_machine_state'):
+                    quoted = '"' + name.replace('"', '""') + '"'
+                    require(target.execute('SELECT count(*) FROM ' + quoted).fetchone()[0] == 0, 'Unexpected retained runtime rows')
+        target.close()
+        fresh_db.chmod(0o600)
+        fsync(fresh_db)
+    else:
+        # Supported pre-SQLite releases keep install records in canonical config.
+        # Modern releases must not silently lose their machine-owned provenance.
+        require(os.environ.get('OPENCLAW_AUTHORED_PLUGIN_INSTALLS', '1') != '0', 'Missing modern runtime database')
+        validate_records(config.get('plugins', {}).get('installs'))
+        index_path = state / 'plugins/installs.json'
+        plain(index_path)
+        if index_path.exists():
+            old_index = json.loads(index_path.read_text())
+            validate_records(old_index.get('installRecords'))
+            legacy_index = {'installRecords': old_index['installRecords']}
+            if 'version' in old_index:
+                require(isinstance(old_index['version'], int), 'Invalid legacy install-index version')
+                legacy_index['version'] = old_index['version']
+    fsync(new_state)
+    config_path = stage / 'openclaw.json'
+    config_path.write_text(json.dumps(config, indent=2) + '\n')
+    config_path.chmod(0o600)
+    fsync(config_path)
+    fsync(stage)
+    os.replace(config_path, state / 'openclaw.json')
+    remove(state / 'state')
+    os.replace(new_state, state / 'state')
+    # Remove all old index/cache artifacts; restore only legacy install provenance.
+    remove(state / 'plugins')
+    if legacy_index is not None:
+        (state / 'plugins').mkdir(mode=0o700)
+        index_path = state / 'plugins/installs.json'
+        index_path.write_text(json.dumps(legacy_index) + '\n')
+        index_path.chmod(0o600)
+        fsync(index_path)
+        fsync(index_path.parent)
+    fsync(state)
+finally:
+    shutil.rmtree(stage)
+
+# An allowlist (not a known-secret denylist) also removes future runtime artifacts.
+retain_only(state, {'openclaw.json', 'state', 'npm', 'extensions', 'plugin-skills', 'cache', 'workspace', 'plugins'})
+retain_only(state / 'workspace', {'skills'})
+retain_only(state / 'cache', {'control-ui-assets'})
+for rel in ('.config/go/telemetry', '.cache/go/telemetry', '.bash_history', '.node_repl_history', '.python_history'):
+    path = root / rel
+    remove(path)
+    if path.parent.exists():
+        fsync(path.parent)
+fsync(state)
+print(json.dumps({'sealed': True, 'database': 'fresh schema plus plugin provenance only' if db.exists() else 'legacy config provenance', 'workspace': 'skills only'}))
+SEAL_PY
+  rm -rf /tmp/openclaw
+  sync
+
   set_step "done"
   echo "__GW_PREPARE_DONE__=1"
   echo "Prepare agent server completed successfully."
