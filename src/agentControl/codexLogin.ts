@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import JSON5 from "json5";
 import type { CodexAuthBundle } from "./protocol.js";
 import { writeRuntimeAuth } from "./runtimeAuthWriter.js";
+import { normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
 
 const OPENAI_AUTH_BASE_URL = "https://auth.openai.com";
 const OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -700,7 +701,10 @@ function clearChatGptRouteOverrides(config: Record<string, unknown>): boolean {
       changed = true;
     }
   }
-  return changed;
+  // Auth import/sync/login explicitly selects subscription. Clear only exact
+  // generated aliases too, or a later doctor migration can restore their proxy
+  // after this action has reported up_to_date. Authored alias rows stay intact.
+  return normalizeManagedSubscriptionRoute(config, true) || changed;
 }
 
 async function reconcileChatGptRoute(configPath: string): Promise<boolean> {

@@ -2,6 +2,8 @@
 
 Scope: relay only, based on `afd1c00`; no backend edits, push, deployment, live credential reads, network inference, gateway/service changes. All auth and config are temporary synthetic fixtures. Public installed provider-auth SDK creates real runtime-owned SQLite schemas; diagnostic-only installed resolver exports select actual auth routes. Runtime: OpenClaw 2026.9.7.
 
+Terra is actually `gpt-5.6-terra`; the original matrix used `gpt-5.4`, not Terra. Labels below are corrected.
+
 ## Reproduce
 
 `MATRIX_REPORT=reports/subscription-sequences-after.json npm run test:subscription-sequences`
@@ -29,12 +31,12 @@ An initial harness run also found that null `lastRefresh` is intentionally mater
 
 ## Exact expanded matrix
 
-- Six 20-action sequences: `model.set` and `modelAssignment.set(main)` × shared runtime SQLite, agent-owned runtime SQLite, legacy JSON. Terra (`gpt-5.4`) → Sol → Terra → Sol; reasoning off/low/high/omitted/null; unrelated Codex Terra fallback, Sol fallback, clear fallbacks; immediate identical repeats; switch Anthropic then return. Assertions cover selected subscription API independently of tokens, refresh token, identity, order/lastGood, schema metadata/SQL/user_version/integrity, primary/fallback values and reasoning.
+- Six 20-action sequences: `model.set` and `modelAssignment.set(main)` × shared runtime SQLite, agent-owned runtime SQLite, legacy JSON. GPT-5.4 (`gpt-5.4`) → Sol → GPT-5.4 → Sol; reasoning off/low/high/omitted/null; unrelated Codex GPT-5.4 fallback, Sol fallback, clear fallbacks; immediate identical repeats; switch Anthropic then return. Assertions cover selected subscription API independently of tokens, refresh token, identity, order/lastGood, schema metadata/SQL/user_version/integrity, primary/fallback values and reasoning.
 - Three nonempty Sol catalog proxy-reintroduction sequences: model.set, modelAssignment.set, config.apply; lingering codex provider row included.
 - Config read/merge/apply and empty generated route; malformed apply must reject and preserve config/auth. `config.patch` is not a relay protocol action; patch-equivalent path is read/merge/apply.
-- Two model-alias sequences: codex/openai-codex/openai for Terra and Sol.
+- Two model-alias sequences: codex/openai-codex/openai for GPT-5.4 and Sol.
 - Five non-main purposes: image, imageGeneration, videoGeneration, musicGeneration, pdf; must not change main reasoning. This tests routing/persistence, not whether Sol supports those generation tasks.
-- Two independent fixture targets with different synthetic identities, each Sol → Terra → Sol (dashboard-equivalent per-agent bulk actions, not backend bulk endpoint).
+- Two independent fixture targets with different synthetic identities, each Sol → GPT-5.4 → Sol (dashboard-equivalent per-agent bulk actions, not backend bulk endpoint).
 - Expired profile: subscription *route identity* survives; unavailable readiness rejects selection; login status explicitly failed/expired, no refresh or inference claimed.
 - Shared and agent-owned import/reimport/export/status sequences; failed sync refresh explicitly rejects and restores auth/config/CLI/schema; expired and identity-mismatched imports reject.
 - Shared and agent-owned sync ordering: version 2 apply, same/older version with stale refresh token ignored, version 3 rotation accepted, older-version route repair keeps rotated token/account; explicit API mode then login mode preserves OAuth and returns to subscription.
@@ -51,7 +53,7 @@ Explicit `codex.auth.clear`/force relink intentionally destroys/replaces authori
 - `npm run lint`: pass (`sequence-lint.log`).
 - `NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost npm test`: **56 files / 560 tests pass**, 38.87s, start 10:34:03 UTC (`sequence-full-tests-final.log`). Loopback bypass is required by this host’s proxy environment, not a code workaround.
 - `npm run test:subscription-sequences`: **30 sequences / 200 actions pass** (`sequence-after.log` and committed JSON).
-- Existing `prove-managed-subscription-route.mjs`: both Terra and Sol pass (`sequence-baseline-proof.log`).
+- Existing `prove-managed-subscription-route.mjs`: both GPT-5.4 and Sol pass (`sequence-baseline-proof.log`).
 - `git diff --check` and script syntax check pass.
 
 Machine-readable before/after reports are committed alongside this document; raw logs remain local, untracked by repository policy.

@@ -3,7 +3,7 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { __testing as codexLoginTesting } from "./codexLogin.js";
+import { __testing as codexLoginTesting, hasChatGptRouteOverrides } from "./codexLogin.js";
 import { __testing as githubAuthTesting } from "./githubAuth.js";
 import { executeAgentControl } from "./executeAgentControl.js";
 
@@ -1679,6 +1679,21 @@ describe("executeAgentControl config validation", () => {
 });
 
 describe("executeAgentControl model set", () => {
+  it.each(["generated", "custom", "extended"])("auth reconciliation detects only generated stale alias (%s)", async (mode) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-auth-route-alias-"));
+    const configPath = path.join(dir, "openclaw.json");
+    const previous = { BACKEND_BASE_URL: process.env.BACKEND_BASE_URL, OPENAI_BASE_URL: process.env.OPENAI_BASE_URL, OPENAI_API_KEY: process.env.OPENAI_API_KEY, CODEX_API_KEY: process.env.CODEX_API_KEY };
+    process.env.BACKEND_BASE_URL = "https://dev-api.golemworkers.com";
+    delete process.env.OPENAI_BASE_URL; delete process.env.OPENAI_API_KEY; delete process.env.CODEX_API_KEY;
+    try {
+      const codex = { baseUrl: mode === "custom" ? "https://custom.test/v1" : process.env.BACKEND_BASE_URL + "/api/v1/relays/openai/v1", models: [], ...(mode === "extended" ? { headers: { "x-authored": "keep" } } : {}) };
+      await fs.writeFile(configPath, JSON.stringify({ models: { providers: { codex } } }));
+      expect(await hasChatGptRouteOverrides(configPath)).toBe(mode === "generated");
+    } finally {
+      for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
   it.each(["model", "pdfModel", "imageGenerationModel"])("normalizes generated route via config.apply %s without auth writes", async (assignment) => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-config-subscription-"));
     const configPath = path.join(dir, "openclaw.json");

@@ -21,7 +21,7 @@ const token = (email, account) => [Buffer.from('{"alg":"none"}').toString('base6
 const bundleFor = name => ({ formatVersion: 1, profileId: 'openai:'+name+'@example.test', accessToken: token(name+'@example.test', 'acct-'+name), idToken: token(name+'@example.test', 'acct-'+name), refreshToken: 'synthetic-refresh-'+name, expiresAtMs: 4700000000000, lastRefresh: '2026-10-01T00:00:00.000Z', email: name+'@example.test', accountId: 'acct-'+name, chatgptPlanType: 'plus' });
 const endpoint = 'https://dev-api.golemworkers.com/api/v1/relays/openai/v1';
 const row = () => ({ baseUrl: endpoint, models: [] });
-const SOL = 'gpt-6.1-sol', TERRA = 'gpt-5.4';
+const SOL = 'gpt-6.1-sol', GPT54 = 'gpt-5.4';
 async function runtimeFunction(prefix, name) {
   const candidates = [];
   for (const file of await fs.readdir(dist)) {
@@ -42,7 +42,7 @@ async function fixture(name, ownership = 'shared', expired = false) {
   const dir = path.join(root, name); await fs.mkdir(dir);
   const f = { root: dir, configPath: path.join(dir, 'openclaw.json'), bundle: bundleFor(name), ownership };
   activate(f);
-  await fs.writeFile(f.configPath, JSON.stringify({ agents: { defaults: { model: { primary: 'openai/'+TERRA }, thinkingDefault: 'high' } }, auth: { order: { openai: [f.bundle.profileId] } }, models: { providers: { openai: row(), codex: row(), anthropic: { baseUrl: 'https://keep.example.test', models: [] } } } }));
+  await fs.writeFile(f.configPath, JSON.stringify({ agents: { defaults: { model: { primary: 'openai/'+GPT54 }, thinkingDefault: 'high' } }, auth: { order: { openai: [f.bundle.profileId] } }, models: { providers: { openai: row(), codex: row(), anthropic: { baseUrl: 'https://keep.example.test', models: [] } } } }));
   if (ownership === 'agent') {
     await fs.mkdir(process.env.OPENCLAW_AGENT_DIR, { recursive: true });
     await promisify(execFile)(process.execPath, ['--input-type=module', '-e', "const {updateAuthProfileStoreWithLock}=await import(process.argv[1]); const r=await updateAuthProfileStoreWithLock({agentDir:process.env.OPENCLAW_AGENT_DIR,saveOptions:{syncExternalCli:false},updater:s=>{s.profiles['anthropic:keep']={type:'api_key',provider:'anthropic',key:'synthetic'}; return true;}}); process.exit(r?0:1);", pathToFileURL(sdk).href], { env: process.env });
@@ -77,6 +77,7 @@ async function run(f, action, gateway = { request() { throw Error('Unexpected ga
 }
 const modelAction = (kind, id, thinking, fallback = null) => ({ kind, ...(kind === 'model.set' ? { model: id, fallbacks: fallback ? [fallback] : [] } : { purpose: 'main', primary: id, fallback }), ...(thinking !== undefined ? { thinkingDefault: thinking } : {}) });
 async function check(name, fn) {
+  if (process.env.MATRIX_FILTER && !name.includes(process.env.MATRIX_FILTER)) return;
   try { const detail = await fn(); results.push({ name, status: 'PASS', ...detail }); }
   catch (error) { results.push({ name, status: 'FAIL', error: error.message }); }
   console.log(JSON.stringify(results.at(-1)));
@@ -98,7 +99,10 @@ exit 0
   async function route(f, id, readiness = 'ready') {
     const cfg = await config(f), auth = await snapshot(f);
     const model = cfg.models?.providers?.openai?.models?.find(m => m.id === id);
-    const resolution = resolve({ config: cfg, provider: 'openai', modelId: id, api: model?.api, baseUrl: model?.baseUrl, agentId: 'main', primaryModel: { provider: 'openai', model: id }, env: {}, resolveProfileAuthMode: key => auth.store.profiles[key]?.type, resolveProfileAuthFlow: key => auth.store.profiles[key]?.authFlow });
+    const primaryRef = cfg.agents?.defaults?.model?.primary ?? 'openai/'+id;
+    const slash = primaryRef.indexOf('/');
+    const primaryModel = { provider: primaryRef.slice(0,slash), model: primaryRef.slice(slash+1) };
+    const resolution = resolve({ config: cfg, provider: 'openai', modelId: id, api: model?.api, baseUrl: model?.baseUrl, agentId: 'main', primaryModel, env: {}, resolveProfileAuthMode: key => auth.store.profiles[key]?.type, resolveProfileAuthFlow: key => auth.store.profiles[key]?.authFlow });
     const order = cfg.auth?.order?.openai ?? auth.state?.order?.openai ?? [];
     return { resolution, selected: select({ provider: 'openai', resolution, sourcePlan: plan({ explicitOrder: true, profiles: order.map(profileId => ({ profileId, mode: auth.store.profiles[profileId]?.type, readiness, cooldown: 'clear' })) }) }) };
   }
@@ -113,7 +117,7 @@ exit 0
     await check(owner+'/'+kind+'/roundtrip-reasoning-fallback-idempotence', async () => {
       const f = await fixture(owner+'-'+kind, owner), before = await snapshot(f);
       let preservedThinking = 'high';
-      for (const [id, thinking, fallback] of [[TERRA,'off'],[SOL,'low'],[TERRA,'high'],[SOL,undefined],[SOL,null],[SOL,'high','codex/'+TERRA],[TERRA,undefined,'openai/'+SOL],[SOL,undefined],[TERRA,undefined]]) {
+      for (const [id, thinking, fallback] of [[GPT54,'off'],[SOL,'low'],[GPT54,'high'],[SOL,undefined],[SOL,null],[SOL,'high','codex/'+GPT54],[GPT54,undefined,'openai/'+SOL],[SOL,undefined],[GPT54,undefined]]) {
         const action = modelAction(kind, 'openai/'+id, thinking, fallback);
         await run(f, action); await subscription(f,id);
         const cfg = await config(f);
@@ -161,7 +165,7 @@ exit 0
     assert.equal(await fs.readFile(f.configPath,'utf8'),contents); assert.deepEqual(await snapshot(f),before);
     return { patchPath: 'config.read + caller merge + config.apply; config.patch unsupported' };
   });
-  for (const id of [TERRA,SOL]) await check('model-aliases/'+id,async()=>{
+  for (const id of [GPT54,SOL]) await check('model-aliases/'+id,async()=>{
     const f=await fixture('aliases-'+id), before=await snapshot(f);
     for(const alias of ['codex','openai-codex','openai']) {
       await run(f,modelAction('model.set',alias+'/'+id,'high'));
@@ -172,7 +176,7 @@ exit 0
   });
   for(const purpose of ['image','imageGeneration','videoGeneration','musicGeneration','pdf']) await check('non-main-assignment/'+purpose,async()=>{
     const f=await fixture('purpose-'+purpose), before=await snapshot(f);
-    await run(f,{kind:'modelAssignment.set',purpose,primary:'openai/'+SOL,fallback:'codex/'+TERRA,thinkingDefault:'off'});
+    await run(f,{kind:'modelAssignment.set',purpose,primary:'openai/'+SOL,fallback:'codex/'+GPT54,thinkingDefault:'off'});
     assert.equal((await config(f)).agents.defaults.thinkingDefault,'high');
     await subscription(f,SOL); assert.deepEqual(await snapshot(f),before);
     return { mainReasoningPreserved:true };
@@ -180,7 +184,7 @@ exit 0
   await check('two-independent-fixtures/dashboard-equivalent-bulk',async()=>{
     const a = await fixture('bulk-a'), b = await fixture('bulk-b');
     const sa=await snapshot(a), sb=await snapshot(b);
-    for (const id of [SOL,TERRA,SOL]) {
+    for (const id of [SOL,GPT54,SOL]) {
       for(const f of [a,b]) await run(f,modelAction('model.set','openai/'+id,'high'));
       await subscription(a,id); await subscription(b,id);
       assert.deepEqual(await snapshot(a),sa); assert.deepEqual(await snapshot(b),sb);
@@ -253,6 +257,43 @@ exit 0
     assert.equal(login.authModes.openaiLogin.active,true); assert.deepEqual(await snapshot(f),rotatedState); await subscription(f,SOL);
     return { staleVersions:[2,1], rotatedVersion:3, modeSwitch:'explicit API mode preserves saved OAuth; login restores subscription' };
   });
+  for(const drift of ['empty','nonempty-sol']) for(const placement of ['primary','fallback','auxiliary']) await check('same-version-sqlite-only/'+drift+'/'+placement,async()=>{
+    const f=await fixture('drift-'+drift+'-'+placement);
+    const id=drift==='empty'?GPT54:SOL;
+    await run(f,modelAction('model.set','openai/'+id,'high'));
+    let refreshCalls=0;
+    const gateway={async request(method){assert.equal(method,'models.authStatus'); refreshCalls++; return {};}};
+    await run(f,{kind:'codex.auth.sync',bundleVersion:9,bundle:f.bundle},gateway);
+    refreshCalls=0;
+    await fs.rm(path.join(f.root,'codex/auth.json'));
+    await assert.rejects(fs.access(path.join(f.root,'codex/auth.json')), {code:'ENOENT'});
+    const before=await snapshot(f), cfg=await config(f);
+    if(placement!=='primary') {
+      cfg.agents.defaults.model={primary:'anthropic/claude-sonnet-4-5',fallbacks:placement==='fallback'?['openai/'+id]:[]};
+      if(placement==='auxiliary') cfg.agents.defaults.pdfModel={primary:'openai/'+id,fallbacks:[]};
+    }
+    cfg.models.providers.openai=drift==='empty'?row():{...cfg.models.providers.openai,baseUrl:endpoint};
+    cfg.models.providers.codex=row();
+    await save(f,cfg);
+    const exported=await run(f,{kind:'codex.auth.export'});
+    assert.equal(exported.bundle.refreshToken,f.bundle.refreshToken); assert.equal(exported.bundle.accountId,f.bundle.accountId);
+    for(let repeat=0;repeat<2;repeat++) {
+      const result=await run(f,{kind:'codex.auth.sync',bundleVersion:9,bundle:f.bundle},gateway);
+      assert.equal(result.reason,'up_to_date'); assert.equal(result.accountId,f.bundle.accountId);
+      assert.deepEqual(await snapshot(f),before);
+      const selected=await subscription(f,id);
+      assert.equal(selected.selected.selection.route.baseUrl,'https://chatgpt.com/backend-api/codex');
+      const after=await config(f);
+      assert.equal(after.models.providers.openai?.baseUrl,undefined);
+      assert.equal(after.models.providers.codex,undefined,'lingering generated alias must not resurrect drift');
+      assert.equal(after.agents.defaults.model.primary,cfg.agents.defaults.model.primary);
+      assert.equal(refreshCalls,1,'drift refresh once; clean repeated sync is idempotent');
+    }
+    const status=await run(f,{kind:'codex.login.status'});
+    assert.equal(status.authModes.openaiLogin.active,true);
+    assert.equal(status.accountId,f.bundle.accountId);
+    return { sqliteOnlyAtEntry:true,placement,drift,effectiveRoute:'subscription/chatgpt endpoint',authUnchanged:true };
+  });
   for (const override of ['custom-base','explicit-api','provider-api-key','persisted-api-key','custom-model','environment-route']) await check('authored-override/'+override+'/intentionally-authoritative',async()=>{
     const f=await fixture('override-'+override);
     let cfg=await config(f);
@@ -263,7 +304,7 @@ exit 0
     if(override==='environment-route') cfg.env={vars:{OPENAI_BASE_URL:'https://custom.example.test/v1'}};
     if(override==='persisted-api-key') await writeRuntimeAuth({configPath:f.configPath,profileId:'openai:key',credential:{type:'api_key',provider:'openai',key:'synthetic-key'}});
     await save(f,cfg); const before=await snapshot(f);
-    await run(f,modelAction('model.set','openai/'+SOL,'high','codex/'+TERRA));
+    await run(f,modelAction('model.set','openai/'+SOL,'high','codex/'+GPT54));
     const after=await config(f); assert.equal(after.models.providers.openai.baseUrl,cfg.models.providers.openai.baseUrl);
     for(const key of ['api','apiKey']) assert.equal(after.models.providers.openai[key],cfg.models.providers.openai[key]);
     if(override==='custom-model') for(const [k,v] of Object.entries(cfg.models.providers.openai.models[0])) assert.deepEqual(after.models.providers.openai.models[0][k],v);
