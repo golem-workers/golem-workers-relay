@@ -1,3 +1,6 @@
+import { isDeepStrictEqual } from "node:util";
+import { ensureNativePiModelCompatibility } from "./nativePiModelCompatibility.js";
+
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : undefined;
@@ -15,7 +18,18 @@ function managedBaseUrl(env: NodeJS.ProcessEnv): string | undefined {
   } catch { return; }
 }
 
-/** Remove ONLY exact, empty generated rows after runtime subscription proof.
+// Reuse the generator as a strict fingerprint: arbitrary nonempty catalogs and
+// authored model/provider fields must remain authoritative.
+function isGeneratedSolCatalog(provider: RecordValue): boolean {
+  const expected: RecordValue = { agents: { defaults: { models: { "openai/gpt-6.1-sol": {} } } } };
+  ensureNativePiModelCompatibility(expected, true, {});
+  const catalog = record(record(expected.models)?.providers)?.openai;
+  const withoutEndpoint = { ...provider };
+  delete withoutEndpoint.baseUrl;
+  return isDeepStrictEqual(withoutEndpoint, catalog);
+}
+
+/** Remove ONLY exact generated rows/routes after runtime subscription proof.
  * Any extension (even an unknown field), credential, header or explicit API
  * makes ownership ambiguous: preserve the whole row. Both names are checked
  * so a later OpenClaw doctor alias migration cannot resurrect the override.
@@ -41,10 +55,16 @@ export function normalizeManagedSubscriptionRoute(
   let changed = false;
   for (const name of ["openai", "codex"]) {
     const provider = record(providers[name]);
-    if (!provider || provider.baseUrl !== endpoint || !Array.isArray(provider.models) || provider.models.length !== 0) continue;
-    if (Object.keys(provider).some((key) => key !== "baseUrl" && key !== "models")) continue;
-    delete providers[name];
-    changed = true;
+    if (!provider || provider.baseUrl !== endpoint || !Array.isArray(provider.models)) continue;
+    if (provider.models.length === 0 && Object.keys(provider).every((key) => key === "baseUrl" || key === "models")) {
+      delete providers[name];
+      changed = true;
+    } else if (name === "openai" && isGeneratedSolCatalog(provider)) {
+      // Provisioning can reinsert baseUrl after Sol has populated the catalog.
+      // Keep that catalog, removing only the exact generated endpoint.
+      delete provider.baseUrl;
+      changed = true;
+    }
   }
   return changed;
 }

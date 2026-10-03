@@ -1,0 +1,204 @@
+{
+  "runtimeVersion": "2026.9.7",
+  "checks": 30,
+  "passed": 30,
+  "failed": 0,
+  "actions": 200,
+  "results": [
+    {
+      "name": "shared/model.set/roundtrip-reasoning-fallback-idempotence",
+      "status": "PASS",
+      "steps": 20,
+      "ownership": "shared",
+      "authUnchanged": true
+    },
+    {
+      "name": "shared/modelAssignment.set/roundtrip-reasoning-fallback-idempotence",
+      "status": "PASS",
+      "steps": 20,
+      "ownership": "shared",
+      "authUnchanged": true
+    },
+    {
+      "name": "agent/model.set/roundtrip-reasoning-fallback-idempotence",
+      "status": "PASS",
+      "steps": 20,
+      "ownership": "agent",
+      "authUnchanged": true
+    },
+    {
+      "name": "agent/modelAssignment.set/roundtrip-reasoning-fallback-idempotence",
+      "status": "PASS",
+      "steps": 20,
+      "ownership": "agent",
+      "authUnchanged": true
+    },
+    {
+      "name": "legacy/model.set/roundtrip-reasoning-fallback-idempotence",
+      "status": "PASS",
+      "steps": 20,
+      "ownership": "legacy",
+      "authUnchanged": true
+    },
+    {
+      "name": "legacy/modelAssignment.set/roundtrip-reasoning-fallback-idempotence",
+      "status": "PASS",
+      "steps": 20,
+      "ownership": "legacy",
+      "authUnchanged": true
+    },
+    {
+      "name": "generated-proxy-reintroduced/nonempty-sol/model.set",
+      "status": "PASS",
+      "authUnchanged": true
+    },
+    {
+      "name": "generated-proxy-reintroduced/nonempty-sol/modelAssignment.set",
+      "status": "PASS",
+      "authUnchanged": true
+    },
+    {
+      "name": "generated-proxy-reintroduced/nonempty-sol/config.apply",
+      "status": "PASS",
+      "authUnchanged": true
+    },
+    {
+      "name": "config.apply/empty-generated-route-and-read-modify-apply",
+      "status": "PASS",
+      "patchPath": "config.read + caller merge + config.apply; config.patch unsupported"
+    },
+    {
+      "name": "model-aliases/gpt-5.4",
+      "status": "PASS",
+      "aliases": [
+        "codex",
+        "openai-codex",
+        "openai"
+      ]
+    },
+    {
+      "name": "model-aliases/gpt-6.1-sol",
+      "status": "PASS",
+      "aliases": [
+        "codex",
+        "openai-codex",
+        "openai"
+      ]
+    },
+    {
+      "name": "non-main-assignment/image",
+      "status": "PASS",
+      "mainReasoningPreserved": true
+    },
+    {
+      "name": "non-main-assignment/imageGeneration",
+      "status": "PASS",
+      "mainReasoningPreserved": true
+    },
+    {
+      "name": "non-main-assignment/videoGeneration",
+      "status": "PASS",
+      "mainReasoningPreserved": true
+    },
+    {
+      "name": "non-main-assignment/musicGeneration",
+      "status": "PASS",
+      "mainReasoningPreserved": true
+    },
+    {
+      "name": "non-main-assignment/pdf",
+      "status": "PASS",
+      "mainReasoningPreserved": true
+    },
+    {
+      "name": "two-independent-fixtures/dashboard-equivalent-bulk",
+      "status": "PASS",
+      "bulkTargets": 2,
+      "independentIdentities": true
+    },
+    {
+      "name": "expired-profile/route-identity-not-readiness",
+      "status": "PASS",
+      "selectionWithUnavailableProfile": "rejected",
+      "refreshAndInference": "not attempted"
+    },
+    {
+      "name": "shared/auth-import-reimport-export-status-and-failed-sync-rollback",
+      "status": "PASS",
+      "rollback": "config + tokens + order + identity + schema + CLI; explicit rejection required"
+    },
+    {
+      "name": "agent/auth-import-reimport-export-status-and-failed-sync-rollback",
+      "status": "PASS",
+      "rollback": "config + tokens + order + identity + schema + CLI; explicit rejection required"
+    },
+    {
+      "name": "shared/sync-version-order-and-mode-roundtrip",
+      "status": "PASS",
+      "staleVersions": [
+        2,
+        1
+      ],
+      "rotatedVersion": 3,
+      "modeSwitch": "explicit API mode preserves saved OAuth; login restores subscription"
+    },
+    {
+      "name": "agent/sync-version-order-and-mode-roundtrip",
+      "status": "PASS",
+      "staleVersions": [
+        2,
+        1
+      ],
+      "rotatedVersion": 3,
+      "modeSwitch": "explicit API mode preserves saved OAuth; login restores subscription"
+    },
+    {
+      "name": "authored-override/custom-base/intentionally-authoritative",
+      "status": "PASS",
+      "category": "intentional override, NOT subscription-loss pass",
+      "routeSelection": "rejected"
+    },
+    {
+      "name": "authored-override/explicit-api/intentionally-authoritative",
+      "status": "PASS",
+      "category": "intentional override, NOT subscription-loss pass",
+      "routeSelection": "rejected"
+    },
+    {
+      "name": "authored-override/provider-api-key/intentionally-authoritative",
+      "status": "PASS",
+      "category": "intentional override, NOT subscription-loss pass",
+      "routeSelection": "rejected"
+    },
+    {
+      "name": "authored-override/persisted-api-key/intentionally-authoritative",
+      "status": "PASS",
+      "category": "intentional override, NOT subscription-loss pass",
+      "routeSelection": "rejected"
+    },
+    {
+      "name": "authored-override/custom-model/intentionally-authoritative",
+      "status": "PASS",
+      "category": "intentional override, NOT subscription-loss pass",
+      "routeSelection": "rejected"
+    },
+    {
+      "name": "authored-override/environment-route/intentionally-authoritative",
+      "status": "PASS",
+      "category": "intentional override, NOT subscription-loss pass",
+      "routeSelection": "rejected"
+    },
+    {
+      "name": "model-mutation/restart-failure-contract",
+      "status": "PASS",
+      "limitation": "model.set writes config before restart; no rollback contract. Error explicitly required; auth untouched."
+    }
+  ],
+  "limitations": [
+    "Offline route selection is not live inference/token refresh",
+    "Fake systemctl; no actual gateway restart or service edits",
+    "Dashboard-equivalent per-target relay actions, not backend bulk endpoint",
+    "Legacy JSON route source inspected directly; runtime migration not invoked",
+    "Private route exports used only in this diagnostic; public SDK handles auth persistence"
+  ]
+}

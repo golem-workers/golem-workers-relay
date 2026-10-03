@@ -1,10 +1,28 @@
 import { describe, expect, it } from "vitest";
+import { ensureNativePiModelCompatibility } from "./nativePiModelCompatibility.js";
 import { normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
 const env = { BACKEND_BASE_URL: "https://dev-api.golemworkers.com" };
 const baseUrl = env.BACKEND_BASE_URL + "/api/v1/relays/openai/v1";
 const row = () => ({ baseUrl, models: [] });
 const fixture = (openai: Record<string, unknown> = row()) => ({ models: { providers: { openai, codex: row(), anthropic: { baseUrl: "https://keep.test", models: [] } } } });
 describe("managed subscription route normalization", () => {
+  it.each(["exact", "model-field", "provider-field", "api", "extra-model"])("recognizes only the exact generated Sol catalog after endpoint reintroduction (%s)", (mode) => {
+    const cfg: Record<string, unknown> = { agents: { defaults: { models: { "openai/gpt-6.1-sol": {} } } } };
+    ensureNativePiModelCompatibility(cfg, true);
+    const providers = (cfg.models as { providers: Record<string, Record<string, unknown>> }).providers;
+    const provider = providers.openai;
+    provider.baseUrl = baseUrl;
+    const models = provider.models as Array<Record<string, unknown>>;
+    if (mode === "model-field") models[0].contextWindow = 12345;
+    if (mode === "provider-field") provider.headers = {};
+    if (mode === "api") models[0].api = "openai-responses";
+    if (mode === "extra-model") models.push({ id: "custom" });
+    const before = structuredClone(provider);
+    expect(normalizeManagedSubscriptionRoute(cfg, true, env)).toBe(mode === "exact");
+    if (mode === "exact") delete before.baseUrl;
+    expect(provider).toEqual(before);
+    expect(normalizeManagedSubscriptionRoute(cfg, true, env)).toBe(false);
+  });
   it("removes exact migrated and lingering aliases, preserving everything else, idempotently", () => {
     const cfg = { ...fixture(), auth: { order: { openai: ["openai:test"] } }, env: { vars: { OPENAI_TTS_BASE_URL: "https://keep.test" } } };
     const before = structuredClone(cfg);

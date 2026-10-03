@@ -1,5 +1,9 @@
 /** OpenClaw 2026.9.7 predates GPT-6.1-Sol in its native catalog. */
-export function ensureNativePiModelCompatibility(config: Record<string, unknown>, subscriptionRoute = false): void {
+export function ensureNativePiModelCompatibility(
+  config: Record<string, unknown>,
+  subscriptionRoute = false,
+  processEnv: NodeJS.ProcessEnv = process.env,
+): void {
   const record = (value: unknown): Record<string, unknown> | undefined =>
     value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
   const ensure = (parent: Record<string, unknown>, key: string): Record<string, unknown> =>
@@ -17,7 +21,7 @@ export function ensureNativePiModelCompatibility(config: Record<string, unknown>
   const env = record(config.env);
   const hasAuthoredRoute = [provider, model].some((entry) =>
     ["api", "baseUrl", "apiKey", "auth", "headers"].some((key) => entry[key] !== undefined))
-    || [env, record(env?.vars), process.env].some((entry) => entry?.OPENAI_BASE_URL !== undefined);
+    || [env, record(env?.vars), processEnv].some((entry) => entry?.OPENAI_BASE_URL !== undefined);
   const defaults: Record<string, unknown> = {
     name: "GPT-6.1-Sol",
     ...(!hasAuthoredRoute ? { api: subscriptionRoute ? "openai-chatgpt-responses" : "openai-responses" } : {}),

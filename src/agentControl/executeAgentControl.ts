@@ -394,6 +394,16 @@ async function applyConfig(input: {
   configText: string;
 }): Promise<AgentControlResult> {
   const parsed = parseConfigText(input.configText);
+  const defaults = ensureOptionalRecord(ensureOptionalRecord(parsed.agents)?.defaults);
+  const requestedModels = ["model", "imageModel", "imageGenerationModel", "videoGenerationModel", "musicGenerationModel", "pdfModel"]
+    .flatMap((key) => {
+      const value = defaults?.[key];
+      if (typeof value === "string") return [value];
+      const assignment = ensureOptionalRecord(value);
+      return [assignment?.primary, ...readUnknownArray(assignment?.fallbacks)]
+        .filter((ref): ref is string => typeof ref === "string");
+    });
+  await applyNativePiModelCompatibility(parsed, input.configPath, requestedModels);
   await atomicWriteUtf8(input.configPath, `${JSON.stringify(parsed, null, 2)}\n`);
   return {
     kind: "config.apply",

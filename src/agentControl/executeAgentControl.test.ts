@@ -1679,6 +1679,32 @@ describe("executeAgentControl config validation", () => {
 });
 
 describe("executeAgentControl model set", () => {
+  it.each(["model", "pdfModel", "imageGenerationModel"])("normalizes generated route via config.apply %s without auth writes", async (assignment) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-config-subscription-"));
+    const configPath = path.join(dir, "openclaw.json");
+    const previous = { BACKEND_BASE_URL: process.env.BACKEND_BASE_URL, OPENAI_BASE_URL: process.env.OPENAI_BASE_URL, OPENAI_API_KEY: process.env.OPENAI_API_KEY, CODEX_API_KEY: process.env.CODEX_API_KEY };
+    process.env.BACKEND_BASE_URL = "https://dev-api.golemworkers.com";
+    delete process.env.OPENAI_BASE_URL; delete process.env.OPENAI_API_KEY; delete process.env.CODEX_API_KEY;
+    try {
+      await fs.writeFile(configPath, "{}");
+      const dbPath = await createSharedAuthStateDatabase(dir);
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(dbPath);
+      db.prepare("INSERT INTO config_machine_state VALUES (?, ?, ?)").run("authProfiles.store", JSON.stringify({ version: 1, profiles: { "openai:test": { type: "oauth", provider: "openai", access: "synthetic", refresh: "synthetic", expires: 4700000000000 } } }), Date.now());
+      db.close();
+      const before = await fs.readFile(dbPath);
+      const row = { baseUrl: process.env.BACKEND_BASE_URL + "/api/v1/relays/openai/v1", models: [] };
+      const cfg = { auth: { order: { openai: ["openai:test"] } }, agents: { defaults: { [assignment]: { primary: "openai/gpt-5.4" } } }, models: { providers: { openai: row, codex: row } } };
+      await executeAgentControl({ action: { kind: "config.apply", configText: JSON.stringify(cfg) }, configPath, gateway: noopGateway });
+      const after = JSON.parse(await fs.readFile(configPath, "utf8")) as { models: { providers: Record<string, unknown> }; auth: unknown };
+      expect(after.models.providers).toEqual({});
+      expect(after.auth).toEqual(cfg.auth);
+      expect(await fs.readFile(dbPath)).toEqual(before);
+    } finally {
+      for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
   it.each([
     ["model.set", "openai/gpt-5.4", "both"],
     ["model.set", "openai/gpt-6.1-sol", "migrated"],
