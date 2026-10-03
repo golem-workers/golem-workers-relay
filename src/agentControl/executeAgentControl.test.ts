@@ -7,6 +7,10 @@ import { __testing as codexLoginTesting } from "./codexLogin.js";
 import { __testing as githubAuthTesting } from "./githubAuth.js";
 import { executeAgentControl } from "./executeAgentControl.js";
 
+vi.mock("./runtimeAuthWriter.js", async () => ({
+  writeRuntimeAuth: (await import("./__tests__/runtimeAuthWriter.fixture.js")).legacyRuntimeAuthWriter,
+}));
+
 const noopGateway = {
   request: () => {
     throw new Error("gateway should not be called");
@@ -1435,9 +1439,8 @@ console.log(JSON.stringify({status: ${JSON.stringify(mode === "failure" ? "error
     expect(await fs.readFile(configPath, "utf8")).toBe(initialConfigText);
     await expect(fs.access(path.join(codexHome, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.access(path.join(codexHome, "golem-auth-sync.json"))).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(
-      fs.access(path.join(tempDir, "agents", "main", "agent", "openclaw-agent.sqlite")),
-    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readAgentRuntimeAuthSqlite(path.join(tempDir, "agents", "main", "agent")))
+      .toEqual({ store: null, state: null });
     expect(await readSystemctlCalls(systemctlLogPath)).toEqual([]);
   });
 
