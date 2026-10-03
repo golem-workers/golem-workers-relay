@@ -1680,6 +1680,55 @@ describe("executeAgentControl config validation", () => {
 
 describe("executeAgentControl model set", () => {
   it.each([
+    ["model.set", "openai/gpt-5.4", "both"],
+    ["model.set", "openai/gpt-6.1-sol", "migrated"],
+    ["modelAssignment.set", "openai/gpt-6.1-sol", "legacy"],
+    ["model.set", "openai/gpt-6.1-sol", "api-key"],
+    ["model.set", "openai/gpt-5.4", "identity"],
+    ["model.set", "openai/gpt-5.4", "missing"],
+  ] as const)("normalizes generated proxy via %s %s (%s), without auth writes", async (kind, model, mode) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-managed-route-"));
+    const configPath = path.join(dir, "openclaw.json");
+    const systemctl = await installFakeSystemctl();
+    const previous = { BACKEND_BASE_URL: process.env.BACKEND_BASE_URL, OPENAI_BASE_URL: process.env.OPENAI_BASE_URL, OPENAI_API_KEY: process.env.OPENAI_API_KEY, CODEX_API_KEY: process.env.CODEX_API_KEY };
+    process.env.BACKEND_BASE_URL = "https://dev-api.golemworkers.com";
+    delete process.env.OPENAI_BASE_URL; delete process.env.OPENAI_API_KEY; delete process.env.CODEX_API_KEY;
+    try {
+      const row = { baseUrl: process.env.BACKEND_BASE_URL + "/api/v1/relays/openai/v1", models: [] };
+      const providers = { ...(mode !== "legacy" ? { openai: row } : {}), ...(mode !== "migrated" ? { codex: row } : {}), anthropic: { baseUrl: "https://keep.test", models: [] } };
+      await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} }, models: { providers }, auth: { order: { openai: ["openai:test"] } } }));
+      const dbPath = await createSharedAuthStateDatabase(dir);
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(dbPath);
+      const profiles = mode === "missing" ? {} : { "openai:test": { type: "oauth", provider: "openai", access: "synthetic", refresh: "synthetic-refresh", expires: 4_700_000_000_000, ...(mode === "identity" ? { authFlow: "chatgpt-identity" } : {}) }, ...(mode === "api-key" ? { "openai:key": { type: "api_key", provider: "openai", key: "synthetic-key" } } : {}) };
+      db.prepare("INSERT INTO config_machine_state VALUES (?, ?, ?)").run("authProfiles.store", JSON.stringify({ version: 1, profiles }), Date.now());
+      db.close();
+      const authBefore = await fs.readFile(dbPath);
+      const action = kind === "model.set" ? { kind, model, fallbacks: [], thinkingDefault: "high" as const } : { kind, purpose: "main" as const, primary: model, fallback: null, thinkingDefault: "high" as const };
+      await executeAgentControl({ action, configPath, gateway: noopGateway });
+      const after = JSON.parse(await fs.readFile(configPath, "utf8")) as { auth: unknown; models: { providers: Record<string, { baseUrl?: string; models?: Array<{ api?: string }> }> } };
+      expect(await fs.readFile(dbPath)).toEqual(authBefore);
+      expect(after.auth).toEqual({ order: { openai: ["openai:test"] } });
+      expect(after.models.providers.anthropic).toEqual(providers.anthropic);
+      if (["missing", "identity", "api-key"].includes(mode)) {
+        expect(after.models.providers.codex).toEqual(row);
+        expect(after.models.providers.openai.baseUrl).toEqual(row.baseUrl);
+      } else {
+        expect(after.models.providers).not.toHaveProperty("codex");
+        expect(after.models.providers.openai?.baseUrl).toBeUndefined();
+        if (model.endsWith("sol")) expect(after.models.providers.openai.models?.[0].api).toBe("openai-chatgpt-responses");
+      }
+      await executeAgentControl({ action, configPath, gateway: noopGateway });
+      expect(JSON.parse(await fs.readFile(configPath, "utf8"))).toEqual(after);
+      expect(await fs.readFile(dbPath)).toEqual(authBefore);
+      expect(await fs.readFile(systemctl, "utf8")).toContain("restart openclaw-gateway.service");
+    } finally {
+      for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
     ["model.set", "shared", false],
     ["modelAssignment.set", "shared", false],
     ["model.set", "legacy", false],

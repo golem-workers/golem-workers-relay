@@ -1,3 +1,4 @@
+import { normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
 import { ensureNativePiModelCompatibility } from "./nativePiModelCompatibility.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -16,6 +17,7 @@ import {
   getCodexLoginStatus,
   hasChatGptRouteOverrides,
   hasPersistedChatGptSubscription,
+  hasPersistedOpenAiApiKey,
   importCodexAuthBundle,
   setCodexAuthMode,
   startCodexLogin,
@@ -670,12 +672,18 @@ async function applyNativePiModelCompatibility(
   configPath: string,
   requestedModels: string[],
 ): Promise<void> {
+  const requestsOpenAi = requestedModels.some((ref) => /^(?:openai|codex|openai-codex)\//i.test(ref.trim()));
   const defaults = ensureOptionalRecord(ensureOptionalRecord(config.agents)?.defaults);
-  if (!ensureOptionalRecord(ensureOptionalRecord(defaults?.models)?.["openai/gpt-6.1-sol"])) return;
+  const hasSol = Boolean(ensureOptionalRecord(ensureOptionalRecord(defaults?.models)?.["openai/gpt-6.1-sol"]));
+  const hasSubscription = (requestsOpenAi || hasSol) && await hasPersistedChatGptSubscription(configPath);
+  if (requestsOpenAi && hasSubscription && !await hasPersistedOpenAiApiKey(configPath)) {
+    normalizeManagedSubscriptionRoute(config, true);
+  }
+  if (!hasSol) return;
   // Only a Sol subscription alias is evidence about Sol's route. A Codex
   // fallback for another model must not change its transport.
   const subscriptionRoute = requestedModels.some((ref) => /^(?:codex|openai-codex)\/gpt-6\.1-sol$/i.test(ref.trim()))
-    || await hasPersistedChatGptSubscription(configPath);
+    || hasSubscription;
   ensureNativePiModelCompatibility(config, subscriptionRoute);
 }
 

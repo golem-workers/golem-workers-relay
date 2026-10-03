@@ -1000,6 +1000,19 @@ export async function hasPersistedChatGptSubscription(configPath: string): Promi
     credential.authFlow !== "chatgpt-identity" && credential.authFlow !== "chatgpt-token-sharing");
 }
 
+/** A persisted API key is explicit intent even alongside a subscription. */
+export async function hasPersistedOpenAiApiKey(configPath: string): Promise<boolean> {
+  const target = await resolveCodexRuntimeAuthTarget(configPath);
+  const stores = [
+    await readRuntimeAuthProfilesStore(configPath),
+    ...(target.kind === "agent"
+      ? await Promise.all(resolveCodexAuthStorePaths(configPath).map((storePath) => readAuthProfilesStore(storePath)))
+      : []),
+  ];
+  return stores.some((store) => Object.values(store.profiles).some((value) =>
+    isRecord(value) && ["openai", "openai-codex", "codex"].includes(String(value.provider)) && value.type === "api_key"));
+}
+
 function pickLiveCodexOAuthEntry(entries: Array<[string, Record<string, unknown>]>): [string, Record<string, unknown>] | null {
   if (entries.length === 0) {
     return null;
