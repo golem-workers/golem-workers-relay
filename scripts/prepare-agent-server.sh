@@ -1684,7 +1684,14 @@ try:
             meta_columns = [row[1] for row in source.execute('PRAGMA table_info(schema_meta)')]
             require(meta_columns == ['meta_key', 'role', 'schema_version', 'agent_id', 'app_version', 'created_at', 'updated_at'], 'Unsupported schema metadata')
             meta = source.execute('SELECT meta_key,role,schema_version,agent_id,app_version FROM schema_meta').fetchall()
-            require(len(meta) == 1 and meta[0][0:2] == ('primary', 'global') and meta[0][3] is None, 'Unsupported global schema metadata')
+            # OpenClaw also stores per-machine migration checkpoints here. Validate
+            # their known shape, but discard them so cold boot reruns migrations.
+            checkpoint_keys = {'startup-migrations', 'state-migrations'}
+            require(all(row[1] == 'global' and row[3] is None and
+                        (row[0] == 'primary' or (row[0] in checkpoint_keys and row[2] == 3))
+                        for row in meta), 'Unsupported global schema metadata')
+            meta = [row for row in meta if row[0] == 'primary']
+            require(len(meta) == 1, 'Unsupported global schema metadata')
             version = source.execute('PRAGMA user_version').fetchone()[0]
         source.close()
         fresh_db = new_state / 'openclaw.sqlite'

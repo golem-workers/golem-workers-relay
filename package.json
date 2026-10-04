@@ -1,6 +1,6 @@
 {
   "name": "golem-workers-relay",
-  "version": "1.0.412",
+  "version": "1.0.417",
   "private": true,
   "type": "module",
   "engines": {
