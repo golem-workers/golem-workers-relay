@@ -50,6 +50,7 @@ const selfNudgeSettingsSchema = z.object({
   debugMessagesEnabled: z.boolean().optional(),
 });
 
+const ownerFenceSchema = z.object({ revision: z.string().regex(/^[0-9]+$/), active: z.array(z.string().regex(/^[1-9][0-9]{0,19}$/)), revoked: z.array(z.string().regex(/^[1-9][0-9]{0,19}$/)) });
 export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("config.read"),
@@ -63,6 +64,8 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("config.apply"),
     configText: z.string().min(1),
+    ownerFence: ownerFenceSchema.optional(),
+    expectedRevision: z.string().optional(),
   }),
   z.object({
     kind: z.literal("config.validate"),
@@ -190,6 +193,9 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     kind: z.literal("config.read"),
     configText: z.string().min(1),
     config: jsonRecordSchema,
+    configRevision: z.string().optional(),
+    ownerFenceVersion: z.literal(1).optional(),
+    ownerRuntime: z.object({ version: z.literal(1), state: z.enum(["pending", "applied", "unavailable", "unsupported"]), enrolledFence: ownerFenceSchema.nullable(), configRevisionHash: z.string().nullable(), appliedConfigHash: z.string().nullable(), config: jsonRecordSchema.nullable() }).optional(),
   }),
   z.object({
     kind: z.literal("channels.status"),

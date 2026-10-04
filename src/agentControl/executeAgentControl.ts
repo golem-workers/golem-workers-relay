@@ -1,3 +1,5 @@
+import { writeOwnerFencedConfig, withOwnerFenceLock, isConfigMutationPath, configRevision, type OwnerFence } from "./ownerFence.js";
+import { readOwnerRuntime } from "./ownerRuntime.js";
 import { normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
 import { ensureNativePiModelCompatibility } from "./nativePiModelCompatibility.js";
 import fs from "node:fs/promises";
@@ -101,9 +103,10 @@ export async function executeAgentControl(input: {
   backendMessageId?: string;
   statusNudgeRunner?: StatusNudgeRunner;
 }): Promise<AgentControlResult> {
+  return withOwnerFenceLock(input.configPath, async () => {
   const result =
     input.action.kind === "config.read"
-      ? await readConfig(input.configPath)
+      ? await readConfig(input.configPath, input.gateway)
       : input.action.kind === "channels.status"
         ? await readChannelsStatus(input.gateway)
       : input.action.kind === "lifecycle.activeRuns"
@@ -115,6 +118,8 @@ export async function executeAgentControl(input: {
         ? await applyConfig({
             configPath: input.configPath,
             configText: input.action.configText,
+            ownerFence: input.action.ownerFence,
+            expectedRevision: input.action.expectedRevision,
           })
       : input.action.kind === "config.validate"
         ? await validateConfig(input.configPath)
@@ -208,6 +213,7 @@ export async function executeAgentControl(input: {
                     fastMode: input.action.fastMode,
                   });
   return agentControlResultSchema.parse(result);
+  });
 }
 
 async function readLifecycleActiveRuns(
@@ -341,10 +347,13 @@ async function sendStatusNudge(input: {
   return { kind: "chat.statusNudge", accepted: true, runId };
 }
 
-async function readConfig(configPath: string): Promise<AgentControlResult> {
+async function readConfig(configPath: string, gateway: GatewayLike): Promise<AgentControlResult> {
   const { configText, config } = await readConfigFile(configPath);
   return {
     kind: "config.read",
+    configRevision: configRevision(configText),
+    ownerFenceVersion: 1,
+    ownerRuntime: await readOwnerRuntime(configPath, gateway),
     configText,
     config,
   };
@@ -392,6 +401,8 @@ async function readChannelsStatus(gateway: GatewayLike): Promise<AgentControlRes
 async function applyConfig(input: {
   configPath: string;
   configText: string;
+  ownerFence?: OwnerFence;
+  expectedRevision?: string;
 }): Promise<AgentControlResult> {
   const parsed = parseConfigText(input.configText);
   const defaults = ensureOptionalRecord(ensureOptionalRecord(parsed.agents)?.defaults);
@@ -404,7 +415,7 @@ async function applyConfig(input: {
         .filter((ref): ref is string => typeof ref === "string");
     });
   await applyNativePiModelCompatibility(parsed, input.configPath, requestedModels);
-  await atomicWriteUtf8(input.configPath, `${JSON.stringify(parsed, null, 2)}\n`);
+  await writeOwnerFencedConfig(input.configPath, JSON.stringify(parsed, null, 2) + "\n", input.ownerFence, { expectedRevision: input.expectedRevision });
   return {
     kind: "config.apply",
     applied: true,
@@ -1341,6 +1352,7 @@ function parseConfigText(configText: string): Record<string, unknown> {
 }
 
 async function atomicWriteUtf8(filePath: string, content: string): Promise<void> {
+  if (isConfigMutationPath(filePath)) { await writeOwnerFencedConfig(filePath, content); return; }
   const dir = path.dirname(filePath);
   const tmpPath = `${filePath}.gwtmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   await fs.mkdir(dir, { recursive: true });

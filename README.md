@@ -486,3 +486,8 @@ Existing model parameters, credentials, and primary/fallback choices are preserv
 GPT-6.1-Sol native Pi compatibility registers model metadata missing from OpenClaw
 2026.9.7. Subscription aliases keep the ChatGPT Responses transport; platform model
 assignments retain OpenAI Responses. No model ID, credential or endpoint is replaced.
+
+### Narrow Telegram owner convergence
+config.read reports owner-fence version 1, disk revision and fresh Gateway effective-config acknowledgment where supported. config.apply accepts ownerFence and expectedRevision; common Relay config mutations preserve the latest numeric owner projection. A durable high-water sidecar rejects stale owner revisions; CAS rejects late rollback over a newer config. Kernel flock releases on process exit, with no permanently orphaned mkdir lock. Existing config validation semantics and model/auth/media choices are retained.
+
+This is eventual config delivery, not a provider lifecycle protocol or continuously leased Gateway. No ExecStart wrapper, automatic wake, stop-before-grant, fleet enrollment or snapshot guarantee. An unavailable Gateway cannot certify revocation; residual wildcard/imported authority is not complete denial.
