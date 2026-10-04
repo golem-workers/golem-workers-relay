@@ -424,6 +424,36 @@ aliases are counted. Fresh caches are required; failures do not publish a fabric
 Collection retains the configured authorization-usage interval (hourly by default); consumers
 show the window end and data freshness. Deploy backend + its migration before this relay.
 
+### Enterprise model activation fence
+`model.set` optionally accepts a caller-issued UUID `fence.revision` and nullable
+`fence.predecessor`. The central control handler serializes config operations with
+Linux util-linux `flock` (already included by the agent preparation image), using
+an inherited open descriptor so process death releases ownership. Never delete the
+lock file to recover it: its inode is the coordination identity.
+
+The adjacent `.model-fence.json` journal is atomically renamed and fsynced before
+mutation. `model.fence.read` observes ownership; `model.fence.reconcile` takes the
+same lock and leaves observed operations UNRESOLVED, or installs a CANCELLED
+revision tombstone under predecessor CAS for undelivered requests. It never claims
+runtime success. Delayed requests and duplicate revisions cannot run after that
+tombstone. Once fencing is established, legacy model.set and modelAssignment.set cannot
+bypass it. Whole-config operations require expectedRevision CAS and unchanged
+agent/model/provider/auth/environment routing; native harness-only convergence
+is allowed so existing owner/channel and managed Pi convergence remain legal. APPLIED means the config/restart handler returned a
+validated result, not provider-auth/runtime verification; the backend must verify
+runtime before ACTIVE. Surviving systemctl restart carries no model/config payload
+and cannot restore an old config; unresolved operations still require a new fenced
+activation and verification. Unsupported old relays must remain fail-closed.
+
+`model.verify` is a real inference probe, not a catalog/readiness alias. It checks
+zero fallbacks and maps stored `openai/<id>` plus native OpenClaw/Pi runtime metadata
+back to the `codex/<id>` subscription wire alias. Active persisted OAuth and absence
+of API-key, endpoint/environment or explicit API-transport overrides are required;
+native harness metadata alone is not proof of subscription billing. A fresh session must
+resolve the selected defaults, return an inference reply, and persist the same
+actual provider/model and runtime. Failed probes are aborted; their sessions and
+transcripts are deleted on all settled paths. Unit tests stub the gateway/runner;
+no demo or test performs real provider inference.
 ### Authorization cold-start handling
 
 Authorization assignment checks the latest Codex version, canonical pnpm entrypoint,

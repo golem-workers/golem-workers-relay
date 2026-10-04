@@ -2257,3 +2257,48 @@ describe("executeAgentControl model set", () => {
     });
   });
 });
+
+it("activates a new revision after an undelivered tombstone and never replays the old config", async () => {
+  const { readModelFence } = await import("./modelFence.js");
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-fenced-activation-"));
+  const configPath = path.join(tempDir, "openclaw.json");
+  await installFakeSystemctl();
+  const old = "11111111-1111-4111-8111-111111111111";
+  const next = "22222222-2222-4222-8222-222222222222";
+  const input = { configPath, gateway: noopGateway };
+  try {
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: { model: { primary: "old/model" } } }, unrelated: "keep" }));
+    await executeAgentControl({ ...input, action: { kind: "model.fence.reconcile", revision: old, predecessor: null, model: "old/model" } });
+    const result = await executeAgentControl({ ...input, action: { kind: "model.set", model: "openai/gpt-5.4", fallbacks: [], fence: { revision: next, predecessor: old } } });
+    expect(result).toMatchObject({ kind: "model.set", applied: true });
+    expect(await readModelFence(configPath)).toMatchObject({ revision: next, status: "APPLIED" });
+    await expect(executeAgentControl({ ...input, action: { kind: "model.set", model: "old/model", fallbacks: [], fence: { revision: old, predecessor: null } } })).rejects.toMatchObject({ code: "MODEL_FENCE_STALE" });
+    const saved = JSON.parse(await fs.readFile(configPath, "utf8")) as { unrelated: string; agents: { defaults: { model: { primary: string } } } };
+    expect(saved.unrelated).toBe("keep");
+    expect(saved.agents.defaults.model.primary).toBe("openai/gpt-5.4");
+  } finally { await fs.rm(tempDir, { recursive: true, force: true }); }
+});
+
+it("preserves fenced native harness convergence and owner config with CAS, never model routing changes", async () => {
+  await installFakeSystemctl();
+  await installFakeOpenclaw();
+  const { writeModelFence } = await import("./modelFence.js");
+  const { configRevision } = await import("./ownerFence.js");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "fenced-native-config-"));
+  const configPath = path.join(dir, "openclaw.json");
+  const config = { agents: { defaults: { model: { primary: "openai/example", fallbacks: [] }, models: { "openai/example": { agentRuntime: { id: "codex" } } } } }, commands: { ownerAllowFrom: [] as string[] } };
+  const text = JSON.stringify(config);
+  await fs.writeFile(configPath, text);
+  await writeModelFence(configPath, { revision: "revision", predecessor: null, model: "codex/example", status: "APPLIED" });
+  try {
+    config.agents.defaults.models["openai/example"].agentRuntime.id = "openclaw";
+    config.commands.ownerAllowFrom = ["telegram:123"];
+    const result = await executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "config.apply", configText: JSON.stringify(config), expectedRevision: configRevision(text) } });
+    expect(result).toMatchObject({ kind: "config.apply" });
+    const current = await fs.readFile(configPath, "utf8");
+    expect(JSON.parse(current).commands.ownerAllowFrom).toEqual(["telegram:123"]);
+    config.agents.defaults.model.primary = "openai/other";
+    await expect(executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "config.apply", configText: JSON.stringify(config), expectedRevision: configRevision(current) } })).rejects.toMatchObject({ code: "MODEL_FENCE_REQUIRED" });
+    expect(await fs.readFile(configPath, "utf8")).toBe(current);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});

@@ -95,8 +95,11 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     code: z.string().min(1),
     accountId: z.string().min(1).optional(),
   }),
+  z.object({ kind: z.literal("model.fence.read") }),
+  z.object({ kind: z.literal("model.fence.reconcile"), revision: z.string().uuid(), predecessor: z.string().uuid().nullable(), model: z.string().min(1) }),
   z.object({
     kind: z.literal("model.set"),
+    fence: z.object({ revision: z.string().uuid(), predecessor: z.string().uuid().nullable() }).optional(),
     model: z.string().min(1),
     fallbacks: modelFallbacksSchema,
     contextTokens: z.number().int().positive().nullable().optional(),
@@ -189,6 +192,8 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
 export type AgentControlAction = z.infer<typeof agentControlActionSchema>;
 
 export const agentControlResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("model.fence.read"), revision: z.string().nullable(), status: z.enum(["PENDING", "APPLIED", "UNRESOLVED", "CANCELLED"]).nullable(), model: z.string().nullable() }),
+  z.object({ kind: z.literal("model.fence.reconcile"), revision: z.string(), status: z.enum(["UNRESOLVED", "CANCELLED"]), model: z.string() }),
   z.object({
     kind: z.literal("config.read"),
     configText: z.string().min(1),
