@@ -100,7 +100,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Selected config or zero-fallback policy differs");
       }
       const sessionKey = "agent:main:enterprise-model-verify:" + randomUUID();
-      type ProbeResponse = { resolved?: { modelProvider?: string; model?: string; agentRuntime?: string }; entry?: { modelProvider?: string; model?: string } };
+      type ProbeResponse = { resolved?: { modelProvider?: string; model?: string; agentRuntime?: string }; entry?: { modelProvider?: string; model?: string; agentHarnessId?: string } };
       const identity = (provider?: string, model?: string, runtime?: string) => {
         const ref = provider && model ? provider + "/" + model : null;
         if (ref?.startsWith("openai/") && runtime !== "codex" && action.model.startsWith("codex/")) return null;
@@ -121,7 +121,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         if (result.outcome !== "reply") throw new AgentControlError("MODEL_VERIFY_FAILED", "Selected runtime model did not return a reply");
         // Session usage records the provider/model actually used, including fallback drift.
         const after = await input.gateway.request("sessions.patch", { key: sessionKey }, { timeoutMs: 15_000 }) as ProbeResponse;
-        if (identity(after.entry?.modelProvider, after.entry?.model, after.resolved?.agentRuntime) !== action.model) {
+        if (identity(after.entry?.modelProvider, after.entry?.model, after.resolved?.agentRuntime) !== action.model || (action.model.startsWith("codex/") && after.entry?.agentHarnessId !== "codex")) {
           throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Inference used another provider/model or runtime");
         }
         completed = true;

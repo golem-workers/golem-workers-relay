@@ -89,7 +89,7 @@ it("parses and dispatches real model.verify protocol against runtime defaults an
     let calls = 0;
     const gateway = { request: (method: string, params?: unknown) => {
       expect(["sessions.patch", "sessions.delete", "chat.abort"]).toContain(method); expect(params).not.toHaveProperty("model");
-      return Promise.resolve({ resolved: { modelProvider: "openai", model: "example", agentRuntime: "codex" }, entry: { modelProvider: "openai", model: "example" } });
+      return Promise.resolve({ resolved: { modelProvider: "openai", model: "example", agentRuntime: "codex" }, entry: { modelProvider: "openai", model: "example", agentHarnessId: "codex" } });
     } };
     const statusNudgeRunner = { runChatTask: () => { calls++; return Promise.resolve({ result: { outcome: "reply" as const, reply: { runId: "test", message: "OK" } }, openclawMeta: {} }); } };
     expect(agentControlResultSchema.parse(await executeAgentControl({ configPath: path.join(dir, "config.json"), action, gateway, statusNudgeRunner }))).toMatchObject({ kind: "model.verify", verified: true });
