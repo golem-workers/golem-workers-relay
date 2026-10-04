@@ -15,6 +15,7 @@ import {
 } from "./outbox.js";
 import type { AgentLifecyclePublisher } from "./publisher.js";
 import {
+  describeOpenClawActiveRunsPayload,
   planAgentLifecycleReconciliation,
   type AgentLifecycleActiveRun,
 } from "./reconciliation.js";
@@ -36,6 +37,8 @@ export function createAgentLifecycleRelay(input: {
   sourceStore: AgentLifecycleSourceStore;
   subscribeLifecycleEvents?: () => Promise<void>;
   queryActiveRuns?: () => Promise<AgentLifecycleActiveRun[]>;
+  querySessionStates?: () => Promise<unknown>;
+  waitingPollIntervalMs?: number;
   now?: () => Date;
   generationId?: () => string;
 }): AgentLifecycleRelay {
@@ -53,6 +56,127 @@ export function createAgentLifecycleRelay(input: {
   let encoder = new AgentLifecycleTransitionEncoder();
   let serial: Promise<void> = Promise.resolve();
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let waitingTimer: ReturnType<typeof setTimeout> | null = null;
+  let polling = false;
+  let connectionRevision = 0;
+  const waiting = new Map<string, AgentLifecycleActiveRun>();
+  const track = (
+    run:
+      | AgentLifecycleActiveRun
+      | {
+          provider: string;
+          agentId?: string;
+          sessionId: string;
+          runId: string;
+          status: string;
+        },
+  ): void => {
+    for (const [key, old] of waiting) {
+      if (old.sessionId === run.sessionId && old.agentId === run.agentId) {
+        // Invalidate in-flight session evidence, but retain other paused runs.
+        if (old.runId === run.runId) waiting.delete(key);
+        else waiting.set(key, { ...old });
+      }
+    }
+    if (run.status === "WAITING")
+      waiting.set(run.runId, { ...run, status: "WAITING" });
+    scheduleWaitingPoll();
+  };
+  function scheduleWaitingPoll(): void {
+    if (
+      !connected ||
+      !input.querySessionStates ||
+      !waiting.size ||
+      waitingTimer ||
+      polling
+    )
+      return;
+    waitingTimer = setTimeout(() => {
+      waitingTimer = null;
+      void pollWaiting();
+    }, input.waitingPollIntervalMs ?? 30_000);
+    waitingTimer.unref?.();
+  }
+  async function pollWaiting(): Promise<void> {
+    if (!connected || !input.querySessionStates || !waiting.size) return;
+    polling = true;
+    const revision = connectionRevision;
+    const snapshot = [...waiting.values()];
+    try {
+      const result = describeOpenClawActiveRunsPayload(
+        await input.querySessionStates(),
+      );
+      enqueue(async () => {
+        if (
+          !connected ||
+          revision !== connectionRevision ||
+          !current?.registered ||
+          !result.payloadValid
+        )
+          return;
+        let changed = false;
+        for (const run of snapshot) {
+          // A live event received while the request was in flight wins.
+          if (waiting.get(run.runId) !== run) continue;
+          const matches = result.sessions.filter(
+            (s) =>
+              s.sessionId === run.sessionId &&
+              (!run.agentId || s.agentId === run.agentId),
+          );
+          if (matches.length !== 1) continue;
+          const session = matches[0];
+          // Missing/ambiguous sessions and genuine pauses are NOT completion evidence.
+          if (
+            session.hasActiveRun !== false ||
+            session.activeRunIds.length ||
+            !["done", "failed", "killed", "timeout"].includes(
+              session.status ?? "",
+            )
+          )
+            continue;
+          const event = encoder.observe(
+            openClawLifecycleAdapter,
+            {
+              event: "lifecycle",
+              phase: "end",
+              persistedStatus: session.status,
+            },
+            {
+              serverId: current.serverId,
+              ...run,
+              sourceGeneration: current.sourceGeneration,
+              occurredAt: now().toISOString(),
+              origin: "RECONCILIATION",
+            },
+          );
+          if (!event) continue;
+          await input.outbox.enqueue(event);
+          waiting.delete(run.runId);
+          changed = true;
+        }
+        if (changed) {
+          const published = await input.publisher.drain();
+          if (published.anomaly === "GENERATION_CONFLICT")
+            scheduleActivationRetry("GENERATION_CONFLICT");
+          else if (published.anomaly === "SEQUENCE_GAP")
+            scheduleActivationRetry("SEQUENCE_GAP");
+          else if (published.pending > 0) scheduleActivationRetry("ANOMALY");
+        }
+      });
+      await serial;
+    } catch (error) {
+      logger.warn(
+        {
+          event: "agent_lifecycle_waiting_poll_failed",
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Waiting session verification deferred",
+      );
+    } finally {
+      polling = false;
+      scheduleWaitingPoll();
+    }
+  }
   let retryAttempt = 0;
   let retryTrigger: ActivationTrigger | null = null;
 
@@ -83,7 +207,8 @@ export function createAgentLifecycleRelay(input: {
       retryTrigger = trigger;
     }
     if (retryTimer) return;
-    const delay = retryDelaysMs[Math.min(retryAttempt, retryDelaysMs.length - 1)];
+    const delay =
+      retryDelaysMs[Math.min(retryAttempt, retryDelaysMs.length - 1)];
     retryAttempt += 1;
     retryTimer = setTimeout(() => {
       retryTimer = null;
@@ -123,31 +248,36 @@ export function createAgentLifecycleRelay(input: {
     }
   };
 
-  const registerCurrent = async (): Promise<AgentLifecycleGenerationResponse | null> => {
-    if (!current) return null;
-    try {
-      const response = await input.backend.registerGeneration({
-        sourceGeneration: current.sourceGeneration,
-        registeredAt: current.updatedAt,
-      });
-      if (response.serverId !== current.serverId) {
-        throw new Error("Authenticated lifecycle server identity changed");
-      }
-      current = { ...current, registered: true, updatedAt: now().toISOString() };
-      await input.sourceStore.save(current);
-      return response;
-    } catch (error) {
-      logger.warn(
-        {
-          event: "agent_lifecycle_generation_registration_failed",
+  const registerCurrent =
+    async (): Promise<AgentLifecycleGenerationResponse | null> => {
+      if (!current) return null;
+      try {
+        const response = await input.backend.registerGeneration({
           sourceGeneration: current.sourceGeneration,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        "Agent lifecycle generation registration deferred",
-      );
-      return null;
-    }
-  };
+          registeredAt: current.updatedAt,
+        });
+        if (response.serverId !== current.serverId) {
+          throw new Error("Authenticated lifecycle server identity changed");
+        }
+        current = {
+          ...current,
+          registered: true,
+          updatedAt: now().toISOString(),
+        };
+        await input.sourceStore.save(current);
+        return response;
+      } catch (error) {
+        logger.warn(
+          {
+            event: "agent_lifecycle_generation_registration_failed",
+            sourceGeneration: current.sourceGeneration,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "Agent lifecycle generation registration deferred",
+        );
+        return null;
+      }
+    };
 
   const reconcile = async (
     response: AgentLifecycleGenerationResponse,
@@ -163,17 +293,29 @@ export function createAgentLifecycleRelay(input: {
         runId: run.runId,
         status: run.status,
       }));
-      const corrections = planAgentLifecycleReconciliation({ checkpoint, observed });
+      waiting.clear();
+      const corrections = planAgentLifecycleReconciliation({
+        checkpoint,
+        observed,
+      });
       for (const correction of corrections) {
         const context = {
           serverId: current.serverId,
-          ...(correction.run.agentId ? { agentId: correction.run.agentId } : {}),
+          ...(correction.run.agentId
+            ? { agentId: correction.run.agentId }
+            : {}),
           sessionId: correction.run.sessionId,
           runId: correction.run.runId,
           sourceGeneration: current.sourceGeneration,
           occurredAt: now().toISOString(),
           origin: "RECONCILIATION" as const,
         };
+        if (correction.run.status === "WAITING") {
+          encoder.seedActiveRun(openClawLifecycleAdapter, context, "WAITING");
+          track(correction.run);
+          // Paused runs need explicit terminal evidence, not absence from active runs.
+          continue;
+        }
         if (correction.kind === "DISAPPEARED") {
           encoder.seedActiveRun(
             openClawLifecycleAdapter,
@@ -187,7 +329,7 @@ export function createAgentLifecycleRelay(input: {
             ? {
                 event: "active_run",
                 hasActiveRun: true,
-                waiting: correction.run.status === "WAITING",
+                waiting: false,
               }
             : {
                 event: "lifecycle",
@@ -354,16 +496,21 @@ export function createAgentLifecycleRelay(input: {
       return;
     }
 
-    const event = encoder.observe(openClawLifecycleAdapter, observation.signal, {
-      serverId: current.serverId,
-      ...(observation.agentId ? { agentId: observation.agentId } : {}),
-      sessionId: observation.sessionId,
-      runId: observation.runId,
-      sourceGeneration: current.sourceGeneration,
-      occurredAt: observation.occurredAt,
-      origin: "LIVE",
-    });
+    const event = encoder.observe(
+      openClawLifecycleAdapter,
+      observation.signal,
+      {
+        serverId: current.serverId,
+        ...(observation.agentId ? { agentId: observation.agentId } : {}),
+        sessionId: observation.sessionId,
+        runId: observation.runId,
+        sourceGeneration: current.sourceGeneration,
+        occurredAt: observation.occurredAt,
+        origin: "LIVE",
+      },
+    );
     if (!event) return;
+    track(event);
 
     try {
       await input.outbox.enqueue(event);
@@ -396,8 +543,12 @@ export function createAgentLifecycleRelay(input: {
     handleGatewayConnectionStateChange(state) {
       if (state.connected === connected) return;
       connected = state.connected;
+      connectionRevision += 1;
+      if (waitingTimer) clearTimeout(waitingTimer);
+      waitingTimer = null;
       if (state.connected) {
         enqueue(activateConnected);
+        scheduleWaitingPoll();
       }
     },
 

@@ -1,0 +1,161 @@
+{
+  "runtimeVersion": "2026.9.7",
+  "checks": 23,
+  "passed": 19,
+  "failed": 4,
+  "actions": 179,
+  "results": [
+    {
+      "name": "shared/model.set/roundtrip-reasoning-fallback-idempotence",
+      "status": "PASS",
+      "steps": 20,
+      "ownership": "shared",
+      "authUnchanged": true
+    },
+    {
+      "name": "shared/modelAssignment.set/roundtrip-reasoning-fallback-idempotence",
+      "status": "PASS",
+      "steps": 20,
+      "ownership": "shared",
+      "authUnchanged": true
+    },
+    {
+      "name": "agent/model.set/roundtrip-reasoning-fallback-idempotence",
+      "status": "PASS",
+      "steps": 20,
+      "ownership": "agent",
+      "authUnchanged": true
+    },
+    {
+      "name": "agent/modelAssignment.set/roundtrip-reasoning-fallback-idempotence",
+      "status": "PASS",
+      "steps": 20,
+      "ownership": "agent",
+      "authUnchanged": true
+    },
+    {
+      "name": "legacy/model.set/roundtrip-reasoning-fallback-idempotence",
+      "status": "PASS",
+      "steps": 20,
+      "ownership": "legacy",
+      "authUnchanged": true
+    },
+    {
+      "name": "legacy/modelAssignment.set/roundtrip-reasoning-fallback-idempotence",
+      "status": "PASS",
+      "steps": 20,
+      "ownership": "legacy",
+      "authUnchanged": true
+    },
+    {
+      "name": "generated-proxy-reintroduced/nonempty-sol/model.set",
+      "status": "FAIL",
+      "error": "Expected values to be strictly equal:\n+ actual - expected\n\n+ 'https://dev-api.golemworkers.com/api/v1/relays/openai/v1'\n- undefined\n"
+    },
+    {
+      "name": "generated-proxy-reintroduced/nonempty-sol/modelAssignment.set",
+      "status": "FAIL",
+      "error": "Expected values to be strictly equal:\n+ actual - expected\n\n+ 'https://dev-api.golemworkers.com/api/v1/relays/openai/v1'\n- undefined\n"
+    },
+    {
+      "name": "generated-proxy-reintroduced/nonempty-sol/config.apply",
+      "status": "FAIL",
+      "error": "Expected values to be strictly equal:\n+ actual - expected\n\n+ 'https://dev-api.golemworkers.com/api/v1/relays/openai/v1'\n- undefined\n"
+    },
+    {
+      "name": "config.apply/empty-generated-route-and-read-modify-apply",
+      "status": "FAIL",
+      "error": "{\"kind\":\"rejected\",\"reason\":\"explicit-order\",\"message\":\"Explicit auth order for openai has no usable profiles.\",\"authModeIncompatible\":true}\n+ actual - expected\n\n+ 'rejected'\n- 'selected'\n"
+    },
+    {
+      "name": "two-independent-fixtures/dashboard-equivalent-bulk",
+      "status": "PASS",
+      "bulkTargets": 2,
+      "independentIdentities": true
+    },
+    {
+      "name": "expired-profile/route-identity-not-readiness",
+      "status": "PASS",
+      "selectionWithUnavailableProfile": "rejected",
+      "refreshAndInference": "not attempted"
+    },
+    {
+      "name": "shared/auth-import-reimport-export-status-and-failed-sync-rollback",
+      "status": "PASS",
+      "rollback": "config + tokens + order + identity + schema + CLI; explicit rejection required"
+    },
+    {
+      "name": "agent/auth-import-reimport-export-status-and-failed-sync-rollback",
+      "status": "PASS",
+      "rollback": "config + tokens + order + identity + schema + CLI; explicit rejection required"
+    },
+    {
+      "name": "shared/sync-version-order-and-mode-roundtrip",
+      "status": "PASS",
+      "staleVersions": [
+        2,
+        1
+      ],
+      "rotatedVersion": 3,
+      "modeSwitch": "explicit API mode preserves saved OAuth; login restores subscription"
+    },
+    {
+      "name": "agent/sync-version-order-and-mode-roundtrip",
+      "status": "PASS",
+      "staleVersions": [
+        2,
+        1
+      ],
+      "rotatedVersion": 3,
+      "modeSwitch": "explicit API mode preserves saved OAuth; login restores subscription"
+    },
+    {
+      "name": "authored-override/custom-base/intentionally-authoritative",
+      "status": "PASS",
+      "category": "intentional override, NOT subscription-loss pass",
+      "routeSelection": "rejected"
+    },
+    {
+      "name": "authored-override/explicit-api/intentionally-authoritative",
+      "status": "PASS",
+      "category": "intentional override, NOT subscription-loss pass",
+      "routeSelection": "rejected"
+    },
+    {
+      "name": "authored-override/provider-api-key/intentionally-authoritative",
+      "status": "PASS",
+      "category": "intentional override, NOT subscription-loss pass",
+      "routeSelection": "rejected"
+    },
+    {
+      "name": "authored-override/persisted-api-key/intentionally-authoritative",
+      "status": "PASS",
+      "category": "intentional override, NOT subscription-loss pass",
+      "routeSelection": "rejected"
+    },
+    {
+      "name": "authored-override/custom-model/intentionally-authoritative",
+      "status": "PASS",
+      "category": "intentional override, NOT subscription-loss pass",
+      "routeSelection": "rejected"
+    },
+    {
+      "name": "authored-override/environment-route/intentionally-authoritative",
+      "status": "PASS",
+      "category": "intentional override, NOT subscription-loss pass",
+      "routeSelection": "rejected"
+    },
+    {
+      "name": "model-mutation/restart-failure-contract",
+      "status": "PASS",
+      "limitation": "model.set writes config before restart; no rollback contract. Error explicitly required; auth untouched."
+    }
+  ],
+  "limitations": [
+    "Offline route selection is not live inference/token refresh",
+    "Fake systemctl; no actual gateway restart or service edits",
+    "Dashboard-equivalent per-target relay actions, not backend bulk endpoint",
+    "Legacy JSON route source inspected directly; runtime migration not invoked",
+    "Private route exports used only in this diagnostic; public SDK handles auth persistence"
+  ]
+}

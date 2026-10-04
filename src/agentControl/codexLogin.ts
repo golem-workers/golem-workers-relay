@@ -1,9 +1,12 @@
+import { isConfigMutationPath, withOwnerFenceLock, writeOwnerFencedConfig } from "./ownerFence.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import JSON5 from "json5";
 import type { CodexAuthBundle } from "./protocol.js";
+import { writeRuntimeAuth } from "./runtimeAuthWriter.js";
+import { normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
 
 const OPENAI_AUTH_BASE_URL = "https://auth.openai.com";
 const OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -387,6 +390,7 @@ async function readAuthProfilesStore(authStorePath: string): Promise<AuthProfile
 }
 
 async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
+  if (isConfigMutationPath(filePath)) { await writeOwnerFencedConfig(filePath, JSON.stringify(value, null, 2) + "\n"); return; }
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
@@ -613,84 +617,7 @@ async function clearCodexSessionAuthProfiles(configPath: string): Promise<void> 
 }
 
 async function updateCodexRuntimeAuthStore(input: { configPath: string; profileId: string; credential: OAuthCredential }): Promise<void> {
-  const { DatabaseSync } = await import("node:sqlite");
-  const target = await resolveCodexRuntimeAuthTarget(input.configPath);
-  const databasePath = target.databasePath;
-  await fs.mkdir(path.dirname(databasePath), { recursive: true });
-  const db = new DatabaseSync(databasePath);
-  try {
-    if (target.kind === "shared-state") {
-      db.exec("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE");
-      try {
-        const readCell = (key: string) => parseSqliteJsonCell((db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get(key) as { value_json?: string } | undefined)?.value_json);
-        const store = readAuthProfilesStoreFromRaw(readCell("authProfiles.store"));
-        store.profiles = replaceOpenAiProfiles(store.profiles, input.profileId, input.credential);
-        const state = coerceAuthProfileStateStore(readCell("authProfiles.state"));
-        state.order = { ...state.order, openai: [input.profileId] };
-        state.lastGood = { ...state.lastGood, openai: input.profileId };
-        const now = Date.now();
-        const writeCell = (key: string, value: unknown) => db.prepare(
-          `INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)
-           ON CONFLICT(state_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms`,
-        ).run(key, JSON.stringify(value), now);
-        writeCell("authProfiles.store", store);
-        writeCell("authProfiles.state", state);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-      return;
-    }
-    db.exec(`
-      PRAGMA busy_timeout = 5000;
-      CREATE TABLE IF NOT EXISTS auth_profile_store (
-        store_key TEXT NOT NULL PRIMARY KEY,
-        store_json TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS auth_profile_state (
-        state_key TEXT NOT NULL PRIMARY KEY,
-        state_json TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-    `);
-    const now = Date.now();
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const rawStore = db.prepare("SELECT store_json FROM auth_profile_store WHERE store_key = ?").get("primary") as { store_json?: string } | undefined;
-      const store = readAuthProfilesStoreFromRaw(parseSqliteJsonCell(rawStore?.store_json));
-      store.profiles = replaceOpenAiProfiles(store.profiles, input.profileId, input.credential);
-
-      const rawState = db.prepare("SELECT state_json FROM auth_profile_state WHERE state_key = ?").get("primary") as { state_json?: string } | undefined;
-      const state = coerceAuthProfileStateStore(parseSqliteJsonCell(rawState?.state_json));
-      state.order = {
-        ...state.order,
-        openai: [input.profileId],
-      };
-      state.lastGood = {
-        ...state.lastGood,
-        openai: input.profileId,
-      };
-
-      db.prepare(
-        `INSERT INTO auth_profile_store (store_key, store_json, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(store_key) DO UPDATE SET store_json = excluded.store_json, updated_at = excluded.updated_at`,
-      ).run("primary", JSON.stringify(store), now);
-      db.prepare(
-        `INSERT INTO auth_profile_state (state_key, state_json, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(state_key) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at`,
-      ).run("primary", JSON.stringify(state), now);
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.close();
-  }
+  await writeRuntimeAuth(input);
 }
 
 function readAuthProfilesStoreFromRaw(value: unknown): AuthProfilesStore {
@@ -743,6 +670,54 @@ function buildOAuthCredential(input: { creds: DeviceCodeCredentials; identity: R
   };
 }
 
+// ChatGPT credentials cannot reproduce API-key/custom-baseURL routes. Keep
+// model metadata, other providers and TTS settings; only remove route overrides.
+export async function hasChatGptRouteOverrides(configPath: string): Promise<boolean> {
+  const config = await readConfigObject(configPath);
+  return clearChatGptRouteOverrides(config);
+}
+
+function clearChatGptRouteOverrides(config: Record<string, unknown>): boolean {
+  let changed = false;
+  const remove = (record: unknown, keys: string[]) => {
+    if (!isRecord(record)) return;
+    for (const key of keys) {
+      if (Object.hasOwn(record, key)) {
+        delete record[key];
+        changed = true;
+      }
+    }
+  };
+  const env = config.env;
+  remove(env, ["OPENAI_API_KEY", "OPENAI_BASE_URL"]);
+  if (isRecord(env)) remove(env.vars, ["OPENAI_API_KEY", "OPENAI_BASE_URL"]);
+  const models = config.models;
+  const providers = isRecord(models) ? models.providers : undefined;
+  if (isRecord(providers)) {
+    const provider = providers.openai;
+    const hadProviderOverride = isRecord(provider) && (Object.hasOwn(provider, "baseUrl") || Object.hasOwn(provider, "apiKey"));
+    remove(provider, ["baseUrl", "apiKey"]);
+    if (hadProviderOverride && isRecord(provider) && Object.keys(provider).every((key) =>
+      key === "models" && Array.isArray(provider.models) && provider.models.length === 0)) {
+      delete providers.openai;
+      changed = true;
+    }
+  }
+  // Auth import/sync/login explicitly selects subscription. Clear only exact
+  // generated aliases too, or a later doctor migration can restore their proxy
+  // after this action has reported up_to_date. Authored alias rows stay intact.
+  return normalizeManagedSubscriptionRoute(config, true) || changed;
+}
+
+async function reconcileChatGptRoute(configPath: string): Promise<boolean> {
+  return withOwnerFenceLock(configPath, async () => {
+  const config = await readConfigObject(configPath);
+  if (!clearChatGptRouteOverrides(config)) return false;
+  await writeJsonFile(configPath, config);
+  return true;
+  });
+}
+
 async function persistCodexCredentials(input: {
   configPath: string;
   creds: DeviceCodeCredentials;
@@ -763,6 +738,9 @@ async function persistCodexCredentials(input: {
   if (!tokens) {
     throw new Error("OpenAI OAuth token exchange response was incomplete.");
   }
+  // OpenClaw must select/initialize its owner BEFORE legacy JSON is written.
+  // Creating legacy files first suppresses fresh shared-store admission.
+  await updateCodexRuntimeAuthStore({ configPath: input.configPath, profileId, credential });
   if ((await resolveCodexRuntimeAuthTarget(input.configPath)).kind === "agent") {
     for (const authStorePath of resolveCodexAuthStorePaths(input.configPath)) {
       const authStore = await readAuthProfilesStore(authStorePath);
@@ -770,11 +748,6 @@ async function persistCodexCredentials(input: {
       await writeJsonFile(authStorePath, authStore);
     }
   }
-  await updateCodexRuntimeAuthStore({
-    configPath: input.configPath,
-    profileId,
-    credential,
-  });
 
   if (input.persistConfig !== false) {
     const currentConfig = await readConfigObject(input.configPath);
@@ -820,7 +793,7 @@ async function persistCodexCredentials(input: {
             ...currentModels,
             [OPENAI_CODEX_DEFAULT_MODEL]: {
               ...(isRecord(currentModels[OPENAI_CODEX_DEFAULT_MODEL]) ? currentModels[OPENAI_CODEX_DEFAULT_MODEL] : {}),
-              agentRuntime: { id: "codex" },
+              agentRuntime: { id: "openclaw" },
             },
           },
         },
@@ -828,6 +801,7 @@ async function persistCodexCredentials(input: {
     };
     await writeJsonFile(input.configPath, nextConfig);
   }
+  await reconcileChatGptRoute(input.configPath);
   await retargetCodexSessionAuthProfiles(input.configPath, profileId);
   return {
     profileId,
@@ -1026,6 +1000,27 @@ async function readPersistedCodexOAuthEntries(configPath: string): Promise<Array
   return Array.from(entriesByProfileId.entries());
 }
 
+/** Route identity is independent of token expiry/readiness. Read the runtime
+ * authority (including shared machine state), not config.auth or CLI mode. */
+export async function hasPersistedChatGptSubscription(configPath: string): Promise<boolean> {
+  const entries = await readPersistedCodexOAuthEntries(configPath);
+  return entries.some(([, credential]) =>
+    credential.authFlow !== "chatgpt-identity" && credential.authFlow !== "chatgpt-token-sharing");
+}
+
+/** A persisted API key is explicit intent even alongside a subscription. */
+export async function hasPersistedOpenAiApiKey(configPath: string): Promise<boolean> {
+  const target = await resolveCodexRuntimeAuthTarget(configPath);
+  const stores = [
+    await readRuntimeAuthProfilesStore(configPath),
+    ...(target.kind === "agent"
+      ? await Promise.all(resolveCodexAuthStorePaths(configPath).map((storePath) => readAuthProfilesStore(storePath)))
+      : []),
+  ];
+  return stores.some((store) => Object.values(store.profiles).some((value) =>
+    isRecord(value) && ["openai", "openai-codex", "codex"].includes(String(value.provider)) && value.type === "api_key"));
+}
+
 function pickLiveCodexOAuthEntry(entries: Array<[string, Record<string, unknown>]>): [string, Record<string, unknown>] | null {
   if (entries.length === 0) {
     return null;
@@ -1171,6 +1166,10 @@ async function snapshotFiles(filePaths: string[]): Promise<FileSnapshot[]> {
 
 async function restoreFileSnapshots(snapshots: FileSnapshot[]): Promise<void> {
   for (const snapshot of snapshots) {
+    if (isConfigMutationPath(snapshot.filePath)) {
+      await writeOwnerFencedConfig(snapshot.filePath, snapshot.contents?.toString("utf8") ?? "{}");
+      continue;
+    }
     if (snapshot.contents === null) {
       await fs.rm(snapshot.filePath, { force: true });
       continue;
@@ -1262,16 +1261,20 @@ async function snapshotCodexRuntimeAuthStore(
 }
 
 async function restoreCodexRuntimeAuthStore(
-  _configPath: string,
+  configPath: string,
   snapshot: CodexRuntimeAuthSnapshot,
 ): Promise<void> {
-  const { databasePath } = snapshot.target;
-  if (!snapshot.databaseExisted) {
-    await fs.rm(databasePath, { force: true });
-    await fs.rm(`${databasePath}-shm`, { force: true });
-    await fs.rm(`${databasePath}-wal`, { force: true });
+  const currentTarget = await resolveCodexRuntimeAuthTarget(configPath);
+  if (currentTarget.kind === "shared-state" && snapshot.target.kind === "agent") {
+    // The runtime initialized a fresh shared owner. Roll back credentials, not
+    // its schema/ownership or an entire global database.
+    await restoreCodexRuntimeAuthStore(configPath, { ...snapshot, target: currentTarget, databaseExisted: true, storeRow: null, stateRow: null });
     return;
   }
+  const { databasePath } = snapshot.target;
+  try { await fs.access(databasePath); } catch { return; }
+  // Runtime-created schemas belong to OpenClaw, even if this auth transaction
+  // fails. Never unlink its database or remove schema-owned tables.
 
   const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(databasePath);
@@ -1302,7 +1305,8 @@ async function restoreCodexRuntimeAuthStore(
           db.prepare("DELETE FROM auth_profile_store WHERE store_key = ?").run("primary");
         }
       } else {
-        db.exec("DROP TABLE IF EXISTS auth_profile_store;");
+        const table = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'auth_profile_store'").get();
+        if (table) db.prepare("DELETE FROM auth_profile_store WHERE store_key = ?").run("primary");
       }
       if (snapshot.stateTableExisted) {
         if (snapshot.stateRow) {
@@ -1315,7 +1319,8 @@ async function restoreCodexRuntimeAuthStore(
           db.prepare("DELETE FROM auth_profile_state WHERE state_key = ?").run("primary");
         }
       } else {
-        db.exec("DROP TABLE IF EXISTS auth_profile_state;");
+        const table = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'auth_profile_state'").get();
+        if (table) db.prepare("DELETE FROM auth_profile_state WHERE state_key = ?").run("primary");
       }
       db.exec("COMMIT;");
     } catch (error) {
@@ -1398,7 +1403,7 @@ async function applyCodexAuthBundle(input: {
   }
   const runtimeAuthSnapshot = await snapshotCodexRuntimeAuthStore(input.configPath);
   const snapshots = await snapshotFiles([
-    ...(input.persistConfig === false ? [] : [input.configPath]),
+    input.configPath, // Route reconciliation is transactional even for live auth sync.
     ...resolveCodexAuthStorePaths(input.configPath),
     resolveCodexSessionsStorePath(input.configPath),
     resolveCodexCliAuthPath(),
@@ -1600,11 +1605,19 @@ function startPendingCodexLogin(
         authorizationCode: authorized.authorizationCode,
         codeVerifier: authorized.codeVerifier,
       });
-      const persist = async () => {
+      const persist = () => withOwnerFenceLock(configPath, async () => {
+        const snapshots = await snapshotFiles([configPath, ...resolveCodexAuthStorePaths(configPath), resolveCodexSessionsStorePath(configPath), resolveCodexCliAuthPath()]);
+        const runtimeSnapshot = await snapshotCodexRuntimeAuthStore(configPath);
+        try {
         const persisted = await persistCodexCredentials({ configPath, creds });
         await writeCodexCliChatGptAuth(persisted.tokens);
         return persisted;
-      };
+        } catch (error) {
+          await restoreFileSnapshots(snapshots);
+          await restoreCodexRuntimeAuthStore(configPath, runtimeSnapshot);
+          throw error;
+        }
+      });
       const persisted = persistenceGuard ? await persistenceGuard(persist) : await persist();
       session.state = "connected";
       session.message = persisted.email ? `Connected as ${persisted.email}.` : "Codex login complete.";
@@ -1664,6 +1677,7 @@ export async function getCodexLoginStatus(configPath: string): Promise<CodexLogi
 
 export async function setCodexAuthMode(configPath: string, mode: CodexAuthMode): Promise<CodexAuthSetActionResult> {
   const snapshots = await snapshotFiles([
+    configPath,
     resolveCodexCliAuthPath(),
     resolveCodexSessionsStorePath(configPath),
   ]);
@@ -1679,6 +1693,7 @@ export async function setCodexAuthMode(configPath: string, mode: CodexAuthMode):
         throw new Error("Saved OpenAI login is incomplete. Start a new device login.");
       }
       await writeCodexCliChatGptAuth(tokens);
+      await reconcileChatGptRoute(configPath);
     } else {
       const apiKey = normalizeString(authJson.OPENAI_API_KEY) || normalizeString(process.env.OPENAI_API_KEY);
       if (!apiKey) {
@@ -1724,7 +1739,7 @@ export async function syncCodexAuthBundle(
   configPath: string,
   bundleVersion: number,
   bundle: CodexAuthBundle,
-  options?: { refreshRuntimeAuth?: () => Promise<void> },
+  options?: { refreshRuntimeAuth?: () => Promise<void>; forceRuntimeRefresh?: boolean },
 ): Promise<CodexAuthSyncActionResult> {
   const syncState = await readCodexAuthSyncState();
   const status = await readPersistedCodexStatus("codex.login.status", configPath);
@@ -1736,14 +1751,29 @@ export async function syncCodexAuthBundle(
     status.profileId === syncState.profileId
   ) {
     const currentBundle = await readCanonicalCodexAuthBundle(configPath);
-    const retiredAuthStores = await retireLegacyCodexAuthStores(configPath);
-    if (retiredAuthStores.length > 0 && options?.refreshRuntimeAuth) {
-      try {
+    const snapshots = await snapshotFiles([configPath, resolveCodexCliAuthPath(), resolveCodexSessionsStorePath(configPath)]);
+    let retiredAuthStores: RetiredAuthStore[] = [];
+    let refreshAttempted = false;
+    try {
+      const modeChanged = !status.authModes.openaiLogin.active;
+      if (modeChanged) await setCodexAuthMode(configPath, "openai_login");
+      const routeChanged = await reconcileChatGptRoute(configPath);
+      retiredAuthStores = await retireLegacyCodexAuthStores(configPath);
+      if ((modeChanged || routeChanged || retiredAuthStores.length > 0 || options?.forceRuntimeRefresh) && options?.refreshRuntimeAuth) {
+        refreshAttempted = true;
         await options.refreshRuntimeAuth();
-      } catch (error) {
-        await restoreRetiredCodexAuthStores(retiredAuthStores);
-        throw error;
       }
+    } catch (error) {
+      await restoreRetiredCodexAuthStores(retiredAuthStores);
+      await restoreFileSnapshots(snapshots);
+      if (refreshAttempted && options?.refreshRuntimeAuth) {
+        try {
+          await options.refreshRuntimeAuth();
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], "ChatGPT route repair failed and rollback could not be reloaded.");
+        }
+      }
+      throw error;
     }
     return {
       kind: "codex.auth.sync",
@@ -1754,7 +1784,7 @@ export async function syncCodexAuthBundle(
       email: currentBundle.email,
       accountId: currentBundle.accountId,
       expiresAtMs: currentBundle.expiresAtMs,
-      authModes: status.authModes,
+      authModes: (await readPersistedCodexStatus("codex.login.status", configPath)).authModes,
     };
   }
 

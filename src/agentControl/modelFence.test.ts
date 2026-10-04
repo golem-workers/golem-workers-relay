@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -82,14 +82,19 @@ it("tombstones undelivered intent before a late old request can execute", async 
 it("parses and dispatches real model.verify protocol against runtime defaults and inference", async () => {
   const { agentControlActionSchema, agentControlResultSchema } = await import("./protocol.js");
   const { executeAgentControl } = await import("./executeAgentControl.js");
+  const auth = await import("./codexLogin.js");
+  const spies = [vi.spyOn(auth, "getCodexLoginStatus").mockResolvedValue({ state: "connected", authModes: { openaiLogin: { active: true, available: true } } } as Awaited<ReturnType<typeof auth.getCodexLoginStatus>>),
+    vi.spyOn(auth, "hasPersistedChatGptSubscription").mockResolvedValue(true),
+    vi.spyOn(auth, "hasPersistedOpenAiApiKey").mockResolvedValue(false),
+    vi.spyOn(auth, "hasChatGptRouteOverrides").mockResolvedValue(false)];
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "model-verify-"));
   try {
-    await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({ agents: { defaults: { model: { primary: "openai/example", fallbacks: [] }, models: { "openai/example": { agentRuntime: { id: "codex" } } } } } }));
+    await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({ agents: { defaults: { model: { primary: "openai/example", fallbacks: [] }, models: { "openai/example": { agentRuntime: { id: "openclaw" } } } } } }));
     const action = agentControlActionSchema.parse({ kind: "model.verify", model: "codex/example" });
     let calls = 0;
     const gateway = { request: (method: string, params?: unknown) => {
       expect(["sessions.patch", "sessions.delete", "chat.abort"]).toContain(method); expect(params).not.toHaveProperty("model");
-      return Promise.resolve({ resolved: { modelProvider: "openai", model: "example", agentRuntime: "codex" }, entry: { modelProvider: "openai", model: "example", agentHarnessId: "codex" } });
+      return Promise.resolve({ resolved: { modelProvider: "openai", model: "example", agentRuntime: "openclaw" }, entry: { modelProvider: "openai", model: "example", agentHarnessId: "openclaw" } });
     } };
     const statusNudgeRunner = { runChatTask: () => { calls++; return Promise.resolve({ result: { outcome: "reply" as const, reply: { runId: "test", message: "OK" } }, openclawMeta: {} }); } };
     expect(agentControlResultSchema.parse(await executeAgentControl({ configPath: path.join(dir, "config.json"), action, gateway, statusNudgeRunner }))).toMatchObject({ kind: "model.verify", verified: true });
@@ -105,16 +110,21 @@ it("parses and dispatches real model.verify protocol against runtime defaults an
     expect(calls).toBe(1);
     expect(cleanup).toEqual(["sessions.patch", "chat.abort", "sessions.delete"]);
     const wrongHarnessGateway = { request: () => Promise.resolve({
-      resolved: { modelProvider: "openai", model: "example", agentRuntime: "codex" },
-      entry: { modelProvider: "openai", model: "example", agentHarnessId: "openclaw" },
+      resolved: { modelProvider: "openai", model: "example", agentRuntime: "openclaw" },
+      entry: { modelProvider: "openai", model: "example", agentHarnessId: "codex" },
     }) };
     await expect(executeAgentControl({ configPath: path.join(dir, "config.json"), action, gateway: wrongHarnessGateway, statusNudgeRunner })).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });
     expect(calls).toBe(2);
     const driftGateway = { request: () => Promise.resolve({
-      resolved: { modelProvider: "openai", model: "example", agentRuntime: "codex" },
-      entry: { modelProvider: "openai", model: "other", agentHarnessId: "codex" },
+      resolved: { modelProvider: "openai", model: "example", agentRuntime: "openclaw" },
+      entry: { modelProvider: "openai", model: "other", agentHarnessId: "openclaw" },
     }) };
     await expect(executeAgentControl({ configPath: path.join(dir, "config.json"), action, gateway: driftGateway, statusNudgeRunner })).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });
     expect(calls).toBe(3);
-  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+    // Native Pi alone is not proof of OAuth billing; explicit API route fails.
+    const config = { agents: { defaults: { model: { primary: "openai/example", fallbacks: [] }, models: { "openai/example": { agentRuntime: { id: "openclaw" } } } } }, models: { providers: { openai: { api: "openai-responses", models: [] } } } };
+    await fs.writeFile(path.join(dir, "config.json"), JSON.stringify(config));
+    await expect(executeAgentControl({ configPath: path.join(dir, "config.json"), action, gateway, statusNudgeRunner })).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });
+    expect(calls).toBe(3);
+  } finally { spies.forEach(spy => spy.mockRestore()); await fs.rm(dir, { recursive: true, force: true }); }
 });

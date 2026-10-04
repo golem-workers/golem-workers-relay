@@ -1,0 +1,70 @@
+{
+  "runtimeVersion": "2026.9.7",
+  "checks": 6,
+  "passed": 6,
+  "failed": 0,
+  "actions": 36,
+  "results": [
+    {
+      "name": "same-version-sqlite-only/empty/primary",
+      "status": "PASS",
+      "sqliteOnlyAtEntry": true,
+      "placement": "primary",
+      "drift": "empty",
+      "effectiveRoute": "subscription/chatgpt endpoint",
+      "authUnchanged": true
+    },
+    {
+      "name": "same-version-sqlite-only/empty/fallback",
+      "status": "PASS",
+      "sqliteOnlyAtEntry": true,
+      "placement": "fallback",
+      "drift": "empty",
+      "effectiveRoute": "subscription/chatgpt endpoint",
+      "authUnchanged": true
+    },
+    {
+      "name": "same-version-sqlite-only/empty/auxiliary",
+      "status": "PASS",
+      "sqliteOnlyAtEntry": true,
+      "placement": "auxiliary",
+      "drift": "empty",
+      "effectiveRoute": "subscription/chatgpt endpoint",
+      "authUnchanged": true
+    },
+    {
+      "name": "same-version-sqlite-only/nonempty-sol/primary",
+      "status": "PASS",
+      "sqliteOnlyAtEntry": true,
+      "placement": "primary",
+      "drift": "nonempty-sol",
+      "effectiveRoute": "subscription/chatgpt endpoint",
+      "authUnchanged": true
+    },
+    {
+      "name": "same-version-sqlite-only/nonempty-sol/fallback",
+      "status": "PASS",
+      "sqliteOnlyAtEntry": true,
+      "placement": "fallback",
+      "drift": "nonempty-sol",
+      "effectiveRoute": "subscription/chatgpt endpoint",
+      "authUnchanged": true
+    },
+    {
+      "name": "same-version-sqlite-only/nonempty-sol/auxiliary",
+      "status": "PASS",
+      "sqliteOnlyAtEntry": true,
+      "placement": "auxiliary",
+      "drift": "nonempty-sol",
+      "effectiveRoute": "subscription/chatgpt endpoint",
+      "authUnchanged": true
+    }
+  ],
+  "limitations": [
+    "Offline route selection is not live inference/token refresh",
+    "Fake systemctl; no actual gateway restart or service edits",
+    "Dashboard-equivalent per-target relay actions, not backend bulk endpoint",
+    "Legacy JSON route source inspected directly; runtime migration not invoked",
+    "Private route exports used only in this diagnostic; public SDK handles auth persistence"
+  ]
+}

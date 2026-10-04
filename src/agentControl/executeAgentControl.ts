@@ -1,9 +1,13 @@
 import { readModelFence, writeModelFence, withModelFenceLock } from "./modelFence.js";
+import { writeOwnerFencedConfig, withOwnerFenceLock, isConfigMutationPath, configRevision, type OwnerFence } from "./ownerFence.js";
+import { readOwnerRuntime } from "./ownerRuntime.js";
+import { normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
+import { ensureNativePiModelCompatibility } from "./nativePiModelCompatibility.js";
+import { isDeepStrictEqual } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import os from "node:os";
 import { randomUUID } from "node:crypto";
 import JSON5 from "json5";
 import {
@@ -15,6 +19,9 @@ import {
   exportCodexAuthBundle,
   clearCodexAuth,
   getCodexLoginStatus,
+  hasChatGptRouteOverrides,
+  hasPersistedChatGptSubscription,
+  hasPersistedOpenAiApiKey,
   importCodexAuthBundle,
   setCodexAuthMode,
   startCodexLogin,
@@ -34,8 +41,11 @@ const execFile = promisify(execFileCallback);
 const GATEWAY_RESTART_CHECK_ATTEMPTS = 20;
 const GATEWAY_RESTART_CHECK_DELAY_MS = 500;
 const CHANNELS_STATUS_TIMEOUT_MS = 15_000;
-const FILE_LOCK_RETRY_ATTEMPTS = 50;
-const FILE_LOCK_RETRY_DELAY_MS = 100;
+// Cold Codex startup is lazy and may outlast channel status polling.
+const CODEX_AUTH_REFRESH_TIMEOUT_MS = 120_000;
+// Gateway.request starts its RPC timer only after connecting. Bound cold-start
+// readiness too, so a dead Gateway cannot hold the auth transaction forever.
+const CODEX_AUTH_READY_AND_REFRESH_TIMEOUT_MS = 240_000;
 const VALID_THINKING_DEFAULTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "adaptive"]);
 let codexAuthMutationQueue: Promise<void> = Promise.resolve();
 
@@ -91,7 +101,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
   return withModelFenceLock(input.configPath, async () => {
     const state = await readModelFence(input.configPath);
     const action = input.action;
-    if (action.kind === "model.verify") {
+    if (action.kind === "model.verify" && (state || input.statusNudgeRunner)) {
       if (!input.statusNudgeRunner) throw new AgentControlError("MODEL_VERIFY_UNAVAILABLE", "Inference runner unavailable");
       const { config } = await readConfigFile(input.configPath);
       const defaults = ensureOptionalRecord(ensureOptionalRecord(config.agents)?.defaults);
@@ -99,11 +109,30 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       if (mapPublicModelRef(typeof configured?.primary === "string" ? configured.primary : null, defaults) !== action.model || readUnknownArray(configured?.fallbacks).length !== 0) {
         throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Selected config or zero-fallback policy differs");
       }
+      // OAuth route identity is independent of the native Pi harness. Never
+      // interpret openclaw runtime metadata alone as subscription billing proof.
+      if (action.model.startsWith("codex/")) {
+        const auth = await getCodexLoginStatus(input.configPath);
+        const providers = ensureOptionalRecord(ensureOptionalRecord(config.models)?.providers);
+        const provider = ensureOptionalRecord(providers?.openai);
+        const modelRow = readUnknownArray(provider?.models).map(ensureOptionalRecord).find(row => row?.id === action.model.slice("codex/".length));
+        const effectiveApi = modelRow?.api ?? provider?.api;
+        const environment = ensureOptionalRecord(config.env);
+        const environmentVars = ensureOptionalRecord(environment?.vars);
+        const hasEnvironmentRoute = [environment, environmentVars, process.env].some(env =>
+          env && ["OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY"].some(key => env[key] !== undefined));
+        if ((effectiveApi !== undefined && effectiveApi !== "openai-chatgpt-responses") || hasEnvironmentRoute || auth.state !== "connected" || !auth.authModes?.openaiLogin.active ||
+            !await hasPersistedChatGptSubscription(input.configPath) ||
+            await hasPersistedOpenAiApiKey(input.configPath) ||
+            await hasChatGptRouteOverrides(input.configPath)) {
+          throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Native subscription route is not active");
+        }
+      }
       const sessionKey = "agent:main:enterprise-model-verify:" + randomUUID();
       type ProbeResponse = { resolved?: { modelProvider?: string; model?: string; agentRuntime?: string }; entry?: { modelProvider?: string; model?: string; agentHarnessId?: string } };
       const identity = (provider?: string, model?: string, runtime?: string) => {
         const ref = provider && model ? provider + "/" + model : null;
-        if (ref?.startsWith("openai/") && runtime !== "codex" && action.model.startsWith("codex/")) return null;
+        if (ref?.startsWith("openai/") && runtime !== "openclaw" && action.model.startsWith("codex/")) return null;
         return mapPublicModelRef(ref, defaults);
       };
       let completed = false;
@@ -121,7 +150,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         if (result.outcome !== "reply") throw new AgentControlError("MODEL_VERIFY_FAILED", "Selected runtime model did not return a reply");
         // Session usage records the provider/model actually used, including fallback drift.
         const after = await input.gateway.request("sessions.patch", { key: sessionKey }, { timeoutMs: 15_000 }) as ProbeResponse;
-        if (identity(after.entry?.modelProvider, after.entry?.model, after.resolved?.agentRuntime) !== action.model || (action.model.startsWith("codex/") && after.entry?.agentHarnessId !== "codex")) {
+        if (identity(after.entry?.modelProvider, after.entry?.model, after.resolved?.agentRuntime) !== action.model || (action.model.startsWith("codex/") && after.entry?.agentHarnessId !== "openclaw")) {
           throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Inference used another provider/model or runtime");
         }
         completed = true;
@@ -168,7 +197,32 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         throw error;
       }
     }
-    if (state && ["model.set", "modelAssignment.set", "config.apply"].includes(action.kind)) {
+    if (state && action.kind === "config.apply") {
+      const { config } = await readConfigFile(input.configPath);
+      const candidate: unknown = JSON5.parse(action.configText);
+      const protectedRoute = (value: unknown) => {
+        const normalize = (entry: unknown): unknown => {
+          if (Array.isArray(entry)) return entry.map(normalize);
+          const row = ensureOptionalRecord(entry);
+          if (!row) return entry;
+          return Object.fromEntries(Object.entries(row).map(([key, item]) =>
+            [key, key === "agentRuntime" ? { id: "openclaw" } : key === "pickerRuntimes" ? ["openclaw"] : normalize(item)]));
+        };
+        const cfg = ensureOptionalRecord(value);
+        return normalize({ agents: cfg?.agents, providers: cfg?.models, auth: cfg?.auth, env: cfg?.env });
+      };
+      if (!action.expectedRevision || !isDeepStrictEqual(protectedRoute(config), protectedRoute(candidate))) {
+        throw new AgentControlError("MODEL_FENCE_REQUIRED", "Fenced configuration requires CAS and unchanged model routing");
+      }
+      const nextDefaults = ensureOptionalRecord(ensureOptionalRecord(ensureOptionalRecord(candidate)?.agents)?.defaults);
+      const nextModels = ensureOptionalRecord(nextDefaults?.models);
+      if (nextModels && Object.values(nextModels).some(value => {
+        const runtime = ensureOptionalRecord(ensureOptionalRecord(value)?.agentRuntime);
+        return runtime && runtime.id !== "openclaw";
+      })) throw new AgentControlError("MODEL_FENCE_REQUIRED", "Managed harness must remain native OpenClaw");
+      return executeAgentControlUnfenced(input);
+    }
+    if (state && ["model.set", "modelAssignment.set"].includes(action.kind)) {
       throw new AgentControlError("MODEL_FENCE_REQUIRED", "Legacy configuration mutations cannot bypass an established model fence");
     }
     return executeAgentControlUnfenced(input);
@@ -184,9 +238,10 @@ async function executeAgentControlUnfenced(input: {
   backendMessageId?: string;
   statusNudgeRunner?: StatusNudgeRunner;
 }): Promise<AgentControlResult> {
+  const operation = async () => {
   const result =
     input.action.kind === "config.read"
-      ? await readConfig(input.configPath)
+      ? await readConfig(input.configPath, input.gateway)
       : input.action.kind === "channels.status"
         ? await readChannelsStatus(input.gateway)
       : input.action.kind === "lifecycle.activeRuns"
@@ -198,6 +253,8 @@ async function executeAgentControlUnfenced(input: {
         ? await applyConfig({
             configPath: input.configPath,
             configText: input.action.configText,
+            ownerFence: input.action.ownerFence,
+            expectedRevision: input.action.expectedRevision,
           })
       : input.action.kind === "config.validate"
         ? await validateConfig(input.configPath)
@@ -213,9 +270,9 @@ async function executeAgentControlUnfenced(input: {
             : input.action.kind === "devicePairing.approve"
               ? await approveDevicePairing(input.gateway, input.action.requestId)
             : input.action.kind === "channelPairing.list"
-              ? await listChannelPairing(input.action.channel, input.action.accountId)
+              ? await listChannelPairing(input.configPath, input.action.channel, input.action.accountId)
               : input.action.kind === "channelPairing.approve"
-                ? await approveChannelPairing(input.action.channel, input.action.code, input.action.accountId)
+                ? await approveChannelPairing(input.configPath, input.action.channel, input.action.code, input.action.accountId)
               : input.action.kind === "whatsapp.login.start"
                 ? await startWhatsAppLogin(input.gateway, input.action)
               : input.action.kind === "whatsapp.login.wait"
@@ -224,10 +281,12 @@ async function executeAgentControlUnfenced(input: {
                 ? await startCodexLogin(
                     input.configPath,
                     { forceRelink: input.action.forceRelink },
-                    runCodexAuthMutationWithGatewayPaused,
+                    (operation) => runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(input.configPath, () => withCleanOpenAiGatewayEnvironment(operation))),
                   )
               : input.action.kind === "codex.login.status"
                 ? await getCodexLoginStatus(input.configPath)
+              : input.action.kind === "model.verify"
+                ? await verifyConfiguredModel(input.configPath, input.action.model)
               : input.action.kind === "codex.auth.set"
                 ? await setCodexAuthWithGatewayPaused(input.configPath, input.action)
               : input.action.kind === "codex.auth.export"
@@ -241,7 +300,7 @@ async function executeAgentControlUnfenced(input: {
                     input.gateway,
                   )
               : input.action.kind === "codex.auth.clear"
-                ? await runCodexAuthMutationWithGatewayPaused(() => clearCodexAuth(input.configPath))
+                ? await runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(input.configPath, () => clearCodexAuth(input.configPath)))
               : input.action.kind === "github.auth.configure"
                 ? await configureGitHubAuth(input.action)
               : input.action.kind === "github.oauth.status"
@@ -289,6 +348,11 @@ async function executeAgentControlUnfenced(input: {
                     fastMode: input.action.fastMode,
                   }) : (() => { throw new AgentControlError("MODEL_FENCE_INTERNAL", "Fence action must use central handler"); })();
   return agentControlResultSchema.parse(result);
+  };
+  // Do not serialize unrelated chat, pairing, lifecycle or login waits behind
+  // config delivery. Only config-bearing read/modify/write operations share it.
+  const configActions = new Set(["config.read", "config.apply", "model.set", "modelAssignment.set", "relay.selfNudge.set"]);
+  return configActions.has(input.action.kind) ? withOwnerFenceLock(input.configPath, operation) : operation();
 }
 
 async function readLifecycleActiveRuns(
@@ -422,10 +486,13 @@ async function sendStatusNudge(input: {
   return { kind: "chat.statusNudge", accepted: true, runId };
 }
 
-async function readConfig(configPath: string): Promise<AgentControlResult> {
+async function readConfig(configPath: string, gateway: GatewayLike): Promise<AgentControlResult> {
   const { configText, config } = await readConfigFile(configPath);
   return {
     kind: "config.read",
+    configRevision: configRevision(configText),
+    ownerFenceVersion: 1,
+    ownerRuntime: await readOwnerRuntime(configPath, gateway),
     configText,
     config,
   };
@@ -473,12 +540,26 @@ async function readChannelsStatus(gateway: GatewayLike): Promise<AgentControlRes
 async function applyConfig(input: {
   configPath: string;
   configText: string;
+  ownerFence?: OwnerFence;
+  expectedRevision?: string;
 }): Promise<AgentControlResult> {
   const parsed = parseConfigText(input.configText);
-  await atomicWriteUtf8(input.configPath, `${JSON.stringify(parsed, null, 2)}\n`);
+  const defaults = ensureOptionalRecord(ensureOptionalRecord(parsed.agents)?.defaults);
+  const requestedModels = ["model", "imageModel", "imageGenerationModel", "videoGenerationModel", "musicGenerationModel", "pdfModel"]
+    .flatMap((key) => {
+      const value = defaults?.[key];
+      if (typeof value === "string") return [value];
+      const assignment = ensureOptionalRecord(value);
+      return [assignment?.primary, ...readUnknownArray(assignment?.fallbacks)]
+        .filter((ref): ref is string => typeof ref === "string");
+    });
+  await applyNativePiModelCompatibility(parsed, input.configPath, requestedModels);
+  const committedRevision = await writeOwnerFencedConfig(input.configPath, JSON.stringify(parsed, null, 2) + "\n", input.ownerFence, { expectedRevision: input.expectedRevision });
   return {
     kind: "config.apply",
     applied: true,
+    committedRevision,
+    committedConfigText: await fs.readFile(input.configPath, "utf8"),
   };
 }
 
@@ -653,8 +734,6 @@ type ChannelPairingRequest = {
   meta?: Record<string, unknown>;
 };
 
-const CHANNEL_PAIRING_TTL_MS = 3_600_000;
-
 function normalizeOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -665,234 +744,109 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeLowercaseString(value: unknown): string {
-  return normalizeOptionalString(value)?.toLowerCase() ?? "";
-}
-
-function safeChannelKey(channel: string): string {
-  const safe = normalizeLowercaseString(channel).replace(/[\\/:*?"<>|]/g, "_").replace(/\.\./g, "_");
-  if (!safe || safe === "_") {
-    throw new AgentControlError("CHANNEL_PAIRING_INVALID_CHANNEL", "Invalid pairing channel", { channel });
-  }
-  return safe;
-}
-
-function safeAccountKey(accountId: string): string {
-  const safe = normalizeLowercaseString(accountId).replace(/[\\/:*?"<>|]/g, "_").replace(/\.\./g, "_");
-  if (!safe || safe === "_") {
-    throw new AgentControlError("CHANNEL_PAIRING_INVALID_ACCOUNT", "Invalid pairing account id", { accountId });
-  }
-  return safe;
-}
-
-function resolveOpenclawStateDir(env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = normalizeOptionalString(env.OPENCLAW_STATE_DIR);
-  if (explicit) return explicit;
-  return path.join(env.HOME || os.homedir() || "/root", ".openclaw");
-}
-
-function resolveOpenclawCredentialsDir(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolveOpenclawStateDir(env), "credentials");
-}
-
-function resolveChannelPairingPath(channel: string, env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolveOpenclawCredentialsDir(env), `${safeChannelKey(channel)}-pairing.json`);
-}
-
-function resolveChannelAllowFromPath(channel: string, accountId?: string, env: NodeJS.ProcessEnv = process.env): string {
-  const base = safeChannelKey(channel);
-  const normalizedAccountId = normalizeOptionalString(accountId);
-  if (!normalizedAccountId) {
-    return path.join(resolveOpenclawCredentialsDir(env), `${base}-allowFrom.json`);
-  }
-  return path.join(resolveOpenclawCredentialsDir(env), `${base}-${safeAccountKey(normalizedAccountId)}-allowFrom.json`);
-}
-
-function parseIsoTimestamp(value: unknown): number | null {
-  const normalized = normalizeOptionalString(value);
-  if (!normalized) return null;
-  const timestamp = Date.parse(normalized);
-  return Number.isFinite(timestamp) ? timestamp : null;
-}
-
-function isExpiredPairingRequest(entry: ChannelPairingRequest, nowMs: number): boolean {
-  const createdAtMs = parseIsoTimestamp(entry.createdAt);
-  if (createdAtMs === null) return true;
-  return nowMs - createdAtMs > CHANNEL_PAIRING_TTL_MS;
-}
-
-function normalizeChannelPairingRequest(value: unknown): ChannelPairingRequest | null {
-  if (!isRecord(value)) return null;
-  const id = normalizeOptionalString(value.id);
-  const code = normalizeOptionalString(value.code)?.toUpperCase() ?? null;
-  const createdAt = normalizeOptionalString(value.createdAt);
-  const lastSeenAt = normalizeOptionalString(value.lastSeenAt) ?? undefined;
-  const meta = isRecord(value.meta) ? value.meta : undefined;
-  if (!id || !code || !createdAt) return null;
-  return {
-    id,
-    code,
-    createdAt,
-    ...(lastSeenAt ? { lastSeenAt } : {}),
-    ...(meta ? { meta } : {}),
-  };
-}
-
-async function readJsonFileWithFallback<T>(filePath: string, fallback: T): Promise<T> {
+// OpenClaw owns pairing storage, expiry, account scoping and atomic approval.
+// Do not read/write credentials JSON: newer runtimes store this state in SQLite.
+async function runPairingCli(configPath: string, args: string[]): Promise<string> {
   try {
-    const raw = await fs.readFile(filePath, "utf8");
-    return JSON.parse(raw) as T;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
-      return fallback;
-    }
-    throw error;
+    const { stdout } = await execFile("openclaw", ["pairing", ...args], {
+      env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath },
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return stdout;
+  } catch {
+    // Child-process errors contain argv (including the approval code) and output.
+    throw new AgentControlError("CHANNEL_PAIRING_COMMAND_FAILED", "OpenClaw pairing command failed");
   }
 }
 
-async function writeJsonFileAtomic(filePath: string, value: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.gwtmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await fs.rename(tempPath, filePath);
-}
-
-async function ensureJsonFile(filePath: string, fallback: unknown): Promise<void> {
+async function readChannelPairingRequests(
+  configPath: string,
+  channel: string,
+  accountId?: string,
+): Promise<ChannelPairingRequest[]> {
+  const account = normalizeOptionalString(accountId);
+  const stdout = await runPairingCli(configPath, [
+    "list", "--channel", channel, "--json", ...(account ? ["--account", account] : []),
+  ]);
+  let payload: unknown;
   try {
-    await fs.access(filePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
-      throw error;
-    }
-    await writeJsonFileAtomic(filePath, fallback);
+    payload = JSON.parse(stdout);
+  } catch {
+    throw new AgentControlError("CHANNEL_PAIRING_INVALID_RESPONSE", "Invalid OpenClaw pairing response");
   }
-}
-
-async function withFileLock<T>(filePath: string, fallback: unknown, fn: () => Promise<T>): Promise<T> {
-  await ensureJsonFile(filePath, fallback);
-  const lockPath = `${filePath}.gwlock`;
-  for (let attempt = 0; attempt < FILE_LOCK_RETRY_ATTEMPTS; attempt += 1) {
-    try {
-      await fs.mkdir(lockPath);
-      try {
-        return await fn();
-      } finally {
-        await fs.rm(lockPath, { recursive: true, force: true });
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException | null)?.code !== "EEXIST") {
-        throw error;
-      }
-      await sleep(FILE_LOCK_RETRY_DELAY_MS);
-    }
+  if (!isRecord(payload) || payload.channel !== channel || !Array.isArray(payload.requests)) {
+    throw new AgentControlError("CHANNEL_PAIRING_INVALID_RESPONSE", "Invalid OpenClaw pairing response");
   }
-  throw new AgentControlError("CHANNEL_PAIRING_LOCK_TIMEOUT", "Timed out waiting for pairing store lock", {
-    filePath,
+  return payload.requests.map((entry: unknown) => {
+    if (!isRecord(entry) || !normalizeOptionalString(entry.id) ||
+        !normalizeOptionalString(entry.code) || !normalizeOptionalString(entry.createdAt) ||
+        !Number.isFinite(Date.parse(String(entry.createdAt))) ||
+        (account && (!isRecord(entry.meta) || entry.meta.accountId !== account))) {
+      throw new AgentControlError("CHANNEL_PAIRING_INVALID_RESPONSE", "Invalid OpenClaw pairing request");
+    }
+    return {
+      id: String(entry.id),
+      code: String(entry.code).trim().toUpperCase(),
+      createdAt: String(entry.createdAt),
+      ...(normalizeOptionalString(entry.lastSeenAt) ? { lastSeenAt: String(entry.lastSeenAt) } : {}),
+      ...(isRecord(entry.meta) ? { meta: entry.meta } : {}),
+    };
   });
 }
 
-async function readChannelPairingRequests(channel: string, accountId?: string): Promise<ChannelPairingRequest[]> {
-  const filePath = resolveChannelPairingPath(channel);
-  return withFileLock(filePath, { version: 1, requests: [] }, async () => {
-    const payload = await readJsonFileWithFallback<{ requests?: unknown[] }>(filePath, { requests: [] });
-    const nowMs = Date.now();
-    const normalizedAccountId = normalizeOptionalString(accountId);
-    const requests = Array.isArray(payload.requests)
-      ? payload.requests
-          .map((entry) => normalizeChannelPairingRequest(entry))
-          .filter((entry): entry is ChannelPairingRequest => entry !== null)
-          .filter((entry) => !isExpiredPairingRequest(entry, nowMs))
-          .filter((entry) => {
-            if (!normalizedAccountId) return true;
-            return normalizeOptionalString(entry.meta?.accountId) === normalizedAccountId;
-          })
-          .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-      : [];
-    return requests;
-  });
-}
-
-async function readAllowFromEntries(filePath: string): Promise<string[]> {
-  const payload = await readJsonFileWithFallback<{ allowFrom?: unknown[] }>(filePath, { allowFrom: [] });
-  return Array.isArray(payload.allowFrom)
-    ? payload.allowFrom
-        .map((entry) => normalizeOptionalString(entry))
-        .filter((entry): entry is string => entry !== null)
-    : [];
-}
-
-async function listChannelPairing(channel: string, accountId?: string): Promise<AgentControlResult> {
+async function listChannelPairing(configPath: string, channel: string, accountId?: string): Promise<AgentControlResult> {
   return {
     kind: "channelPairing.list",
-    requests: await readChannelPairingRequests(channel, accountId),
+    requests: await readChannelPairingRequests(configPath, channel, accountId),
   };
 }
 
 async function approveChannelPairing(
+  configPath: string,
   channel: string,
   code: string,
-  accountId?: string
+  accountId?: string,
 ): Promise<AgentControlResult> {
   const normalizedCode = normalizeOptionalString(code)?.toUpperCase() ?? "";
   if (!normalizedCode) {
     throw new AgentControlError("CHANNEL_PAIRING_INVALID_CODE", "Invalid pairing code");
   }
-  const filePath = resolveChannelPairingPath(channel);
-  return withFileLock(filePath, { version: 1, requests: [] }, async () => {
-    const payload = await readJsonFileWithFallback<{ requests?: unknown[] }>(filePath, { requests: [] });
-    const requests = Array.isArray(payload.requests)
-      ? payload.requests
-          .map((entry) => normalizeChannelPairingRequest(entry))
-          .filter((entry): entry is ChannelPairingRequest => entry !== null)
-      : [];
-    const normalizedAccountId = normalizeOptionalString(accountId);
-    const matchIndex = requests.findIndex((entry) => {
-      if (entry.code !== normalizedCode) return false;
-      if (!normalizedAccountId) return true;
-      return normalizeOptionalString(entry.meta?.accountId) === normalizedAccountId;
-    });
-    if (matchIndex < 0) {
-      throw new AgentControlError("CHANNEL_PAIRING_UNKNOWN_CODE", "Unknown pairing code", {
-        channel,
-        code: normalizedCode,
-      });
-    }
-    const approved = requests[matchIndex];
-    if (!approved) {
-      throw new AgentControlError("CHANNEL_PAIRING_UNKNOWN_CODE", "Unknown pairing code", {
-        channel,
-        code: normalizedCode,
-      });
-    }
-    const nextRequests = requests.filter((_, index) => index !== matchIndex);
-    await writeJsonFileAtomic(filePath, {
-      version: 1,
-      requests: nextRequests,
-    });
+  const requests = await readChannelPairingRequests(configPath, channel, accountId);
+  const approved = requests.find((entry) => entry.code === normalizedCode);
+  if (!approved) {
+    throw new AgentControlError("CHANNEL_PAIRING_UNKNOWN_CODE", "Unknown or expired pairing code");
+  }
+  const account = normalizeOptionalString(accountId) ?? normalizeOptionalString(approved.meta?.accountId);
+  // Revalidation and the actual mutation are atomic in the installed runtime.
+  await runPairingCli(configPath, [
+    "approve", "--channel", channel, ...(account ? ["--account", account] : []), normalizedCode,
+  ]);
+  return {
+    kind: "channelPairing.approve",
+    approved: true,
+    payload: { id: approved.id, code: approved.code, entry: approved },
+  };
+}
 
-    const effectiveAccountId =
-      normalizeOptionalString(accountId) ?? normalizeOptionalString(approved.meta?.accountId) ?? undefined;
-    const allowFromPath = resolveChannelAllowFromPath(channel, effectiveAccountId);
-    await withFileLock(allowFromPath, { version: 1, allowFrom: [] }, async () => {
-      const currentAllowFrom = await readAllowFromEntries(allowFromPath);
-      if (!currentAllowFrom.includes(approved.id)) {
-        await writeJsonFileAtomic(allowFromPath, {
-          version: 1,
-          allowFrom: [...currentAllowFrom, approved.id],
-        });
-      }
-    });
-
-    return {
-      kind: "channelPairing.approve",
-      approved: true,
-      payload: {
-        id: approved.id,
-        code: approved.code,
-        entry: approved,
-      },
-    };
-  });
+async function applyNativePiModelCompatibility(
+  config: Record<string, unknown>,
+  configPath: string,
+  requestedModels: string[],
+): Promise<void> {
+  const requestsOpenAi = requestedModels.some((ref) => /^(?:openai|codex|openai-codex)\//i.test(ref.trim()));
+  const defaults = ensureOptionalRecord(ensureOptionalRecord(config.agents)?.defaults);
+  const hasSol = Boolean(ensureOptionalRecord(ensureOptionalRecord(defaults?.models)?.["openai/gpt-6.1-sol"]));
+  const hasSubscription = (requestsOpenAi || hasSol) && await hasPersistedChatGptSubscription(configPath);
+  if (requestsOpenAi && hasSubscription && !await hasPersistedOpenAiApiKey(configPath)) {
+    normalizeManagedSubscriptionRoute(config, true);
+  }
+  if (!hasSol) return;
+  // Only a Sol subscription alias is evidence about Sol's route. A Codex
+  // fallback for another model must not change its transport.
+  const subscriptionRoute = requestedModels.some((ref) => /^(?:codex|openai-codex)\/gpt-6\.1-sol$/i.test(ref.trim()))
+    || hasSubscription;
+  ensureNativePiModelCompatibility(config, subscriptionRoute);
 }
 
 async function setModel(input: {
@@ -931,6 +885,7 @@ async function setModel(input: {
   } else if (input.thinkingDefault === null) {
     delete defaultsCfg.thinkingDefault;
   }
+  await applyNativePiModelCompatibility(nextConfig, input.configPath, [input.model, ...fallbacks]);
   await atomicWriteUtf8(input.configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
   const restart = await restartGatewayService();
   return {
@@ -971,21 +926,22 @@ function mapStoredModelRef(modelRef: string): { modelRef: string; agentRuntimeId
   if (lower.startsWith("openai-codex/")) {
     return {
       modelRef: `openai/${trimmed.slice("openai-codex/".length)}`,
-      agentRuntimeId: "codex",
+      agentRuntimeId: "openclaw",
     };
   }
   if (lower.startsWith("codex/")) {
     return {
       modelRef: `openai/${trimmed.slice("codex/".length)}`,
-      agentRuntimeId: "codex",
+      agentRuntimeId: "openclaw",
     };
   }
-  return { modelRef: trimmed, agentRuntimeId: null };
+  return { modelRef: trimmed, agentRuntimeId: "openclaw" };
 }
 
 function mapPublicModelRef(
   modelRef: string | null | undefined,
   defaultsCfg?: Record<string, unknown> | null,
+  subscriptionPurpose = true,
 ): string | null {
   const trimmed = String(modelRef ?? "").trim();
   if (!trimmed) return null;
@@ -995,7 +951,7 @@ function mapPublicModelRef(
   const modelsCfg = ensureOptionalRecord(defaultsCfg?.models);
   const modelCfg = ensureOptionalRecord(modelsCfg?.[trimmed]);
   const agentRuntime = ensureOptionalRecord(modelCfg?.agentRuntime);
-  if (agentRuntime?.id === "codex" && trimmed.toLowerCase().startsWith("openai/")) {
+  if ((agentRuntime?.id === "codex" || (subscriptionPurpose && agentRuntime?.id === "openclaw")) && trimmed.toLowerCase().startsWith("openai/")) {
     return `codex/${trimmed.slice("openai/".length)}`;
   }
   return trimmed;
@@ -1082,8 +1038,8 @@ async function readModelAssignments(configPath: string): Promise<AgentControlRes
     return {
       kind: "assignment" as const,
       purpose,
-      primary: mapPublicModelRef(typeof entry?.primary === "string" ? entry.primary : null, defaultsCfg),
-      fallback: mapPublicModelRef(fallbackValues[0] ?? null, defaultsCfg),
+      primary: mapPublicModelRef(typeof entry?.primary === "string" ? entry.primary : null, defaultsCfg, !purpose.endsWith("Generation")),
+      fallback: mapPublicModelRef(fallbackValues[0] ?? null, defaultsCfg, !purpose.endsWith("Generation")),
       thinkingDefault: purpose === "main" ? readThinkingDefault(defaultsCfg?.thinkingDefault) : null,
       fastMode: purpose === "main"
         ? readModelFastMode(defaultsCfg ?? {}, typeof entry?.primary === "string" ? entry.primary : null)
@@ -1137,6 +1093,7 @@ async function setModelAssignment(input: {
   } else if (input.purpose === "main" && input.thinkingDefault === null) {
     delete defaultsCfg.thinkingDefault;
   }
+  await applyNativePiModelCompatibility(nextConfig, input.configPath, [input.primary, input.fallback ?? ""]);
   await atomicWriteUtf8(input.configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
   const restart = await restartGatewayService();
   return {
@@ -1155,6 +1112,47 @@ async function setModelAssignment(input: {
     subState: restart.subState,
     result: restart.result,
   };
+}
+
+async function verifyConfiguredModel(configPath: string, model: string): Promise<AgentControlResult> {
+  const { config } = await readConfigFile(configPath);
+  const agents = isRecord(config.agents) ? config.agents : {};
+  const defaults = isRecord(agents.defaults) ? agents.defaults : {};
+  const configured = isRecord(defaults.model) ? defaults.model.primary : defaults.model;
+  const expected = mapStoredModelRef(model);
+  if (configured !== expected.modelRef) {
+    throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Configured model changed before authorization verification.");
+  }
+  const marker = `AUTH_CHECK_${randomUUID().replaceAll("-", "")}`;
+  try {
+    // A fresh session, no --deliver: never publish diagnostic text to a customer
+    // channel, reuse their conversation or accept mere authStatus as success.
+    const { stdout } = await execFile("openclaw", [
+      "agent", "--agent", "main", "--session-id", `authorization-check-${randomUUID()}`,
+      "--session-key", `agent:main:authorization-check:${randomUUID()}`,
+      "--message", `Reply exactly ${marker}. Do not use tools.`,
+      "--json", "--timeout", "90",
+    ], {
+      env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath },
+      timeout: 120_000,
+      maxBuffer: 1024 * 1024,
+    });
+    const response: unknown = JSON.parse(stdout);
+    const result = isRecord(response) && isRecord(response.result) ? response.result : null;
+    const meta = result && isRecord(result.meta) ? result.meta : null;
+    const agentMeta = meta && isRecord(meta.agentMeta) ? meta.agentMeta : null;
+    const expectedModel = expected.modelRef.slice(expected.modelRef.indexOf("/") + 1);
+    const payloads = result && Array.isArray(result.payloads) ? result.payloads : [];
+    if (!isRecord(response) || response.status !== "ok"
+      || agentMeta?.model !== expectedModel
+      || !payloads.some((payload: unknown) => isRecord(payload) && typeof payload.text === "string" && payload.text.trim() === marker)) {
+      throw new Error("Model response did not pass authorization verification.");
+    }
+    return { kind: "model.verify", model, verified: true };
+  } catch {
+    // CLI output may contain private runtime data. Do not return it to the UI.
+    throw new AgentControlError("MODEL_VERIFY_FAILED", "Authorization was saved, but the selected model did not pass an isolated response check. Retry after checking model availability and routing.");
+  }
 }
 
 async function restartGatewayService(): Promise<Extract<AgentControlResult, { kind: "gateway.restart" }>> {
@@ -1196,33 +1194,36 @@ async function importCodexAuthWithGatewayPaused(
   configPath: string,
   action: Extract<AgentControlAction, { kind: "codex.auth.import" }>,
 ): Promise<AgentControlResult> {
-  return await runCodexAuthMutationWithGatewayPaused(() => importCodexAuthBundle(configPath, action.bundle));
+  return await runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(configPath, () => withCleanOpenAiGatewayEnvironment(() => importCodexAuthBundle(configPath, action.bundle))));
 }
 
 async function setCodexAuthWithGatewayPaused(
   configPath: string,
   action: Extract<AgentControlAction, { kind: "codex.auth.set" }>,
 ): Promise<AgentControlResult> {
-  return await runCodexAuthMutationWithGatewayPaused(async () => {
-    const result = await setCodexAuthMode(configPath, action.mode);
-    if (action.mode === "openai_login") {
-      await removeLegacyOpenAiGatewayEnvironment();
-    }
-    return result;
-  });
+  return await runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(configPath, () => action.mode === "openai_login"
+    ? withCleanOpenAiGatewayEnvironment(() => setCodexAuthMode(configPath, action.mode))
+    : setCodexAuthMode(configPath, action.mode)));
 }
 
 function removeOpenAiEnvironmentLines(contents: string): string {
-  const legacyEnvironment = /^\s*Environment=(?:"?)(?:OPENAI_API_KEY|OPENAI_BASE_URL)=/;
-  const legacyEnvironmentFile = /^\s*EnvironmentFile=-?\/root\/\.openclaw\/openai-relay\.env\s*$/;
-  const lines = contents.split(/\r?\n/);
-  const filtered = lines.filter(
-    (line) => !legacyEnvironment.test(line) && !legacyEnvironmentFile.test(line),
-  );
-  return filtered.join("\n");
+  return contents.split(/\r?\n/).flatMap((line) => {
+    if (/^\s*EnvironmentFile=-?["']?\/root\/\.openclaw\/openai-relay\.env["']?\s*$/.test(line)) return [];
+    const match = /^(\s*Environment=)(.*)$/.exec(line);
+    if (!match) return [line];
+    // systemd permits several quoted assignments on one Environment= line.
+    // Remove only the OpenAI route tokens, never a neighbouring TTS/other key.
+    const tokens = match[2].match(/(?:[^\s"'\\]|\\.|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')+/g) ?? [];
+    const retained = tokens.filter((token) => !/^["']?(?:OPENAI_API_KEY|OPENAI_BASE_URL)=/.test(token));
+    if (retained.length === tokens.length) return [line];
+    return retained.length ? [`${match[1]}${retained.join(" ")}`] : [];
+  }).join("\n");
 }
 
-async function removeLegacyOpenAiGatewayEnvironment(): Promise<void> {
+type GatewayEnvironmentEdit = { filePath: string; current: string; next: string };
+
+async function planOpenAiGatewayEnvironmentCleanup(): Promise<GatewayEnvironmentEdit[]> {
+  const edits: GatewayEnvironmentEdit[] = [];
   const unitPath = process.env.OPENCLAW_GATEWAY_UNIT_PATH?.trim()
     || "/root/.config/systemd/user/openclaw-gateway.service";
   const dropInDir = process.env.OPENCLAW_GATEWAY_DROP_IN_DIR?.trim()
@@ -1249,11 +1250,40 @@ async function removeLegacyOpenAiGatewayEnvironment(): Promise<void> {
     }
     const next = removeOpenAiEnvironmentLines(current);
     if (next !== current) {
-      await atomicWriteUtf8(filePath, next);
+      edits.push({ filePath, current, next });
     }
   }
+  return edits;
+}
 
-  await execSystemctl(["--user", "daemon-reload"]);
+async function writeGatewayEnvironment(edits: GatewayEnvironmentEdit[], rollback = false): Promise<void> {
+  for (const edit of edits) await atomicWriteUtf8(edit.filePath, rollback ? edit.current : edit.next);
+  if (edits.length) await execSystemctl(["--user", "daemon-reload"]);
+}
+
+async function withCleanOpenAiGatewayEnvironment<T>(operation: () => Promise<T>): Promise<T> {
+  const edits = await planOpenAiGatewayEnvironmentCleanup();
+  try {
+    await writeGatewayEnvironment(edits);
+    return await operation();
+  } catch (error) {
+    await writeGatewayEnvironment(edits, true);
+    throw error;
+  }
+}
+
+async function refreshCodexRuntimeAuth(gateway: GatewayLike): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      gateway.request("models.authStatus", { refresh: true }, { timeoutMs: CODEX_AUTH_REFRESH_TIMEOUT_MS }),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Gateway did not become ready for authorization refresh.")), CODEX_AUTH_READY_AND_REFRESH_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function syncCodexAuthWithoutGatewayRestart(
@@ -1261,20 +1291,34 @@ async function syncCodexAuthWithoutGatewayRestart(
   action: Extract<AgentControlAction, { kind: "codex.auth.sync" }>,
   gateway: GatewayLike,
 ): Promise<AgentControlResult> {
-  // Keep auth mutations serialized, but do not pause the gateway. OpenClaw can
-  // reload its persisted auth store and provider cache while active runs keep
-  // using the credential snapshot with which they started.
-  return await enqueueCodexAuthMutation(() =>
-    syncCodexAuthBundle(configPath, action.bundleVersion, action.bundle, {
-      refreshRuntimeAuth: async () => {
-        await gateway.request(
-          "models.authStatus",
-          { refresh: true },
-          { timeoutMs: CHANNELS_STATUS_TIMEOUT_MS },
-        );
-      },
-    }),
-  );
+  return await enqueueCodexAuthMutation(() => withOwnerFenceLock(configPath, async () => {
+    const edits = await planOpenAiGatewayEnvironmentCleanup();
+    const restartNeeded = edits.length > 0 || await hasChatGptRouteOverrides(configPath);
+    // Only legacy route repairs need a restart. Ordinary credential rotation
+    // still refreshes live, without interrupting active runs.
+    if (restartNeeded) await execSystemctl(["--user", "stop", "openclaw-gateway.service"]);
+    let refreshCalls = 0;
+    try {
+      await writeGatewayEnvironment(edits);
+      return await syncCodexAuthBundle(configPath, action.bundleVersion, action.bundle, {
+        forceRuntimeRefresh: restartNeeded,
+        refreshRuntimeAuth: async () => {
+          refreshCalls += 1;
+          // The auth transaction restores credentials/config before its second
+          // callback. Restore service environment before loading that rollback.
+          if (refreshCalls > 1) await writeGatewayEnvironment(edits, true);
+          if (restartNeeded) await restartGatewayService();
+          await refreshCodexRuntimeAuth(gateway);
+        },
+      });
+    } catch (error) {
+      if (refreshCalls === 0) {
+        await writeGatewayEnvironment(edits, true);
+        if (restartNeeded) await restartGatewayService();
+      }
+      throw error;
+    }
+  }));
 }
 
 function describeUnknownError(error: unknown): string | null {
@@ -1449,6 +1493,7 @@ function parseConfigText(configText: string): Record<string, unknown> {
 }
 
 async function atomicWriteUtf8(filePath: string, content: string): Promise<void> {
+  if (isConfigMutationPath(filePath)) { await writeOwnerFencedConfig(filePath, content); return; }
   const dir = path.dirname(filePath);
   const tmpPath = `${filePath}.gwtmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   await fs.mkdir(dir, { recursive: true });

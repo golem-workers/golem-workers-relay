@@ -50,6 +50,7 @@ const selfNudgeSettingsSchema = z.object({
   debugMessagesEnabled: z.boolean().optional(),
 });
 
+const ownerFenceSchema = z.object({ revision: z.string().regex(/^[0-9]+$/), active: z.array(z.string().regex(/^[1-9][0-9]{0,19}$/)), revoked: z.array(z.string().regex(/^[1-9][0-9]{0,19}$/)) });
 export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("config.read"),
@@ -63,6 +64,8 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("config.apply"),
     configText: z.string().min(1),
+    ownerFence: ownerFenceSchema.optional(),
+    expectedRevision: z.string().optional(),
   }),
   z.object({
     kind: z.literal("config.validate"),
@@ -92,7 +95,6 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     code: z.string().min(1),
     accountId: z.string().min(1).optional(),
   }),
-  z.object({ kind: z.literal("model.verify"), model: z.string().min(1) }),
   z.object({ kind: z.literal("model.fence.read") }),
   z.object({ kind: z.literal("model.fence.reconcile"), revision: z.string().uuid(), predecessor: z.string().uuid().nullable(), model: z.string().min(1) }),
   z.object({
@@ -149,6 +151,10 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     bundle: codexAuthBundleSchema,
   }),
   z.object({
+    kind: z.literal("model.verify"),
+    model: z.string().min(1),
+  }),
+  z.object({
     kind: z.literal("codex.auth.clear"),
   }),
   z.object({
@@ -186,13 +192,15 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
 export type AgentControlAction = z.infer<typeof agentControlActionSchema>;
 
 export const agentControlResultSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("model.verify"), model: z.string().min(1), verified: z.literal(true) }),
   z.object({ kind: z.literal("model.fence.read"), revision: z.string().nullable(), status: z.enum(["PENDING", "APPLIED", "UNRESOLVED", "CANCELLED"]).nullable(), model: z.string().nullable() }),
   z.object({ kind: z.literal("model.fence.reconcile"), revision: z.string(), status: z.enum(["UNRESOLVED", "CANCELLED"]), model: z.string() }),
   z.object({
     kind: z.literal("config.read"),
     configText: z.string().min(1),
     config: jsonRecordSchema,
+    configRevision: z.string().optional(),
+    ownerFenceVersion: z.literal(1).optional(),
+    ownerRuntime: z.object({ version: z.literal(1), state: z.enum(["pending", "applied", "unavailable", "unsupported"]), enrolledFence: ownerFenceSchema.nullable(), configRevisionHash: z.string().nullable(), appliedConfigHash: z.string().nullable(), config: jsonRecordSchema.nullable() }).optional(),
   }),
   z.object({
     kind: z.literal("channels.status"),
@@ -228,6 +236,8 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("config.apply"),
     applied: z.literal(true),
+    committedRevision: z.string().optional(),
+    committedConfigText: z.string().optional(),
   }),
   z.object({
     kind: z.literal("config.validate"),
@@ -370,6 +380,11 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     accountId: z.string().min(1).nullable(),
     expiresAtMs: z.number().int().positive(),
     authModes: codexAuthModesSchema,
+  }),
+  z.object({
+    kind: z.literal("model.verify"),
+    model: z.string().min(1),
+    verified: z.literal(true),
   }),
   z.object({
     kind: z.literal("codex.auth.clear"),

@@ -78,6 +78,14 @@ does not serialize chat turns globally; OpenClaw is responsible for resolving
 ordering for concurrent messages in the same session. Set `RELAY_CONCURRENCY=1`
 only when reproducing legacy FIFO behavior.
 
+OpenClaw 2026.9.6 stores reply file paths in canonical SQLite transcript
+`openclawDelivery.mediaUrls`, not in the public `chat.history` display projection.
+On SQLite-based agents (Node 24+), relay reads the exact selected assistant event
+read-only, validating its message ID, session key, and run ID before collecting
+files. Identity and compressed-size failures stop delivery; display error labels
+are never used to guess attachments. Legacy file-based agents keep their existing
+transcript path. File containment, size, and ambiguity checks still apply.
+
 Generated artifact delivery uses the native relay channel directive form,
 `[[media:relative/path.ext]]`.
 
@@ -125,7 +133,10 @@ The script:
 - writes a temporary snapshot-only warmup config that activates `telegram` and `whatsapp`, performs a mandatory `start -> readiness -> channels status -> stop` cycle to force first-run plugin initialization into snapshot prep, and then seals the snapshot back to a cold config for backend-owned bootstrap;
 - resolves WhatsApp from the same npm registry used by the compatibility version resolver (`npm:@openclaw/whatsapp@<version>`), while preserving `OPENCLAW_WHATSAPP_PLUGIN_SPEC` overrides. Snapshot sealing validates plugin manifests and built entrypoints across legacy install records/extensions, shared npm installs, and per-package npm projects (including WhatsApp), ignoring unfinished install-stage directories;
 - leaves the image ready for backend provisioning to reuse the prepared `relay-channel` and `codex` plugin installs from the snapshot;
+- performs an offline identity seal after confirming the gateway is stopped: removes gateway token/password, config backups, device/signing identity, runtime databases/sidecars, generated workspace files, histories and Go telemetry. Only neutral config, installed plugin payloads/provenance, authored skills and the Control UI asset cache remain; no OpenClaw CLI command runs after this seal in the prepare script;
 - finishes image preparation by stopping and disabling `openclaw-gateway.service` so prepared images boot with OpenClaw cold and backend provisioning performs the first controlled start.
+
+See the [snapshot identity seal contract](docs/prepare-agent-server.md#snapshot-identity-seal-contract) for the retained paths, legacy compatibility, fail-closed checks and post-seal probe restrictions.
 
 Execution logs are written to:
 
@@ -224,6 +235,16 @@ Notes:
 ## Relay configuration
 
 Relay reads env vars (see `.env.example`). The OpenClaw-related ones:
+
+### Messenger sender approvals
+
+Backend-only channel pairing (`channelPairing.list` / `channelPairing.approve`)
+uses the installed OpenClaw `pairing` CLI and the agent's config path. The runtime
+owns pending-request expiry, account scoping and atomic approval, including both
+legacy and SQLite-backed runtimes. Relay must not read or mutate pairing JSON
+files directly. CLI failure or invalid output is an explicit control error, not
+an empty approvals list; command output and approval codes are omitted from errors.
+No additional environment variables are required; `openclaw` must be on Relay's PATH.
 
 ### Shared Codex authorization
 
@@ -415,17 +436,88 @@ mutation. `model.fence.read` observes ownership; `model.fence.reconcile` takes t
 same lock and leaves observed operations UNRESOLVED, or installs a CANCELLED
 revision tombstone under predecessor CAS for undelivered requests. It never claims
 runtime success. Delayed requests and duplicate revisions cannot run after that
-tombstone. Once fencing is established, legacy model.set, modelAssignment.set and
-config.apply cannot bypass it. APPLIED means the config/restart handler returned a
+tombstone. Once fencing is established, legacy model.set and modelAssignment.set cannot
+bypass it. Whole-config operations require expectedRevision CAS and unchanged
+agent/model/provider/auth/environment routing; native harness-only convergence
+is allowed so existing owner/channel and managed Pi convergence remain legal. APPLIED means the config/restart handler returned a
 validated result, not provider-auth/runtime verification; the backend must verify
 runtime before ACTIVE. Surviving systemctl restart carries no model/config payload
 and cannot restore an old config; unresolved operations still require a new fenced
 activation and verification. Unsupported old relays must remain fail-closed.
 
 `model.verify` is a real inference probe, not a catalog/readiness alias. It checks
-zero fallbacks and maps stored `openai/<id>` plus explicit Codex runtime metadata
-back to `codex/<id>`, rejecting ordinary OpenAI API routing. A fresh session must
+zero fallbacks and maps stored `openai/<id>` plus native OpenClaw/Pi runtime metadata
+back to the `codex/<id>` subscription wire alias. Active persisted OAuth and absence
+of API-key, endpoint/environment or explicit API-transport overrides are required;
+native harness metadata alone is not proof of subscription billing. A fresh session must
 resolve the selected defaults, return an inference reply, and persist the same
 actual provider/model and runtime. Failed probes are aborted; their sessions and
 transcripts are deleted on all settled paths. Unit tests stub the gateway/runner;
 no demo or test performs real provider inference.
+### Authorization cold-start handling
+
+Authorization assignment checks the latest Codex version, canonical pnpm entrypoint,
+managed config and executable wrapper before skipping installation/restart. Explicit
+runtime Update retains its repair behavior. Relay live auth refresh has a dedicated
+120-second budget (independent of channel status); assignment allows 600 seconds
+for refresh and possible rollback. Credential mutations are not blindly retried.
+A successful Gateway health probe alone does not prove authorization readiness.
+
+### ChatGPT authorization route reconciliation
+
+Installing or reselecting ChatGPT authorization removes conflicting OpenAI
+`baseUrl`/`apiKey` provider overrides and `OPENAI_API_KEY`/`OPENAI_BASE_URL`
+from both root `env` and `env.vars`. Other providers, model metadata and TTS
+settings are retained. Relay also removes legacy managed systemd API routing.
+Only a stale-route repair restarts Gateway during shared-auth sync; a clean
+same-version sync remains a no-op. Refresh failure restores auth, config and
+service environment before reloading the previous state. API-key mode is not
+subject to ChatGPT cleanup.
+
+Enterprise assignment always invokes this idempotent reconciliation, including
+for an already ACTIVE account. Before reporting ACTIVE it runs `model.verify`: an
+isolated CLI session with a unique response marker, expected-model validation
+and no channel delivery. A valid saved login alone is insufficient. Verification
+failure is reported as FAILED (credentials may already be installed); retrying
+reconciles and verifies again. Background token rotation does not run paid model
+probes. Roll out the Relay action support before this backend change.
+
+Each sync refresh phase bounds connection readiness plus auth refresh to 240
+seconds (the RPC itself remains 120 seconds). Sync allows 600 seconds for
+repair/restart/refresh and rollback; the isolated
+model probe uses a 90-second model deadline, 120-second process deadline and
+150-second backend request deadline. No new environment settings are required.
+
+### Waiting-session reconciliation
+
+While lifecycle runs are `WAITING`, Relay checks the local Gateway's
+`sessions.list` every 30 seconds. Unchanged observations produce no backend
+requests. Explicit `done`, `failed`, `timeout`, or `killed` status for the same
+session, with no active run, is published through the lifecycle outbox once.
+Live events continue to handle resumption and approval changes; a newer live
+event wins over an in-flight poll. Polling stops on Gateway disconnect and when
+no waiting runs remain, and resumes from the backend checkpoint on reconnect.
+
+Missing sessions (including those outside the 200-row list window), unknown
+status, failed requests, or active runs are not evidence of completion. Those
+cases remain waiting for a subsequent observation; there is no age-based expiry.
+
+Waiting runs are tracked independently by run identity. A later turn in the same
+session does not discard an older wait; verified terminal session state closes
+all retained waits. Live activity invalidates in-flight evidence for that session.
+Backend checkpoint recovery also retains multiple waits from the same session.
+## Managed agent harness
+
+Model assignments and OpenAI OAuth provisioning select the native OpenClaw (Pi)
+harness (`agentRuntime.id = "openclaw"`). Public `codex/` subscription model aliases
+remain accepted and resolve to the same OpenAI model; they do not select Codex CLI.
+Existing model parameters, credentials, and primary/fallback choices are preserved.
+
+GPT-6.1-Sol native Pi compatibility registers model metadata missing from OpenClaw
+2026.9.7. Subscription aliases keep the ChatGPT Responses transport; platform model
+assignments retain OpenAI Responses. No model ID, credential or endpoint is replaced.
+
+### Narrow Telegram owner convergence
+config.read reports owner-fence version 1, disk revision and fresh Gateway effective-config acknowledgment where supported. config.apply accepts ownerFence and expectedRevision; common Relay config mutations preserve the latest numeric owner projection. A durable high-water sidecar rejects stale owner revisions; CAS rejects late rollback over a newer config. Kernel flock releases on process exit, with no permanently orphaned mkdir lock. Existing config validation semantics and model/auth/media choices are retained.
+
+This is eventual config delivery, not a provider lifecycle protocol or continuously leased Gateway. No ExecStart wrapper, automatic wake, stop-before-grant, fleet enrollment or snapshot guarantee. An unavailable Gateway cannot certify revocation; residual wildcard/imported authority is not complete denial.
