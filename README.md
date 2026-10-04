@@ -402,3 +402,30 @@ individual timestamped records; no calendar-day sums are prorated. Only OpenAI p
 aliases are counted. Fresh caches are required; failures do not publish a fabricated zero.
 Collection retains the configured authorization-usage interval (hourly by default); consumers
 show the window end and data freshness. Deploy backend + its migration before this relay.
+
+### Enterprise model activation fence
+`model.set` optionally accepts a caller-issued UUID `fence.revision` and nullable
+`fence.predecessor`. The central control handler serializes config operations with
+Linux util-linux `flock` (already included by the agent preparation image), using
+an inherited open descriptor so process death releases ownership. Never delete the
+lock file to recover it: its inode is the coordination identity.
+
+The adjacent `.model-fence.json` journal is atomically renamed and fsynced before
+mutation. `model.fence.read` observes ownership; `model.fence.reconcile` takes the
+same lock and leaves observed operations UNRESOLVED, or installs a CANCELLED
+revision tombstone under predecessor CAS for undelivered requests. It never claims
+runtime success. Delayed requests and duplicate revisions cannot run after that
+tombstone. Once fencing is established, legacy model.set, modelAssignment.set and
+config.apply cannot bypass it. APPLIED means the config/restart handler returned a
+validated result, not provider-auth/runtime verification; the backend must verify
+runtime before ACTIVE. Surviving systemctl restart carries no model/config payload
+and cannot restore an old config; unresolved operations still require a new fenced
+activation and verification. Unsupported old relays must remain fail-closed.
+
+`model.verify` is a real inference probe, not a catalog/readiness alias. It checks
+zero fallbacks and maps stored `openai/<id>` plus explicit Codex runtime metadata
+back to `codex/<id>`, rejecting ordinary OpenAI API routing. A fresh session must
+resolve the selected defaults, return an inference reply, and persist the same
+actual provider/model and runtime. Failed probes are aborted; their sessions and
+transcripts are deleted on all settled paths. Unit tests stub the gateway/runner;
+no demo or test performs real provider inference.

@@ -1,3 +1,4 @@
+import { readModelFence, writeModelFence, withModelFenceLock } from "./modelFence.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback, spawn } from "node:child_process";
@@ -85,7 +86,96 @@ function readFastMode(value: unknown): ModelSetFastMode {
   return value === true || value === false || value === "auto" ? value : null;
 }
 
-export async function executeAgentControl(input: {
+export async function executeAgentControl(input: Parameters<typeof executeAgentControlUnfenced>[0]): Promise<AgentControlResult> {
+  // All ingress paths and all config writers share this lock, including legacy calls.
+  return withModelFenceLock(input.configPath, async () => {
+    const state = await readModelFence(input.configPath);
+    const action = input.action;
+    if (action.kind === "model.verify") {
+      if (!input.statusNudgeRunner) throw new AgentControlError("MODEL_VERIFY_UNAVAILABLE", "Inference runner unavailable");
+      const { config } = await readConfigFile(input.configPath);
+      const defaults = ensureOptionalRecord(ensureOptionalRecord(config.agents)?.defaults);
+      const configured = ensureOptionalRecord(defaults?.model);
+      if (mapPublicModelRef(typeof configured?.primary === "string" ? configured.primary : null, defaults) !== action.model || readUnknownArray(configured?.fallbacks).length !== 0) {
+        throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Selected config or zero-fallback policy differs");
+      }
+      const sessionKey = "agent:main:enterprise-model-verify:" + randomUUID();
+      type ProbeResponse = { resolved?: { modelProvider?: string; model?: string; agentRuntime?: string }; entry?: { modelProvider?: string; model?: string } };
+      const identity = (provider?: string, model?: string, runtime?: string) => {
+        const ref = provider && model ? provider + "/" + model : null;
+        if (ref?.startsWith("openai/") && runtime !== "codex" && action.model.startsWith("codex/")) return null;
+        return mapPublicModelRef(ref, defaults);
+      };
+      let completed = false;
+      try {
+        // Do not override model: prove current runtime defaults and actual runtime identity.
+        const before = await input.gateway.request("sessions.patch", { key: sessionKey }, { timeoutMs: 15_000 }) as ProbeResponse;
+        if (identity(before.resolved?.modelProvider, before.resolved?.model, before.resolved?.agentRuntime) !== action.model) {
+          throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Runtime default model differs from selected model");
+        }
+        const { result } = await input.statusNudgeRunner.runChatTask({
+          taskId: "enterprise_model_verify_" + randomUUID(), sessionKey,
+          messageText: "Reply with OK only. This is a model connectivity check. Do not use tools.",
+          deliverySystem: "relay_channel_v2", timeoutMs: 120_000,
+        });
+        if (result.outcome !== "reply") throw new AgentControlError("MODEL_VERIFY_FAILED", "Selected runtime model did not return a reply");
+        // Session usage records the provider/model actually used, including fallback drift.
+        const after = await input.gateway.request("sessions.patch", { key: sessionKey }, { timeoutMs: 15_000 }) as ProbeResponse;
+        if (identity(after.entry?.modelProvider, after.entry?.model, after.resolved?.agentRuntime) !== action.model) {
+          throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Inference used another provider/model or runtime");
+        }
+        completed = true;
+        return { kind: "model.verify", model: action.model, verified: true };
+      } finally {
+        try {
+          if (!completed) await input.gateway.request("chat.abort", { sessionKey }, { timeoutMs: 15_000 });
+        } finally {
+          await input.gateway.request("sessions.delete", { key: sessionKey, deleteTranscript: true }, { timeoutMs: 15_000 });
+        }
+      }
+    }
+    if (action.kind === "model.fence.read") return {
+      kind: "model.fence.read", revision: state?.revision ?? null,
+      status: state?.status ?? null, model: state?.model ?? null,
+    };
+    if (action.kind === "model.fence.reconcile") {
+      if (state?.revision === action.revision) {
+        // Lock acquisition proves no mutable handler remains alive. This is NOT success.
+        const status = state.status === "CANCELLED" ? "CANCELLED" as const : "UNRESOLVED" as const;
+        await writeModelFence(input.configPath, { ...state, status });
+        return { kind: "model.fence.reconcile", revision: state.revision, status, model: state.model };
+      }
+      if ((state?.revision ?? null) !== action.predecessor || state?.status === "PENDING") {
+        throw new AgentControlError("MODEL_FENCE_STALE", "Fence revision changed");
+      }
+      // Tombstone even an undelivered operation BEFORE allowing any subsequent revision.
+      await writeModelFence(input.configPath, { revision: action.revision, predecessor: action.predecessor, model: action.model, status: "CANCELLED" });
+      return { kind: "model.fence.reconcile", revision: action.revision, status: "CANCELLED", model: action.model };
+    }
+    if (action.kind === "model.set" && action.fence) {
+      const fence = action.fence;
+      if (state?.revision === fence.revision || (state?.revision ?? null) !== fence.predecessor || state?.status === "PENDING") {
+        throw new AgentControlError("MODEL_FENCE_STALE", "Reconcile the existing operation before activation");
+      }
+      const pending = { ...fence, status: "PENDING" as const, model: action.model };
+      await writeModelFence(input.configPath, pending);
+      try {
+        const result = await executeAgentControlUnfenced(input);
+        await writeModelFence(input.configPath, { ...pending, status: "APPLIED" });
+        return result;
+      } catch (error) {
+        await writeModelFence(input.configPath, { ...pending, status: "UNRESOLVED" });
+        throw error;
+      }
+    }
+    if (state && ["model.set", "modelAssignment.set", "config.apply"].includes(action.kind)) {
+      throw new AgentControlError("MODEL_FENCE_REQUIRED", "Legacy configuration mutations cannot bypass an established model fence");
+    }
+    return executeAgentControlUnfenced(input);
+  });
+}
+
+async function executeAgentControlUnfenced(input: {
   action: AgentControlAction;
   configPath: string;
   gateway: GatewayLike;
@@ -190,14 +280,14 @@ export async function executeAgentControl(input: {
                         "cron.inventory.refresh must be handled by relay ingress"
                       );
                     })()
-                : await setModel({
+                : input.action.kind === "model.set" ? await setModel({
                     configPath: input.configPath,
                     model: input.action.model,
                     fallbacks: input.action.fallbacks,
                     contextTokens: input.action.contextTokens ?? null,
                     thinkingDefault: input.action.thinkingDefault,
                     fastMode: input.action.fastMode,
-                  });
+                  }) : (() => { throw new AgentControlError("MODEL_FENCE_INTERNAL", "Fence action must use central handler"); })();
   return agentControlResultSchema.parse(result);
 }
 

@@ -1950,3 +1950,24 @@ describe("executeAgentControl model set", () => {
     });
   });
 });
+
+it("activates a new revision after an undelivered tombstone and never replays the old config", async () => {
+  const { readModelFence } = await import("./modelFence.js");
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-fenced-activation-"));
+  const configPath = path.join(tempDir, "openclaw.json");
+  await installFakeSystemctl();
+  const old = "11111111-1111-4111-8111-111111111111";
+  const next = "22222222-2222-4222-8222-222222222222";
+  const input = { configPath, gateway: noopGateway };
+  try {
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: { model: { primary: "old/model" } } }, unrelated: "keep" }));
+    await executeAgentControl({ ...input, action: { kind: "model.fence.reconcile", revision: old, predecessor: null, model: "old/model" } });
+    const result = await executeAgentControl({ ...input, action: { kind: "model.set", model: "openai/gpt-5.4", fallbacks: [], fence: { revision: next, predecessor: old } } });
+    expect(result).toMatchObject({ kind: "model.set", applied: true });
+    expect(await readModelFence(configPath)).toMatchObject({ revision: next, status: "APPLIED" });
+    await expect(executeAgentControl({ ...input, action: { kind: "model.set", model: "old/model", fallbacks: [], fence: { revision: old, predecessor: null } } })).rejects.toMatchObject({ code: "MODEL_FENCE_STALE" });
+    const saved = JSON.parse(await fs.readFile(configPath, "utf8")) as { unrelated: string; agents: { defaults: { model: { primary: string } } } };
+    expect(saved.unrelated).toBe("keep");
+    expect(saved.agents.defaults.model.primary).toBe("openai/gpt-5.4");
+  } finally { await fs.rm(tempDir, { recursive: true, force: true }); }
+});
