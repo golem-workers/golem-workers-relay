@@ -1,3 +1,5 @@
+import { writeOwnerFencedConfig, withOwnerFenceLock, isConfigMutationPath, configRevision, type OwnerFence } from "./ownerFence.js";
+import { readOwnerRuntime } from "./ownerRuntime.js";
 import { normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
 import { ensureNativePiModelCompatibility } from "./nativePiModelCompatibility.js";
 import fs from "node:fs/promises";
@@ -101,9 +103,10 @@ export async function executeAgentControl(input: {
   backendMessageId?: string;
   statusNudgeRunner?: StatusNudgeRunner;
 }): Promise<AgentControlResult> {
+  const operation = async () => {
   const result =
     input.action.kind === "config.read"
-      ? await readConfig(input.configPath)
+      ? await readConfig(input.configPath, input.gateway)
       : input.action.kind === "channels.status"
         ? await readChannelsStatus(input.gateway)
       : input.action.kind === "lifecycle.activeRuns"
@@ -115,6 +118,8 @@ export async function executeAgentControl(input: {
         ? await applyConfig({
             configPath: input.configPath,
             configText: input.action.configText,
+            ownerFence: input.action.ownerFence,
+            expectedRevision: input.action.expectedRevision,
           })
       : input.action.kind === "config.validate"
         ? await validateConfig(input.configPath)
@@ -141,7 +146,7 @@ export async function executeAgentControl(input: {
                 ? await startCodexLogin(
                     input.configPath,
                     { forceRelink: input.action.forceRelink },
-                    (operation) => runCodexAuthMutationWithGatewayPaused(() => withCleanOpenAiGatewayEnvironment(operation)),
+                    (operation) => runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(input.configPath, () => withCleanOpenAiGatewayEnvironment(operation))),
                   )
               : input.action.kind === "codex.login.status"
                 ? await getCodexLoginStatus(input.configPath)
@@ -160,7 +165,7 @@ export async function executeAgentControl(input: {
                     input.gateway,
                   )
               : input.action.kind === "codex.auth.clear"
-                ? await runCodexAuthMutationWithGatewayPaused(() => clearCodexAuth(input.configPath))
+                ? await runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(input.configPath, () => clearCodexAuth(input.configPath)))
               : input.action.kind === "github.auth.configure"
                 ? await configureGitHubAuth(input.action)
               : input.action.kind === "github.oauth.status"
@@ -208,6 +213,11 @@ export async function executeAgentControl(input: {
                     fastMode: input.action.fastMode,
                   });
   return agentControlResultSchema.parse(result);
+  };
+  // Do not serialize unrelated chat, pairing, lifecycle or login waits behind
+  // config delivery. Only config-bearing read/modify/write operations share it.
+  const configActions = new Set(["config.read", "config.apply", "model.set", "modelAssignment.set", "relay.selfNudge.set"]);
+  return configActions.has(input.action.kind) ? withOwnerFenceLock(input.configPath, operation) : operation();
 }
 
 async function readLifecycleActiveRuns(
@@ -341,10 +351,13 @@ async function sendStatusNudge(input: {
   return { kind: "chat.statusNudge", accepted: true, runId };
 }
 
-async function readConfig(configPath: string): Promise<AgentControlResult> {
+async function readConfig(configPath: string, gateway: GatewayLike): Promise<AgentControlResult> {
   const { configText, config } = await readConfigFile(configPath);
   return {
     kind: "config.read",
+    configRevision: configRevision(configText),
+    ownerFenceVersion: 1,
+    ownerRuntime: await readOwnerRuntime(configPath, gateway),
     configText,
     config,
   };
@@ -392,6 +405,8 @@ async function readChannelsStatus(gateway: GatewayLike): Promise<AgentControlRes
 async function applyConfig(input: {
   configPath: string;
   configText: string;
+  ownerFence?: OwnerFence;
+  expectedRevision?: string;
 }): Promise<AgentControlResult> {
   const parsed = parseConfigText(input.configText);
   const defaults = ensureOptionalRecord(ensureOptionalRecord(parsed.agents)?.defaults);
@@ -404,10 +419,12 @@ async function applyConfig(input: {
         .filter((ref): ref is string => typeof ref === "string");
     });
   await applyNativePiModelCompatibility(parsed, input.configPath, requestedModels);
-  await atomicWriteUtf8(input.configPath, `${JSON.stringify(parsed, null, 2)}\n`);
+  const committedRevision = await writeOwnerFencedConfig(input.configPath, JSON.stringify(parsed, null, 2) + "\n", input.ownerFence, { expectedRevision: input.expectedRevision });
   return {
     kind: "config.apply",
     applied: true,
+    committedRevision,
+    committedConfigText: await fs.readFile(input.configPath, "utf8"),
   };
 }
 
@@ -1042,16 +1059,16 @@ async function importCodexAuthWithGatewayPaused(
   configPath: string,
   action: Extract<AgentControlAction, { kind: "codex.auth.import" }>,
 ): Promise<AgentControlResult> {
-  return await runCodexAuthMutationWithGatewayPaused(() => withCleanOpenAiGatewayEnvironment(() => importCodexAuthBundle(configPath, action.bundle)));
+  return await runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(configPath, () => withCleanOpenAiGatewayEnvironment(() => importCodexAuthBundle(configPath, action.bundle))));
 }
 
 async function setCodexAuthWithGatewayPaused(
   configPath: string,
   action: Extract<AgentControlAction, { kind: "codex.auth.set" }>,
 ): Promise<AgentControlResult> {
-  return await runCodexAuthMutationWithGatewayPaused(() => action.mode === "openai_login"
+  return await runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(configPath, () => action.mode === "openai_login"
     ? withCleanOpenAiGatewayEnvironment(() => setCodexAuthMode(configPath, action.mode))
-    : setCodexAuthMode(configPath, action.mode));
+    : setCodexAuthMode(configPath, action.mode)));
 }
 
 function removeOpenAiEnvironmentLines(contents: string): string {
@@ -1139,7 +1156,7 @@ async function syncCodexAuthWithoutGatewayRestart(
   action: Extract<AgentControlAction, { kind: "codex.auth.sync" }>,
   gateway: GatewayLike,
 ): Promise<AgentControlResult> {
-  return await enqueueCodexAuthMutation(async () => {
+  return await enqueueCodexAuthMutation(() => withOwnerFenceLock(configPath, async () => {
     const edits = await planOpenAiGatewayEnvironmentCleanup();
     const restartNeeded = edits.length > 0 || await hasChatGptRouteOverrides(configPath);
     // Only legacy route repairs need a restart. Ordinary credential rotation
@@ -1166,7 +1183,7 @@ async function syncCodexAuthWithoutGatewayRestart(
       }
       throw error;
     }
-  });
+  }));
 }
 
 function describeUnknownError(error: unknown): string | null {
@@ -1341,6 +1358,7 @@ function parseConfigText(configText: string): Record<string, unknown> {
 }
 
 async function atomicWriteUtf8(filePath: string, content: string): Promise<void> {
+  if (isConfigMutationPath(filePath)) { await writeOwnerFencedConfig(filePath, content); return; }
   const dir = path.dirname(filePath);
   const tmpPath = `${filePath}.gwtmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   await fs.mkdir(dir, { recursive: true });
