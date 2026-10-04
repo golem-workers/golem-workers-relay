@@ -103,7 +103,7 @@ export async function executeAgentControl(input: {
   backendMessageId?: string;
   statusNudgeRunner?: StatusNudgeRunner;
 }): Promise<AgentControlResult> {
-  return withOwnerFenceLock(input.configPath, async () => {
+  const operation = async () => {
   const result =
     input.action.kind === "config.read"
       ? await readConfig(input.configPath, input.gateway)
@@ -213,7 +213,11 @@ export async function executeAgentControl(input: {
                     fastMode: input.action.fastMode,
                   });
   return agentControlResultSchema.parse(result);
-  });
+  };
+  // Do not serialize unrelated chat, pairing, lifecycle or login waits behind
+  // config delivery. Only config-bearing read/modify/write operations share it.
+  const configActions = new Set(["config.read", "config.apply", "model.set", "modelAssignment.set", "relay.selfNudge.set", "codex.auth.set", "codex.auth.import", "codex.auth.sync", "codex.auth.clear"]);
+  return configActions.has(input.action.kind) ? withOwnerFenceLock(input.configPath, operation) : operation();
 }
 
 async function readLifecycleActiveRuns(
