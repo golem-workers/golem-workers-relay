@@ -104,5 +104,17 @@ it("parses and dispatches real model.verify protocol against runtime defaults an
     await expect(executeAgentControl({ configPath: path.join(dir, "config.json"), action, gateway: apiGateway, statusNudgeRunner })).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });
     expect(calls).toBe(1);
     expect(cleanup).toEqual(["sessions.patch", "chat.abort", "sessions.delete"]);
+    const wrongHarnessGateway = { request: () => Promise.resolve({
+      resolved: { modelProvider: "openai", model: "example", agentRuntime: "codex" },
+      entry: { modelProvider: "openai", model: "example", agentHarnessId: "openclaw" },
+    }) };
+    await expect(executeAgentControl({ configPath: path.join(dir, "config.json"), action, gateway: wrongHarnessGateway, statusNudgeRunner })).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });
+    expect(calls).toBe(2);
+    const driftGateway = { request: () => Promise.resolve({
+      resolved: { modelProvider: "openai", model: "example", agentRuntime: "codex" },
+      entry: { modelProvider: "openai", model: "other", agentHarnessId: "codex" },
+    }) };
+    await expect(executeAgentControl({ configPath: path.join(dir, "config.json"), action, gateway: driftGateway, statusNudgeRunner })).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });
+    expect(calls).toBe(3);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
