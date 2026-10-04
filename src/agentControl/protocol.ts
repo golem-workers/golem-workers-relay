@@ -231,6 +231,8 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("config.apply"),
     applied: z.literal(true),
+    committedRevision: z.string().optional(),
+    committedConfigText: z.string().optional(),
   }),
   z.object({
     kind: z.literal("config.validate"),

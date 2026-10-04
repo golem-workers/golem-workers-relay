@@ -58,3 +58,9 @@ it("reports a crash-persisted fence without treating absent config as success", 
  await writeOwnerFencedConfig(file, original);
  expect(parse(await readFile(file, "utf8")).commands.ownerAllowFrom).toEqual(["custom:keep"]);
 });
+
+it("removes padded numeric and Telegram aliases but preserves other channels and wildcard", async () => {
+ const file = await fixture();
+ await writeOwnerFencedConfig(file, JSON.stringify({ commands: { ownerAllowFrom: [" 123 ", " telegram:123 ", " tg:123 ", "telegram: 123", "discord:123", "whatsapp:123", " * "] } }), revoked);
+ expect(parse(await readFile(file, "utf8")).commands.ownerAllowFrom).toEqual(["discord:123", "whatsapp:123", " * "]);
+});

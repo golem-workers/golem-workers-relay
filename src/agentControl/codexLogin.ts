@@ -1,3 +1,4 @@
+import { isConfigMutationPath, withOwnerFenceLock, writeOwnerFencedConfig } from "./ownerFence.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -389,6 +390,7 @@ async function readAuthProfilesStore(authStorePath: string): Promise<AuthProfile
 }
 
 async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
+  if (isConfigMutationPath(filePath)) { await writeOwnerFencedConfig(filePath, JSON.stringify(value, null, 2) + "\n"); return; }
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
@@ -708,10 +710,12 @@ function clearChatGptRouteOverrides(config: Record<string, unknown>): boolean {
 }
 
 async function reconcileChatGptRoute(configPath: string): Promise<boolean> {
+  return withOwnerFenceLock(configPath, async () => {
   const config = await readConfigObject(configPath);
   if (!clearChatGptRouteOverrides(config)) return false;
   await writeJsonFile(configPath, config);
   return true;
+  });
 }
 
 async function persistCodexCredentials(input: {
@@ -1162,6 +1166,10 @@ async function snapshotFiles(filePaths: string[]): Promise<FileSnapshot[]> {
 
 async function restoreFileSnapshots(snapshots: FileSnapshot[]): Promise<void> {
   for (const snapshot of snapshots) {
+    if (isConfigMutationPath(snapshot.filePath)) {
+      await writeOwnerFencedConfig(snapshot.filePath, snapshot.contents?.toString("utf8") ?? "{}");
+      continue;
+    }
     if (snapshot.contents === null) {
       await fs.rm(snapshot.filePath, { force: true });
       continue;
@@ -1597,11 +1605,19 @@ function startPendingCodexLogin(
         authorizationCode: authorized.authorizationCode,
         codeVerifier: authorized.codeVerifier,
       });
-      const persist = async () => {
+      const persist = () => withOwnerFenceLock(configPath, async () => {
+        const snapshots = await snapshotFiles([configPath, ...resolveCodexAuthStorePaths(configPath), resolveCodexSessionsStorePath(configPath), resolveCodexCliAuthPath()]);
+        const runtimeSnapshot = await snapshotCodexRuntimeAuthStore(configPath);
+        try {
         const persisted = await persistCodexCredentials({ configPath, creds });
         await writeCodexCliChatGptAuth(persisted.tokens);
         return persisted;
-      };
+        } catch (error) {
+          await restoreFileSnapshots(snapshots);
+          await restoreCodexRuntimeAuthStore(configPath, runtimeSnapshot);
+          throw error;
+        }
+      });
       const persisted = persistenceGuard ? await persistenceGuard(persist) : await persist();
       session.state = "connected";
       session.message = persisted.email ? `Connected as ${persisted.email}.` : "Codex login complete.";

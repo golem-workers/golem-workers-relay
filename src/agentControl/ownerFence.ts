@@ -28,7 +28,7 @@ export function projectOwners(text: string, fence: OwnerFence): string {
   const ownerEntries = owners as string[];
   const revoked = new Set(fence.revoked.filter(id => !fence.active.includes(id)));
 
-  commands.ownerAllowFrom = [...new Set([...ownerEntries.filter((owner: string) => !revoked.has(owner.replace(/^(telegram|tg):/i, ""))), ...fence.active.map(id => "telegram:" + id)])];
+  commands.ownerAllowFrom = [...new Set([...ownerEntries.filter((owner: string) => !revoked.has(owner.trim().replace(/^(telegram|tg):/i, "").trim())), ...fence.active.map(id => "telegram:" + id)])];
   config.commands = commands;
   return JSON.stringify(config, null, 2) + "\n";
 }
