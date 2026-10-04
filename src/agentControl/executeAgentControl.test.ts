@@ -2296,7 +2296,7 @@ it("preserves fenced native harness convergence and owner config with CAS, never
     const result = await executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "config.apply", configText: JSON.stringify(config), expectedRevision: configRevision(text) } });
     expect(result).toMatchObject({ kind: "config.apply" });
     const current = await fs.readFile(configPath, "utf8");
-    expect(JSON.parse(current).commands.ownerAllowFrom).toEqual(["telegram:123"]);
+    expect(JSON.parse(current) as unknown).toMatchObject({ commands: { ownerAllowFrom: ["telegram:123"] } });
     config.agents.defaults.model.primary = "openai/other";
     await expect(executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "config.apply", configText: JSON.stringify(config), expectedRevision: configRevision(current) } })).rejects.toMatchObject({ code: "MODEL_FENCE_REQUIRED" });
     expect(await fs.readFile(configPath, "utf8")).toBe(current);
