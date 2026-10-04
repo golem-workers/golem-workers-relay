@@ -191,6 +191,26 @@ describe("offline snapshot identity sealing", () => {
     mutate(root, "c.execute(\"UPDATE config_machine_state SET value_json='{}' WHERE state_key='plugins.installedIndex'\")");
     unchangedFailure(root, "Invalid installed plugin index");
   });
+  it("discards known startup migration checkpoints while retaining only primary schema metadata", () => {
+    const root = fixture();
+    mutate(root, "c.executemany(\"INSERT INTO schema_meta VALUES (?, 'global', 3, NULL, ?, 123, 456)\", [(key, secret) for key in ('startup-migrations', 'state-migrations')])");
+    const result = runSeal(root);
+    expect(result.status, result.stderr).toBe(0);
+    expect(query(root, "SELECT meta_key FROM schema_meta")).toEqual([["primary"]]);
+  });
+  it.each(["agent", "future-version"])("rejects invalid migration checkpoint %s", (kind) => {
+    const root = fixture();
+    mutate(root, "c.execute(\"INSERT INTO schema_meta VALUES ('startup-migrations', 'global', 3, NULL, 'checkpoint', 123, 456)\")");
+    mutate(root, kind === "agent"
+      ? "c.execute(\"UPDATE schema_meta SET agent_id='baked-agent' WHERE meta_key='startup-migrations'\")"
+      : "c.execute(\"UPDATE schema_meta SET schema_version=99 WHERE meta_key='startup-migrations'\")");
+    unchangedFailure(root, "Unsupported global schema metadata");
+  });
+  it("rejects unknown schema metadata keys", () => {
+    const root = fixture();
+    mutate(root, "c.execute(\"INSERT INTO schema_meta VALUES ('future-state', 'global', 3, NULL, 'value', 123, 456)\")");
+    unchangedFailure(root, "Unsupported global schema metadata");
+  });
   it("rejects unfamiliar schema metadata", () => {
     const root = fixture();
     mutate(root, "c.execute('ALTER TABLE schema_meta ADD COLUMN future TEXT')");

@@ -44,12 +44,15 @@ What it does:
 
 The final seal is for **fresh disposable bake servers only**, never existing agents.
 For modern SQLite-backed OpenClaw it reconstructs a new database from the installed
-schema and retains only global schema metadata and the sanitized
+schema and retains only the `primary` global schema metadata and the sanitized
 `config_machine_state` row `plugins.installedIndex`. Plugin install records
 (including package integrity/provenance) remain; source-admission inode receipts,
 diagnostics, workspace binding and generated timestamps are cleared. All other
 tables are empty, including device keys, config signing keys, cron and session
-runtime. SQLite virtual-table shadows are recreated by SQLite, not copied. The
+runtime. Known `startup-migrations` and `state-migrations` metadata checkpoints
+(format 3, global role, no agent identity) are validated and discarded so a new
+instance reruns migrations. Unknown checkpoint keys/versions and agent-bound
+metadata fail closed. SQLite virtual-table shadows are recreated by SQLite, not copied. The
 runtime may regenerate instance-local state only during provisioning/startup.
 
 Supported legacy no-database releases retain canonical `plugins.installs` and,
