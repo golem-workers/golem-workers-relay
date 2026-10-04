@@ -4,21 +4,29 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 
-// Resolve only the public SDK export. Provisioned services set NODE_PATH; also
-// support ordinary global installs whose executable is a symlink on PATH.
+// Resolve the public SDK from the active executable first. NODE_PATH can still
+// point at an obsolete pnpm global root after an update (backend issue #656).
+// Loading that SDK against the current runtime database can reject its schema.
 export async function resolveRuntimeAuthSdk(): Promise<string> {
+  for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!directory) continue;
+    let executable: string;
+    try {
+      executable = await fs.realpath(path.join(directory, "openclaw"));
+      const pkg = JSON.parse(await fs.readFile(path.join(path.dirname(executable), "package.json"), "utf8")) as { name?: string };
+      if (pkg.name !== "openclaw") continue;
+    } catch { continue; /* A wrapper or unrelated PATH entry is not a package root. */ }
+    try {
+      return createRequire(executable).resolve("openclaw/plugin-sdk/provider-auth");
+    } catch {
+      // Never silently substitute an older module installation for a known runtime.
+      throw new Error("Active OpenClaw public provider-auth SDK is unavailable; refusing stale SDK fallback.");
+    }
+  }
   const require = createRequire(import.meta.url);
   try {
     return require.resolve("openclaw/plugin-sdk/provider-auth");
-  } catch { /* Try the installed executable, not hashed private dist modules. */ }
-  for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
-    if (!directory) continue;
-    try {
-      const executable = await fs.realpath(path.join(directory, "openclaw"));
-      const installedRequire = createRequire(executable);
-      return installedRequire.resolve("openclaw/plugin-sdk/provider-auth");
-    } catch { /* A wrapper or unrelated PATH entry is not a package root. */ }
-  }
+  } catch { /* No resolvable executable or module installation. */ }
   throw new Error("Installed OpenClaw public provider-auth SDK is unavailable; refusing to create an auth database.");
 }
 
