@@ -190,10 +190,13 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         }
       }
       const sessionKey = "agent:main:enterprise-model-verify:" + randomUUID();
-      type ProbeResponse = { resolved?: { modelProvider?: string; model?: string; agentRuntime?: string }; entry?: { modelProvider?: string; model?: string; agentHarnessId?: string } };
-      const identity = (provider?: string, model?: string, runtime?: string) => {
+      type ProbeResponse = { resolved?: { modelProvider?: string; model?: string; agentRuntime?: unknown }; entry?: { modelProvider?: string; model?: string; agentHarnessId?: string } };
+      const identity = (provider?: string, model?: string, runtime?: unknown) => {
         const ref = provider && model ? provider + "/" + model : null;
-        if (ref && runtime !== managedRuntime.expectedRuntime(config, ref, "main", policy, context)) return null;
+        // Current Gateway responses carry { id, source }, not a bare runtime id.
+        // Missing/malformed ids still fail closed; source is not identity proof.
+        const runtimeId = typeof runtime === "string" ? runtime : ensureOptionalRecord(runtime)?.id;
+        if (ref && runtimeId !== managedRuntime.expectedRuntime(config, ref, "main", policy, context)) return null;
         return mapPublicModelRef(ref, defaults, Boolean(ref && managedRuntime.isSubscriptionRoute(config, ref, context)));
       };
       let completed = false;
