@@ -1,3 +1,5 @@
+import { MANAGED_RUNTIME_SOURCE_SHA256 } from "../managed-runtime/policy.generated.js";
+import { createManagedRuntimePolicy } from "../managed-runtime/policy.generated.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
@@ -5,7 +7,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __testing as codexLoginTesting, hasChatGptRouteOverrides } from "./codexLogin.js";
 import { __testing as githubAuthTesting } from "./githubAuth.js";
-import { executeAgentControl } from "./executeAgentControl.js";
+import { executeAgentControl as executeAgentControlImpl } from "./executeAgentControl.js";
 
 vi.mock("./runtimeAuthWriter.js", async () => ({
   writeRuntimeAuth: (await import("./__tests__/runtimeAuthWriter.fixture.js")).legacyRuntimeAuthWriter,
@@ -1151,7 +1153,8 @@ describe("executeAgentControl Codex login", () => {
     const run = executeAgentControl({ configPath, action, gateway });
     if (failRefresh) {
       await expect(run).rejects.toThrow("runtime refresh failed");
-      expect(await fs.readFile(configPath, "utf8")).toBe(dirtyText);
+      const expected = structuredClone(dirty); createManagedRuntimePolicy().normalizeConfig(expected);
+      expect(JSON.parse(await fs.readFile(configPath, "utf8"))).toEqual(expected);
       expect(await fs.readFile(unit, "utf8")).toBe(dirtyUnit);
       expect(gateway.request).toHaveBeenCalledTimes(2);
     } else {
@@ -1159,8 +1162,8 @@ describe("executeAgentControl Codex login", () => {
       const config = JSON.parse(await fs.readFile(configPath, "utf8")) as { env: { vars: Record<string, unknown> }; models: { providers: Record<string, unknown> } };
       expect(config.env).toEqual({ vars: { OPENAI_TTS_BASE_URL: "https://tts-keep", OTHER: "keep" } });
       expect(config.models.providers).toEqual({
-        openai: { models: dirty.models.providers.openai.models },
-        anthropic: dirty.models.providers.anthropic,
+        openai: { models: dirty.models.providers.openai.models.map(row => ({ ...row, agentRuntime: { id: "openclaw" } })), agentRuntime: { id: "openclaw" } },
+        anthropic: { ...dirty.models.providers.anthropic, agentRuntime: { id: "openclaw" } },
       });
       expect(await fs.readFile(unit, "utf8")).toBe('[Service]\nEnvironment="OPENAI_TTS_BASE_URL=keep" OTHER=keep\n');
       expect(gateway.request).toHaveBeenCalledTimes(1);
@@ -1187,7 +1190,7 @@ if (args.includes('--deliver') || !args.includes('--session-key') || !args.inclu
 const prompt = args[args.indexOf('--message') + 1];
 console.log(JSON.stringify({status: ${JSON.stringify(mode === "failure" ? "error" : "ok")}, result: {
   payloads: [{text: ${mode === "wrong-answer" ? "'not the marker'" : "prompt.split(' ')[2].slice(0, -1)"}}],
-  meta: {agentMeta: {model: ${JSON.stringify(mode === "wrong-model" ? "another-model" : "gpt-6-astra")}}}
+  meta: {agentMeta: {provider: "openai", agentHarnessId: "openclaw", model: ${JSON.stringify(mode === "wrong-model" ? "another-model" : "gpt-6-astra")}}}
 }}));
 `, { mode: 0o700 });
     process.env.PATH = `${dir}:${process.env.PATH}`;
@@ -1196,7 +1199,7 @@ console.log(JSON.stringify({status: ${JSON.stringify(mode === "failure" ? "error
     else await expect(run).rejects.toMatchObject({ code: "MODEL_VERIFY_FAILED" });
   });
 
-  it.each([0, 16_000])("syncs auth with %i ms runtime latency without restart or duplicate mutation", async (latencyMs) => {
+  it.each([0, 16_000])("syncs auth with %i ms runtime latency with only required migration/clear reloads", async (latencyMs) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-sync-"));
     const configPath = path.join(tempDir, "openclaw.json");
     const codexHome = path.join(tempDir, ".codex");
@@ -1288,7 +1291,7 @@ console.log(JSON.stringify({status: ${JSON.stringify(mode === "failure" ? "error
       { refresh: true },
       { timeoutMs: 120_000 },
     );
-    expect(await readSystemctlCalls(systemctlLogPath)).toEqual([]);
+    expect((await readSystemctlCalls(systemctlLogPath)).filter(call => call === "--user restart openclaw-gateway.service")).toHaveLength(1);
 
     const sessionsPath = path.join(tempDir, "agents", "main", "sessions", "sessions.json");
     await fs.mkdir(path.dirname(sessionsPath), { recursive: true });
@@ -1353,7 +1356,8 @@ console.log(JSON.stringify({status: ${JSON.stringify(mode === "failure" ? "error
       await fs.readFile(path.join(tempDir, "agents", "main", "agent", "auth-profiles.json"), "utf8"),
     ) as { profiles: Record<string, unknown> };
     expect(Object.keys(authStore.profiles)).toEqual(["openai:second@example.com"]);
-    expect(await fs.readFile(configPath, "utf8")).toBe(initialConfigText);
+    const normalizedInitial = structuredClone(initialConfig); createManagedRuntimePolicy().normalizeConfig(normalizedInitial);
+    expect(JSON.parse(await fs.readFile(configPath, "utf8"))).toEqual(normalizedInitial);
     expect(gateway.request).toHaveBeenCalledTimes(2);
     const runtimeAuth = await readAgentRuntimeAuthSqlite(path.join(tempDir, "agents", "main", "agent"));
     expect(Object.keys(runtimeAuth.store?.profiles ?? {})).toEqual(["openai:second@example.com"]);
@@ -1393,7 +1397,7 @@ console.log(JSON.stringify({status: ${JSON.stringify(mode === "failure" ? "error
     await expect(fs.access(path.join(codexHome, "golem-auth-sync.json"))).rejects.toMatchObject({ code: "ENOENT" });
     const systemctlCalls = await readSystemctlCalls(systemctlLogPath);
     expect(systemctlCalls.filter((call) => call === "--user stop openclaw-gateway.service")).toHaveLength(1);
-    expect(systemctlCalls.filter((call) => call === "--user restart openclaw-gateway.service")).toHaveLength(1);
+    expect(systemctlCalls.filter((call) => call === "--user restart openclaw-gateway.service")).toHaveLength(2);
   }, 45_000);
 
   it("rolls back persisted Codex auth when live runtime refresh fails", async () => {
@@ -1750,9 +1754,9 @@ describe("executeAgentControl model set", () => {
       const after = JSON.parse(await fs.readFile(configPath, "utf8")) as { auth: unknown; models: { providers: Record<string, { baseUrl?: string; models?: Array<{ api?: string }> }> } };
       expect(await fs.readFile(dbPath)).toEqual(authBefore);
       expect(after.auth).toEqual({ order: { openai: ["openai:test"] } });
-      expect(after.models.providers.anthropic).toEqual(providers.anthropic);
+      expect(after.models.providers.anthropic).toEqual({ ...providers.anthropic, agentRuntime: { id: "openclaw" } });
       if (["missing", "identity", "api-key"].includes(mode)) {
-        expect(after.models.providers.codex).toEqual(row);
+        expect(after.models.providers.codex).toEqual({ ...row, agentRuntime: { id: "openclaw" } });
         expect(after.models.providers.openai.baseUrl).toEqual(row.baseUrl);
       } else {
         expect(after.models.providers).not.toHaveProperty("codex");
@@ -2302,3 +2306,78 @@ it("preserves fenced native harness convergence and owner config with CAS, never
     expect(await fs.readFile(configPath, "utf8")).toBe(current);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
+
+describe("authoritative managed harness sequences", () => {
+  const ref = "openai/gpt-6.1-sol";
+  const config = (runtime: string, api = "openai-responses") => ({
+    agents: { defaults: { model: { primary: ref, fallbacks: [] as string[] }, models: { [ref]: { agentRuntime: { id: runtime } } } } },
+    models: { providers: { openai: { api, ...(api === "openai-responses" ? { baseUrl: "https://api.openai.com/v1", apiKey: "fixture-ref" } : {}), models: [{ id: "gpt-6.1-sol" }] } } },
+  });
+  it.each(["openclaw", "codex"] as const)("normalizes model/auxiliary writes, preserves fenced routes and proves actual fresh runtime (%s)", async harness => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "managed-sequence-"));
+    const configPath = path.join(dir, "openclaw.json");
+    const log = await installFakeSystemctl();
+    const managedRuntimePolicy = { schemaVersion: 1 as const, revision: harness === "codex" ? 2 : 1, chatHarness: harness };
+    try {
+      await fs.writeFile(configPath, JSON.stringify(config("stale")));
+      await executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "model.set", model: ref, fallbacks: [], managedRuntimePolicy } });
+      expect(JSON.parse(await fs.readFile(configPath, "utf8"))).toMatchObject({ agents: { defaults: { models: { [ref]: { agentRuntime: { id: harness } } } } } });
+      await executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "modelAssignment.set", purpose: "imageGeneration", primary: "openai/gpt-image-2", fallback: null, managedRuntimePolicy } });
+      expect(JSON.parse(await fs.readFile(configPath, "utf8"))).toMatchObject({ agents: { defaults: { models: { "openai/gpt-image-2": { agentRuntime: { id: "openclaw" } } } } } });
+      const revision = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+      await executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "model.set", model: ref, fallbacks: [], fence: { revision, predecessor: null }, managedRuntimePolicy } });
+      const read = await executeAgentControl({ configPath, gateway: { request: () => Promise.resolve({}) }, action: { kind: "config.read", managedRuntimePolicy } });
+      expect(read).toMatchObject({ managedRuntimePolicyVersion: 1, managedRuntimePolicy });
+      if (read.kind !== "config.read") throw new Error("wrong result");
+      const candidate = structuredClone(read.config); candidate.commands = { ownerAllowFrom: ["telegram:123"] };
+      await executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "config.apply", configText: JSON.stringify(candidate), expectedRevision: read.configRevision, managedRuntimePolicy } });
+      const before = await fs.readFile(configPath, "utf8");
+      await expect(executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "config.apply", configText: JSON.stringify(candidate), expectedRevision: read.configRevision, managedRuntimePolicy } })).rejects.toThrow("CONFIG_CONFLICT");
+      const hostile = JSON.parse(before) as ReturnType<typeof config>; hostile.models.providers.openai.baseUrl = "https://evil.test/v1";
+      const { configRevision } = await import("./ownerFence.js");
+      await expect(executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "config.apply", configText: JSON.stringify(hostile), expectedRevision: configRevision(before), managedRuntimePolicy } })).rejects.toMatchObject({ code: "MODEL_FENCE_REQUIRED" });
+      expect(await fs.readFile(configPath, "utf8")).toBe(before);
+      const gateway = { request: vi.fn(() => Promise.resolve({ resolved: { modelProvider: "openai", model: "gpt-6.1-sol", agentRuntime: harness }, entry: { modelProvider: "openai", model: "gpt-6.1-sol", agentHarnessId: harness } })) };
+      const runner = { runChatTask: vi.fn(() => Promise.resolve({ result: { outcome: "reply" as const, reply: { runId: "fixture", message: "OK" } }, openclawMeta: {} })) };
+      await expect(executeAgentControl({ configPath, gateway, statusNudgeRunner: runner, action: { kind: "model.verify", model: ref, managedRuntimePolicy } })).resolves.toMatchObject({ verified: true });
+      expect(runner.runChatTask).toHaveBeenCalledTimes(1);
+      expect(await fs.readFile(log, "utf8")).toContain("restart openclaw-gateway.service");
+    } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  });
+  it("rejects incompatible Codex before config, authority or fenced intent writes", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "managed-incompatible-")), configPath = path.join(dir, "openclaw.json");
+    const cfg = config("openclaw"); cfg.models.providers.openai.baseUrl = "https://managed-proxy.test/v1";
+    const original = JSON.stringify(cfg); await fs.writeFile(configPath, original);
+    try {
+      await expect(executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "model.set", model: ref, fallbacks: [], managedRuntimePolicy: { schemaVersion: 1, revision: 2, chatHarness: "codex" }, fence: { revision: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", predecessor: null } } })).rejects.toThrow("MANAGED_CODEX_INCOMPATIBLE");
+      expect(await fs.readFile(configPath, "utf8")).toBe(original);
+      await expect(fs.access(configPath + ".managed-runtime-policy.json")).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.access(configPath + ".model-fence.json")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  });
+  it.each(["openclaw", "codex"] as const)("repairs stale runtime on an already-authorized no-op OAuth sync without changing credentials (%s)", async harness => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "managed-noop-auth-")), configPath = path.join(dir, "openclaw.json");
+    process.env.CODEX_HOME = path.join(dir, ".codex"); delete process.env.OPENAI_API_KEY;
+    const log = await installFakeSystemctl();
+    const managedRuntimePolicy = { schemaVersion: 1 as const, revision: harness === "codex" ? 2 : 1, chatHarness: harness };
+    const token = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQ3MDAwMDAwMDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3QtMTIzIn19.signature";
+    const action = { kind: "codex.auth.sync" as const, managedRuntimePolicy, bundleVersion: 7, bundle: { formatVersion: 1 as const, profileId: "openai:user@example.com", accessToken: token, refreshToken: "fixture-refresh", idToken: token, expiresAtMs: 4_700_000_000_000, lastRefresh: null, email: "user@example.com", accountId: "acct-123", chatgptPlanType: null } };
+    try {
+      await fs.writeFile(configPath, JSON.stringify(config("stale", "openai-chatgpt-responses")));
+      const gateway = { request: vi.fn(() => Promise.resolve({ ts: Date.now(), providers: [] })) };
+      await executeAgentControl({ configPath, gateway, action });
+      const profileDb = path.join(dir, "agents/main/agent/openclaw-agent.sqlite");
+      const credentialsBefore = await fs.readFile(profileDb);
+      const stale = JSON.parse(await fs.readFile(configPath, "utf8")) as ReturnType<typeof config>; stale.agents.defaults.models[ref].agentRuntime.id = harness === "codex" ? "openclaw" : "codex";
+      await fs.writeFile(configPath, JSON.stringify(stale));
+      const beforeRestarts = (await readSystemctlCalls(log)).filter(call => call.includes("restart openclaw-gateway.service")).length;
+      await expect(executeAgentControl({ configPath, gateway, action })).resolves.toMatchObject({ applied: false, reason: "up_to_date" });
+      expect(JSON.parse(await fs.readFile(configPath, "utf8"))).toMatchObject({ agents: { defaults: { models: { [ref]: { agentRuntime: { id: harness } } } } } });
+      expect(await fs.readFile(profileDb)).toEqual(credentialsBefore);
+      expect((await readSystemctlCalls(log)).filter(call => call.includes("restart openclaw-gateway.service"))).toHaveLength(beforeRestarts + 1);
+      const restarts = await readSystemctlCalls(log); await executeAgentControl({ configPath, gateway, action }); expect(await readSystemctlCalls(log)).toEqual(restarts);
+    } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  });
+});
+
+function executeAgentControl(input: Parameters<typeof executeAgentControlImpl>[0]) { return executeAgentControlImpl({ ...input, policyAuthority: "backend", action: { ...input.action, ...(input.action.managedRuntimePolicy ? { managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 } : {}) } }); }

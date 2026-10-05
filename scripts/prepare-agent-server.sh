@@ -450,6 +450,7 @@ run_openclaw_onboard_and_verify() {
   systemctl --user daemon-reload
 
   systemctl --user enable openclaw-gateway.service || true
+  node /root/golem-workers-relay/scripts/managed-runtime-normalize.mjs /root/.openclaw/openclaw.json
   systemctl --user restart openclaw-gateway.service
   wait_for_openclaw_gateway_ready
 
@@ -553,6 +554,7 @@ warm_openclaw_snapshot_channels() {
   prepare_root_user_systemd
   systemctl --user daemon-reload || true
   systemctl --user enable openclaw-gateway.service || true
+  node /root/golem-workers-relay/scripts/managed-runtime-normalize.mjs /root/.openclaw/openclaw.json
   systemctl --user restart openclaw-gateway.service
   wait_for_openclaw_gateway_ready
   echo "OpenClaw gateway passed snapshot warmup readiness."
@@ -1333,6 +1335,9 @@ NODE
   install_openclaw_capability_plugin moonshot "${MOONSHOT_PLUGIN_INSTALL_SPEC}"
   install_openclaw_capability_plugin perplexity "${PERPLEXITY_PLUGIN_INSTALL_SPEC}"
 
+  set_step "openclaw_snapshot_managed_runtime_policy"
+  node "${RELAY_REPO_DIR}/scripts/managed-runtime-normalize.mjs" /root/.openclaw/openclaw.json
+
   set_step "openclaw_snapshot_channels_warmup_start"
   warm_openclaw_snapshot_channels
 
@@ -1568,6 +1573,9 @@ NODE
   test -f /root/.openclaw/openclaw.json
 
   # Offline only: config CLI writes can regenerate tokens, signing keys and journals.
+  set_step "openclaw_snapshot_managed_runtime_seal"
+  node "${RELAY_REPO_DIR}/scripts/managed-runtime-normalize.mjs" /root/.openclaw/openclaw.json
+
   set_step "openclaw_snapshot_identity_seal"
   local seal_gateway_state
   seal_gateway_state="$(systemctl --user show openclaw-gateway.service --property=ActiveState --value)"

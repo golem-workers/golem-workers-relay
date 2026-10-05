@@ -1,3 +1,7 @@
+import { withManagedRuntimePolicy, commitManagedRuntimePolicy } from "../managed-runtime/runtime-policy.js";
+import { MANAGED_RUNTIME_SOURCE_SHA256, type ManagedRuntimePolicy } from "../managed-runtime/policy.generated.js";
+export { MANAGED_RUNTIME_SOURCE_SHA256 };
+export const managedRuntimeCommitProtocolVersion = 1;
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
@@ -63,11 +67,14 @@ export async function withOwnerFenceLock<T>(configPath: string, operation: () =>
   } finally { lock.stdin.end(); }
 }
 export async function writeOwnerFencedConfig(configPath: string, text: string, incoming?: OwnerFence, options: {
+  managedRuntimePolicy?: ManagedRuntimePolicy;
+  managedRuntimePolicyDigest?: string;
   expectedConfigText?: string | null;
   expectedRevision?: string;
   validate?: (candidate: string) => Promise<void>;
 } = {}): Promise<string> {
-  return withOwnerFenceLock(configPath, async () => {
+  if (options.managedRuntimePolicy && options.managedRuntimePolicyDigest !== MANAGED_RUNTIME_SOURCE_SHA256) throw new Error("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH");
+  return withOwnerFenceLock(configPath, () => withManagedRuntimePolicy(configPath, options.managedRuntimePolicy, async () => {
     const previous = await readOwnerFence(configPath);
     if (incoming && previous && BigInt(incoming.revision) < BigInt(previous.revision)) throw new Error("STALE_OWNER_REVISION");
     if (incoming && previous && incoming.revision === previous.revision && JSON.stringify(incoming) !== JSON.stringify(previous)) throw new Error("OWNER_REVISION_CONFLICT");
@@ -77,7 +84,9 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
     if (options.expectedRevision !== undefined && (current === undefined || configRevision(current) !== options.expectedRevision)) throw new Error("CONFIG_CONFLICT");
     if (options.expectedConfigText !== undefined && (options.expectedConfigText === null ? current !== undefined : (current === undefined || !isDeepStrictEqual(JSON5.parse(current), JSON5.parse(options.expectedConfigText))))) throw new Error("CONFIG_CONFLICT");
     const fence = incoming ?? previous;
-    const projected = fence ? projectOwners(text, fence) : text;
+    const { normalizeManagedConfigText } = await import("../managed-runtime/runtime-policy.js");
+    const normalized = await normalizeManagedConfigText(configPath, text);
+    const projected = fence ? projectOwners(normalized, fence) : normalized;
     // Retain caller validation semantics. Owner projection itself validates the
     // narrow field; do not impose a new whole-config/media migration here.
     if (options.validate) {
@@ -87,8 +96,9 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
     }
     // Authority first: a crash after this point may require convergence, never
     // restore a lower authorization revision. Locks are never stolen on age.
+    await commitManagedRuntimePolicy(configPath);
     if (incoming) await atomic(fenceBase(configPath) + ".owner-fence.json", JSON.stringify(incoming));
     await atomic(configPath, projected);
     return configRevision(projected);
-  });
+  }));
 }

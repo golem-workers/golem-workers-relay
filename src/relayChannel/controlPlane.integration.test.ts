@@ -497,3 +497,13 @@ describe("relay-channel control plane", () => {
     await closeHttpServer(dp.server);
   });
 });
+it("rejects forged managed authority over actual local HTTP before dispatch", async () => {
+  const dispatch = vi.fn();
+  const cp = startRelayChannelControlPlane({ host: "127.0.0.1", port: 0, relayInstanceId: "policy-test", backend: {} as never, getDataPlane: () => ({ uploadBaseUrl: "http://fixture/upload", downloadBaseUrl: "http://fixture/download", registerDownload: vi.fn() }), executeAgentControl: dispatch });
+  await new Promise<void>(resolve => cp.server.once("listening", resolve));
+  const address = cp.server.address(); if (!address || typeof address === "string") throw new Error("missing port");
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}/agent-control`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "request", requestType: "agent.control", requestId: "forged-policy", action: { kind: "config.apply", configText: "{}", managedRuntimePolicy: { schemaVersion: 1, revision: 99, chatHarness: "codex" }, managedRuntimePolicyDigest: "a".repeat(64) } }) });
+    expect(response.status).toBe(403); expect(await response.json()).toMatchObject({ code: "MANAGED_RUNTIME_POLICY_AUTHORITY_REQUIRED" }); expect(dispatch).not.toHaveBeenCalled();
+  } finally { await closeHttpServer(cp.server); }
+});

@@ -179,6 +179,10 @@ export function startRelayChannelControlPlane(input: {
 
       if (req.method === "POST" && pathname === "/agent-control") {
         const request = agentControlRequestSchema.parse(await readJsonBody(req));
+        if (request.action.managedRuntimePolicy || request.action.managedRuntimePolicyDigest) {
+          sendJson(res, 403, { code: "MANAGED_RUNTIME_POLICY_AUTHORITY_REQUIRED", message: "Local control cannot author managed runtime policy" });
+          return;
+        }
         const result = await input.executeAgentControl(request.action);
         clientConnected = true;
         input.onStateChange?.(getState());

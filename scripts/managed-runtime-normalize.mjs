@@ -1,0 +1,360 @@
+function createManagedRuntimePolicy() {
+    const record = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+    const ensure = (parent, key) => record(parent[key]) ?? (parent[key] = {});
+    const defaultPolicy = { schemaVersion: 1, revision: 1, chatHarness: "openclaw" };
+    function parsePolicy(value) {
+        const row = record(value);
+        if (!row || row.schemaVersion !== 1 || !Number.isSafeInteger(row.revision) || Number(row.revision) < 1 || !["openclaw", "codex"].includes(String(row.chatHarness)) || Object.keys(row).some(key => !["schemaVersion", "revision", "chatHarness"].includes(key)))
+            throw new Error("MANAGED_RUNTIME_POLICY_INVALID");
+        return { schemaVersion: 1, revision: Number(row.revision), chatHarness: row.chatHarness };
+    }
+    function acceptPolicy(current, incoming) {
+        current = parsePolicy(current);
+        incoming = parsePolicy(incoming);
+        if (incoming.revision < current.revision)
+            throw new Error("MANAGED_RUNTIME_POLICY_STALE");
+        if (incoming.revision === current.revision && incoming.chatHarness !== current.chatHarness)
+            throw new Error("MANAGED_RUNTIME_POLICY_CONFLICT");
+        return incoming;
+    }
+    function policyFromEnvironment(env) {
+        return parsePolicy({ schemaVersion: 1, revision: Number(env.MANAGED_AGENT_HARNESS_POLICY_REVISION ?? 1), chatHarness: env.MANAGED_AGENT_HARNESS ?? "openclaw" });
+    }
+    function profiles(config) { return Object.values(record(record(config.auth)?.profiles) ?? {}).map(record).filter((row) => Boolean(row)); }
+    function environment(config, context) {
+        return { ...(context.env ?? {}), ...(record(config.env) ?? {}), ...(record(record(config.env)?.vars) ?? {}) };
+    }
+    function modelParts(ref) {
+        const slash = ref.indexOf("/");
+        return { provider: ref.slice(0, slash).toLowerCase(), model: ref.slice(slash + 1) };
+    }
+    function route(config, ref, context) {
+        const { provider, model } = modelParts(ref);
+        const providers = record(record(config.models)?.providers) ?? {};
+        const providerRow = record(providers[provider]) ?? record(providers.openai) ?? {};
+        const legacy = record(record(config.providers)?.[provider]) ?? {};
+        const modelRow = (Array.isArray(providerRow.models) ? providerRow.models : []).map(record).find(row => row?.id === model) ?? {};
+        const env = environment(config, context);
+        const catalog = record(record(record(config.agents)?.defaults)?.models);
+        const rows = [legacy, providerRow, modelRow, record(catalog?.[ref]) ?? {}, record(record(config.agents)?.defaults) ?? {}, context.scope ?? { params: context.params }, record(context.scopeModels?.[ref]) ?? {}];
+        const authored = (key) => { for (const row of [...rows].reverse())
+            if (row[key] !== undefined)
+                return row[key]; return undefined; };
+        const hasApiKey = context.apiKeyAuth || env.OPENAI_API_KEY !== undefined || env.CODEX_API_KEY !== undefined || authored("apiKey") !== undefined || (context.apiKeyAuth === undefined && profiles(config).some(row => ["openai", "codex", "openai-codex"].includes(String(row.provider)) && ["api_key", "api-key"].includes(String(row.mode))));
+        const hasSubscription = context.subscriptionAuth || (context.subscriptionAuth === undefined && profiles(config).some(row => ["openai", "codex", "openai-codex"].includes(String(row.provider)) && ["oauth", "token"].includes(String(row.mode))));
+        const api = authored("api") ?? (hasSubscription && !hasApiKey ? "openai-chatgpt-responses" : "openai-responses");
+        const baseUrl = authored("baseUrl") ?? env.OPENAI_BASE_URL ?? (api === "openai-chatgpt-responses" ? "https://chatgpt.com/backend-api/codex" : "https://api.openai.com/v1");
+        function reproducibleParams(value) {
+            if (value === undefined)
+                return true;
+            const params = record(value);
+            if (!params)
+                return false;
+            return Object.entries(params).every(([key, value]) => ["fastMode", "fast_mode"].includes(key) ? [true, false, "auto"].includes(value) : ["fastAutoOnSeconds", "fast_auto_on_seconds", "fastSeconds", "fast_seconds"].includes(key) && typeof value === "number" && Number.isFinite(value) && value > 0);
+        }
+        const overrides = rows.some(row => ["headers", "requestTransportOverrides", "requestOptions", "fetch", "transport", "request", "localService", "authHeader", "timeoutSeconds", "compat"].some(key => row[key] !== undefined && row[key] !== "none" && !(record(row[key]) && Object.keys(record(row[key])).length === 0)) || !reproducibleParams(row.params));
+        return { provider, model, api, baseUrl, overrides, hasApiKey: Boolean(hasApiKey), hasSubscription: Boolean(hasSubscription) };
+    }
+    function codexCompatibility(config, ref, context = {}) {
+        const info = route(config, ref, context);
+        const deny = (reason) => ({ supported: false, reason });
+        if (!["openai", "codex", "openai-codex"].includes(info.provider))
+            return deny("provider does not support Codex");
+        if (!/^(?:gpt-(?:4|5|6)(?:[.-]|$)|o[134](?:[-.]|$)|chatgpt-)/i.test(info.model) || /(?:image|embedding|audio|tts|transcrib|realtime|sora)/i.test(info.model))
+            return deny("model is not an eligible conversational/image-understanding model");
+        if (info.overrides)
+            return deny("authored request transport overrides cannot be reproduced by Codex");
+        try {
+            if (typeof info.baseUrl !== "string")
+                return deny("invalid provider endpoint");
+            const url = new URL(info.baseUrl);
+            if (url.protocol !== "https:" || url.port || url.username || url.password || url.search || url.hash)
+                return deny("route must be an exact official HTTPS endpoint");
+            const platform = url.hostname === "api.openai.com" && ["/", "/v1", "/v1/"].includes(url.pathname);
+            const chatgpt = url.hostname === "chatgpt.com" && /^\/backend-api(?:\/(?:v1|codex(?:\/(?:v1|responses))?))?\/?$/.test(url.pathname);
+            if (!(platform && info.api === "openai-responses") && !(chatgpt && info.api === "openai-chatgpt-responses"))
+                return deny("authored/custom or incompatible provider route cannot be reproduced by Codex");
+            if (platform && !info.hasApiKey)
+                return deny("prepared OpenAI API-key authentication is required");
+            if (chatgpt && !info.hasSubscription)
+                return deny("prepared ChatGPT OAuth/token authentication is required");
+        }
+        catch {
+            return deny("invalid provider endpoint");
+        }
+        return { supported: true };
+    }
+    function isSubscriptionRoute(config, ref, context = {}) {
+        const info = route(config, ref, context);
+        return info.api === "openai-chatgpt-responses" && info.hasSubscription;
+    }
+    function expectedRuntime(config, ref, purpose, policy, context = {}) {
+        if (parsePolicy(policy).chatHarness === "openclaw" || !["main", "image", "pdf"].includes(purpose))
+            return "openclaw";
+        const result = codexCompatibility(config, ref, context);
+        if (!result.supported && purpose !== "main")
+            return "openclaw"; // Explicit native auxiliary-provider scope, not a chat fallback.
+        if (!result.supported)
+            throw new Error(`MANAGED_CODEX_INCOMPATIBLE: ${ref} (${purpose}): ${result.reason}`);
+        return "codex";
+    }
+    /** Sol catalog augmentation never replaces authored transport/auth or injects an API
+     * into an authored endpoint without an explicit API contract. */
+    function ensureSolCompatibility(config, subscriptionRoute = false, context = {}) {
+        const defaults = record(record(config.agents)?.defaults);
+        const catalog = record(defaults?.models);
+        if (!record(catalog?.["openai/gpt-6.1-sol"]))
+            return;
+        const provider = ensure(ensure(ensure(config, "models"), "providers"), "openai");
+        provider.agentRuntime ??= { id: "openclaw" };
+        const models = Array.isArray(provider.models) ? provider.models : [];
+        provider.models = models;
+        let model = models.map(record).find(row => row?.id === "gpt-6.1-sol");
+        if (!model) {
+            model = { id: "gpt-6.1-sol" };
+            models.push(model);
+        }
+        const env = environment(config, context);
+        const hasAuthoredRoute = [provider, model, record(record(config.providers)?.openai) ?? {}].some(row => ["api", "baseUrl", "apiKey", "auth", "headers"].some(key => row[key] !== undefined)) || env.OPENAI_BASE_URL !== undefined;
+        const values = { name: "GPT-6.1-Sol", reasoning: true, input: ["text", "image"], contextWindow: 272000, cost: { input: 2, output: 10 }, agentRuntime: { id: "openclaw" } };
+        const apiKeyIntent = Boolean(context.apiKeyAuth || env.OPENAI_API_KEY !== undefined || env.CODEX_API_KEY !== undefined || profiles(config).some(row => ["openai", "codex", "openai-codex"].includes(String(row.provider)) && ["api_key", "api-key"].includes(String(row.mode))));
+        if (!hasAuthoredRoute)
+            values.api = subscriptionRoute && !apiKeyIntent ? "openai-chatgpt-responses" : "openai-responses";
+        for (const [key, value] of Object.entries(values))
+            if (model[key] === undefined)
+                model[key] = value;
+    }
+    function needsAuthContext(config, policy) {
+        if (policy.chatHarness === "codex")
+            return true;
+        const catalog = record(record(record(config.agents)?.defaults)?.models);
+        if (!record(catalog?.["openai/gpt-6.1-sol"]))
+            return false;
+        const provider = record(record(record(config.models)?.providers)?.openai) ?? {};
+        const model = (Array.isArray(provider.models) ? provider.models : []).map(record).find(row => row?.id === "gpt-6.1-sol") ?? {};
+        return [provider, model, record(record(config.providers)?.openai) ?? {}].every(row => ["api", "baseUrl", "apiKey", "auth", "headers"].every(key => row[key] === undefined));
+    }
+    function assignmentRefs(value) {
+        const row = record(value);
+        return (typeof value === "string" ? [value] : row ? [row.primary, ...(Array.isArray(row.fallbacks) ? row.fallbacks : []), row.fallback] : []).filter((ref) => typeof ref === "string" && Boolean(ref.trim())).map(ref => ref.trim());
+    }
+    /** Preflight on a clone: rejection never partially mutates the caller's config. */
+    function normalizeConfig(config, policy = defaultPolicy, context = {}) {
+        policy = parsePolicy(policy);
+        const next = JSON.parse(JSON.stringify(config));
+        const originalAgents = record(next.agents) ?? {};
+        const originalScopes = [record(originalAgents.defaults), ...(Array.isArray(originalAgents.list) ? originalAgents.list : []).map(record), ...Object.values(record(originalAgents.entries) ?? {}).map(record)].filter((row) => Boolean(row));
+        if (next.models === undefined && !originalScopes.some(row => Object.keys(row).some(key => key === "models" || key === "model" || key.endsWith("Model"))))
+            return;
+        const agents = ensure(next, "agents"), defaults = ensure(agents, "defaults"), catalog = ensure(defaults, "models");
+        const subscription = Boolean(context.subscriptionAuth || profiles(next).some(row => row.mode === "oauth" && ["openai", "codex", "openai-codex"].includes(String(row.provider))));
+        ensureSolCompatibility(next, subscription, context);
+        const scopes = [defaults, ...(Array.isArray(agents.list) ? agents.list : []).map(record).filter((row) => Boolean(row)), ...Object.values(record(agents.entries) ?? {}).map(record).filter((row) => Boolean(row))];
+        const uses = new Map();
+        const keys = { model: "main", imageModel: "image", pdfModel: "pdf", imageGenerationModel: "imageGeneration", videoGenerationModel: "videoGeneration", musicGenerationModel: "musicGeneration", embeddingModel: "embedding", audioTranscriptionModel: "audioTranscription" };
+        for (const scope of scopes)
+            for (const [key, purpose] of Object.entries({ ...Object.fromEntries(Object.keys({ ...defaults, ...scope }).filter(key => key.endsWith("Model")).map(key => [key, "auxiliary"])), ...keys }))
+                for (const ref of assignmentRefs(scope[key] ?? (scope === defaults ? undefined : defaults[key]))) {
+                    const runtime = expectedRuntime(next, ref, purpose, policy, { ...context, params: record(scope.params), scopeModels: record(scope.models), scope });
+                    const set = uses.get(ref) ?? new Set();
+                    set.add(runtime);
+                    uses.set(ref, set);
+                    if (set.size > 1)
+                        throw new Error(`MANAGED_RUNTIME_PURPOSE_CONFLICT: ${ref} is shared by conversational and native-only media purposes`);
+                    ensure(catalog, ref);
+                }
+        function runtimeFor(ref) {
+            const used = uses.get(ref);
+            if (used)
+                return [...used][0];
+            return policy.chatHarness === "codex" && codexCompatibility(next, ref, context).supported ? "codex" : "openclaw";
+        }
+        for (const scope of scopes) {
+            const models = record(scope.models);
+            for (const [ref, value] of Object.entries(models ?? {})) {
+                const entry = record(value);
+                if (!entry)
+                    continue;
+                const runtime = runtimeFor(ref);
+                entry.agentRuntime = { id: runtime };
+                if (Array.isArray(entry.pickerRuntimes))
+                    entry.pickerRuntimes = [runtime];
+            }
+        }
+        for (const [providerId, value] of Object.entries(record(record(next.models)?.providers) ?? {})) {
+            const provider = record(value);
+            if (!provider)
+                continue;
+            // A provider-wide Codex default would capture unsupported models/purposes.
+            provider.agentRuntime = { id: "openclaw" };
+            if (Array.isArray(provider.pickerRuntimes))
+                provider.pickerRuntimes = ["openclaw"];
+            for (const value of Array.isArray(provider.models) ? provider.models : []) {
+                const model = record(value);
+                if (!model || typeof model.id !== "string")
+                    continue;
+                const runtime = runtimeFor(providerId + "/" + model.id);
+                model.agentRuntime = { id: runtime };
+                if (Array.isArray(model.pickerRuntimes))
+                    model.pickerRuntimes = [runtime];
+            }
+        }
+        function commit(target, source) {
+            for (const key of Object.keys(target))
+                if (!(key in source))
+                    delete target[key];
+            for (const [key, value] of Object.entries(source)) {
+                const prior = record(target[key]), row = record(value);
+                if (prior && row)
+                    commit(prior, row);
+                else if (Array.isArray(target[key]) && Array.isArray(value)) {
+                    const array = target[key];
+                    const items = value.map((item, index) => { const old = record(array[index]), next = record(item); if (old && next) {
+                        commit(old, next);
+                        return old;
+                    } return item; });
+                    array.splice(0, array.length, ...items);
+                }
+                else
+                    target[key] = value;
+            }
+        }
+        commit(config, next);
+    }
+    /** Comparison projection ignores ONLY runtime choice metadata. Every model id,
+     * provider route, auth, env and unrelated field remains protected by existing CAS. */
+    function protectedRoute(config) {
+        const next = JSON.parse(JSON.stringify({ agents: config.agents, providers: config.models, legacyProviders: config.providers, auth: config.auth, env: config.env }));
+        const strip = (row) => { delete row.agentRuntime; delete row.pickerRuntimes; };
+        const agents = record(next.agents) ?? {};
+        for (const scope of [record(agents.defaults), ...(Array.isArray(agents.list) ? agents.list : []).map(record), ...Object.values(record(agents.entries) ?? {}).map(record)].filter((row) => Boolean(row))) {
+            for (const entry of Object.values(record(scope.models) ?? {}).map(record))
+                if (entry)
+                    strip(entry);
+        }
+        for (const provider of Object.values(record(record(next.providers)?.providers) ?? {}).map(record))
+            if (provider) {
+                strip(provider);
+                for (const model of (Array.isArray(provider.models) ? provider.models : []).map(record))
+                    if (model)
+                        strip(model);
+            }
+        return next;
+    }
+    function assertRuntimeMetadata(config, policy, context = {}) {
+        const expected = JSON.parse(JSON.stringify(config));
+        normalizeConfig(expected, policy, context);
+        function check(value, normalized) {
+            if (Array.isArray(value)) {
+                value.forEach((entry, index) => check(entry, Array.isArray(normalized) ? normalized[index] : undefined));
+                return;
+            }
+            const row = record(value), wanted = record(normalized);
+            if (!row)
+                return;
+            for (const [key, entry] of Object.entries(row)) {
+                if ((key === "agentRuntime" || key === "pickerRuntimes") && wanted?.[key] !== undefined && JSON.stringify(entry) !== JSON.stringify(wanted[key]))
+                    throw new Error("MANAGED_RUNTIME_METADATA_CONFLICT");
+                else
+                    check(entry, wanted?.[key]);
+            }
+        }
+        check(config, expected);
+    }
+    return { defaultPolicy, parsePolicy, acceptPolicy, policyFromEnvironment, codexCompatibility, isSubscriptionRoute, expectedRuntime, ensureSolCompatibility, needsAuthContext, normalizeConfig, protectedRoute, assertRuntimeMetadata };
+}
+/** Read-only offline auth proof. Shared machine ownership excludes stale agent JSON. */
+function readOfflineRuntimeAuth(configPath) {
+    const fs = process.getBuiltinModule("node:fs");
+    const path = process.getBuiltinModule("node:path");
+    const row = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const root = path.dirname(configPath);
+    const sharedPath = path.join(root, "state/openclaw.sqlite");
+    const agentPath = path.join(root, "agents/main/agent/openclaw-agent.sqlite");
+    let shared = false;
+    const credentials = [];
+    if (fs.existsSync(sharedPath)) {
+        const { DatabaseSync } = process.getBuiltinModule("node:sqlite");
+        const db = new DatabaseSync(sharedPath, { readOnly: true });
+        try {
+            if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='config_machine_state'").get()) {
+                const ownership = db.prepare("SELECT value_json FROM config_machine_state WHERE state_key='auth.sharedStore'").get();
+                shared = row(JSON.parse(ownership?.value_json ?? "null")).location === "state-db";
+                if (shared) {
+                    const store = db.prepare("SELECT value_json FROM config_machine_state WHERE state_key='authProfiles.store'").get();
+                    credentials.push(...Object.values(row(row(JSON.parse(store?.value_json ?? "null")).profiles)));
+                }
+            }
+        }
+        finally {
+            db.close();
+        }
+    }
+    if (!shared) {
+        if (fs.existsSync(agentPath)) {
+            const { DatabaseSync } = process.getBuiltinModule("node:sqlite");
+            const db = new DatabaseSync(agentPath, { readOnly: true });
+            try {
+                if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='auth_profile_store'").get()) {
+                    const store = db.prepare("SELECT store_json FROM auth_profile_store WHERE store_key='primary'").get();
+                    credentials.push(...Object.values(row(row(JSON.parse(store?.store_json ?? "null")).profiles)));
+                }
+            }
+            finally {
+                db.close();
+            }
+        }
+        for (const file of [path.join(root, "auth-profiles.json"), path.join(root, "agents/main/agent/auth-profiles.json")])
+            if (fs.existsSync(file))
+                credentials.push(...Object.values(row(row(JSON.parse(fs.readFileSync(file, "utf8"))).profiles)));
+    }
+    const openai = credentials.map(row).filter(value => ["openai", "openai-codex", "codex"].includes(String(value.provider)));
+    return { subscriptionAuth: openai.some(value => value.type === "oauth" && !["chatgpt-identity", "chatgpt-token-sharing"].includes(String(value.authFlow))), apiKeyAuth: openai.some(value => value.type === "api_key") };
+}
+
+const fs = process.getBuiltinModule("node:fs");
+const path = process.getBuiltinModule("node:path");
+const managed = createManagedRuntimePolicy();
+const configPath = process.argv[2] || "/root/.openclaw/openclaw.json";
+const policyPath = process.argv[3] || "/var/lib/golem-workers/managed-runtime-policy.json";
+async function run() {
+const primaryConfigPath = configPath.replace(/\.managed-restore-candidate$/, "");
+const fenceBase = primaryConfigPath === "/root/.openclaw/openclaw.json" ? "/var/lib/golem-workers/owner-fence/openclaw.json" : primaryConfigPath;
+fs.mkdirSync(path.dirname(fenceBase), { recursive: true });
+const { spawn } = process.getBuiltinModule("node:child_process");
+const lock = spawn("flock", ["-x", "-w", "30", fenceBase + ".owner-write.lock", "sh", "-c", "printf ready; cat >/dev/null"], { stdio: ["pipe", "pipe", "pipe"] });
+try {
+await new Promise((resolve, reject) => { lock.once("error", reject); lock.once("exit", () => reject(new Error("OWNER_CONFIG_LOCK_UNAVAILABLE"))); lock.stdout.once("data", resolve); });
+const current = fs.existsSync(policyPath) ? managed.parsePolicy(JSON.parse(fs.readFileSync(policyPath, "utf8"))) : managed.defaultPolicy;
+const incoming = process.env.GOLEM_MANAGED_RUNTIME_POLICY_JSON ? managed.parsePolicy(JSON.parse(process.env.GOLEM_MANAGED_RUNTIME_POLICY_JSON)) : current;
+const policy = managed.acceptPolicy(current, incoming);
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+managed.normalizeConfig(config, policy, { ...(managed.needsAuthContext(config, policy) ? readOfflineRuntimeAuth(configPath) : {}), env: process.env });
+function atomic(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temporary = file + ".managed-" + process.pid;
+  const fd = fs.openSync(temporary, "wx", 0o600);
+  try { fs.writeFileSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  fs.renameSync(temporary, file);
+  const directory = fs.openSync(path.dirname(file), "r"); try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+}
+// Authority first. A crash may require convergence; never allow a stale rollback.
+let text = JSON.stringify(config, null, 2) + "\n";
+const ownerFencePath = fenceBase + ".owner-fence.json";
+if (fs.existsSync(ownerFencePath)) {
+  const modulePath = "/root/golem-workers-relay/dist/agentControl/ownerFence.js";
+  if (!fs.existsSync(modulePath)) throw new Error("OWNER_FENCE_MODULE_REQUIRED");
+  const { projectOwners } = await import(modulePath);
+  text = projectOwners(text, JSON.parse(fs.readFileSync(ownerFencePath, "utf8")));
+}
+const candidate = configPath + ".managed-validate-" + process.pid;
+try {
+  fs.writeFileSync(candidate, text, { mode: 0o600, flag: "wx" });
+  const validation = process.getBuiltinModule("node:child_process").spawnSync("openclaw", ["config", "validate", "--json"], { env: { ...process.env, OPENCLAW_CONFIG_PATH: candidate }, encoding: "utf8" });
+  if (validation.error || validation.status !== 0) throw new Error("OPENCLAW_CONFIG_INVALID");
+} finally { fs.rmSync(candidate, { force: true }); }
+atomic(policyPath, JSON.stringify(policy) + "\n");
+atomic(configPath, text);
+} finally { lock.stdin.end(); }
+}
+run().catch(error => { console.error(error); process.exitCode = 1; });

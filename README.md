@@ -1,5 +1,7 @@
 # golem-workers-relay
 
+Managed chat harness selection and coordinated release contract: [managed runtime policy](docs/managed-runtime-policy.md). OpenClaw remains the default; authentication is independent of harness choice.
+
 Relay daemon that accepts push messages from `golem-workers-backend` over HTTP and executes them via a **local**
 OpenClaw Gateway over WebSocket (`ws://127.0.0.1:18789` by default).
 For messenger-backed `relay_channel_v2` transport, relay keeps only routing/context metadata and proxies

@@ -1,4 +1,5 @@
 import { z } from "zod";
+const managedRuntimePolicySchema = z.object({ schemaVersion: z.literal(1), revision: z.number().int().positive(), chatHarness: z.enum(["openclaw", "codex"]) }).strict();
 
 const jsonRecordSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
   z.record(z.string(), z.unknown())
@@ -187,7 +188,7 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("cron.inventory.refresh"),
     requestId: z.string().min(1).max(200),
   }),
-]);
+]).and(z.object({ managedRuntimePolicy: managedRuntimePolicySchema.optional(), managedRuntimePolicyDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }));
 
 export type AgentControlAction = z.infer<typeof agentControlActionSchema>;
 
@@ -428,7 +429,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     observedAt: z.string().datetime({ offset: true }),
     collectionStatus: z.enum(["COMPLETE", "PARTIAL", "FAILED"]),
   }),
-]);
+]).and(z.object({ managedRuntimePolicyVersion: z.literal(1).optional(), managedRuntimePolicy: managedRuntimePolicySchema.optional(), managedRuntimePolicyDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }));
 
 export type AgentControlResult = z.infer<typeof agentControlResultSchema>;
 
