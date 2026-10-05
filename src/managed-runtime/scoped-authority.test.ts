@@ -18,22 +18,26 @@ async function fixture() {
   const gateway = { request: () => Promise.resolve({}) };
   return { dir, configPath, gateway, text };
 }
-it("rejects foreign and unbound incoming or sidecar policy, including startup", async () => {
+it("accepts backend authority without a new identity env and rejects local or foreign policy", async () => {
   const f = await fixture();
-  const action = { kind: "managedRuntime.preflight" as const, managedRuntimePolicy: scoped(), managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 };
-  await expect(executeAgentControl({ ...f, action, registeredServerId: "agent-a" })).rejects.toThrow("Only authenticated backend");
-  for (const registeredServerId of [undefined, "agent-b"]) {
-    await expect(executeAgentControl({ ...f, action, registeredServerId, policyAuthority: "backend" })).rejects.toThrow("SERVER_MISMATCH");
-  }
-  await fs.writeFile(policyFile(f.configPath), JSON.stringify(scoped("agent-b")));
-  await expect(executeAgentControl({ ...f, action: { kind: "config.read" }, registeredServerId: "agent-a" })).rejects.toThrow("SERVER_MISMATCH");
-  await expect(withManagedRuntimePolicy(f.configPath, undefined, () => normalizeManagedConfigOnDisk(f.configPath), "agent-a")).rejects.toThrow("SERVER_MISMATCH");
+  const action = { kind: "managedRuntime.preflight" as const, managedRuntimePolicy: scoped("agent-a", "codex", 1), managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 };
+  await expect(executeAgentControl({ ...f, action })).rejects.toThrow("Only authenticated backend");
+  await expect(executeAgentControl({ ...f, action: { ...action, managedRuntimePolicyDigest: undefined }, policyAuthority: "backend" })).rejects.toThrow("Backend policy digest is required");
+  await expect(executeAgentControl({ ...f, action: { ...action, managedRuntimePolicyDigest: "0".repeat(64) }, policyAuthority: "backend" })).rejects.toThrow("source digests differ");
+  await expect(executeAgentControl({ ...f, action, policyAuthority: "backend" })).resolves.toMatchObject({ kind: "managedRuntime.preflight", compatible: true });
   expect(await fs.readFile(f.configPath, "utf8")).toBe(f.text);
+  await expect(fs.access(policyFile(f.configPath))).rejects.toThrow();
+  const current = scoped("agent-b");
+  await fs.writeFile(policyFile(f.configPath), JSON.stringify(current));
+  await expect(executeAgentControl({ ...f, action, policyAuthority: "backend" })).rejects.toThrow("SERVER_MISMATCH");
+  await expect(executeAgentControl({ ...f, action: { kind: "config.read" } })).resolves.toMatchObject({ managedRuntimePolicy: current });
+  expect(await fs.readFile(f.configPath, "utf8")).toBe(f.text);
+  expect(JSON.parse(await fs.readFile(policyFile(f.configPath), "utf8"))).toEqual(current);
 });
 it("read returns persisted policy; preflight projects model/fallback changes without staging or writes", async () => {
   const f = await fixture(); const current = scoped(); const target = scoped("agent-a", "codex", 1);
   await fs.writeFile(policyFile(f.configPath), JSON.stringify(current));
-  const input = { ...f, registeredServerId: "agent-a", policyAuthority: "backend" as const };
+  const input = { ...f, policyAuthority: "backend" as const };
   const authority = { managedRuntimePolicy: target, managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 };
   const read = await executeAgentControl({ ...input, action: { kind: "config.read", ...authority } });
   expect(read).toMatchObject({ managedRuntimePolicyVersion: 2, managedRuntimePolicy: current });
@@ -50,40 +54,52 @@ it("rejects stale agent authority before preflight and preserves independent ser
   const a = await fixture(), b = await fixture();
   await fs.writeFile(policyFile(a.configPath), JSON.stringify(scoped("agent-a", "codex", 3)));
   await fs.writeFile(policyFile(b.configPath), JSON.stringify(scoped("agent-b", "openclaw", 1)));
-  await expect(executeAgentControl({ ...a, registeredServerId: "agent-a", policyAuthority: "backend", action: { kind: "managedRuntime.preflight", managedRuntimePolicy: scoped("agent-a", "openclaw", 2), managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 } })).rejects.toThrow("STALE");
-  const read = await executeAgentControl({ ...b, registeredServerId: "agent-b", action: { kind: "config.read" } });
+  await expect(executeAgentControl({ ...a, policyAuthority: "backend", action: { kind: "managedRuntime.preflight", managedRuntimePolicy: scoped("agent-a", "openclaw", 2), managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 } })).rejects.toThrow("STALE");
+  const read = await executeAgentControl({ ...b, action: { kind: "config.read" } });
   expect(read.managedRuntimePolicy?.chatHarness).toBe("openclaw");
 });
 it("wire rejects inconsistent effective choice and accepts readonly preflight", () => {
   expect(agentControlActionSchema.safeParse({ kind: "managedRuntime.preflight", managedRuntimePolicy: scoped() }).success).toBe(true);
   expect(agentControlActionSchema.safeParse({ kind: "config.read", managedRuntimePolicy: { ...scoped(), chatHarness: "codex" } }).success).toBe(false);
 });
-it("emitted CLI binds existing and incoming scoped policy to trusted identity", async () => {
+it("emitted CLI converges scoped authority without identity env and retains server/revision/schema fences", async () => {
   const f = await fixture(); const sidecar = policyFile(f.configPath);
-  await fs.writeFile(sidecar, JSON.stringify(scoped("agent-b")));
-  async function rejectCli(env: NodeJS.ProcessEnv) {
-    const output = path.join(f.dir, "cli-error.log");
-    const file = await fs.open(output, "w");
-    try {
-      const code = await new Promise<number | null>((resolve, reject) => {
-        const child = spawn(process.execPath, ["scripts/managed-runtime-normalize.mjs", f.configPath, sidecar], { env, stdio: ["ignore", "ignore", file.fd] });
-        child.once("error", reject); child.once("exit", resolve);
-      });
-      expect(code).toBe(1);
-    } finally { await file.close(); }
-    expect(await fs.readFile(output, "utf8")).toContain("SERVER_MISMATCH");
+  const bin = path.join(f.dir, "bin"); await fs.mkdir(bin);
+  // Validate the candidate JSON without calling the installed Gateway or its CLI.
+  await fs.writeFile(path.join(bin, "openclaw"), '#!/usr/bin/env node\nJSON.parse(require("fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8")); process.exit(process.env.TEST_SCHEMA_REJECTED === "1" ? 1 : 0);\n', { mode: 0o700 });
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: bin + path.delimiter + process.env.PATH };
+  delete env.RELAY_SERVER_ID;
+  delete env.GOLEM_MANAGED_RUNTIME_POLICY_JSON;
+  async function runCli(extra: NodeJS.ProcessEnv = {}) {
+    return new Promise<{ code: number | null; error: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, ["scripts/managed-runtime-normalize.mjs", f.configPath, sidecar], { env: { ...env, ...extra }, stdio: ["ignore", "ignore", "pipe"] });
+      let error = ""; child.stderr.on("data", value => { error += String(value); });
+      child.once("error", reject); child.once("exit", code => resolve({ code, error }));
+    });
   }
-  for (const identity of ["", "agent-a"]) await rejectCli({ ...process.env, RELAY_SERVER_ID: identity });
-  await fs.rm(sidecar);
-  await rejectCli({ ...process.env, RELAY_SERVER_ID: "agent-a", GOLEM_MANAGED_RUNTIME_POLICY_JSON: JSON.stringify(scoped("agent-b")) });
-  expect(await fs.readFile(f.configPath, "utf8")).toBe(f.text);
-  await expect(fs.access(sidecar)).rejects.toThrow();
+  const target = scoped("agent-a", "codex", 1);
+  expect((await runCli({ GOLEM_MANAGED_RUNTIME_POLICY_JSON: JSON.stringify(target) })).code).toBe(0);
+  expect(JSON.parse(await fs.readFile(sidecar, "utf8"))).toEqual(target);
+  await fs.writeFile(f.configPath, f.text); // Restart/restore convergence with only protected persisted authority.
+  expect((await runCli()).code).toBe(0);
+  expect(await fs.readFile(f.configPath, "utf8")).toContain('"codex"');
+  const before = await fs.readFile(f.configPath, "utf8");
+  for (const [policy, reason] of [[scoped("agent-b", "codex", 2), "SERVER_MISMATCH"], [scoped("agent-a", null, 0), "STALE"], [managedRuntime.defaultPolicy, "DOWNGRADE"]] as const) {
+    const result = await runCli({ GOLEM_MANAGED_RUNTIME_POLICY_JSON: JSON.stringify(policy) });
+    expect(result.code).toBe(1); expect(result.error).toContain(reason);
+    expect(await fs.readFile(f.configPath, "utf8")).toBe(before);
+    expect(JSON.parse(await fs.readFile(sidecar, "utf8"))).toEqual(target);
+  }
+  const result = await runCli({ GOLEM_MANAGED_RUNTIME_POLICY_JSON: JSON.stringify(scoped("agent-a", "openclaw", 2)), TEST_SCHEMA_REJECTED: "1" });
+  expect(result.code).toBe(1); expect(result.error).toContain("OPENCLAW_CONFIG_INVALID");
+  expect(await fs.readFile(f.configPath, "utf8")).toBe(before);
+  expect(JSON.parse(await fs.readFile(sidecar, "utf8"))).toEqual(target);
 });
 it("V2 commit migrates V1 only after CAS and schema success, and recovers without downgrading", async () => {
   const { writeOwnerFencedConfig, configRevision } = await import("../agentControl/ownerFence.js");
   const f = await fixture(); const target = scoped("agent-a", "codex", 1);
   await fs.writeFile(policyFile(f.configPath), JSON.stringify(managedRuntime.defaultPolicy));
-  const run = (operation: () => Promise<unknown>) => withManagedRuntimePolicy(f.configPath, target, operation, "agent-a");
+  const run = (operation: () => Promise<unknown>) => withManagedRuntimePolicy(f.configPath, target, operation);
   await expect(run(() => writeOwnerFencedConfig(f.configPath, f.text, undefined, { expectedRevision: "stale" }))).rejects.toThrow("CONFIG_CONFLICT");
   await expect(run(() => writeOwnerFencedConfig(f.configPath, f.text, undefined, { expectedRevision: configRevision(f.text), validate: () => Promise.reject(new Error("SCHEMA_REJECTED")) }))).rejects.toThrow("SCHEMA_REJECTED");
   expect(JSON.parse(await fs.readFile(policyFile(f.configPath), "utf8"))).toEqual(managedRuntime.defaultPolicy);
@@ -91,14 +107,14 @@ it("V2 commit migrates V1 only after CAS and schema success, and recovers withou
   expect(JSON.parse(await fs.readFile(policyFile(f.configPath), "utf8"))).toEqual(target);
   // Crash/restore left old config after authority commit: converge under retained authority.
   await fs.writeFile(f.configPath, f.text);
-  await withManagedRuntimePolicy(f.configPath, undefined, () => normalizeManagedConfigOnDisk(f.configPath), "agent-a");
+  await withManagedRuntimePolicy(f.configPath, undefined, () => normalizeManagedConfigOnDisk(f.configPath));
   expect(await fs.readFile(f.configPath, "utf8")).toContain('"codex"');
-  await expect(withManagedRuntimePolicy(f.configPath, managedRuntime.defaultPolicy, () => Promise.resolve(), "agent-a")).rejects.toThrow("DOWNGRADE");
+  await expect(withManagedRuntimePolicy(f.configPath, managedRuntime.defaultPolicy, () => Promise.resolve())).rejects.toThrow("DOWNGRADE");
 });
 it("rejects stale preflight revision before credential, config, gateway or authority side effects", async () => {
   const f = await fixture(); const current = scoped();
   await fs.writeFile(policyFile(f.configPath), JSON.stringify(current));
-  const input = { ...f, registeredServerId: "agent-a", policyAuthority: "backend" as const };
+  const input = { ...f, policyAuthority: "backend" as const };
   const proof = await executeAgentControl({ ...input, action: { kind: "managedRuntime.preflight" } });
   if (proof.kind !== "managedRuntime.preflight") throw new Error("preflight required");
   const changed = f.text + "\n";

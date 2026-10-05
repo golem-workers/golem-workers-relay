@@ -362,9 +362,9 @@ try {
 await new Promise((resolve, reject) => { lock.once("error", reject); lock.once("exit", () => reject(new Error("OWNER_CONFIG_LOCK_UNAVAILABLE"))); lock.stdout.once("data", resolve); });
 const current = fs.existsSync(policyPath) ? managed.parsePolicy(JSON.parse(fs.readFileSync(policyPath, "utf8"))) : managed.defaultPolicy;
 const incoming = process.env.GOLEM_MANAGED_RUNTIME_POLICY_JSON ? managed.parsePolicy(JSON.parse(process.env.GOLEM_MANAGED_RUNTIME_POLICY_JSON)) : current;
-// Identity is provisioned with the authenticated relay registration, never inferred from policy.
-managed.assertPolicyServer(current, process.env.RELAY_SERVER_ID);
-managed.assertPolicyServer(incoming, process.env.RELAY_SERVER_ID);
+// The backend's privileged target-scoped writer supplies incoming authority.
+// Retain an existing sidecar's server binding and monotonic revisions without
+// introducing a mandatory identity environment variable on existing agents.
 const policy = managed.acceptPolicy(current, incoming);
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 managed.normalizeConfig(config, policy, { ...(managed.needsAuthContext(config, policy) ? readOfflineRuntimeAuth(configPath) : {}), env: process.env });

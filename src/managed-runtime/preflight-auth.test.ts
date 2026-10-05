@@ -33,7 +33,7 @@ async function check(candidate: ReturnType<typeof config>, accepted: boolean, mo
   const files = [configPath, cliPath, authPath, policyFile(configPath), databasePath];
   const snapshot = () => Promise.all(files.map(file => fs.readFile(file).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; })));
   const before = await snapshot();
-  const run = executeAgentControl({ configPath, registeredServerId: "agent-a", policyAuthority: "backend", gateway: { request: () => Promise.resolve({}) }, action: {
+  const run = executeAgentControl({ configPath, policyAuthority: "backend", gateway: { request: () => Promise.resolve({}) }, action: {
     kind: "managedRuntime.preflight", codexAuthMode: mode,
     managedRuntimePolicy: managedRuntime.resolveAgentPolicy(managedRuntime.defaultPolicy, { serverId: "agent-a", revision: 1, harnessOverride: "codex" }),
     managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256,
