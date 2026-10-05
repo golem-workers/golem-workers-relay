@@ -36,7 +36,9 @@ export function createManagedRuntimePolicy() {
     const modelRow = (Array.isArray(providerRow.models) ? providerRow.models : []).map(record).find(row => row?.id === model) ?? {};
     const env = environment(config, context);
     const catalog = record(record(record(config.agents)?.defaults)?.models);
-    const rows = [legacy, providerRow, modelRow, record(catalog?.[ref]) ?? {}, record(record(config.agents)?.defaults) ?? {}, context.scope ?? { params: context.params }, record(context.scopeModels?.[ref]) ?? {}];
+    const defaultsScope = record(record(config.agents)?.defaults) ?? {};
+    const agentScope = context.scope ?? { params: context.params };
+    const rows = [legacy, providerRow, modelRow, record(catalog?.[ref]) ?? {}, defaultsScope, agentScope, record(context.scopeModels?.[ref]) ?? {}];
     const authored = (key: string): unknown => { for (const row of [...rows].reverse()) if (row[key] !== undefined) return row[key]; return undefined; };
     const hasApiKey = context.apiKeyAuth || env.OPENAI_API_KEY !== undefined || env.CODEX_API_KEY !== undefined || authored("apiKey") !== undefined || (context.apiKeyAuth === undefined && profiles(config).some(row => ["openai", "codex", "openai-codex"].includes(String(row.provider)) && ["api_key", "api-key"].includes(String(row.mode))));
     const hasSubscription = context.subscriptionAuth || (context.subscriptionAuth === undefined && profiles(config).some(row => ["openai", "codex", "openai-codex"].includes(String(row.provider)) && ["oauth", "token"].includes(String(row.mode))));
@@ -47,7 +49,7 @@ export function createManagedRuntimePolicy() {
       const params = record(value); if (!params) return false;
       return Object.entries(params).every(([key, value]) => ["fastMode", "fast_mode"].includes(key) ? [true, false, "auto"].includes(value as boolean | string) : ["fastAutoOnSeconds", "fast_auto_on_seconds", "fastSeconds", "fast_seconds"].includes(key) && typeof value === "number" && Number.isFinite(value) && value > 0);
     }
-    const overrides = rows.some(row => ["headers", "requestTransportOverrides", "requestOptions", "fetch", "transport", "request", "localService", "authHeader", "timeoutSeconds", "compat"].some(key => row[key] !== undefined && row[key] !== "none" && !(record(row[key]) && Object.keys(record(row[key])!).length === 0)) || !reproducibleParams(row.params));
+    const overrides = rows.some(row => ["headers", "requestTransportOverrides", "requestOptions", "fetch", "transport", "request", "localService", "authHeader", "timeoutSeconds", "compat"].some(key => !(key === "timeoutSeconds" && (row === defaultsScope || row === agentScope)) && row[key] !== undefined && row[key] !== "none" && !(record(row[key]) && Object.keys(record(row[key])!).length === 0)) || !reproducibleParams(row.params));
     return { provider, model, api, baseUrl, overrides, hasApiKey: Boolean(hasApiKey), hasSubscription: Boolean(hasSubscription) };
   }
   function codexCompatibility(config: Row, ref: string, context: RuntimeContext = {}): { supported: boolean; reason?: string } {

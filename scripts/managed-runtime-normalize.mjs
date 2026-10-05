@@ -36,7 +36,9 @@ function createManagedRuntimePolicy() {
         const modelRow = (Array.isArray(providerRow.models) ? providerRow.models : []).map(record).find(row => row?.id === model) ?? {};
         const env = environment(config, context);
         const catalog = record(record(record(config.agents)?.defaults)?.models);
-        const rows = [legacy, providerRow, modelRow, record(catalog?.[ref]) ?? {}, record(record(config.agents)?.defaults) ?? {}, context.scope ?? { params: context.params }, record(context.scopeModels?.[ref]) ?? {}];
+        const defaultsScope = record(record(config.agents)?.defaults) ?? {};
+        const agentScope = context.scope ?? { params: context.params };
+        const rows = [legacy, providerRow, modelRow, record(catalog?.[ref]) ?? {}, defaultsScope, agentScope, record(context.scopeModels?.[ref]) ?? {}];
         const authored = (key) => { for (const row of [...rows].reverse())
             if (row[key] !== undefined)
                 return row[key]; return undefined; };
@@ -52,7 +54,7 @@ function createManagedRuntimePolicy() {
                 return false;
             return Object.entries(params).every(([key, value]) => ["fastMode", "fast_mode"].includes(key) ? [true, false, "auto"].includes(value) : ["fastAutoOnSeconds", "fast_auto_on_seconds", "fastSeconds", "fast_seconds"].includes(key) && typeof value === "number" && Number.isFinite(value) && value > 0);
         }
-        const overrides = rows.some(row => ["headers", "requestTransportOverrides", "requestOptions", "fetch", "transport", "request", "localService", "authHeader", "timeoutSeconds", "compat"].some(key => row[key] !== undefined && row[key] !== "none" && !(record(row[key]) && Object.keys(record(row[key])).length === 0)) || !reproducibleParams(row.params));
+        const overrides = rows.some(row => ["headers", "requestTransportOverrides", "requestOptions", "fetch", "transport", "request", "localService", "authHeader", "timeoutSeconds", "compat"].some(key => !(key === "timeoutSeconds" && (row === defaultsScope || row === agentScope)) && row[key] !== undefined && row[key] !== "none" && !(record(row[key]) && Object.keys(record(row[key])).length === 0)) || !reproducibleParams(row.params));
         return { provider, model, api, baseUrl, overrides, hasApiKey: Boolean(hasApiKey), hasSubscription: Boolean(hasSubscription) };
     }
     function codexCompatibility(config, ref, context = {}) {

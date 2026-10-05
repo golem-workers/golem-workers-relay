@@ -98,3 +98,20 @@ it("protects legacy provider routing and rejects per-agent request overlays", ()
   expect(() => engine.normalizeConfig(overlaid, codex)).toThrow("MANAGED_CODEX_INCOMPATIBLE");
   const empty = fixture(); Object.assign(empty.models.providers.openai, { headers: {}, request: {}, compat: {} }); engine.normalizeConfig(empty, codex);
 });
+
+it("preserves provisioned agent turn budgets without confusing them with provider request timeouts", () => {
+  const cfg = { ...fixture(), agents: { defaults: { ...fixture().agents.defaults, timeoutSeconds: 259200 }, list: [{ id: "worker", timeoutSeconds: 3600 }], entries: { other: { timeoutSeconds: 7200 } } } };
+  expect(engine.codexCompatibility(cfg, ref)).toEqual({ supported: true });
+  const generated = structuredClone(cfg);
+  engine.normalizeConfig(cfg, codex);
+  runInNewContext(MANAGED_RUNTIME_FACTORY_SOURCE + "createManagedRuntimePolicy().normalizeConfig(config, policy);", { config: generated, policy: codex, URL });
+  expect(generated).toEqual(cfg);
+  expect(cfg.agents.defaults.timeoutSeconds).toBe(259200); expect(cfg.agents.list[0].timeoutSeconds).toBe(3600); expect(cfg.agents.entries.other.timeoutSeconds).toBe(7200);
+  expect(cfg.agents.defaults.models[ref]).toMatchObject({ agentRuntime: { id: "codex" } });
+  for (const level of ["provider", "model", "catalog"]) {
+    const request = fixture(); const target = level === "provider" ? request.models.providers.openai : level === "model" ? request.models.providers.openai.models[0] : request.agents.defaults.models[ref];
+    Object.assign(target, { timeoutSeconds: 30 });
+    expect(engine.codexCompatibility(request, ref).supported).toBe(false);
+    expect(() => engine.normalizeConfig(request, codex)).toThrow("MANAGED_CODEX_INCOMPATIBLE");
+  }
+});

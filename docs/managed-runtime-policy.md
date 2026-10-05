@@ -29,7 +29,10 @@ non-HTTPS and deceptive hosts fail closed. Trailing-dot hostnames are deliberate
 stricter than some upstream classifiers: they are rejected. Valid Fast-mode
 boolean/`auto` and positive finite cutoff controls are preserved; real authored
 request/provider/model/catalog/default/per-agent overrides are rejected. Empty
-request metadata records do not count as overrides.
+request metadata records do not count as overrides. Agent-level
+`agents.defaults/list/entries.timeoutSeconds` is a preserved turn/run budget,
+not a provider request timeout; provider/model/catalog request timeouts remain
+incompatible with Codex.
 
 Image-understanding/PDF models may use Codex only when eligible; incompatible
 auxiliary providers and embedding/audio/image-generation/video/music purposes
