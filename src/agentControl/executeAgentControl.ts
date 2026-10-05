@@ -98,7 +98,7 @@ function readFastMode(value: unknown): ModelSetFastMode {
   return value === true || value === false || value === "auto" ? value : null;
 }
 
-export async function executeAgentControl(input: Parameters<typeof executeAgentControlUnfenced>[0] & { policyAuthority?: "backend"; registeredServerId?: string }): Promise<AgentControlResult> {
+export async function executeAgentControl(input: Parameters<typeof executeAgentControlUnfenced>[0] & { policyAuthority?: "backend" }): Promise<AgentControlResult> {
   if (input.action.managedRuntimePolicy && input.policyAuthority !== "backend") throw new AgentControlError("MANAGED_RUNTIME_POLICY_AUTHORITY_REQUIRED", "Only authenticated backend ingress may change managed harness authority");
   if (input.action.managedRuntimePolicy && !input.action.managedRuntimePolicyDigest) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend policy digest is required");
   const readOnlyPolicy = ["config.read", "managedRuntime.preflight"].includes(input.action.kind);
@@ -109,7 +109,8 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
     if (input.action.managedRuntimePolicyDigest && input.action.managedRuntimePolicyDigest !== MANAGED_RUNTIME_SOURCE_SHA256) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend and relay policy source digests differ; coordinated release required");
     const policy = await readManagedRuntimePolicy(input.configPath);
     if (input.action.managedRuntimePolicy) {
-      managedRuntime.assertPolicyServer(input.action.managedRuntimePolicy, input.registeredServerId);
+      // Ingress has already authenticated this agent's relay token. The backend
+      // authors the target policy; do not require a second identity env variable.
       managedRuntime.acceptPolicy(policy, input.action.managedRuntimePolicy);
     }
     // Prepared credential/model proof is bound to this exact locked config.
@@ -285,7 +286,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       throw new AgentControlError("MODEL_FENCE_REQUIRED", "Legacy configuration mutations cannot bypass an established model fence");
     }
     return complete(await executeAgentControlUnfenced(input));
-  }, input.registeredServerId)));
+  })));
 }
 
 async function executeAgentControlUnfenced(input: {

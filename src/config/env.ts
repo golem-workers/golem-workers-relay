@@ -19,7 +19,6 @@ const envBooleanSchema = z.preprocess((value) => {
 }, z.boolean());
 
 const envSchema = z.object({
-  RELAY_SERVER_ID: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
   RELAY_TOKEN: z.string().min(1),
   BACKEND_BASE_URL: z.string().url(),
 
@@ -128,7 +127,6 @@ export type RelayEnv = z.infer<typeof envSchema>;
 export type RelayConfig = {
   relayToken: string;
   backendBaseUrl: string;
-  serverId?: string;
   relayInstanceId: string;
   taskTimeoutMs: number;
   systemTaskTimeoutMs: number;
@@ -273,7 +271,6 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
   return {
     relayToken: parsed.RELAY_TOKEN,
     backendBaseUrl: parsed.BACKEND_BASE_URL.replace(/\/+$/, ""),
-    serverId: parsed.RELAY_SERVER_ID,
     relayInstanceId,
     taskTimeoutMs: parsed.RELAY_TASK_TIMEOUT_MS ?? 12 * 60 * 60_000,
     systemTaskTimeoutMs: parsed.RELAY_SYSTEM_TASK_TIMEOUT_MS ?? 120_000,
