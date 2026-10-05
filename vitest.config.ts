@@ -1,9 +1,9 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig, configDefaults } from "vitest/config";
 
 export default defineConfig({
   test: {
     environment: "node",
-    exclude: ["**/node_modules/**", "**/dist/**", "**/.git/**", "**/src/e2e/**"],
+    exclude: [...configDefaults.exclude, "**/src/e2e/**", "vendor/managed-runtime-policy/**"],
   },
 });
 

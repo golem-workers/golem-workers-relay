@@ -793,7 +793,7 @@ async function persistCodexCredentials(input: {
             ...currentModels,
             [OPENAI_CODEX_DEFAULT_MODEL]: {
               ...(isRecord(currentModels[OPENAI_CODEX_DEFAULT_MODEL]) ? currentModels[OPENAI_CODEX_DEFAULT_MODEL] : {}),
-              agentRuntime: { id: "openclaw" },
+              // The common fenced writer derives runtime from managed authority.
             },
           },
         },
@@ -1008,8 +1008,16 @@ export async function hasPersistedChatGptSubscription(configPath: string): Promi
     credential.authFlow !== "chatgpt-identity" && credential.authFlow !== "chatgpt-token-sharing");
 }
 
+/** Read-only availability proof. CLI mode/runtime metadata is not a credential;
+ * inactive saved keys are usable by setCodexAuthMode without a login mutation. */
+export async function hasPreparedCodexApiKey(configPath: string): Promise<boolean> {
+  const cli = await readCodexCliAuthJson();
+  return Boolean(normalizeString(cli.OPENAI_API_KEY) || normalizeString(process.env.OPENAI_API_KEY))
+    || await hasPersistedOpenAiApiKey(configPath, true);
+}
+
 /** A persisted API key is explicit intent even alongside a subscription. */
-export async function hasPersistedOpenAiApiKey(configPath: string): Promise<boolean> {
+export async function hasPersistedOpenAiApiKey(configPath: string, requireKeyValue = false): Promise<boolean> {
   const target = await resolveCodexRuntimeAuthTarget(configPath);
   const stores = [
     await readRuntimeAuthProfilesStore(configPath),
@@ -1018,7 +1026,7 @@ export async function hasPersistedOpenAiApiKey(configPath: string): Promise<bool
       : []),
   ];
   return stores.some((store) => Object.values(store.profiles).some((value) =>
-    isRecord(value) && ["openai", "openai-codex", "codex"].includes(String(value.provider)) && value.type === "api_key"));
+    isRecord(value) && ["openai", "openai-codex", "codex"].includes(String(value.provider)) && value.type === "api_key" && (!requireKeyValue || ("key" in value && Boolean(normalizeString(value.key))))));
 }
 
 function pickLiveCodexOAuthEntry(entries: Array<[string, Record<string, unknown>]>): [string, Record<string, unknown>] | null {

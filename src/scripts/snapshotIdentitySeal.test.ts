@@ -83,7 +83,7 @@ function fixture(modern = true) {
   return root;
 }
 function runSeal(root: string, modern = true, prefix = "") {
-  return python(root, prefix + seal.replace("root = pathlib.Path('/root')", "# root supplied by test"), modern);
+  return python(root, prefix + seal.replace("root = pathlib.Path('/root')", "# root supplied by test").replace("machine_state = root.parent / 'var/lib/golem-workers'", "machine_state = root / 'machine-state'"), modern);
 }
 function query(root: string, sql: string) {
   const result = python(root, "import sqlite3,json\nc=sqlite3.connect(root / '.openclaw/state/openclaw.sqlite')\nprint(json.dumps(c.execute(" + JSON.stringify(sql) + ").fetchall()))");
@@ -131,6 +131,17 @@ describe("offline snapshot identity sealing", () => {
     expect(runSeal(root).status).toBe(0); // repeatable without regenerating identity
   });
 
+  it("strips agent-bound harness and owner authority only during fresh image sealing", () => {
+    const root = fixture();
+    const machine = join(root, "machine-state");
+    mkdirSync(join(machine, "owner-fence"), { recursive: true });
+    writeFileSync(join(machine, "managed-runtime-policy.json"), JSON.stringify({ schemaVersion: 2, serverId: "source-agent", globalRevision: 4, revision: 7, harnessOverride: "codex", defaultHarness: "openclaw", chatHarness: "codex" }));
+    writeFileSync(join(machine, "owner-fence", "openclaw.json.owner-fence.json"), secret);
+    const result = runSeal(root);
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(machine)).toBe(false);
+    expect(script).toContain("fresh-bake seal");
+  });
   it("reads committed WAL provenance and discards WAL/SHM without copying secret pages", () => {
     const root = fixture();
     const wal = python(root, "import sqlite3,os\nc=sqlite3.connect(root / '.openclaw/state/openclaw.sqlite')\nc.execute('PRAGMA journal_mode=WAL')\nc.execute(\"UPDATE config_machine_state SET updated_at_ms=9999 WHERE state_key='plugins.installedIndex'\")\nc.execute('INSERT INTO device_identities VALUES (?)', (secret,))\nc.commit()\nos._exit(0)\n");

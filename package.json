@@ -7,15 +7,15 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "npm run policy:check && tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "test": "vitest run",
+    "test": "npm run policy:check && vitest run",
     "test:subscription-sequences": "npm run build && node scripts/prove-subscription-action-sequences.mjs",
     "test:transport": "vitest run src/openclaw/chatRunner.test.ts src/relayChannel/transportDeliveryTracker.test.ts src/relayChannel/transportStateMachineFuzz.test.ts src/relayChannel/controlPlane.integration.test.ts src/relayChannel/telegramTransport.test.ts src/processor/messageProcessor.test.ts src/push/pushServer.test.ts",
     "test:e2e": "vitest run -c vitest.e2e.config.ts --reporter=verbose",
     "test:watch": "vitest",
-    "lint": "eslint src --ext .ts",
+    "lint": "npm run policy:check && eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
     "openclaw:setup": "bash scripts/openclaw/onboard-docker.sh openclaw.env",
     "openclaw:up": "docker compose --env-file openclaw.env up -d --build openclaw-gateway",
@@ -23,7 +23,9 @@
     "openclaw:logs": "docker compose --env-file openclaw.env logs -f --tail=200 openclaw-gateway",
     "openclaw:ps": "docker compose --env-file openclaw.env ps",
     "openclaw:cli": "docker compose --env-file openclaw.env --profile cli run --rm --build openclaw-cli",
-    "openclaw:reset": "docker compose --env-file openclaw.env down --remove-orphans && rm -rf .openclaw openclaw-workspace"
+    "openclaw:reset": "docker compose --env-file openclaw.env down --remove-orphans && rm -rf .openclaw openclaw-workspace",
+    "policy:check": "node scripts/managed-runtime-policy.mjs --check",
+    "policy:generate": "node scripts/managed-runtime-policy.mjs"
   },
   "dependencies": {
     "cron-parser": "^5.10.0",

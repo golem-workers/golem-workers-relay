@@ -1,3 +1,5 @@
+import { MANAGED_RUNTIME_SOURCE_SHA256 } from "../managed-runtime/policy.generated.js";
+import { managedRuntime, withManagedRuntimePolicy, readManagedRuntimePolicy, runtimeContext, normalizeManagedConfigOnDisk, activeManagedConfigPath } from "../managed-runtime/runtime-policy.js";
 import { readModelFence, writeModelFence, withModelFenceLock } from "./modelFence.js";
 import { writeOwnerFencedConfig, withOwnerFenceLock, isConfigMutationPath, configRevision, type OwnerFence } from "./ownerFence.js";
 import { readOwnerRuntime } from "./ownerRuntime.js";
@@ -96,9 +98,68 @@ function readFastMode(value: unknown): ModelSetFastMode {
   return value === true || value === false || value === "auto" ? value : null;
 }
 
-export async function executeAgentControl(input: Parameters<typeof executeAgentControlUnfenced>[0]): Promise<AgentControlResult> {
+export async function executeAgentControl(input: Parameters<typeof executeAgentControlUnfenced>[0] & { policyAuthority?: "backend"; registeredServerId?: string }): Promise<AgentControlResult> {
+  if (input.action.managedRuntimePolicy && input.policyAuthority !== "backend") throw new AgentControlError("MANAGED_RUNTIME_POLICY_AUTHORITY_REQUIRED", "Only authenticated backend ingress may change managed harness authority");
+  if (input.action.managedRuntimePolicy && !input.action.managedRuntimePolicyDigest) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend policy digest is required");
+  const readOnlyPolicy = ["config.read", "managedRuntime.preflight"].includes(input.action.kind);
+  // Read config and persisted authority under the same owner lock, including CLI writers.
+  const withReadLock = (operation: () => Promise<AgentControlResult>) => readOnlyPolicy || input.action.managedRuntimeExpectedConfigRevision ? withOwnerFenceLock(input.configPath, operation) : operation();
   // All ingress paths and all config writers share this lock, including legacy calls.
-  return withModelFenceLock(input.configPath, async () => {
+  return withModelFenceLock(input.configPath, () => withReadLock(() => withManagedRuntimePolicy(input.configPath, readOnlyPolicy ? undefined : input.action.managedRuntimePolicy, async () => {
+    if (input.action.managedRuntimePolicyDigest && input.action.managedRuntimePolicyDigest !== MANAGED_RUNTIME_SOURCE_SHA256) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend and relay policy source digests differ; coordinated release required");
+    const policy = await readManagedRuntimePolicy(input.configPath);
+    if (input.action.managedRuntimePolicy) {
+      managedRuntime.assertPolicyServer(input.action.managedRuntimePolicy, input.registeredServerId);
+      managedRuntime.acceptPolicy(policy, input.action.managedRuntimePolicy);
+    }
+    // Prepared credential/model proof is bound to this exact locked config.
+    // Check before any service, environment, credential or policy mutation;
+    // hold the same reentrant owner lock through the auth/config transaction.
+    if (input.action.managedRuntimeExpectedConfigRevision) {
+      const { configText } = await readConfigFile(input.configPath);
+      if (configRevision(configText) !== input.action.managedRuntimeExpectedConfigRevision) throw new AgentControlError("CONFIG_CONFLICT", "Configuration changed since managed runtime preflight; prepare the selection again.");
+    }
+    const context = await runtimeContext(input.configPath);
+    const complete = (result: AgentControlResult): AgentControlResult => result.kind === "config.read" ? ({ ...result, managedRuntimePolicyVersion: 2, managedRuntimePolicy: policy, managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 }) : result;
+    if (input.action.kind === "managedRuntime.preflight") {
+      const action = input.action;
+      return withOwnerFenceLock(input.configPath, async () => {
+        const { config, configText } = await readConfigFile(input.configPath);
+        const candidate = structuredClone(config);
+        const defaults = ensureRecord(ensureRecord(candidate, "agents"), "defaults");
+        if (action.model !== undefined || action.fallbacks !== undefined || action.fallback !== undefined) {
+          const key = getPurposeConfigKey(action.purpose ?? "main");
+          const previous = defaults[key];
+          if (typeof previous === "string") defaults[key] = { primary: previous };
+          const assignment = ensureRecord(defaults, key);
+          if (action.model !== undefined) assignment.primary = mapStoredModelRef(action.model).modelRef;
+          if (action.fallbacks !== undefined && action.fallback !== undefined) throw new AgentControlError("MANAGED_RUNTIME_PREFLIGHT_INVALID", "Specify fallbacks or fallback, not both");
+          const fallbacks = action.fallbacks ?? (action.fallback !== undefined ? (action.fallback === null ? [] : [action.fallback]) : undefined);
+          if (fallbacks !== undefined) assignment.fallbacks = fallbacks.map(ref => mapStoredModelRef(ref).modelRef);
+        }
+        const proofContext = { ...context };
+        if (action.codexAuthMode === "api_key") {
+          const { hasPreparedCodexApiKey } = await import("./codexLogin.js");
+          proofContext.apiKeyAuth = await hasPreparedCodexApiKey(input.configPath);
+          // Explicit API intent cannot borrow an OAuth credential to pass preflight.
+          proofContext.subscriptionAuth = false;
+          const assignment = defaults[getPurposeConfigKey(action.purpose ?? "main")];
+          const primary = typeof assignment === "string" ? assignment : ensureOptionalRecord(assignment)?.primary;
+          if (!proofContext.apiKeyAuth && !(typeof primary === "string" && managedRuntime.hasPreparedApiKey(candidate, primary, proofContext))) {
+            throw new AgentControlError("MANAGED_CODEX_INCOMPATIBLE", "Requested API-key authentication has no prepared key value");
+          }
+        } else if (action.codexAuthMode === "openai_login" && !context.subscriptionAuth) {
+          throw new AgentControlError("MANAGED_CODEX_INCOMPATIBLE", "Requested authentication has not been prepared in persisted auth");
+        }
+        try {
+          managedRuntime.normalizeConfig(candidate, action.managedRuntimePolicy ?? policy, proofContext);
+        } catch (error) {
+          if (error instanceof Error && error.message.startsWith("MANAGED_CODEX_INCOMPATIBLE")) throw new AgentControlError("MANAGED_CODEX_INCOMPATIBLE", error.message, undefined, { cause: error });
+          throw error;
+        }
+        return { kind: "managedRuntime.preflight", compatible: true, configRevision: configRevision(configText) };
+      });
+    }
     const state = await readModelFence(input.configPath);
     const action = input.action;
     if (action.kind === "model.verify" && (state || input.statusNudgeRunner)) {
@@ -106,7 +167,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       const { config } = await readConfigFile(input.configPath);
       const defaults = ensureOptionalRecord(ensureOptionalRecord(config.agents)?.defaults);
       const configured = ensureOptionalRecord(defaults?.model);
-      if (mapPublicModelRef(typeof configured?.primary === "string" ? configured.primary : null, defaults) !== action.model || readUnknownArray(configured?.fallbacks).length !== 0) {
+      if (mapPublicModelRef(typeof configured?.primary === "string" ? configured.primary : null, defaults, managedRuntime.isSubscriptionRoute(config, typeof configured?.primary === "string" ? configured.primary : "", context)) !== action.model || readUnknownArray(configured?.fallbacks).length !== 0) {
         throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Selected config or zero-fallback policy differs");
       }
       // OAuth route identity is independent of the native Pi harness. Never
@@ -132,8 +193,8 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       type ProbeResponse = { resolved?: { modelProvider?: string; model?: string; agentRuntime?: string }; entry?: { modelProvider?: string; model?: string; agentHarnessId?: string } };
       const identity = (provider?: string, model?: string, runtime?: string) => {
         const ref = provider && model ? provider + "/" + model : null;
-        if (ref?.startsWith("openai/") && runtime !== "openclaw" && action.model.startsWith("codex/")) return null;
-        return mapPublicModelRef(ref, defaults);
+        if (ref && runtime !== managedRuntime.expectedRuntime(config, ref, "main", policy, context)) return null;
+        return mapPublicModelRef(ref, defaults, Boolean(ref && managedRuntime.isSubscriptionRoute(config, ref, context)));
       };
       let completed = false;
       try {
@@ -150,11 +211,11 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         if (result.outcome !== "reply") throw new AgentControlError("MODEL_VERIFY_FAILED", "Selected runtime model did not return a reply");
         // Session usage records the provider/model actually used, including fallback drift.
         const after = await input.gateway.request("sessions.patch", { key: sessionKey }, { timeoutMs: 15_000 }) as ProbeResponse;
-        if (identity(after.entry?.modelProvider, after.entry?.model, after.resolved?.agentRuntime) !== action.model || (action.model.startsWith("codex/") && after.entry?.agentHarnessId !== "openclaw")) {
+        if (identity(after.entry?.modelProvider, after.entry?.model, after.resolved?.agentRuntime) !== action.model || (after.entry?.agentHarnessId !== managedRuntime.expectedRuntime(config, action.model.replace(/^(?:codex|openai-codex)\//, "openai/"), "main", policy, context))) {
           throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Inference used another provider/model or runtime");
         }
         completed = true;
-        return { kind: "model.verify", model: action.model, verified: true };
+        return complete({ kind: "model.verify", model: action.model, verified: true });
       } finally {
         try {
           if (!completed) await input.gateway.request("chat.abort", { sessionKey }, { timeoutMs: 15_000 });
@@ -163,35 +224,48 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         }
       }
     }
-    if (action.kind === "model.fence.read") return {
+    if (action.kind === "model.fence.read") return complete({
       kind: "model.fence.read", revision: state?.revision ?? null,
       status: state?.status ?? null, model: state?.model ?? null,
-    };
+    });
     if (action.kind === "model.fence.reconcile") {
       if (state?.revision === action.revision) {
         // Lock acquisition proves no mutable handler remains alive. This is NOT success.
         const status = state.status === "CANCELLED" ? "CANCELLED" as const : "UNRESOLVED" as const;
         await writeModelFence(input.configPath, { ...state, status });
-        return { kind: "model.fence.reconcile", revision: state.revision, status, model: state.model };
+        return complete({ kind: "model.fence.reconcile", revision: state.revision, status, model: state.model });
       }
       if ((state?.revision ?? null) !== action.predecessor || state?.status === "PENDING") {
         throw new AgentControlError("MODEL_FENCE_STALE", "Fence revision changed");
       }
       // Tombstone even an undelivered operation BEFORE allowing any subsequent revision.
       await writeModelFence(input.configPath, { revision: action.revision, predecessor: action.predecessor, model: action.model, status: "CANCELLED" });
-      return { kind: "model.fence.reconcile", revision: action.revision, status: "CANCELLED", model: action.model };
+      return complete({ kind: "model.fence.reconcile", revision: action.revision, status: "CANCELLED", model: action.model });
     }
     if (action.kind === "model.set" && action.fence) {
       const fence = action.fence;
       if (state?.revision === fence.revision || (state?.revision ?? null) !== fence.predecessor || state?.status === "PENDING") {
         throw new AgentControlError("MODEL_FENCE_STALE", "Reconcile the existing operation before activation");
       }
+      // Reject an incompatible choice before even persisting fenced intent.
+      const { config: source } = await readConfigFile(input.configPath);
+      const candidate = structuredClone(source);
+      const candidateDefaults = ensureRecord(ensureRecord(candidate, "agents"), "defaults");
+      const selected = mapStoredModelRef(action.model);
+      const fallbacks = action.fallbacks.map(mapStoredModelRef);
+      ensureRecord(candidateDefaults, "model").primary = selected.modelRef;
+      ensureRecord(candidateDefaults, "model").fallbacks = fallbacks.map(row => row.modelRef);
+      ensureModelRegistryEntry(candidateDefaults, selected.modelRef);
+      for (const fallback of fallbacks) ensureModelRegistryEntry(candidateDefaults, fallback.modelRef);
+      applyModelFastMode(candidateDefaults, selected.modelRef, action.fastMode);
+      await applyNativePiModelCompatibility(candidate, input.configPath, [action.model, ...action.fallbacks]);
+      managedRuntime.normalizeConfig(candidate, policy, context);
       const pending = { ...fence, status: "PENDING" as const, model: action.model };
       await writeModelFence(input.configPath, pending);
       try {
         const result = await executeAgentControlUnfenced(input);
         await writeModelFence(input.configPath, { ...pending, status: "APPLIED" });
-        return result;
+        return complete(result);
       } catch (error) {
         await writeModelFence(input.configPath, { ...pending, status: "UNRESOLVED" });
         throw error;
@@ -200,33 +274,18 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
     if (state && action.kind === "config.apply") {
       const { config } = await readConfigFile(input.configPath);
       const candidate: unknown = JSON5.parse(action.configText);
-      const protectedRoute = (value: unknown) => {
-        const normalize = (entry: unknown): unknown => {
-          if (Array.isArray(entry)) return entry.map(normalize);
-          const row = ensureOptionalRecord(entry);
-          if (!row) return entry;
-          return Object.fromEntries(Object.entries(row).map(([key, item]) =>
-            [key, key === "agentRuntime" ? { id: "openclaw" } : key === "pickerRuntimes" ? ["openclaw"] : normalize(item)]));
-        };
-        const cfg = ensureOptionalRecord(value);
-        return normalize({ agents: cfg?.agents, providers: cfg?.models, auth: cfg?.auth, env: cfg?.env });
-      };
-      if (!action.expectedRevision || !isDeepStrictEqual(protectedRoute(config), protectedRoute(candidate))) {
+      if (!action.expectedRevision || !isDeepStrictEqual(managedRuntime.protectedRoute(config), managedRuntime.protectedRoute(candidate as Record<string, unknown>))) {
         throw new AgentControlError("MODEL_FENCE_REQUIRED", "Fenced configuration requires CAS and unchanged model routing");
       }
-      const nextDefaults = ensureOptionalRecord(ensureOptionalRecord(ensureOptionalRecord(candidate)?.agents)?.defaults);
-      const nextModels = ensureOptionalRecord(nextDefaults?.models);
-      if (nextModels && Object.values(nextModels).some(value => {
-        const runtime = ensureOptionalRecord(ensureOptionalRecord(value)?.agentRuntime);
-        return runtime && runtime.id !== "openclaw";
-      })) throw new AgentControlError("MODEL_FENCE_REQUIRED", "Managed harness must remain native OpenClaw");
-      return executeAgentControlUnfenced(input);
+      try { managedRuntime.assertRuntimeMetadata(candidate as Record<string, unknown>, policy, context); }
+      catch (error) { throw new AgentControlError("MODEL_FENCE_REQUIRED", "Configuration runtime metadata differs from authoritative managed policy", undefined, { cause: error }); }
+      return complete(await executeAgentControlUnfenced(input));
     }
     if (state && ["model.set", "modelAssignment.set"].includes(action.kind)) {
       throw new AgentControlError("MODEL_FENCE_REQUIRED", "Legacy configuration mutations cannot bypass an established model fence");
     }
-    return executeAgentControlUnfenced(input);
-  });
+    return complete(await executeAgentControlUnfenced(input));
+  }, input.registeredServerId)));
 }
 
 async function executeAgentControlUnfenced(input: {
@@ -347,6 +406,9 @@ async function executeAgentControlUnfenced(input: {
                     thinkingDefault: input.action.thinkingDefault,
                     fastMode: input.action.fastMode,
                   }) : (() => { throw new AgentControlError("MODEL_FENCE_INTERNAL", "Fence action must use central handler"); })();
+  if (["codex.auth.sync", "codex.auth.import", "codex.auth.set", "codex.auth.clear"].includes(input.action.kind)) {
+    if (await normalizeManagedConfigOnDisk(input.configPath)) await restartGatewayService();
+  }
   return agentControlResultSchema.parse(result);
   };
   // Do not serialize unrelated chat, pairing, lifecycle or login waits behind
@@ -926,32 +988,30 @@ function mapStoredModelRef(modelRef: string): { modelRef: string; agentRuntimeId
   if (lower.startsWith("openai-codex/")) {
     return {
       modelRef: `openai/${trimmed.slice("openai-codex/".length)}`,
-      agentRuntimeId: "openclaw",
+      agentRuntimeId: null,
     };
   }
   if (lower.startsWith("codex/")) {
     return {
       modelRef: `openai/${trimmed.slice("codex/".length)}`,
-      agentRuntimeId: "openclaw",
+      agentRuntimeId: null,
     };
   }
-  return { modelRef: trimmed, agentRuntimeId: "openclaw" };
+  return { modelRef: trimmed, agentRuntimeId: null };
 }
 
 function mapPublicModelRef(
   modelRef: string | null | undefined,
   defaultsCfg?: Record<string, unknown> | null,
-  subscriptionPurpose = true,
+  subscriptionPurpose = false,
 ): string | null {
   const trimmed = String(modelRef ?? "").trim();
   if (!trimmed) return null;
   if (trimmed.toLowerCase().startsWith("openai-codex/")) {
     return `codex/${trimmed.slice("openai-codex/".length)}`;
   }
-  const modelsCfg = ensureOptionalRecord(defaultsCfg?.models);
-  const modelCfg = ensureOptionalRecord(modelsCfg?.[trimmed]);
-  const agentRuntime = ensureOptionalRecord(modelCfg?.agentRuntime);
-  if ((agentRuntime?.id === "codex" || (subscriptionPurpose && agentRuntime?.id === "openclaw")) && trimmed.toLowerCase().startsWith("openai/")) {
+  void defaultsCfg;
+  if (subscriptionPurpose && trimmed.toLowerCase().startsWith("openai/")) {
     return `codex/${trimmed.slice("openai/".length)}`;
   }
   return trimmed;
@@ -967,9 +1027,7 @@ function ensureModelRegistryEntry(
   const modelsCfg = ensureRecord(defaultsCfg, "models");
   const existingModel = modelsCfg[trimmed];
   const nextModel = isRecord(existingModel) ? existingModel : {};
-  if (agentRuntimeId) {
-    nextModel.agentRuntime = { id: agentRuntimeId };
-  }
+  void agentRuntimeId; // Runtime metadata is written only by the common managed-policy boundary.
   modelsCfg[trimmed] = nextModel;
 }
 
@@ -1020,6 +1078,7 @@ function applyModelFastMode(
 
 async function readModelAssignments(configPath: string): Promise<AgentControlResult> {
   const { config } = await readConfigFile(configPath);
+  const context = await runtimeContext(configPath);
   const agentsCfg = ensureOptionalRecord(config.agents);
   const defaultsCfg = ensureOptionalRecord(agentsCfg?.defaults);
   const assignments = ([
@@ -1038,8 +1097,8 @@ async function readModelAssignments(configPath: string): Promise<AgentControlRes
     return {
       kind: "assignment" as const,
       purpose,
-      primary: mapPublicModelRef(typeof entry?.primary === "string" ? entry.primary : null, defaultsCfg, !purpose.endsWith("Generation")),
-      fallback: mapPublicModelRef(fallbackValues[0] ?? null, defaultsCfg, !purpose.endsWith("Generation")),
+      primary: mapPublicModelRef(typeof entry?.primary === "string" ? entry.primary : null, defaultsCfg, !purpose.endsWith("Generation") && managedRuntime.isSubscriptionRoute(config, typeof entry?.primary === "string" ? entry.primary : "", context)),
+      fallback: mapPublicModelRef(fallbackValues[0] ?? null, defaultsCfg, !purpose.endsWith("Generation") && managedRuntime.isSubscriptionRoute(config, String(fallbackValues[0] ?? ""), context)),
       thinkingDefault: purpose === "main" ? readThinkingDefault(defaultsCfg?.thinkingDefault) : null,
       fastMode: purpose === "main"
         ? readModelFastMode(defaultsCfg ?? {}, typeof entry?.primary === "string" ? entry.primary : null)
@@ -1123,6 +1182,9 @@ async function verifyConfiguredModel(configPath: string, model: string): Promise
   if (configured !== expected.modelRef) {
     throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Configured model changed before authorization verification.");
   }
+  const policy = await readManagedRuntimePolicy(configPath);
+  const context = await runtimeContext(configPath);
+  const expectedHarness = managedRuntime.expectedRuntime(config, expected.modelRef, "main", policy, context);
   const marker = `AUTH_CHECK_${randomUUID().replaceAll("-", "")}`;
   try {
     // A fresh session, no --deliver: never publish diagnostic text to a customer
@@ -1144,6 +1206,8 @@ async function verifyConfiguredModel(configPath: string, model: string): Promise
     const expectedModel = expected.modelRef.slice(expected.modelRef.indexOf("/") + 1);
     const payloads = result && Array.isArray(result.payloads) ? result.payloads : [];
     if (!isRecord(response) || response.status !== "ok"
+      || agentMeta?.provider !== expected.modelRef.slice(0, expected.modelRef.indexOf("/"))
+      || agentMeta?.agentHarnessId !== expectedHarness
       || agentMeta?.model !== expectedModel
       || !payloads.some((payload: unknown) => isRecord(payload) && typeof payload.text === "string" && payload.text.trim() === marker)) {
       throw new Error("Model response did not pass authorization verification.");
@@ -1156,6 +1220,8 @@ async function verifyConfiguredModel(configPath: string, model: string): Promise
 }
 
 async function restartGatewayService(): Promise<Extract<AgentControlResult, { kind: "gateway.restart" }>> {
+  const configPath = activeManagedConfigPath();
+  if (configPath) await normalizeManagedConfigOnDisk(configPath);
   await execSystemctl(["--user", "restart", "openclaw-gateway.service"]);
   for (let attempt = 0; attempt < GATEWAY_RESTART_CHECK_ATTEMPTS; attempt += 1) {
     const state = await readGatewayState();
