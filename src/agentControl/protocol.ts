@@ -1,5 +1,10 @@
 import { z } from "zod";
-const managedRuntimePolicySchema = z.object({ schemaVersion: z.literal(1), revision: z.number().int().positive(), chatHarness: z.enum(["openclaw", "codex"]) }).strict();
+const harnessSchema = z.enum(["openclaw", "codex"]);
+const managedRuntimePolicySchema = z.union([
+  z.object({ schemaVersion: z.literal(1), revision: z.number().int().positive(), chatHarness: harnessSchema }).strict(),
+  z.object({ schemaVersion: z.literal(2), serverId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), globalRevision: z.number().int().positive(), revision: z.number().int().nonnegative(), harnessOverride: harnessSchema.nullable(), defaultHarness: harnessSchema, chatHarness: harnessSchema }).strict()
+    .refine(policy => policy.chatHarness === (policy.harnessOverride ?? policy.defaultHarness), "Invalid effective harness"),
+]);
 
 const jsonRecordSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
   z.record(z.string(), z.unknown())
@@ -53,6 +58,14 @@ const selfNudgeSettingsSchema = z.object({
 
 const ownerFenceSchema = z.object({ revision: z.string().regex(/^[0-9]+$/), active: z.array(z.string().regex(/^[1-9][0-9]{0,19}$/)), revoked: z.array(z.string().regex(/^[1-9][0-9]{0,19}$/)) });
 export const agentControlActionSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("managedRuntime.preflight"),
+    model: z.string().min(1).optional(),
+    fallbacks: modelFallbacksSchema.optional(),
+    purpose: modelAssignmentPurposeSchema.optional(),
+    fallback: modelRefStringSchema.optional(),
+    codexAuthMode: z.enum(["api_key", "openai_login"]).optional(),
+  }),
   z.object({
     kind: z.literal("config.read"),
   }),
@@ -188,13 +201,14 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("cron.inventory.refresh"),
     requestId: z.string().min(1).max(200),
   }),
-]).and(z.object({ managedRuntimePolicy: managedRuntimePolicySchema.optional(), managedRuntimePolicyDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }));
+ ]).and(z.object({ managedRuntimeExpectedConfigRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(), managedRuntimePolicy: managedRuntimePolicySchema.optional(), managedRuntimePolicyDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }));
 
 export type AgentControlAction = z.infer<typeof agentControlActionSchema>;
 
 export const agentControlResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("model.fence.read"), revision: z.string().nullable(), status: z.enum(["PENDING", "APPLIED", "UNRESOLVED", "CANCELLED"]).nullable(), model: z.string().nullable() }),
   z.object({ kind: z.literal("model.fence.reconcile"), revision: z.string(), status: z.enum(["UNRESOLVED", "CANCELLED"]), model: z.string() }),
+  z.object({ kind: z.literal("managedRuntime.preflight"), compatible: z.literal(true), configRevision: z.string() }),
   z.object({
     kind: z.literal("config.read"),
     configText: z.string().min(1),
@@ -429,7 +443,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     observedAt: z.string().datetime({ offset: true }),
     collectionStatus: z.enum(["COMPLETE", "PARTIAL", "FAILED"]),
   }),
-]).and(z.object({ managedRuntimePolicyVersion: z.literal(1).optional(), managedRuntimePolicy: managedRuntimePolicySchema.optional(), managedRuntimePolicyDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }));
+]).and(z.object({ managedRuntimePolicyVersion: z.literal(2).optional(), managedRuntimePolicy: managedRuntimePolicySchema.optional(), managedRuntimePolicyDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }));
 
 export type AgentControlResult = z.infer<typeof agentControlResultSchema>;
 

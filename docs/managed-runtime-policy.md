@@ -2,11 +2,11 @@
 
 ## Authority and compatibility
 
-Only backend `MANAGED_AGENT_HARNESS=openclaw|codex` and
-`MANAGED_AGENT_HARNESS_POLICY_REVISION` select the managed chat harness.
-Default: OpenClaw, revision 1. **First Codex activation requires revision >=2,
-even on a new agent.** Every subsequent choice change needs a strictly newer
-revision. Unknown schema, fields, harnesses, stale revisions and same-revision
+Backend `MANAGED_AGENT_HARNESS=openclaw|codex` and
+`MANAGED_AGENT_HARNESS_POLICY_REVISION` select the global default; the backend-owned
+nullable agent override selects the effective harness.
+Default: OpenClaw, revision 1. Global schema 1 changes require a newer global revision. Scoped overrides use
+an independent agent revision, starting at zero for inheritance. Unknown schema, fields, harnesses, stale revisions and same-revision
 conflicts fail closed. Roll back the *choice* using a newer revision, not an old
 policy file. Do not use config text, local login, relay environment, or backups
 as an alternative authority.
@@ -96,3 +96,43 @@ fails local HTTP/Host/SSE tests under that proxy. `NODE_USE_ENV_PROXY=0` isolate
 local test servers; it is a test-process setting, not an application behavior
 change. Recovery tests carry a frozen owner-fence fixture for standalone checkout
 coverage; managed authority tests separately execute the current shared writers.
+
+## Agent-scoped authority (capability 2)
+
+Global schema 1 remains supported. Schema 2 binds `serverId`, independent `globalRevision`
+and agent `revision`, nullable `harnessOverride`, `defaultHarness`, and effective
+`chatHarness`. Both revision domains must be monotonic; equal-domain conflicts and
+V2-to-V1 downgrades fail. A pinned override survives a global default change.
+
+Provision `RELAY_SERVER_ID` alongside the authenticated relay token, including the
+remote normalizer environment. Startup, backend and local ingress, and CLI compare
+both existing and incoming scoped policy to this identity. Missing identity fails
+closed for V2. Neither payloads, OpenClaw config nor restored sidecars establish
+identity. Backend lifecycle scripts must carry the registered target identity;
+copying a different server's sidecar is rejected.
+
+`config.read` returns the actual persisted policy, source digest and capability 2.
+`managedRuntime.preflight` accepts optional `model`, `fallbacks`, `purpose`, `fallback`
+and `codexAuthMode` and reports `{compatible:true,configRevision}`. It applies model
+proposals to a clone and validates canonical compatibility and prepared persisted
+auth without writing config, auth, or target authority. Harness-only checks leave
+model selections unchanged. Incompatible chat routes raise `MANAGED_CODEX_INCOMPATIBLE`.
+
+Mutations retain the owner/config fence: validate CAS, canonical compatibility and
+schema before committing sidecar authority, then config. If a crash occurs after
+sidecar commit, restart converges compatible config under that authority. If the
+old model/route is incompatible, startup fails closed and the backend must resend
+the validated intended config at the retained or a newer policy revision. Never
+restore a lower revision as rollback. Preflight is advisory: callers must retain mutation CAS and
+recheck compatibility at commit. A successful local test does not prove deployed
+runtime activation.
+
+Explicit API-key preflight accepts concrete prepared key values from the configured
+route/env, process env, saved CLI auth (even while CLI mode is ChatGPT), or the
+authoritative runtime auth store. Mode/type markers alone are not credentials.
+Config readiness follows the canonical scope precedence; unresolved config secret
+references are not proof of an available key. API intent disables OAuth proof for
+the dry run, so an explicitly authored ChatGPT route must be changed separately;
+preflight never rewrites it. OAuth proof continues to honor machine-owned auth and
+does not revive stale legacy JSON or CLI tokens. Credential readiness is a local
+proof, not a live provider/key-validity check.

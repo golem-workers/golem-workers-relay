@@ -345,3 +345,10 @@ describe("loadRelayConfig", () => {
     expect(cfg.relayChannel.plugin.gitRef).toBe("feature/channel-plugin");
   });
 });
+
+it("uses only provisioned RELAY_SERVER_ID for registered policy identity", () => {
+  const base = { RELAY_TOKEN: "t", BACKEND_BASE_URL: "https://example.com" };
+  expect(loadRelayConfig(base).serverId).toBeUndefined();
+  expect(loadRelayConfig({ ...base, RELAY_SERVER_ID: "agent-a" }).serverId).toBe("agent-a");
+  expect(() => loadRelayConfig({ ...base, RELAY_SERVER_ID: "../agent-a" })).toThrow();
+});

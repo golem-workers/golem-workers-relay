@@ -98,15 +98,68 @@ function readFastMode(value: unknown): ModelSetFastMode {
   return value === true || value === false || value === "auto" ? value : null;
 }
 
-export async function executeAgentControl(input: Parameters<typeof executeAgentControlUnfenced>[0] & { policyAuthority?: "backend" }): Promise<AgentControlResult> {
+export async function executeAgentControl(input: Parameters<typeof executeAgentControlUnfenced>[0] & { policyAuthority?: "backend"; registeredServerId?: string }): Promise<AgentControlResult> {
   if (input.action.managedRuntimePolicy && input.policyAuthority !== "backend") throw new AgentControlError("MANAGED_RUNTIME_POLICY_AUTHORITY_REQUIRED", "Only authenticated backend ingress may change managed harness authority");
   if (input.action.managedRuntimePolicy && !input.action.managedRuntimePolicyDigest) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend policy digest is required");
+  const readOnlyPolicy = ["config.read", "managedRuntime.preflight"].includes(input.action.kind);
+  // Read config and persisted authority under the same owner lock, including CLI writers.
+  const withReadLock = (operation: () => Promise<AgentControlResult>) => readOnlyPolicy || input.action.managedRuntimeExpectedConfigRevision ? withOwnerFenceLock(input.configPath, operation) : operation();
   // All ingress paths and all config writers share this lock, including legacy calls.
-  return withModelFenceLock(input.configPath, () => withManagedRuntimePolicy(input.configPath, input.action.managedRuntimePolicy, async () => {
+  return withModelFenceLock(input.configPath, () => withReadLock(() => withManagedRuntimePolicy(input.configPath, readOnlyPolicy ? undefined : input.action.managedRuntimePolicy, async () => {
     if (input.action.managedRuntimePolicyDigest && input.action.managedRuntimePolicyDigest !== MANAGED_RUNTIME_SOURCE_SHA256) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend and relay policy source digests differ; coordinated release required");
     const policy = await readManagedRuntimePolicy(input.configPath);
+    if (input.action.managedRuntimePolicy) {
+      managedRuntime.assertPolicyServer(input.action.managedRuntimePolicy, input.registeredServerId);
+      managedRuntime.acceptPolicy(policy, input.action.managedRuntimePolicy);
+    }
+    // Prepared credential/model proof is bound to this exact locked config.
+    // Check before any service, environment, credential or policy mutation;
+    // hold the same reentrant owner lock through the auth/config transaction.
+    if (input.action.managedRuntimeExpectedConfigRevision) {
+      const { configText } = await readConfigFile(input.configPath);
+      if (configRevision(configText) !== input.action.managedRuntimeExpectedConfigRevision) throw new AgentControlError("CONFIG_CONFLICT", "Configuration changed since managed runtime preflight; prepare the selection again.");
+    }
     const context = await runtimeContext(input.configPath);
-    const complete = (result: AgentControlResult): AgentControlResult => result.kind === "config.read" ? ({ ...result, managedRuntimePolicyVersion: 1, managedRuntimePolicy: policy, managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 }) : result;
+    const complete = (result: AgentControlResult): AgentControlResult => result.kind === "config.read" ? ({ ...result, managedRuntimePolicyVersion: 2, managedRuntimePolicy: policy, managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 }) : result;
+    if (input.action.kind === "managedRuntime.preflight") {
+      const action = input.action;
+      return withOwnerFenceLock(input.configPath, async () => {
+        const { config, configText } = await readConfigFile(input.configPath);
+        const candidate = structuredClone(config);
+        const defaults = ensureRecord(ensureRecord(candidate, "agents"), "defaults");
+        if (action.model !== undefined || action.fallbacks !== undefined || action.fallback !== undefined) {
+          const key = getPurposeConfigKey(action.purpose ?? "main");
+          const previous = defaults[key];
+          if (typeof previous === "string") defaults[key] = { primary: previous };
+          const assignment = ensureRecord(defaults, key);
+          if (action.model !== undefined) assignment.primary = mapStoredModelRef(action.model).modelRef;
+          if (action.fallbacks !== undefined && action.fallback !== undefined) throw new AgentControlError("MANAGED_RUNTIME_PREFLIGHT_INVALID", "Specify fallbacks or fallback, not both");
+          const fallbacks = action.fallbacks ?? (action.fallback !== undefined ? (action.fallback === null ? [] : [action.fallback]) : undefined);
+          if (fallbacks !== undefined) assignment.fallbacks = fallbacks.map(ref => mapStoredModelRef(ref).modelRef);
+        }
+        const proofContext = { ...context };
+        if (action.codexAuthMode === "api_key") {
+          const { hasPreparedCodexApiKey } = await import("./codexLogin.js");
+          proofContext.apiKeyAuth = await hasPreparedCodexApiKey(input.configPath);
+          // Explicit API intent cannot borrow an OAuth credential to pass preflight.
+          proofContext.subscriptionAuth = false;
+          const assignment = defaults[getPurposeConfigKey(action.purpose ?? "main")];
+          const primary = typeof assignment === "string" ? assignment : ensureOptionalRecord(assignment)?.primary;
+          if (!proofContext.apiKeyAuth && !(typeof primary === "string" && managedRuntime.hasPreparedApiKey(candidate, primary, proofContext))) {
+            throw new AgentControlError("MANAGED_CODEX_INCOMPATIBLE", "Requested API-key authentication has no prepared key value");
+          }
+        } else if (action.codexAuthMode === "openai_login" && !context.subscriptionAuth) {
+          throw new AgentControlError("MANAGED_CODEX_INCOMPATIBLE", "Requested authentication has not been prepared in persisted auth");
+        }
+        try {
+          managedRuntime.normalizeConfig(candidate, action.managedRuntimePolicy ?? policy, proofContext);
+        } catch (error) {
+          if (error instanceof Error && error.message.startsWith("MANAGED_CODEX_INCOMPATIBLE")) throw new AgentControlError("MANAGED_CODEX_INCOMPATIBLE", error.message, undefined, { cause: error });
+          throw error;
+        }
+        return { kind: "managedRuntime.preflight", compatible: true, configRevision: configRevision(configText) };
+      });
+    }
     const state = await readModelFence(input.configPath);
     const action = input.action;
     if (action.kind === "model.verify" && (state || input.statusNudgeRunner)) {
@@ -232,7 +285,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       throw new AgentControlError("MODEL_FENCE_REQUIRED", "Legacy configuration mutations cannot bypass an established model fence");
     }
     return complete(await executeAgentControlUnfenced(input));
-  }));
+  }, input.registeredServerId)));
 }
 
 async function executeAgentControlUnfenced(input: {

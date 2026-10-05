@@ -1,25 +1,48 @@
 /** Canonical source. Generated consumers must not be edited. Pure, dependency-free,
  * deliberately enclosed in one factory so remote serialization includes every dependency. */
-export type ManagedRuntimePolicy = { schemaVersion: 1; revision: number; chatHarness: "openclaw" | "codex" };
+export type ManagedHarness = "openclaw" | "codex";
+export type GlobalManagedRuntimePolicy = { schemaVersion: 1; revision: number; chatHarness: ManagedHarness };
+export type AgentManagedRuntimePolicy = { schemaVersion: 2; serverId: string; globalRevision: number; revision: number; harnessOverride: ManagedHarness | null; defaultHarness: ManagedHarness; chatHarness: ManagedHarness };
+export type ManagedRuntimePolicy = GlobalManagedRuntimePolicy | AgentManagedRuntimePolicy;
 export type RuntimeContext = { env?: Record<string, unknown>; subscriptionAuth?: boolean; apiKeyAuth?: boolean; params?: Record<string, unknown>; scopeModels?: Record<string, unknown>; scope?: Record<string, unknown> };
 export function createManagedRuntimePolicy() {
   type Row = Record<string, unknown>;
   const record = (value: unknown): Row | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Row : undefined;
   const ensure = (parent: Row, key: string): Row => record(parent[key]) ?? (parent[key] = {}) as Row;
-  const defaultPolicy: ManagedRuntimePolicy = { schemaVersion: 1, revision: 1, chatHarness: "openclaw" };
+  const defaultPolicy: GlobalManagedRuntimePolicy = { schemaVersion: 1, revision: 1, chatHarness: "openclaw" };
   function parsePolicy(value: unknown): ManagedRuntimePolicy {
     const row = record(value);
-    if (!row || row.schemaVersion !== 1 || !Number.isSafeInteger(row.revision) || Number(row.revision) < 1 || !["openclaw", "codex"].includes(String(row.chatHarness)) || Object.keys(row).some(key => !["schemaVersion", "revision", "chatHarness"].includes(key))) throw new Error("MANAGED_RUNTIME_POLICY_INVALID");
-    return { schemaVersion: 1, revision: Number(row.revision), chatHarness: row.chatHarness as ManagedRuntimePolicy["chatHarness"] };
+    const harness = (value: unknown): value is ManagedHarness => value === "openclaw" || value === "codex";
+    const integer = (value: unknown, minimum: number) => Number.isSafeInteger(value) && Number(value) >= minimum;
+    if (row?.schemaVersion === 1 && integer(row.revision, 1) && harness(row.chatHarness) && Object.keys(row).every(key => ["schemaVersion", "revision", "chatHarness"].includes(key))) return { schemaVersion: 1, revision: Number(row.revision), chatHarness: row.chatHarness };
+    if (row?.schemaVersion === 2 && typeof row.serverId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(row.serverId) && integer(row.globalRevision, 1) && integer(row.revision, 0) && (row.harnessOverride === null || harness(row.harnessOverride)) && harness(row.defaultHarness) && harness(row.chatHarness) && row.chatHarness === (row.harnessOverride ?? row.defaultHarness) && Object.keys(row).every(key => ["schemaVersion", "serverId", "globalRevision", "revision", "harnessOverride", "defaultHarness", "chatHarness"].includes(key))) return { schemaVersion: 2, serverId: row.serverId, globalRevision: Number(row.globalRevision), revision: Number(row.revision), harnessOverride: row.harnessOverride, defaultHarness: row.defaultHarness, chatHarness: row.chatHarness };
+    throw new Error("MANAGED_RUNTIME_POLICY_INVALID");
+  }
+  function assertPolicyServer(policy: ManagedRuntimePolicy, serverId: string | undefined): void {
+    if (policy.schemaVersion === 2 && (!serverId || policy.serverId !== serverId)) throw new Error("MANAGED_RUNTIME_POLICY_SERVER_MISMATCH");
+  }
+  function resolveAgentPolicy(global: GlobalManagedRuntimePolicy, agent: { serverId: string; harnessOverride: ManagedHarness | null; revision: number }): AgentManagedRuntimePolicy {
+    const parsed = parsePolicy(global);
+    if (parsed.schemaVersion !== 1) throw new Error("MANAGED_RUNTIME_GLOBAL_POLICY_REQUIRED");
+    return parsePolicy({ schemaVersion: 2, serverId: agent.serverId, globalRevision: parsed.revision, revision: agent.revision, harnessOverride: agent.harnessOverride, defaultHarness: parsed.chatHarness, chatHarness: agent.harnessOverride ?? parsed.chatHarness }) as AgentManagedRuntimePolicy;
   }
   function acceptPolicy(current: ManagedRuntimePolicy, incoming: ManagedRuntimePolicy): ManagedRuntimePolicy {
     current = parsePolicy(current); incoming = parsePolicy(incoming);
-    if (incoming.revision < current.revision) throw new Error("MANAGED_RUNTIME_POLICY_STALE");
-    if (incoming.revision === current.revision && incoming.chatHarness !== current.chatHarness) throw new Error("MANAGED_RUNTIME_POLICY_CONFLICT");
+    if (current.schemaVersion === 2) {
+      if (incoming.schemaVersion !== 2) throw new Error("MANAGED_RUNTIME_POLICY_DOWNGRADE");
+      assertPolicyServer(incoming, current.serverId);
+      if (incoming.globalRevision < current.globalRevision || incoming.revision < current.revision) throw new Error("MANAGED_RUNTIME_POLICY_STALE");
+      if ((incoming.revision === current.revision && incoming.harnessOverride !== current.harnessOverride) || (incoming.globalRevision === current.globalRevision && incoming.defaultHarness !== current.defaultHarness)) throw new Error("MANAGED_RUNTIME_POLICY_CONFLICT");
+    } else {
+      const globalRevision = incoming.schemaVersion === 1 ? incoming.revision : incoming.globalRevision;
+      const defaultHarness = incoming.schemaVersion === 1 ? incoming.chatHarness : incoming.defaultHarness;
+      if (globalRevision < current.revision) throw new Error("MANAGED_RUNTIME_POLICY_STALE");
+      if (globalRevision === current.revision && defaultHarness !== current.chatHarness) throw new Error("MANAGED_RUNTIME_POLICY_CONFLICT");
+    }
     return incoming;
   }
-  function policyFromEnvironment(env: Record<string, unknown>): ManagedRuntimePolicy {
-    return parsePolicy({ schemaVersion: 1, revision: Number(env.MANAGED_AGENT_HARNESS_POLICY_REVISION ?? 1), chatHarness: env.MANAGED_AGENT_HARNESS ?? "openclaw" });
+  function policyFromEnvironment(env: Record<string, unknown>): GlobalManagedRuntimePolicy {
+    return parsePolicy({ schemaVersion: 1, revision: Number(env.MANAGED_AGENT_HARNESS_POLICY_REVISION ?? 1), chatHarness: env.MANAGED_AGENT_HARNESS ?? "openclaw" }) as GlobalManagedRuntimePolicy;
   }
   function profiles(config: Row): Row[] { return Object.values(record(record(config.auth)?.profiles) ?? {}).map(record).filter((row): row is Row => Boolean(row)); }
   function environment(config: Row, context: RuntimeContext): Row {
@@ -41,6 +64,9 @@ export function createManagedRuntimePolicy() {
     const rows = [legacy, providerRow, modelRow, record(catalog?.[ref]) ?? {}, defaultsScope, agentScope, record(context.scopeModels?.[ref]) ?? {}];
     const authored = (key: string): unknown => { for (const row of [...rows].reverse()) if (row[key] !== undefined) return row[key]; return undefined; };
     const hasApiKey = context.apiKeyAuth || env.OPENAI_API_KEY !== undefined || env.CODEX_API_KEY !== undefined || authored("apiKey") !== undefined || (context.apiKeyAuth === undefined && profiles(config).some(row => ["openai", "codex", "openai-codex"].includes(String(row.provider)) && ["api_key", "api-key"].includes(String(row.mode))));
+    // Readiness proof is deliberately stricter than route metadata presence.
+    const keyValue = (value: unknown) => typeof value === "string" && Boolean(value.trim()) && !value.includes("${");
+    const preparedApiKey = Boolean(context.apiKeyAuth || keyValue(env.OPENAI_API_KEY) || keyValue(env.CODEX_API_KEY) || keyValue(authored("apiKey")));
     const hasSubscription = context.subscriptionAuth || (context.subscriptionAuth === undefined && profiles(config).some(row => ["openai", "codex", "openai-codex"].includes(String(row.provider)) && ["oauth", "token"].includes(String(row.mode))));
     const api = authored("api") ?? (hasSubscription && !hasApiKey ? "openai-chatgpt-responses" : "openai-responses");
     const baseUrl = authored("baseUrl") ?? env.OPENAI_BASE_URL ?? (api === "openai-chatgpt-responses" ? "https://chatgpt.com/backend-api/codex" : "https://api.openai.com/v1");
@@ -50,7 +76,10 @@ export function createManagedRuntimePolicy() {
       return Object.entries(params).every(([key, value]) => ["fastMode", "fast_mode"].includes(key) ? [true, false, "auto"].includes(value as boolean | string) : ["fastAutoOnSeconds", "fast_auto_on_seconds", "fastSeconds", "fast_seconds"].includes(key) && typeof value === "number" && Number.isFinite(value) && value > 0);
     }
     const overrides = rows.some(row => ["headers", "requestTransportOverrides", "requestOptions", "fetch", "transport", "request", "localService", "authHeader", "timeoutSeconds", "compat"].some(key => !(key === "timeoutSeconds" && (row === defaultsScope || row === agentScope)) && row[key] !== undefined && row[key] !== "none" && !(record(row[key]) && Object.keys(record(row[key])!).length === 0)) || !reproducibleParams(row.params));
-    return { provider, model, api, baseUrl, overrides, hasApiKey: Boolean(hasApiKey), hasSubscription: Boolean(hasSubscription) };
+    return { provider, model, api, baseUrl, overrides, preparedApiKey, hasApiKey: Boolean(hasApiKey), hasSubscription: Boolean(hasSubscription) };
+  }
+  function hasPreparedApiKey(config: Row, ref: string, context: RuntimeContext = {}): boolean {
+    return route(config, ref, context).preparedApiKey;
   }
   function codexCompatibility(config: Row, ref: string, context: RuntimeContext = {}): { supported: boolean; reason?: string } {
     const info = route(config, ref, context);
@@ -195,7 +224,7 @@ export function createManagedRuntimePolicy() {
     }
     check(config, expected);
   }
-  return { defaultPolicy, parsePolicy, acceptPolicy, policyFromEnvironment, codexCompatibility, isSubscriptionRoute, expectedRuntime, ensureSolCompatibility, needsAuthContext, normalizeConfig, protectedRoute, assertRuntimeMetadata };
+  return { defaultPolicy, parsePolicy, assertPolicyServer, resolveAgentPolicy, acceptPolicy, policyFromEnvironment, hasPreparedApiKey, codexCompatibility, isSubscriptionRoute, expectedRuntime, ensureSolCompatibility, needsAuthContext, normalizeConfig, protectedRoute, assertRuntimeMetadata };
 }
 
 /** Read-only offline auth proof. Shared machine ownership excludes stale agent JSON. */

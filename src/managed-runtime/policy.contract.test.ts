@@ -115,3 +115,52 @@ it("preserves provisioned agent turn budgets without confusing them with provide
     expect(() => engine.normalizeConfig(request, codex)).toThrow("MANAGED_CODEX_INCOMPATIBLE");
   }
 });
+
+describe("agent scoped policy V2", () => {
+  const scoped = (serverId = "server-a", harnessOverride: "codex" | "openclaw" | null = null, revision = 0, global = native) => engine.resolveAgentPolicy(global, { serverId, harnessOverride, revision });
+  it("isolates servers, preserves pinned choices on global bumps, and permits same-global agent switches", () => {
+    const a = scoped("server-a", "openclaw", 3);
+    const b = scoped("server-b", "codex", 1);
+    const bumped = scoped("server-a", "openclaw", 3, codex);
+    expect(engine.acceptPolicy(a, bumped)).toEqual(bumped);
+    expect(bumped.chatHarness).toBe("openclaw");
+    expect(b.chatHarness).toBe("codex");
+    expect(engine.acceptPolicy(bumped, scoped("server-a", null, 4, codex)).chatHarness).toBe("codex");
+    expect(engine.acceptPolicy(scoped(), scoped("server-a", null, 0, codex)).chatHarness).toBe("codex");
+    expect(() => engine.acceptPolicy(a, b)).toThrow("SERVER_MISMATCH");
+    expect(() => engine.assertPolicyServer(a, undefined)).toThrow("SERVER_MISMATCH");
+  });
+  it("rejects either revision regressing and equal-domain conflicts", () => {
+    const current = scoped("server-a", "codex", 3, codex);
+    for (const next of [scoped("server-a", "codex", 2, codex), scoped("server-a", "codex", 4)]) expect(() => engine.acceptPolicy(current, next)).toThrow("STALE");
+    expect(() => engine.acceptPolicy(current, scoped("server-a", "openclaw", 3, codex))).toThrow("CONFLICT");
+    expect(() => engine.acceptPolicy(current, scoped("server-a", "codex", 4, { ...codex, chatHarness: "openclaw" }))).toThrow("CONFLICT");
+  });
+  it("migrates global revisions without permitting downgrade", () => {
+    expect(engine.acceptPolicy(codex, scoped("server-a", null, 0, codex)).revision).toBe(0);
+    expect(() => engine.acceptPolicy(codex, scoped())).toThrow("STALE");
+    expect(() => engine.acceptPolicy(scoped(), native)).toThrow("DOWNGRADE");
+  });
+  it("strictly validates scoped shape and effective choice", () => {
+    for (const patch of [{ revision: -1 }, { globalRevision: 0 }, { revision: 1.5 }, { serverId: "" }, { harnessOverride: undefined }, { harnessOverride: "auto" }, { chatHarness: "codex" }, { extra: true }]) expect(() => engine.parsePolicy({ ...scoped(), ...patch })).toThrow("INVALID");
+  });
+  it("has generated remote parity for scoped resolve/accept and normalization", () => {
+    const policy = scoped("server-a", "codex", 2);
+    const direct = fixture(), remote = fixture();
+    engine.normalizeConfig(direct, policy);
+    const result: unknown = runInNewContext(MANAGED_RUNTIME_FACTORY_SOURCE + "const e = createManagedRuntimePolicy(); e.assertPolicyServer(policy, 'server-a'); e.normalizeConfig(config, e.acceptPolicy(e.defaultPolicy, e.resolveAgentPolicy(e.defaultPolicy, {serverId:'server-a',harnessOverride:'codex',revision:2}))); policy;", { config: remote, policy, URL });
+    expect(result).toEqual(policy); expect(remote).toEqual(direct);
+  });
+});
+
+it("proves concrete API keys using canonical route scope without trusting mode metadata", () => {
+  const config = fixture();
+  expect(engine.hasPreparedApiKey(config, ref)).toBe(true);
+  const source = { agents: { defaults: { models: { [ref]: { apiKey: "catalog-key" } } } }, models: { providers: { openai: { apiKey: "" } } } };
+  expect(engine.hasPreparedApiKey(source, ref)).toBe(true);
+  expect(engine.hasPreparedApiKey(source, ref, { scopeModels: { [ref]: { apiKey: "${UNRESOLVED}" } } })).toBe(false);
+  expect(engine.hasPreparedApiKey({}, ref, { env: { OPENAI_API_KEY: " " } })).toBe(false);
+  expect(engine.hasPreparedApiKey({ auth: { profiles: { stale: { provider: "openai", mode: "api_key" } } } }, ref)).toBe(false);
+  const remote: unknown = runInNewContext(MANAGED_RUNTIME_FACTORY_SOURCE + "createManagedRuntimePolicy().hasPreparedApiKey(config, ref)", { config: source, ref, URL });
+  expect(remote).toBe(true);
+});

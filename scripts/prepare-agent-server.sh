@@ -1772,6 +1772,15 @@ for rel in ('.config/go/telemetry', '.cache/go/telemetry', '.bash_history', '.no
     if path.parent.exists():
         fsync(path.parent)
 fsync(state)
+# An image is not an agent. Never transplant agent-bound harness high-water
+# marks or owner fences into a freshly registered Server. This fresh-bake seal
+# is deliberately separate from update/restore, which must retain authority.
+machine_state = root.parent / 'var/lib/golem-workers'
+for directory in (machine_state.parent.parent, machine_state.parent, machine_state):
+    plain(directory, True)
+remove(machine_state)
+if machine_state.parent.exists():
+    fsync(machine_state.parent)
 print(json.dumps({'sealed': True, 'database': 'fresh schema plus plugin provenance only' if db.exists() else 'legacy config provenance', 'workspace': 'skills only'}))
 SEAL_PY
   rm -rf /tmp/openclaw

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { normalizeManagedConfigOnDisk } from "./managed-runtime/runtime-policy.js";
+import { normalizeManagedConfigOnDisk, withManagedRuntimePolicy } from "./managed-runtime/runtime-policy.js";
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { logger } from "./logger.js";
@@ -87,7 +87,7 @@ async function main(): Promise<void> {
   const openclaw = resolveOpenclawConfig(process.env, {
     gatewayWsUrl: cfg.openclaw.gatewayWsUrl,
   });
-  if (await normalizeManagedConfigOnDisk(openclaw.configPath)) execFileSync("systemctl", ["--user", "restart", "openclaw-gateway.service"], { env: { ...process.env, HOME: "/root", XDG_RUNTIME_DIR: "/run/user/0" }, stdio: "pipe" });
+  if (await withManagedRuntimePolicy(openclaw.configPath, undefined, () => normalizeManagedConfigOnDisk(openclaw.configPath), cfg.serverId)) execFileSync("systemctl", ["--user", "restart", "openclaw-gateway.service"], { env: { ...process.env, HOME: "/root", XDG_RUNTIME_DIR: "/run/user/0" }, stdio: "pipe" });
   logger.info(
     {
       pid: process.pid,
@@ -231,6 +231,7 @@ async function main(): Promise<void> {
           ? executeCronInventoryRefresh(cronInventorySync, action.requestId)
           : executeAgentControl({
           action,
+          registeredServerId: cfg.serverId,
           configPath: openclaw.configPath,
           gateway: gateway ?? {
             request: () => {
@@ -698,6 +699,7 @@ async function main(): Promise<void> {
       return executeAgentControl({
         action: message.input.action,
         policyAuthority: "backend",
+        registeredServerId: cfg.serverId,
         configPath: openclaw.configPath,
         gateway,
         backend,

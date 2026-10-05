@@ -2327,7 +2327,7 @@ describe("authoritative managed harness sequences", () => {
       const revision = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
       await executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "model.set", model: ref, fallbacks: [], fence: { revision, predecessor: null }, managedRuntimePolicy } });
       const read = await executeAgentControl({ configPath, gateway: { request: () => Promise.resolve({}) }, action: { kind: "config.read", managedRuntimePolicy } });
-      expect(read).toMatchObject({ managedRuntimePolicyVersion: 1, managedRuntimePolicy });
+      expect(read).toMatchObject({ managedRuntimePolicyVersion: 2, managedRuntimePolicy });
       if (read.kind !== "config.read") throw new Error("wrong result");
       const candidate = structuredClone(read.config); candidate.commands = { ownerAllowFrom: ["telegram:123"] };
       await executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "config.apply", configText: JSON.stringify(candidate), expectedRevision: read.configRevision, managedRuntimePolicy } });
