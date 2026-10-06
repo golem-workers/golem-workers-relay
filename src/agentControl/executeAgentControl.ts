@@ -101,7 +101,9 @@ function readFastMode(value: unknown): ModelSetFastMode {
 export async function executeAgentControl(input: Parameters<typeof executeAgentControlUnfenced>[0] & { policyAuthority?: "backend" }): Promise<AgentControlResult> {
   if (input.action.managedRuntimePolicy && input.policyAuthority !== "backend") throw new AgentControlError("MANAGED_RUNTIME_POLICY_AUTHORITY_REQUIRED", "Only authenticated backend ingress may change managed harness authority");
   if (input.action.managedRuntimePolicy && !input.action.managedRuntimePolicyDigest) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend policy digest is required");
-  const readOnlyPolicy = ["config.read", "managedRuntime.preflight"].includes(input.action.kind);
+  // Older backends may attach authority even to pairing inventory. Validate
+  // that authority below, but never activate it for a read-only list request.
+  const readOnlyPolicy = ["config.read", "managedRuntime.preflight", "channelPairing.list", "devicePairing.list"].includes(input.action.kind);
   // Read config and persisted authority under the same owner lock, including CLI writers.
   const withReadLock = (operation: () => Promise<AgentControlResult>) => readOnlyPolicy || input.action.managedRuntimeExpectedConfigRevision ? withOwnerFenceLock(input.configPath, operation) : operation();
   // All ingress paths and all config writers share this lock, including legacy calls.
@@ -191,10 +193,13 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         }
       }
       const sessionKey = "agent:main:enterprise-model-verify:" + randomUUID();
-      type ProbeResponse = { resolved?: { modelProvider?: string; model?: string; agentRuntime?: string }; entry?: { modelProvider?: string; model?: string; agentHarnessId?: string } };
-      const identity = (provider?: string, model?: string, runtime?: string) => {
+      type ProbeResponse = { resolved?: { modelProvider?: string; model?: string; agentRuntime?: unknown }; entry?: { modelProvider?: string; model?: string; agentHarnessId?: string } };
+      const identity = (provider?: string, model?: string, runtime?: unknown) => {
         const ref = provider && model ? provider + "/" + model : null;
-        if (ref && runtime !== managedRuntime.expectedRuntime(config, ref, "main", policy, context)) return null;
+        // sessions.patch returns selected runtime metadata { id, source }, not
+        // a runtime string. Missing/malformed metadata must remain fail-closed.
+        const runtimeId = ensureOptionalRecord(runtime)?.id;
+        if (ref && runtimeId !== managedRuntime.expectedRuntime(config, ref, "main", policy, context)) return null;
         return mapPublicModelRef(ref, defaults, Boolean(ref && managedRuntime.isSubscriptionRoute(config, ref, context)));
       };
       let completed = false;

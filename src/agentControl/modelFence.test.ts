@@ -94,7 +94,7 @@ it("parses and dispatches real model.verify protocol against runtime defaults an
     let calls = 0;
     const gateway = { request: (method: string, params?: unknown) => {
       expect(["sessions.patch", "sessions.delete", "chat.abort"]).toContain(method); expect(params).not.toHaveProperty("model");
-      return Promise.resolve({ resolved: { modelProvider: "openai", model: "example", agentRuntime: "openclaw" }, entry: { modelProvider: "openai", model: "example", agentHarnessId: "openclaw" } });
+      return Promise.resolve({ resolved: { modelProvider: "openai", model: "example", agentRuntime: { id: "openclaw", source: "model" } }, entry: { modelProvider: "openai", model: "example", agentHarnessId: "openclaw" } });
     } };
     const statusNudgeRunner = { runChatTask: () => { calls++; return Promise.resolve({ result: { outcome: "reply" as const, reply: { runId: "test", message: "OK" } }, openclawMeta: {} }); } };
     expect(agentControlResultSchema.parse(await executeAgentControl({ configPath: path.join(dir, "config.json"), action, gateway, statusNudgeRunner }))).toMatchObject({ kind: "model.verify", verified: true });
@@ -110,13 +110,13 @@ it("parses and dispatches real model.verify protocol against runtime defaults an
     expect(calls).toBe(1);
     expect(cleanup).toEqual(["sessions.patch", "chat.abort", "sessions.delete"]);
     const wrongHarnessGateway = { request: () => Promise.resolve({
-      resolved: { modelProvider: "openai", model: "example", agentRuntime: "openclaw" },
+      resolved: { modelProvider: "openai", model: "example", agentRuntime: { id: "openclaw", source: "model" } },
       entry: { modelProvider: "openai", model: "example", agentHarnessId: "codex" },
     }) };
     await expect(executeAgentControl({ configPath: path.join(dir, "config.json"), action, gateway: wrongHarnessGateway, statusNudgeRunner })).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });
     expect(calls).toBe(2);
     const driftGateway = { request: () => Promise.resolve({
-      resolved: { modelProvider: "openai", model: "example", agentRuntime: "openclaw" },
+      resolved: { modelProvider: "openai", model: "example", agentRuntime: { id: "openclaw", source: "model" } },
       entry: { modelProvider: "openai", model: "other", agentHarnessId: "openclaw" },
     }) };
     await expect(executeAgentControl({ configPath: path.join(dir, "config.json"), action, gateway: driftGateway, statusNudgeRunner })).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });
