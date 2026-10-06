@@ -61,10 +61,18 @@ async function readProcessSnapshot(procRoot: string, processId: number): Promise
 }
 
 function isOpenclawGateway(process: ProcessSnapshot): boolean {
-  return (
-    process.argv.some((value) => value.includes("/openclaw/dist/index.js"))
-    && process.argv.includes("gateway")
-  );
+  // Managed launcher repair and installed-package services use different entry
+  // paths. Match the actual executable/script slot, never a shell command,
+  // prompt or unrelated argument containing an OpenClaw path. This is workload
+  // discovery only; it grants no model/owner/config authority.
+  const node = /^node(?:\.exe)?$/u.test(path.basename(process.argv[0] ?? ""));
+  const entryIndex = node ? 1 : 0;
+  const entry = process.argv[entryIndex] ?? "";
+  const installedEntry = entry.endsWith("/openclaw/dist/index.js")
+    || entry.endsWith("/openclaw/openclaw.mjs");
+  const managedLauncher = entry === "/usr/local/bin/openclaw" || entry === "/usr/bin/openclaw";
+  return (installedEntry || managedLauncher)
+    && process.argv[entryIndex + 1] === "gateway";
 }
 
 function codexExecutable(process: ProcessSnapshot): string | null {
@@ -110,6 +118,16 @@ export async function readRuntimeWorkloadSnapshot(
   );
   if (gatewayProcessIds.size === 0) {
     throw new Error("RUNTIME_WORKLOAD_GATEWAY_NOT_FOUND");
+  }
+  // The managed launcher can respawn the server with a rewritten process title.
+  // Only its DIRECT titled child joins the root set. An unrelated titled process
+  // or a tool beneath the actual server must never disappear from workload.
+  const launcherProcessIds = new Set(gatewayProcessIds);
+  for (const process of processes) {
+    if (launcherProcessIds.has(process.parentProcessId)
+      && process.argv.length === 1 && process.argv[0] === "openclaw-gateway") {
+      gatewayProcessIds.add(process.processId);
+    }
   }
   const gatewayDescendants = collectDescendants(processes, gatewayProcessIds);
   const reasons: RuntimeWorkloadReason[] = [];
