@@ -346,9 +346,11 @@ describe("loadRelayConfig", () => {
   });
 });
 
-it("uses only provisioned RELAY_SERVER_ID for registered policy identity", () => {
+it("loads legacy relay environments without an additional server identity key", () => {
   const base = { RELAY_TOKEN: "t", BACKEND_BASE_URL: "https://example.com" };
-  expect(loadRelayConfig(base).serverId).toBeUndefined();
-  expect(loadRelayConfig({ ...base, RELAY_SERVER_ID: "agent-a" }).serverId).toBe("agent-a");
-  expect(() => loadRelayConfig({ ...base, RELAY_SERVER_ID: "../agent-a" })).toThrow();
+  const legacy = loadRelayConfig(base);
+  expect(legacy.relayToken).toBe("t");
+  // Previously provisioned identity keys are inert, not an alternative authority.
+  expect(loadRelayConfig({ ...base, RELAY_SERVER_ID: "../obsolete-agent" }).relayToken).toBe(legacy.relayToken);
+  expect(loadRelayConfig({ ...base, RELAY_SERVER_ID: "obsolete-agent" })).not.toHaveProperty("serverId");
 });

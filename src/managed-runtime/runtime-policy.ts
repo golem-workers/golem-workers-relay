@@ -5,7 +5,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import JSON5 from "json5";
 import { createManagedRuntimePolicy, type ManagedRuntimePolicy, type RuntimeContext } from "./policy.generated.js";
 export const managedRuntime = createManagedRuntimePolicy();
-const scope = new AsyncLocalStorage<{ configPath: string; policy: ManagedRuntimePolicy; serverId?: string }>();
+const scope = new AsyncLocalStorage<{ configPath: string; policy: ManagedRuntimePolicy }>();
 export function policyFile(configPath: string): string {
   return configPath === "/root/.openclaw/openclaw.json" ? "/var/lib/golem-workers/managed-runtime-policy.json" : configPath + ".managed-runtime-policy.json";
 }
@@ -13,9 +13,9 @@ export async function readManagedRuntimePolicy(configPath: string): Promise<Mana
   const active = scope.getStore();
   if (active?.configPath === path.resolve(configPath)) return active.policy;
   try {
-    const policy = managedRuntime.parsePolicy(JSON.parse(await fs.readFile(policyFile(configPath), "utf8")));
-    managedRuntime.assertPolicyServer(policy, active?.serverId ?? process.env.RELAY_SERVER_ID);
-    return policy;
+    // This sidecar is committed only by the authenticated backend/privileged writer.
+    // Startup must not require a new environment key on existing agent servers.
+    return managedRuntime.parsePolicy(JSON.parse(await fs.readFile(policyFile(configPath), "utf8")));
   }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...managedRuntime.defaultPolicy }; throw error; }
 }
@@ -24,8 +24,7 @@ async function persistPolicy(configPath: string, incoming: ManagedRuntimePolicy)
   let current: ManagedRuntimePolicy = managedRuntime.defaultPolicy;
   try { current = managedRuntime.parsePolicy(JSON.parse(await fs.readFile(target, "utf8"))); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  managedRuntime.assertPolicyServer(current, scope.getStore()?.serverId ?? process.env.RELAY_SERVER_ID);
-  managedRuntime.assertPolicyServer(incoming, scope.getStore()?.serverId ?? process.env.RELAY_SERVER_ID);
+  // Retain the persisted server binding and both revision fences on every write.
   managedRuntime.acceptPolicy(current, incoming);
   if (JSON.stringify(current) === JSON.stringify(incoming)) return;
   await fs.mkdir(path.dirname(target), { recursive: true });
@@ -39,14 +38,14 @@ async function persistPolicy(configPath: string, incoming: ManagedRuntimePolicy)
 }
 /** Called inside model/owner mutation locks. Incoming authority is carried by the
  * authenticated backend action, never by arbitrary OpenClaw config text. */
-export async function withManagedRuntimePolicy<T>(configPath: string, incoming: ManagedRuntimePolicy | undefined, operation: () => Promise<T>, serverId = scope.getStore()?.serverId ?? process.env.RELAY_SERVER_ID): Promise<T> {
+export async function withManagedRuntimePolicy<T>(configPath: string, incoming: ManagedRuntimePolicy | undefined, operation: () => Promise<T>): Promise<T> {
   const inherited = scope.getStore();
-  return scope.run({ configPath: "", policy: managedRuntime.defaultPolicy, serverId }, async () => {
+  return scope.run({ configPath: "", policy: managedRuntime.defaultPolicy }, async () => {
     const current = inherited?.configPath === path.resolve(configPath) ? inherited.policy : await readManagedRuntimePolicy(configPath);
-    managedRuntime.assertPolicyServer(current, serverId);
-    if (incoming) managedRuntime.assertPolicyServer(incoming, serverId);
+    // First scoped authority comes from authenticated backend ingress. Subsequent
+    // authority must retain that server binding and monotonic revision counters.
     const policy = incoming ? managedRuntime.acceptPolicy(current, incoming) : current;
-    return scope.run({ configPath: path.resolve(configPath), policy, serverId }, operation);
+    return scope.run({ configPath: path.resolve(configPath), policy }, operation);
   });
 }
 export async function runtimeContext(configPath: string): Promise<RuntimeContext> {

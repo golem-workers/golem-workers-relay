@@ -104,12 +104,17 @@ and agent `revision`, nullable `harnessOverride`, `defaultHarness`, and effectiv
 `chatHarness`. Both revision domains must be monotonic; equal-domain conflicts and
 V2-to-V1 downgrades fail. A pinned override survives a global default change.
 
-Provision `RELAY_SERVER_ID` alongside the authenticated relay token, including the
-remote normalizer environment. Startup, backend and local ingress, and CLI compare
-both existing and incoming scoped policy to this identity. Missing identity fails
-closed for V2. Neither payloads, OpenClaw config nor restored sidecars establish
-identity. Backend lifecycle scripts must carry the registered target identity;
-copying a different server's sidecar is rejected.
+The backend selects the relay endpoint and its per-agent token from the same
+`Server.id`. Relay push ingress verifies that token before dispatch; only this
+backend-authenticated ingress may supply managed authority. No additional
+`RELAY_SERVER_ID` environment variable is required, including on existing agents.
+First scoped authority is backend-authored; later policies must match the persisted
+server binding and retain both monotonic revision fences. Local control cannot
+supply authority, and startup/CLI convergence validates the protected sidecar without
+requiring a new environment key. Neither arbitrary OpenClaw config nor archives establish
+authority. Backend lifecycle scopes independently verify their registered target
+before dispatch. A sidecar with another server binding rejects subsequent backend
+policy changes; archives cannot replace the protected authority sidecar.
 
 `config.read` returns the actual persisted policy, source digest and capability 2.
 `managedRuntime.preflight` accepts optional `model`, `fallbacks`, `purpose`, `fallback`
