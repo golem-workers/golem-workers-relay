@@ -101,7 +101,9 @@ function readFastMode(value: unknown): ModelSetFastMode {
 export async function executeAgentControl(input: Parameters<typeof executeAgentControlUnfenced>[0] & { policyAuthority?: "backend" }): Promise<AgentControlResult> {
   if (input.action.managedRuntimePolicy && input.policyAuthority !== "backend") throw new AgentControlError("MANAGED_RUNTIME_POLICY_AUTHORITY_REQUIRED", "Only authenticated backend ingress may change managed harness authority");
   if (input.action.managedRuntimePolicy && !input.action.managedRuntimePolicyDigest) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend policy digest is required");
-  const readOnlyPolicy = ["config.read", "managedRuntime.preflight"].includes(input.action.kind);
+  // Older backends may attach authority even to pairing inventory. Validate
+  // that authority below, but never activate it for a read-only list request.
+  const readOnlyPolicy = ["config.read", "managedRuntime.preflight", "channelPairing.list", "devicePairing.list"].includes(input.action.kind);
   // Read config and persisted authority under the same owner lock, including CLI writers.
   const withReadLock = (operation: () => Promise<AgentControlResult>) => readOnlyPolicy || input.action.managedRuntimeExpectedConfigRevision ? withOwnerFenceLock(input.configPath, operation) : operation();
   // All ingress paths and all config writers share this lock, including legacy calls.
