@@ -9,7 +9,7 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 it.each([
   { name: "2026.9.8 descriptor", runtime: { id: "openclaw", source: "model" }, valid: true },
-  { name: "legacy string", runtime: "openclaw", valid: true },
+  { name: "unproven legacy string", runtime: "openclaw", valid: false },
   { name: "wrong descriptor runtime", runtime: { id: "codex", source: "model" }, valid: false },
   { name: "missing descriptor id", runtime: { source: "model" }, valid: false },
   { name: "nonstring id", runtime: { id: 1 }, valid: false },

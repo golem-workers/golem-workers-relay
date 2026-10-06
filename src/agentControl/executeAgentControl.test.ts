@@ -2337,7 +2337,7 @@ describe("authoritative managed harness sequences", () => {
       const { configRevision } = await import("./ownerFence.js");
       await expect(executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "config.apply", configText: JSON.stringify(hostile), expectedRevision: configRevision(before), managedRuntimePolicy } })).rejects.toMatchObject({ code: "MODEL_FENCE_REQUIRED" });
       expect(await fs.readFile(configPath, "utf8")).toBe(before);
-      const gateway = { request: vi.fn(() => Promise.resolve({ resolved: { modelProvider: "openai", model: "gpt-6.1-sol", agentRuntime: harness }, entry: { modelProvider: "openai", model: "gpt-6.1-sol", agentHarnessId: harness } })) };
+      const gateway = { request: vi.fn(() => Promise.resolve({ resolved: { modelProvider: "openai", model: "gpt-6.1-sol", agentRuntime: { id: harness, source: "model" } }, entry: { modelProvider: "openai", model: "gpt-6.1-sol", agentHarnessId: harness } })) };
       const runner = { runChatTask: vi.fn(() => Promise.resolve({ result: { outcome: "reply" as const, reply: { runId: "fixture", message: "OK" } }, openclawMeta: {} })) };
       await expect(executeAgentControl({ configPath, gateway, statusNudgeRunner: runner, action: { kind: "model.verify", model: ref, managedRuntimePolicy } })).resolves.toMatchObject({ verified: true });
       expect(runner.runChatTask).toHaveBeenCalledTimes(1);

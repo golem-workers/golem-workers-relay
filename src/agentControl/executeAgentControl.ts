@@ -196,9 +196,9 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       type ProbeResponse = { resolved?: { modelProvider?: string; model?: string; agentRuntime?: unknown }; entry?: { modelProvider?: string; model?: string; agentHarnessId?: string } };
       const identity = (provider?: string, model?: string, runtime?: unknown) => {
         const ref = provider && model ? provider + "/" + model : null;
-        // Current Gateway responses carry { id, source }, not a bare runtime id.
-        // Missing/malformed ids still fail closed; source is not identity proof.
-        const runtimeId = typeof runtime === "string" ? runtime : ensureOptionalRecord(runtime)?.id;
+        // sessions.patch returns selected runtime metadata { id, source }, not
+        // a runtime string. Missing/malformed metadata must remain fail-closed.
+        const runtimeId = ensureOptionalRecord(runtime)?.id;
         if (ref && runtimeId !== managedRuntime.expectedRuntime(config, ref, "main", policy, context)) return null;
         return mapPublicModelRef(ref, defaults, Boolean(ref && managedRuntime.isSubscriptionRoute(config, ref, context)));
       };
