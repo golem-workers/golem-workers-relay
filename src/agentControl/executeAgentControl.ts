@@ -1,4 +1,4 @@
-import { MANAGED_RUNTIME_SOURCE_SHA256 } from "../managed-runtime/policy.generated.js";
+import { readOfflineRuntimeAuth, MANAGED_RUNTIME_SOURCE_SHA256 } from "../managed-runtime/policy.generated.js";
 import { managedRuntime, withManagedRuntimePolicy, readManagedRuntimePolicy, runtimeContext, normalizeManagedConfigOnDisk, activeManagedConfigPath } from "../managed-runtime/runtime-policy.js";
 import { readModelFence, writeModelFence, withModelFenceLock } from "./modelFence.js";
 import { writeOwnerFencedConfig, withOwnerFenceLock, isConfigMutationPath, configRevision, type OwnerFence } from "./ownerFence.js";
@@ -306,7 +306,7 @@ async function executeAgentControlUnfenced(input: {
   const operation = async () => {
   const result =
     input.action.kind === "config.read"
-      ? await readConfig(input.configPath, input.gateway)
+      ? await readConfig(input.configPath, input.gateway, input.action.includeRuntimeAuthContext)
       : input.action.kind === "channels.status"
         ? await readChannelsStatus(input.gateway)
       : input.action.kind === "lifecycle.activeRuns"
@@ -554,10 +554,12 @@ async function sendStatusNudge(input: {
   return { kind: "chat.statusNudge", accepted: true, runId };
 }
 
-async function readConfig(configPath: string, gateway: GatewayLike): Promise<AgentControlResult> {
+async function readConfig(configPath: string, gateway: GatewayLike, includeRuntimeAuthContext = false): Promise<AgentControlResult> {
   const { configText, config } = await readConfigFile(configPath);
+  const auth = includeRuntimeAuthContext ? readOfflineRuntimeAuth(configPath) : undefined;
   return {
     kind: "config.read",
+    ...(auth ? { runtimeAuthContext: { version: 1 as const, subscriptionAuth: Boolean(auth.subscriptionAuth), apiKeyAuth: Boolean(auth.apiKeyAuth) } } : {}),
     configRevision: configRevision(configText),
     ownerFenceVersion: 1,
     ownerRuntime: await readOwnerRuntime(configPath, gateway),
