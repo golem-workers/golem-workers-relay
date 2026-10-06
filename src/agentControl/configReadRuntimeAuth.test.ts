@@ -38,7 +38,7 @@ it("shared SQLite ownership excludes stale legacy API-key profiles", async () =>
   expect(result).toHaveProperty("runtimeAuthContext", { version: 1, subscriptionAuth: true, apiKeyAuth: false });
   expect(JSON.stringify(result)).not.toMatch(/fixture-secret|stale-secret/);
 });
-it("ordinary config.read does not probe malformed auth stores", async () => {
+it("ordinary config.read skips the additional strict offline-reader probe", async () => {
   const input = await fixture(); await fs.writeFile(path.join(input.root, "auth-profiles.json"), "malformed");
   const result = await executeAgentControl({ ...input, action: { kind: "config.read" } });
   expect(result).not.toHaveProperty("runtimeAuthContext");

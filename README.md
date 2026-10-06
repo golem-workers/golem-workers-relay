@@ -534,7 +534,7 @@ The booleans come from the generated offline runtime-store reader used by
 managed commits, including shared SQLite ownership; they do not come from CLI
 login availability, pending login, or OAuth expiry. No credentials or profile
 metadata are exported, no auth/config/service mutation is performed, and
-ordinary config reads do not probe the auth store. Malformed stores fail closed
+ordinary config reads do not add this strict offline-reader probe (their existing runtime-context path can still read credential stores). Malformed stores fail closed
 for opt-in reads. The backend #676 phase-1 Sync consumer requires this proof
 for Codex agents; deploy a compatible Relay before that backend consumer.
 No new environment variable or policy revision; existing identity/owner/model
