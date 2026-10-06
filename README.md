@@ -525,3 +525,17 @@ config.read reports owner-fence version 1, disk revision and fresh Gateway effec
 This is eventual config delivery, not a provider lifecycle protocol or continuously leased Gateway. No ExecStart wrapper, automatic wake, stop-before-grant, fleet enrollment or snapshot guarantee. An unavailable Gateway cannot certify revocation; residual wildcard/imported authority is not complete denial.
 
 Model verification requires Gateway runtime metadata (`resolved.agentRuntime.id`) and independently checks the historical inference producer (`entry.agentHarnessId`). Pairing inventory reads do not activate or persist incoming managed policy; approval operations retain mutation fences.
+
+### Nonsecret runtime-auth proof for shared backend Update/Sync
+
+`config.read` accepts optional `includeRuntimeAuthContext=true`; only this
+opt-in response includes `runtimeAuthContext={version:1,subscriptionAuth,apiKeyAuth}`.
+The booleans come from the generated offline runtime-store reader used by
+managed commits, including shared SQLite ownership; they do not come from CLI
+login availability, pending login, or OAuth expiry. No credentials or profile
+metadata are exported, no auth/config/service mutation is performed, and
+ordinary config reads do not probe the auth store. Malformed stores fail closed
+for opt-in reads. The backend #676 phase-1 Sync consumer requires this proof
+for Codex agents; deploy a compatible Relay before that backend consumer.
+No new environment variable or policy revision; existing identity/owner/model
+fences and commit-time auth rechecks remain unchanged.

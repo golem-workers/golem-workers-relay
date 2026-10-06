@@ -68,6 +68,7 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("config.read"),
+    includeRuntimeAuthContext: z.boolean().optional(),
   }),
   z.object({
     kind: z.literal("channels.status"),
@@ -211,6 +212,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("managedRuntime.preflight"), compatible: z.literal(true), configRevision: z.string() }),
   z.object({
     kind: z.literal("config.read"),
+    runtimeAuthContext: z.object({ version: z.literal(1), subscriptionAuth: z.boolean(), apiKeyAuth: z.boolean() }).optional(),
     configText: z.string().min(1),
     config: jsonRecordSchema,
     configRevision: z.string().optional(),
