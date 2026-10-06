@@ -1,5 +1,14 @@
 # golem-workers-relay
 
+Runtime workload discovery recognizes the managed `/usr/local/bin/openclaw` and
+`/usr/bin/openclaw` Gateway launchers as well as installed OpenClaw package entry
+scripts. It checks the executable/script argument position and adjacent `gateway`
+command, not arbitrary shell/prompt arguments. A launcher's directly respawned
+`openclaw-gateway` child remains a Gateway root rather than a busy tool; standalone
+or deeper titled processes do not receive that exemption. Gateway descendants and
+standalone Codex processes still report busy; an absent/unrecognized Gateway fails closed.
+This compatibility check grants no config/model/owner authority or new env setting.
+
 Managed chat harness selection and coordinated release contract: [managed runtime policy](docs/managed-runtime-policy.md). OpenClaw remains the default; authentication is independent of harness choice. Capability 2 supports backend-owned per-agent overrides through the existing token-authenticated backend ingress, without requiring `RELAY_SERVER_ID` on existing agents. Persisted policies retain their server binding and monotonic revision fences. Read-only `managedRuntime.preflight` validates proposed choices before mutation; `config.read` reports persisted policy.
 
 Relay daemon that accepts push messages from `golem-workers-backend` over HTTP and executes them via a **local**
