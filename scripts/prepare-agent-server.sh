@@ -263,24 +263,14 @@ default_prepare_apt_security_mirror() {
   local arch
   arch="$(prepare_architecture)"
 
-  if should_use_hetzner_mirror; then
-    case "${arch}" in
-      arm64|aarch64)
-        printf '%s' "https://mirror.hetzner.com/ubuntu-ports/security"
-        ;;
-      *)
-        printf '%s' "https://mirror.hetzner.com/ubuntu/security"
-        ;;
-    esac
-    return 0
-  fi
-
+  # Security indices can reference newly published packages before third-party
+  # mirrors have copied them. Fetch security updates from Ubuntu directly.
   case "${arch}" in
     arm64|aarch64)
       printf '%s' "http://ports.ubuntu.com/ubuntu-ports"
       ;;
     *)
-      printf '%s' "http://security.ubuntu.com/ubuntu"
+      printf '%s' "https://security.ubuntu.com/ubuntu"
       ;;
   esac
 }
