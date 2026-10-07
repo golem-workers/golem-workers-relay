@@ -2381,3 +2381,47 @@ describe("authoritative managed harness sequences", () => {
 });
 
 function executeAgentControl(input: Parameters<typeof executeAgentControlImpl>[0]) { return executeAgentControlImpl({ ...input, policyAuthority: "backend", action: { ...input.action, ...(input.action.managedRuntimePolicy ? { managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 } : {}) } }); }
+
+describe("canonical config-sync normalized model fence", () => {
+  it("accepts Sol augmentation and maintenance bytes but still fences route/auth/primary and CAS", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "canonical-sync-fence-"));
+    const configPath = path.join(dir, "openclaw.json");
+    delete process.env.OPENAI_API_KEY;
+    process.env.CODEX_HOME = path.join(dir, ".codex");
+    const source = {
+      agents: { defaults: { model: { primary: "openai/gpt-6.1-sol", fallbacks: [] }, models: { "openai/gpt-6.1-sol": {} }, compaction: { maxActiveTranscriptBytes: 1000, keepRecentTokens: 24000, model: "openai/gpt-5.4-mini" } } },
+      auth: { profiles: { "openai:fixture": { provider: "openai", mode: "oauth" } } },
+    };
+    const sourceText = JSON.stringify(source);
+    const { configRevision } = await import("./ownerFence.js");
+    const { writeModelFence } = await import("./modelFence.js");
+    const runtime = createManagedRuntimePolicy();
+    const candidate = structuredClone(source) as Record<string, unknown>;
+    runtime.normalizeConfig(candidate, runtime.defaultPolicy, { env: {}, subscriptionAuth: false, apiKeyAuth: false });
+    const defaults = (candidate.agents as { defaults: typeof source.agents.defaults }).defaults;
+    defaults.compaction.maxActiveTranscriptBytes = 0;
+    try {
+      await fs.writeFile(configPath, sourceText);
+      await writeModelFence(configPath, { revision: "676-fixture", predecessor: null, status: "APPLIED", model: "openai/gpt-6.1-sol" });
+      const attempt = (config: Record<string, unknown>, expectedRevision: string | undefined = configRevision(sourceText)) => executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "config.apply", configText: JSON.stringify(config), expectedRevision } });
+      const hostileMutations = [
+        (cfg: Record<string, unknown>) => { (cfg.agents as typeof source.agents).defaults.model.primary = "openai/gpt-5.4"; },
+        (cfg: Record<string, unknown>) => { (cfg.models as { providers: { openai: Record<string, unknown> } }).providers.openai.baseUrl = "https://evil.test/v1"; },
+        (cfg: Record<string, unknown>) => { Reflect.deleteProperty(cfg, "auth"); },
+        (cfg: Record<string, unknown>) => { (cfg.agents as typeof source.agents).defaults.compaction.model = "openai/other"; },
+        (cfg: Record<string, unknown>) => { (cfg.agents as typeof source.agents).defaults.compaction.keepRecentTokens = 1; },
+      ];
+      for (const mutate of hostileMutations) {
+        const hostile = structuredClone(candidate); mutate(hostile);
+        await expect(attempt(hostile)).rejects.toMatchObject({ code: "MODEL_FENCE_REQUIRED" });
+        expect(await fs.readFile(configPath, "utf8")).toBe(sourceText);
+      }
+      await expect(attempt(candidate, "stale-revision")).rejects.toThrow("CONFIG_CONFLICT");
+      expect(await fs.readFile(configPath, "utf8")).toBe(sourceText);
+      await expect(attempt(candidate)).resolves.toMatchObject({ kind: "config.apply" });
+      const written: unknown = JSON.parse(await fs.readFile(configPath, "utf8"));
+      expect(written).toMatchObject(candidate);
+      expect(source.agents.defaults.compaction.maxActiveTranscriptBytes).toBe(1000);
+    } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  });
+});
