@@ -138,7 +138,7 @@ The script:
 - explicitly brings up root user-systemd (`loginctl enable-linger root`, `user@0.service`, `/run/user/0/bus`) before any OpenClaw daemon install work;
 - pins guest DNS to the current default gateway before `apt-get upgrade`, so Ubuntu package upgrades do not drop resolver state mid-prepare on small microVMs;
 - rewrites `/etc/apt/sources.list` before package installation so the prepare run uses a deterministic Ubuntu mirror set without duplicated entries;
-- on Hetzner hosts it prefers `mirror.hetzner.com` (including the `ubuntu-ports` variant on `arm64`) to speed up large Ubuntu package installs during snapshot preparation;
+- on Hetzner hosts it prefers `mirror.hetzner.com` (including the `ubuntu-ports` variant on `arm64`) for regular packages; security updates always use the official Ubuntu security archive (`ports.ubuntu.com` on `arm64`) to avoid third-party security indices pointing to packages that have not been mirrored yet;
 - also accepts `APT_MIRROR_HINT=hetzner` so orchestration can force Hetzner mirrors even when the guest itself only sees generic KVM DMI metadata;
 - optionally runs `openclaw onboard --install-daemon`, then explicitly restarts and verifies `openclaw-gateway.service` with an extended readiness window because current OpenClaw releases can come up slowly on small snapshot VMs;
 - writes a temporary snapshot-only warmup config that activates `telegram` and `whatsapp`, performs a mandatory `start -> readiness -> channels status -> stop` cycle to force first-run plugin initialization into snapshot prep, and then seals the snapshot back to a cold config for backend-owned bootstrap;
