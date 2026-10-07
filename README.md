@@ -551,3 +551,11 @@ fences and commit-time auth rechecks remain unchanged.
 
 ## Canonical Sync model fence (#676)
 Fenced config apply normalizes a cloned predecessor with the same locked managed policy and target auth context as canonical Sync. Generated Sol catalog augmentation is compared like-for-like; only `agents.defaults.compaction.maxActiveTranscriptBytes` is omitted from both route projections as a maintenance budget. Other compaction fields, selected models, provider endpoints/auth, owner/transport fences and revision CAS remain protected. No live source rewrite or new environment switch is introduced.
+
+### Config sync model fence
+
+Canonical managed-runtime policy separates model routing from operational agent
+settings: compaction and turn budgets use config CAS without requiring a model
+selection transition. Model assignments/catalogs, request transport overrides,
+provider routes and auth remain protected. Deploy with the matching backend
+canonical policy digest; do not disable owner, CAS or model fences.

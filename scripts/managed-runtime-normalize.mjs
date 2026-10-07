@@ -256,12 +256,27 @@ function createManagedRuntimePolicy() {
         }
         commit(config, next);
     }
-    /** Comparison projection ignores ONLY runtime choice metadata. Every model id,
-     * provider route, auth, env and unrelated field remains protected by existing CAS. */
+    /** Model fence protects model assignments/catalogs, provider routes and auth.
+     * Operational agent settings (including compaction) use whole-config CAS,
+     * not the model-selection fence. Runtime metadata has its separate invariant. */
     function protectedRoute(config) {
         const next = JSON.parse(JSON.stringify({ agents: config.agents, providers: config.models, legacyProviders: config.providers, auth: config.auth, env: config.env }));
         const strip = (row) => { delete row.agentRuntime; delete row.pickerRuntimes; };
-        const agents = record(next.agents) ?? {};
+        const sourceAgents = record(next.agents) ?? {};
+        const project = (value) => {
+            const scope = record(value);
+            if (!scope)
+                return undefined;
+            return Object.fromEntries(Object.entries(scope).filter(([key]) => ["id", "model", "models", "params", "api", "baseUrl", "apiKey", "auth", "headers", "requestTransportOverrides", "requestOptions", "fetch", "transport", "request", "localService", "authHeader", "compat"].includes(key) || key.endsWith("Model")));
+        };
+        const agents = {};
+        if (sourceAgents.defaults !== undefined)
+            agents.defaults = project(sourceAgents.defaults);
+        if (Array.isArray(sourceAgents.list))
+            agents.list = sourceAgents.list.map(project);
+        if (record(sourceAgents.entries))
+            agents.entries = Object.fromEntries(Object.entries(sourceAgents.entries).map(([id, scope]) => [id, project(scope)]));
+        next.agents = agents;
         for (const scope of [record(agents.defaults), ...(Array.isArray(agents.list) ? agents.list : []).map(record), ...Object.values(record(agents.entries) ?? {}).map(record)].filter((row) => Boolean(row))) {
             for (const entry of Object.values(record(scope.models) ?? {}).map(record))
                 if (entry)

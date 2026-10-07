@@ -164,3 +164,21 @@ it("proves concrete API keys using canonical route scope without trusting mode m
   const remote: unknown = runInNewContext(MANAGED_RUNTIME_FACTORY_SOURCE + "createManagedRuntimePolicy().hasPreparedApiKey(config, ref)", { config: source, ref, URL });
   expect(remote).toBe(true);
 });
+
+it("does not model-fence compaction/budgets but protects every conversational route scope", () => {
+  const baseline = fixture();
+  const operational = structuredClone(baseline);
+  Object.assign(operational.agents.defaults, { compaction: { model: "openai/gpt-6-luna" }, timeoutSeconds: 7200, maxConcurrent: 4 });
+  expect(engine.protectedRoute(operational)).toEqual(engine.protectedRoute(baseline));
+  for (const key of ["model", "models", "params", "request", "headers", "baseUrl", "apiKey"]) {
+    const changed = structuredClone(baseline);
+    Object.assign(changed.agents.defaults, { [key]: { changed: true } });
+    expect(engine.protectedRoute(changed)).not.toEqual(engine.protectedRoute(baseline));
+  }
+  for (const shape of ["list", "entries"]) {
+    const initial = { ...baseline, agents: { ...baseline.agents, [shape]: shape === "list" ? [{ id: "worker", model: "openai/a" }] : { worker: { model: "openai/a" } } } };
+    const changed = structuredClone(initial);
+    Object.assign(changed.agents, { [shape]: shape === "list" ? [{ id: "worker", model: "openai/b" }] : { worker: { model: "openai/b" } } });
+    expect(engine.protectedRoute(changed)).not.toEqual(engine.protectedRoute(initial));
+  }
+});
