@@ -548,3 +548,6 @@ for opt-in reads. The backend #676 phase-1 Sync consumer requires this proof
 for Codex agents; deploy a compatible Relay before that backend consumer.
 No new environment variable or policy revision; existing identity/owner/model
 fences and commit-time auth rechecks remain unchanged.
+
+## Canonical Sync model fence (#676)
+Fenced config apply normalizes a cloned predecessor with the same locked managed policy and target auth context as canonical Sync. Generated Sol catalog augmentation is compared like-for-like; only `agents.defaults.compaction.maxActiveTranscriptBytes` is omitted from both route projections as a maintenance budget. Other compaction fields, selected models, provider endpoints/auth, owner/transport fences and revision CAS remain protected. No live source rewrite or new environment switch is introduced.

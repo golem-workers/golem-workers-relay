@@ -280,7 +280,23 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
     if (state && action.kind === "config.apply") {
       const { config } = await readConfigFile(input.configPath);
       const candidate: unknown = JSON5.parse(action.configText);
-      if (!action.expectedRevision || !isDeepStrictEqual(managedRuntime.protectedRoute(config), managedRuntime.protectedRoute(candidate as Record<string, unknown>))) {
+      // Backend Sync supplies a normalized candidate. Normalize a clone with the
+      // same locked target policy/auth context; never rewrite the live predecessor.
+      const normalizedSource = structuredClone(config);
+      managedRuntime.normalizeConfig(normalizedSource, policy, context);
+      const sourceRoute = managedRuntime.protectedRoute(normalizedSource) as Record<string, unknown>;
+      const candidateRoute = managedRuntime.protectedRoute(candidate as Record<string, unknown>) as Record<string, unknown>;
+      for (const projection of [sourceRoute, candidateRoute]) {
+        const defaults = ensureOptionalRecord(ensureOptionalRecord(projection.agents)?.defaults);
+        const compaction = ensureOptionalRecord(defaults?.compaction);
+        // Maintenance byte budget is not model/auth/transport intent. Every
+        // other compaction leaf remains fenced, including model and provider.
+        if (compaction && Object.hasOwn(compaction, "maxActiveTranscriptBytes")) {
+          delete compaction.maxActiveTranscriptBytes;
+          if (!Object.keys(compaction).length) delete defaults!.compaction;
+        }
+      }
+      if (!action.expectedRevision || !isDeepStrictEqual(sourceRoute, candidateRoute)) {
         throw new AgentControlError("MODEL_FENCE_REQUIRED", "Fenced configuration requires CAS and unchanged model routing");
       }
       try { managedRuntime.assertRuntimeMetadata(candidate as Record<string, unknown>, policy, context); }
