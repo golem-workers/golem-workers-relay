@@ -286,16 +286,8 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       managedRuntime.normalizeConfig(normalizedSource, policy, context);
       const sourceRoute = managedRuntime.protectedRoute(normalizedSource) as Record<string, unknown>;
       const candidateRoute = managedRuntime.protectedRoute(candidate as Record<string, unknown>) as Record<string, unknown>;
-      for (const projection of [sourceRoute, candidateRoute]) {
-        const defaults = ensureOptionalRecord(ensureOptionalRecord(projection.agents)?.defaults);
-        const compaction = ensureOptionalRecord(defaults?.compaction);
-        // Maintenance byte budget is not model/auth/transport intent. Every
-        // other compaction leaf remains fenced, including model and provider.
-        if (compaction && Object.hasOwn(compaction, "maxActiveTranscriptBytes")) {
-          delete compaction.maxActiveTranscriptBytes;
-          if (!Object.keys(compaction).length) delete defaults!.compaction;
-        }
-      }
+      // Operational agent settings use whole-config CAS; only canonical
+      // model/auth/transport routing participates in the model fence.
       if (!action.expectedRevision || !isDeepStrictEqual(sourceRoute, candidateRoute)) {
         throw new AgentControlError("MODEL_FENCE_REQUIRED", "Fenced configuration requires CAS and unchanged model routing");
       }

@@ -2400,6 +2400,9 @@ describe("canonical config-sync normalized model fence", () => {
     runtime.normalizeConfig(candidate, runtime.defaultPolicy, { env: {}, subscriptionAuth: false, apiKeyAuth: false });
     const defaults = (candidate.agents as { defaults: typeof source.agents.defaults }).defaults;
     defaults.compaction.maxActiveTranscriptBytes = 0;
+    defaults.compaction.model = "openai/gpt-6-luna";
+    defaults.compaction.keepRecentTokens = 32000;
+    Object.assign(defaults, { timeoutSeconds: 7200 });
     try {
       await fs.writeFile(configPath, sourceText);
       await writeModelFence(configPath, { revision: "676-fixture", predecessor: null, status: "APPLIED", model: "openai/gpt-6.1-sol" });
@@ -2408,8 +2411,6 @@ describe("canonical config-sync normalized model fence", () => {
         (cfg: Record<string, unknown>) => { (cfg.agents as typeof source.agents).defaults.model.primary = "openai/gpt-5.4"; },
         (cfg: Record<string, unknown>) => { (cfg.models as { providers: { openai: Record<string, unknown> } }).providers.openai.baseUrl = "https://evil.test/v1"; },
         (cfg: Record<string, unknown>) => { Reflect.deleteProperty(cfg, "auth"); },
-        (cfg: Record<string, unknown>) => { (cfg.agents as typeof source.agents).defaults.compaction.model = "openai/other"; },
-        (cfg: Record<string, unknown>) => { (cfg.agents as typeof source.agents).defaults.compaction.keepRecentTokens = 1; },
       ];
       for (const mutate of hostileMutations) {
         const hostile = structuredClone(candidate); mutate(hostile);
