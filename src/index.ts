@@ -1,3 +1,4 @@
+import { recoverGatewayConnection } from "./managed-runtime/gatewayRecovery.js";
 import { convergeManagedRuntimeAtStartup } from "./managed-runtime/startup.js";
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
@@ -85,6 +86,7 @@ async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
   const openclaw = resolveOpenclawConfig(process.env, {
     gatewayWsUrl: cfg.openclaw.gatewayWsUrl,
+    allowMissingAuth: true,
   });
   await convergeManagedRuntimeAtStartup(openclaw.configPath, logger);
   logger.info(
@@ -389,7 +391,18 @@ async function main(): Promise<void> {
   });
 
   const stop = createStopSignal();
-  await ensureGatewayConnected(gateway, stop);
+  const recoveringGateway = gateway;
+  void recoverGatewayConnection({
+    stopped: () => stop.stopped,
+    connect: async () => {
+      recoveringGateway.updateAuth(resolveOpenclawConfig(process.env, {
+        gatewayWsUrl: cfg.openclaw.gatewayWsUrl,
+        allowMissingAuth: true,
+      }).gateway.auth);
+      await recoveringGateway.start();
+    },
+    onError: err => logger.error({ err }, "Gateway unavailable; relay remains available and retries connection"),
+  });
   if (cfg.cronInventory.enabled) {
     cronInventorySync = createCronInventorySync({
       collector: createCronInventoryCollector({
@@ -1437,16 +1450,6 @@ function createStopSignal() {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   return state;
-}
-
-async function ensureGatewayConnected(
-  gateway: GatewayClient,
-  stop: { stopped: boolean },
-) {
-  if (stop.stopped) {
-    throw new Error("Relay stop requested before gateway startup completed");
-  }
-  await gateway.start();
 }
 
 async function waitForStop(stop: { stopped: boolean }): Promise<void> {
