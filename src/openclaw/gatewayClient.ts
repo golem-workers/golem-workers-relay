@@ -213,6 +213,11 @@ export class GatewayClient {
     this.tickTimeoutMultiplier = Math.max(1, opts.tickTimeoutMultiplier ?? 10);
   }
 
+  updateAuth(auth: { token?: string; password?: string }): void {
+    this.opts.token = auth.token;
+    this.opts.password = auth.password;
+  }
+
   async start(): Promise<void> {
     this.stopped = false;
     if (this.hello) return;

@@ -51,7 +51,7 @@ export function isCodexModelRef(modelRef: string | null | undefined): boolean {
   return typeof modelRef === "string" && modelRef.trim().toLowerCase().startsWith("codex/");
 }
 
-export function resolveOpenclawConfig(env: NodeJS.ProcessEnv, input?: { gatewayWsUrl?: string }) {
+export function resolveOpenclawConfig(env: NodeJS.ProcessEnv, input?: { gatewayWsUrl?: string; allowMissingAuth?: boolean }) {
   const configPath = resolveDefaultConfigPath(env);
   const parsed = safeReadJson5(configPath);
 
@@ -87,7 +87,7 @@ export function resolveOpenclawConfig(env: NodeJS.ProcessEnv, input?: { gatewayW
     },
   };
 
-  if (!resolved.gateway.auth.token && !resolved.gateway.auth.password) {
+  if (!input?.allowMissingAuth && !resolved.gateway.auth.token && !resolved.gateway.auth.password) {
     throw new Error(
       "OpenClaw gateway auth is not configured: set OPENCLAW_GATEWAY_TOKEN/OPENCLAW_GATEWAY_PASSWORD or gateway.auth token/password in openclaw.json"
     );

@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { normalizeManagedConfigOnDisk, withManagedRuntimePolicy } from "./managed-runtime/runtime-policy.js";
+import { recoverGatewayConnection } from "./managed-runtime/gatewayRecovery.js";
+import { convergeManagedRuntimeAtStartup } from "./managed-runtime/startup.js";
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { logger } from "./logger.js";
@@ -86,8 +86,9 @@ async function main(): Promise<void> {
   const cfg = loadRelayConfig(process.env);
   const openclaw = resolveOpenclawConfig(process.env, {
     gatewayWsUrl: cfg.openclaw.gatewayWsUrl,
+    allowMissingAuth: true,
   });
-  if (await withManagedRuntimePolicy(openclaw.configPath, undefined, () => normalizeManagedConfigOnDisk(openclaw.configPath), { allowMissingAuth: true })) execFileSync("systemctl", ["--user", "restart", "openclaw-gateway.service"], { env: { ...process.env, HOME: "/root", XDG_RUNTIME_DIR: "/run/user/0" }, stdio: "pipe" });
+  await convergeManagedRuntimeAtStartup(openclaw.configPath, logger);
   logger.info(
     {
       pid: process.pid,
@@ -390,7 +391,18 @@ async function main(): Promise<void> {
   });
 
   const stop = createStopSignal();
-  await ensureGatewayConnected(gateway, stop);
+  const recoveringGateway = gateway;
+  void recoverGatewayConnection({
+    stopped: () => stop.stopped,
+    connect: async () => {
+      recoveringGateway.updateAuth(resolveOpenclawConfig(process.env, {
+        gatewayWsUrl: cfg.openclaw.gatewayWsUrl,
+        allowMissingAuth: true,
+      }).gateway.auth);
+      await recoveringGateway.start();
+    },
+    onError: err => logger.error({ err }, "Gateway unavailable; relay remains available and retries connection"),
+  });
   if (cfg.cronInventory.enabled) {
     cronInventorySync = createCronInventorySync({
       collector: createCronInventoryCollector({
@@ -1438,16 +1450,6 @@ function createStopSignal() {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   return state;
-}
-
-async function ensureGatewayConnected(
-  gateway: GatewayClient,
-  stop: { stopped: boolean },
-) {
-  if (stop.stopped) {
-    throw new Error("Relay stop requested before gateway startup completed");
-  }
-  await gateway.start();
 }
 
 async function waitForStop(stop: { stopped: boolean }): Promise<void> {

@@ -10,6 +10,14 @@ import {
 } from "./activityIndex.js";
 
 describe("ConversationActivityIndex", () => {
+  it("ignores truncated cache JSON without deleting it or preventing startup", async () => {
+    const filePath = await tempIndexPath();
+    await fs.writeFile(filePath, '{"records":[');
+    const index = new ConversationActivityIndex({ filePath });
+    await expect(index.load()).resolves.toBeUndefined();
+    expect(index.findBestUserVisibleRoute({ now: 1000 })).toBeNull();
+    expect(await fs.readFile(filePath, "utf8")).toBe('{"records":[');
+  });
   it("selects the freshest external user-visible route", async () => {
     const filePath = await tempIndexPath();
     const index = new ConversationActivityIndex({ filePath });

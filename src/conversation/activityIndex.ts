@@ -265,7 +265,13 @@ export class ConversationActivityIndex {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
     }
-    const parsed = activityStoreSchema.safeParse(JSON.parse(raw));
+    let value: unknown;
+    try { value = JSON.parse(raw); }
+    catch {
+      logger.warn({ filePath: this.opts.filePath }, "Ignoring malformed relay conversation activity index");
+      return;
+    }
+    const parsed = activityStoreSchema.safeParse(value);
     if (!parsed.success) {
       logger.warn(
         { filePath: this.opts.filePath, error: parsed.error.message },
