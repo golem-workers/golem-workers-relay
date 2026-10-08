@@ -299,7 +299,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       throw new AgentControlError("MODEL_FENCE_REQUIRED", "Legacy configuration mutations cannot bypass an established model fence");
     }
     return complete(await executeAgentControlUnfenced(input));
-  })));
+  }, { allowMissingAuth: ["codex.auth.clear", "gateway.restart"].includes(input.action.kind) })));
 }
 
 async function executeAgentControlUnfenced(input: {

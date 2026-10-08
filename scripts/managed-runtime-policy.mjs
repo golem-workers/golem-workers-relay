@@ -35,7 +35,7 @@ const incoming = process.env.GOLEM_MANAGED_RUNTIME_POLICY_JSON ? managed.parsePo
 // introducing a mandatory identity environment variable on existing agents.
 const policy = managed.acceptPolicy(current, incoming);
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-managed.normalizeConfig(config, policy, { ...(managed.needsAuthContext(config, policy) ? readOfflineRuntimeAuth(configPath) : {}), env: process.env });
+managed.normalizeConfig(config, policy, { ...(managed.needsAuthContext(config, policy) ? readOfflineRuntimeAuth(configPath) : {}), env: process.env, allowMissingAuth: current.chatHarness === "codex" && JSON.stringify(current) === JSON.stringify(policy) });
 function atomic(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = file + ".managed-" + process.pid;

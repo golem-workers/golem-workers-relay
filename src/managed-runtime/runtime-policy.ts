@@ -5,7 +5,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import JSON5 from "json5";
 import { createManagedRuntimePolicy, type ManagedRuntimePolicy, type RuntimeContext } from "./policy.generated.js";
 export const managedRuntime = createManagedRuntimePolicy();
-const scope = new AsyncLocalStorage<{ configPath: string; policy: ManagedRuntimePolicy }>();
+const scope = new AsyncLocalStorage<{ configPath: string; policy: ManagedRuntimePolicy; allowMissingAuth?: boolean }>();
 export function policyFile(configPath: string): string {
   return configPath === "/root/.openclaw/openclaw.json" ? "/var/lib/golem-workers/managed-runtime-policy.json" : configPath + ".managed-runtime-policy.json";
 }
@@ -38,19 +38,19 @@ async function persistPolicy(configPath: string, incoming: ManagedRuntimePolicy)
 }
 /** Called inside model/owner mutation locks. Incoming authority is carried by the
  * authenticated backend action, never by arbitrary OpenClaw config text. */
-export async function withManagedRuntimePolicy<T>(configPath: string, incoming: ManagedRuntimePolicy | undefined, operation: () => Promise<T>): Promise<T> {
+export async function withManagedRuntimePolicy<T>(configPath: string, incoming: ManagedRuntimePolicy | undefined, operation: () => Promise<T>, options?: { allowMissingAuth?: boolean }): Promise<T> {
   const inherited = scope.getStore();
   return scope.run({ configPath: "", policy: managedRuntime.defaultPolicy }, async () => {
     const current = inherited?.configPath === path.resolve(configPath) ? inherited.policy : await readManagedRuntimePolicy(configPath);
     // First scoped authority comes from authenticated backend ingress. Subsequent
     // authority must retain that server binding and monotonic revision counters.
     const policy = incoming ? managedRuntime.acceptPolicy(current, incoming) : current;
-    return scope.run({ configPath: path.resolve(configPath), policy }, operation);
+    return scope.run({ configPath: path.resolve(configPath), policy, allowMissingAuth: (options?.allowMissingAuth === true || (options === undefined && inherited?.configPath === path.resolve(configPath) && inherited.allowMissingAuth === true)) && current.chatHarness === "codex" && JSON.stringify(current) === JSON.stringify(policy) }, operation);
   });
 }
 export async function runtimeContext(configPath: string): Promise<RuntimeContext> {
   const { hasPersistedChatGptSubscription, hasPersistedOpenAiApiKey } = await import("../agentControl/codexLogin.js");
-  return { env: process.env, subscriptionAuth: await hasPersistedChatGptSubscription(configPath), apiKeyAuth: await hasPersistedOpenAiApiKey(configPath) };
+  return { allowMissingAuth: scope.getStore()?.configPath === path.resolve(configPath) && scope.getStore()?.allowMissingAuth === true, env: process.env, subscriptionAuth: await hasPersistedChatGptSubscription(configPath), apiKeyAuth: await hasPersistedOpenAiApiKey(configPath) };
 }
 /** The single local write boundary. CAS is checked by the caller BEFORE this runs;
  * credentials/model refs/routes are not rewritten. Incompatible Codex choice fails

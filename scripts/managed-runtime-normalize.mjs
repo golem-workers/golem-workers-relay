@@ -109,9 +109,9 @@ function createManagedRuntimePolicy() {
             const chatgpt = url.hostname === "chatgpt.com" && /^\/backend-api(?:\/(?:v1|codex(?:\/(?:v1|responses))?))?\/?$/.test(url.pathname);
             if (!(platform && info.api === "openai-responses") && !(chatgpt && info.api === "openai-chatgpt-responses"))
                 return deny("authored/custom or incompatible provider route cannot be reproduced by Codex");
-            if (platform && !info.hasApiKey)
+            if (platform && !info.hasApiKey && !context.allowMissingAuth)
                 return deny("prepared OpenAI API-key authentication is required");
-            if (chatgpt && !info.hasSubscription)
+            if (chatgpt && !info.hasSubscription && !context.allowMissingAuth)
                 return deny("prepared ChatGPT OAuth/token authentication is required");
         }
         catch {
@@ -382,7 +382,7 @@ const incoming = process.env.GOLEM_MANAGED_RUNTIME_POLICY_JSON ? managed.parsePo
 // introducing a mandatory identity environment variable on existing agents.
 const policy = managed.acceptPolicy(current, incoming);
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-managed.normalizeConfig(config, policy, { ...(managed.needsAuthContext(config, policy) ? readOfflineRuntimeAuth(configPath) : {}), env: process.env });
+managed.normalizeConfig(config, policy, { ...(managed.needsAuthContext(config, policy) ? readOfflineRuntimeAuth(configPath) : {}), env: process.env, allowMissingAuth: current.chatHarness === "codex" && JSON.stringify(current) === JSON.stringify(policy) });
 function atomic(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = file + ".managed-" + process.pid;

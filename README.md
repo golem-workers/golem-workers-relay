@@ -559,3 +559,4 @@ settings: compaction and turn budgets use config CAS without requiring a model
 selection transition. Model assignments/catalogs, request transport overrides,
 provider routes and auth remain protected. Deploy with the matching backend
 canonical policy digest; do not disable owner, CAS or model fences.
+OAuth disconnect and startup of unchanged persisted Codex authority permit absent credentials for structural convergence only. Model/preflight activation remains credential-gated; unsupported routes and policy/owner/model fences remain enforced. Deploy with the matching backend canonical policy digest.
