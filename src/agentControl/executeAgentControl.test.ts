@@ -120,7 +120,7 @@ exit 1
     "utf8",
   );
   fsSync.chmodSync(scriptPath, 0o755);
-  process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+  process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
   return logPath;
 }
 
@@ -144,7 +144,7 @@ ${input?.fail ? "printf 'invalid operator config\\n' >&2\nexit 1" : "printf '{\"
     "utf8",
   );
   fsSync.chmodSync(scriptPath, 0o755);
-  process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+  process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
   return logPath;
 }
 
@@ -427,7 +427,7 @@ if (args[1] === "list") {
   console.log("Approved sender.");
 } else process.exit(9);
 `, { mode: 0o755 });
-    process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+    process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
     const calls = async () => (await fs.readFile(logPath, "utf8")).trim().split("\n").map(line => JSON.parse(line) as { args: string[]; configPath: string; stateDir: string });
     const execute = (action: Parameters<typeof executeAgentControl>[0]["action"]) =>
       executeAgentControl({ action, configPath, gateway: noopGateway });
@@ -571,6 +571,39 @@ describe("executeAgentControl Codex login", () => {
   beforeEach(async () => {
     systemctlLogPath = await installFakeSystemctl();
   });
+
+  it("clears OAuth under persisted Codex authority, restarts, and remains idempotent without weakening preflight", async () => {
+    await installFakeOpenclaw();
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-disconnect-"));
+    process.env.OPENCLAW_STATE_DIR = tempDir;
+    process.env.HOME = tempDir;
+    process.env.CODEX_HOME = path.join(tempDir, "codex");
+    delete process.env.OPENAI_API_KEY;
+    const configPath = path.join(tempDir, "openclaw.json");
+    const policy = { schemaVersion: 1 as const, revision: 2, chatHarness: "codex" as const };
+    const ref = "openai/gpt-6.1-sol";
+    const config = {
+      auth: { profiles: { "openai:fixture": { provider: "openai", mode: "oauth" } } },
+      agents: { defaults: { model: { primary: ref, fallbacks: [] }, models: { [ref]: {} } } },
+      models: { providers: { openai: { api: "openai-chatgpt-responses", baseUrl: "https://chatgpt.com/backend-api/codex", models: [{ id: "gpt-6.1-sol" }] } } },
+      channels: { telegram: { enabled: true } },
+    };
+    createManagedRuntimePolicy().normalizeConfig(config, policy, { subscriptionAuth: true });
+    await fs.writeFile(configPath, JSON.stringify(config));
+    await fs.writeFile(configPath + ".managed-runtime-policy.json", JSON.stringify(policy));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(executeAgentControl({ action: { kind: "codex.auth.clear" }, configPath, gateway: noopGateway })).resolves.toEqual({ kind: "codex.auth.clear", applied: true });
+    }
+    const after = JSON.parse(await fs.readFile(configPath, "utf8")) as typeof config;
+    expect(after.auth.profiles).toEqual({});
+    expect(after.agents).toEqual(config.agents);
+    expect(after.models).toEqual(config.models);
+    expect(after.channels).toEqual(config.channels);
+    expect(JSON.parse(await fs.readFile(configPath + ".managed-runtime-policy.json", "utf8"))).toEqual(policy);
+    expect((await readSystemctlCalls(systemctlLogPath)).filter(call => call === "--user restart openclaw-gateway.service")).toHaveLength(2);
+    await expect(executeAgentControl({ action: { kind: "managedRuntime.preflight" }, configPath, gateway: noopGateway })).rejects.toMatchObject({ code: "MANAGED_CODEX_INCOMPATIBLE" });
+    await expect(executeAgentControl({ action: { kind: "gateway.restart" }, configPath, gateway: noopGateway })).resolves.toMatchObject({ restarted: true });
+  }, 30_000);
 
   it("starts device-code login and reports the verification details", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-login-"));

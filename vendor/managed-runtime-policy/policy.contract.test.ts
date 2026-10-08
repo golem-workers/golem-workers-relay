@@ -181,3 +181,25 @@ it("does not model-fence compaction/budgets but protects every conversational ro
     expect(engine.protectedRoute(changed)).not.toEqual(engine.protectedRoute(initial));
   }
 });
+
+ it.each(["openai-responses", "openai-chatgpt-responses"])("disconnect convergence preserves %s route without claiming readiness", api => {
+  const config = fixture();
+  const provider = config.models.providers.openai;
+  delete (provider as { apiKey?: string }).apiKey;
+  provider.api = api;
+  provider.baseUrl = api === "openai-responses" ? "https://api.openai.com/v1" : "https://chatgpt.com/backend-api/codex";
+  engine.normalizeConfig(config, native, { env: {}, subscriptionAuth: false, apiKeyAuth: false });
+  const before = structuredClone(config);
+  const context = { env: {}, subscriptionAuth: false, apiKeyAuth: false };
+  expect(() => engine.normalizeConfig(config, codex, context)).toThrow("authentication is required");
+  expect(config).toEqual(before);
+  engine.normalizeConfig(config, codex, { ...context, allowMissingAuth: true });
+  expect(config.agents.defaults.models[ref]).toMatchObject({ agentRuntime: { id: "codex" } });
+  expect(engine.protectedRoute(config)).toEqual(engine.protectedRoute(before));
+  expect(engine.codexCompatibility(config, ref, context).supported).toBe(false);
+  const normalized = structuredClone(config);
+  engine.normalizeConfig(config, codex, { ...context, allowMissingAuth: true });
+  expect(config).toEqual(normalized);
+  config.models.providers.openai.baseUrl = "https://proxy.test/v1";
+  expect(() => engine.normalizeConfig(config, codex, { ...context, allowMissingAuth: true })).toThrow("MANAGED_CODEX_INCOMPATIBLE");
+ });

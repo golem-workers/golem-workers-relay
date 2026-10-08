@@ -87,7 +87,7 @@ async function main(): Promise<void> {
   const openclaw = resolveOpenclawConfig(process.env, {
     gatewayWsUrl: cfg.openclaw.gatewayWsUrl,
   });
-  if (await withManagedRuntimePolicy(openclaw.configPath, undefined, () => normalizeManagedConfigOnDisk(openclaw.configPath))) execFileSync("systemctl", ["--user", "restart", "openclaw-gateway.service"], { env: { ...process.env, HOME: "/root", XDG_RUNTIME_DIR: "/run/user/0" }, stdio: "pipe" });
+  if (await withManagedRuntimePolicy(openclaw.configPath, undefined, () => normalizeManagedConfigOnDisk(openclaw.configPath), { allowMissingAuth: true })) execFileSync("systemctl", ["--user", "restart", "openclaw-gateway.service"], { env: { ...process.env, HOME: "/root", XDG_RUNTIME_DIR: "/run/user/0" }, stdio: "pipe" });
   logger.info(
     {
       pid: process.pid,

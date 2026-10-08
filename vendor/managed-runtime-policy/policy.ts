@@ -4,7 +4,8 @@ export type ManagedHarness = "openclaw" | "codex";
 export type GlobalManagedRuntimePolicy = { schemaVersion: 1; revision: number; chatHarness: ManagedHarness };
 export type AgentManagedRuntimePolicy = { schemaVersion: 2; serverId: string; globalRevision: number; revision: number; harnessOverride: ManagedHarness | null; defaultHarness: ManagedHarness; chatHarness: ManagedHarness };
 export type ManagedRuntimePolicy = GlobalManagedRuntimePolicy | AgentManagedRuntimePolicy;
-export type RuntimeContext = { env?: Record<string, unknown>; subscriptionAuth?: boolean; apiKeyAuth?: boolean; params?: Record<string, unknown>; scopeModels?: Record<string, unknown>; scope?: Record<string, unknown> };
+/** Missing credentials are permitted only during disconnect/startup convergence, never readiness proofs. */
+export type RuntimeContext = { allowMissingAuth?: boolean; env?: Record<string, unknown>; subscriptionAuth?: boolean; apiKeyAuth?: boolean; params?: Record<string, unknown>; scopeModels?: Record<string, unknown>; scope?: Record<string, unknown> };
 export function createManagedRuntimePolicy() {
   type Row = Record<string, unknown>;
   const record = (value: unknown): Row | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Row : undefined;
@@ -94,8 +95,8 @@ export function createManagedRuntimePolicy() {
       const platform = url.hostname === "api.openai.com" && ["/", "/v1", "/v1/"].includes(url.pathname);
       const chatgpt = url.hostname === "chatgpt.com" && /^\/backend-api(?:\/(?:v1|codex(?:\/(?:v1|responses))?))?\/?$/.test(url.pathname);
       if (!(platform && info.api === "openai-responses") && !(chatgpt && info.api === "openai-chatgpt-responses")) return deny("authored/custom or incompatible provider route cannot be reproduced by Codex");
-      if (platform && !info.hasApiKey) return deny("prepared OpenAI API-key authentication is required");
-      if (chatgpt && !info.hasSubscription) return deny("prepared ChatGPT OAuth/token authentication is required");
+      if (platform && !info.hasApiKey && !context.allowMissingAuth) return deny("prepared OpenAI API-key authentication is required");
+      if (chatgpt && !info.hasSubscription && !context.allowMissingAuth) return deny("prepared ChatGPT OAuth/token authentication is required");
     } catch { return deny("invalid provider endpoint"); }
     return { supported: true };
   }
