@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -131,6 +132,47 @@ describe("prepare-agent-server snapshot preparation", () => {
     const script = readFileSync(prepareAgentServerScriptPath, "utf8");
 
     expect(script).toContain("sqlite3 \\");
+  });
+
+  it("mutates snapshot plugins offline and aborts when gateway stop fails", () => {
+    const script = readFileSync(prepareAgentServerScriptPath, "utf8");
+    const start = script.indexOf('  set_step "openclaw_snapshot_plugins_offline"');
+    const end = script.indexOf('  set_step "openclaw_snapshot_channels_warmup_status"');
+    expect(start).toBeGreaterThan(script.indexOf("    run_openclaw_onboard_and_verify"));
+    expect(end).toBeGreaterThan(start);
+    const lifecycle = script.slice(start, end);
+    const mocks = `
+      set -e
+      gateway=running
+      set_step() { :; }
+      stop_openclaw_gateway_if_present() {
+        echo stop
+        if [[ "$STOP_FAIL" == 1 ]]; then return 1; fi
+        gateway=stopped
+      }
+      require_offline() { [[ "$gateway" == stopped ]]; }
+      write_openclaw_snapshot_warmup_config() { require_offline; echo config; }
+      install_openclaw_whatsapp_plugin() { require_offline; echo whatsapp; }
+      install_openclaw_capability_plugin() { require_offline; echo "$1"; }
+      node() { require_offline; echo policy; }
+      warm_openclaw_snapshot_channels() { require_offline; gateway=running; echo warmup; }
+      RELAY_REPO_DIR=/unused
+      MOONSHOT_PLUGIN_INSTALL_SPEC=unused
+      PERPLEXITY_PLUGIN_INSTALL_SPEC=unused
+    `;
+    expect(execFileSync("bash", ["-c", `${mocks}\n${lifecycle}`], {
+      encoding: "utf8", env: { ...process.env, STOP_FAIL: "0" },
+    }).trim().split("\n")).toEqual([
+      "stop", "config", "whatsapp", "moonshot", "perplexity", "policy", "warmup",
+    ]);
+    try {
+      execFileSync("bash", ["-c", `${mocks}\n${lifecycle}`], {
+        encoding: "utf8", env: { ...process.env, STOP_FAIL: "1" },
+      });
+      throw new Error("Expected failed gateway stop to abort snapshot preparation");
+    } catch (error) {
+      expect(error).toMatchObject({ status: 1, stdout: "stop\n" });
+    }
   });
 
   it("bakes the WhatsApp plugin into provider snapshots before channel warmup", () => {

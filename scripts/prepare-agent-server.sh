@@ -1315,6 +1315,11 @@ NODE
     echo "Skipping openclaw onboard --install-daemon by request."
   fi
 
+  # Onboarding leaves the gateway live. Mutate plugin/config state offline so
+  # automatic reload cannot race CLI install/enable and plugin resource drain.
+  set_step "openclaw_snapshot_plugins_offline"
+  stop_openclaw_gateway_if_present
+
   set_step "openclaw_snapshot_channels_warmup_config"
   write_openclaw_snapshot_warmup_config
 
