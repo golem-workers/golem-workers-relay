@@ -27,9 +27,9 @@ it.each(["openai-chatgpt-responses", "openai-responses"])("starts with missing %
   expect(await convergeManagedRuntimeAtStartup(configPath, logger, restart)).toBe("restarted");
   expect(restart).toHaveBeenCalledTimes(1);
   const text = await fs.readFile(configPath, "utf8");
-  const normalized = JSON.parse(text);
+  const normalized = JSON.parse(text) as ReturnType<typeof config>;
   expect(managedRuntime.protectedRoute(normalized)).toEqual(managedRuntime.protectedRoute(original));
-  expect(normalized.agents.defaults.models["openai/gpt-5.5"].agentRuntime).toEqual({ id: "codex" });
+  expect(normalized.agents.defaults.models["openai/gpt-5.5"]).toMatchObject({ agentRuntime: { id: "codex" } });
   expect(managedRuntime.codexCompatibility(normalized, "openai/gpt-5.5", await runtimeContext(configPath)).supported).toBe(false);
   await expect(normalizeManagedConfigText(configPath, text)).rejects.toThrow("MANAGED_CODEX_INCOMPATIBLE");
   expect(await convergeManagedRuntimeAtStartup(configPath, logger, restart)).toBe("unchanged");
