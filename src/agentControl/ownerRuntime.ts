@@ -15,8 +15,8 @@ async function boundedRequest(gateway: { request(method: string, params?: unknow
 // Hold the commit gate to bind enrollment to this observation, never restart.
 export async function readOwnerRuntime(configPath: string, gateway: {
   request(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
-}): Promise<Receipt> {
-  return withOwnerFenceLock(configPath, async () => {
+}, snapshotOnly = false): Promise<Receipt> {
+  const observe = async (): Promise<Receipt> => {
     const enrolledFence = await readOwnerFence(configPath);
     const base: Receipt = { version: 1, state: "pending", enrolledFence, configRevisionHash: null, appliedConfigHash: null, config: null };
     if (!enrolledFence) return base;
@@ -39,7 +39,9 @@ export async function readOwnerRuntime(configPath: string, gateway: {
       // Re-read across the channel observation to reject a superseded receipt.
       const after = await boundedRequest(gateway, "config.get", {});
       if (!record(after) || after.valid !== true || after.path !== configPath || after.configRevisionHash !== revision || after.appliedConfigHash !== applied || !isDeepStrictEqual(after.config, response.config)) return receipt;
+      if (!isDeepStrictEqual(await readOwnerFence(configPath), enrolledFence)) return { ...receipt, state: "pending" };
       return { ...receipt, state: "applied" };
     } catch { return { ...base, state: "unavailable" }; }
-  });
+  };
+  return snapshotOnly ? observe() : withOwnerFenceLock(configPath, observe);
 }
