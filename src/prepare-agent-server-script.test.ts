@@ -73,11 +73,14 @@ describe("prepare-agent-server.sh", () => {
     }
   });
 
-  it("links stable OpenClaw and Codex commands to package bin entries instead of pnpm shims", () => {
-    expect(script).toContain('ln -sfn "${GLOBAL_PNPM_ROOT}/.bin/codex" /usr/local/bin/codex');
-    expect(script).toContain('ln -sfn "${GLOBAL_PNPM_ROOT}/.bin/openclaw" /usr/local/bin/openclaw');
-    expect(script).not.toContain('ln -sfn "${PNPM_HOME_DIR}/codex" /usr/local/bin/codex');
-    expect(script).not.toContain('ln -sfn "${PNPM_HOME_DIR}/openclaw" /usr/local/bin/openclaw');
+  it("uses npm-owned launchers without installing pnpm or linking a launcher onto itself", () => {
+    expect(script).toContain('export npm_config_prefix=/usr/local');
+    expect(script).toContain('npm config set prefix /usr/local --location=user');
+    expect(script).toContain('GLOBAL_NPM_ROOT="$(npm root -g)"');
+    expect(script).toContain('npm install -g "@openai/codex@${CODEX_INSTALL_VERSION}"');
+    expect(script).toContain('test -x /usr/local/bin/openclaw');
+    expect(script).not.toContain('pnpm');
+    expect(script).not.toContain('ln -sfn "${GLOBAL_NPM_ROOT}');
   });
 
   it("enforces the Node ranges required by current OpenClaw releases", () => {

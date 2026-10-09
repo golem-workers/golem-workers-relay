@@ -14,7 +14,7 @@ describe("prepare-agent-server snapshot preparation", () => {
     const patchIndex = script.indexOf("patch-openclaw-ai-attachment-replay.mjs");
 
     expect(script).toContain("patch-openclaw-ai-attachment-replay.mjs");
-    expect(script).toContain('"${GLOBAL_PNPM_ROOT}/@openclaw/ai"');
+    expect(script).toContain('"${OPENCLAW_PACKAGE_DIR}/node_modules/@openclaw/ai"');
     expect(patchIndex).toBeGreaterThan(
       script.indexOf("OPENCLAW_INSTALLED_VERSION="),
     );

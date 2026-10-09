@@ -31,7 +31,6 @@ OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS="--max-old-space-size=${OPENCLAW_GATEWAY_
 OPENCLAW_GATEWAY_READINESS_ATTEMPTS="${OPENCLAW_GATEWAY_READINESS_ATTEMPTS:-360}"
 OPENCLAW_GATEWAY_READINESS_SLEEP_SECONDS="${OPENCLAW_GATEWAY_READINESS_SLEEP_SECONDS:-2}"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
-PNPM_HOME_DIR="/root/.local/share/pnpm"
 OPENCLAW_MIN_NODE_24_VERSION="24.16.0"
 OPENCLAW_MIN_NODE_26_VERSION="26.1.0"
 OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-}"
@@ -746,51 +745,47 @@ EOF
   cd /root
 
   set_step "openclaw_install"
-  npm install -g pnpm@10
+  export npm_config_prefix=/usr/local
+  npm config set prefix /usr/local --location=user
+  export PATH="/usr/local/bin:/usr/bin:/bin:${PATH}"
+  test "$(npm prefix -g)" = /usr/local
   hash -r
-  mkdir -p "${NODE_COMPILE_CACHE_DIR}" "${PNPM_HOME_DIR}"
+  mkdir -p "${NODE_COMPILE_CACHE_DIR}"
   chmod 1777 "${NODE_COMPILE_CACHE_DIR}"
-  export PNPM_HOME="${PNPM_HOME_DIR}"
-  export PATH="${PNPM_HOME}:${PATH}"
-  GLOBAL_PNPM_ROOT="$(pnpm root -g)"
-  echo "Using global pnpm root: ${GLOBAL_PNPM_ROOT}"
+  GLOBAL_NPM_ROOT="$(npm root -g)"
+  echo "Using global npm root: ${GLOBAL_NPM_ROOT}"
   append_line_if_missing "${ROOT_BASHRC}" "export NODE_OPTIONS=\"${NODE_OPTIONS_VALUE}\""
   append_line_if_missing "${ROOT_BASHRC}" "export NODE_COMPILE_CACHE=\"${NODE_COMPILE_CACHE_DIR}\""
   append_line_if_missing "${ROOT_BASHRC}" 'export OPENCLAW_NO_RESPAWN=1'
   append_line_if_missing "${ROOT_BASHRC}" 'export FS_SAFE_NATIVE_MODE=off'
   append_line_if_missing "${ROOT_BASHRC}" 'export OPENCLAW_FS_SAFE_NATIVE_MODE=off'
-  append_line_if_missing "${ROOT_BASHRC}" "export PNPM_HOME=\"${PNPM_HOME_DIR}\""
-  append_line_if_missing "${ROOT_BASHRC}" 'export PATH="$PNPM_HOME:$PATH"'
-  append_line_if_missing "${ROOT_BASHRC}" "export NODE_PATH=\"${GLOBAL_PNPM_ROOT}\""
+  append_line_if_missing "${ROOT_BASHRC}" "export NODE_PATH=\"${GLOBAL_NPM_ROOT}\""
   upsert_env_file_key /etc/environment NODE_OPTIONS "${NODE_OPTIONS_VALUE}"
   upsert_env_file_key /etc/environment NODE_COMPILE_CACHE "${NODE_COMPILE_CACHE_DIR}"
   upsert_env_file_key /etc/environment OPENCLAW_NO_RESPAWN "1"
   upsert_env_file_key /etc/environment FS_SAFE_NATIVE_MODE "off"
   upsert_env_file_key /etc/environment OPENCLAW_FS_SAFE_NATIVE_MODE "off"
-  upsert_env_file_key /etc/environment PNPM_HOME "${PNPM_HOME_DIR}"
-  upsert_env_file_key /etc/environment NODE_PATH "${GLOBAL_PNPM_ROOT}"
+  upsert_env_file_key /etc/environment NODE_PATH "${GLOBAL_NPM_ROOT}"
   write_file /etc/profile.d/golem-node-runtime.sh "#!/usr/bin/env bash
 export NODE_OPTIONS=\"${NODE_OPTIONS_VALUE}\"
 export NODE_COMPILE_CACHE=\"${NODE_COMPILE_CACHE_DIR}\"
 export OPENCLAW_NO_RESPAWN=1
 export FS_SAFE_NATIVE_MODE=off
 export OPENCLAW_FS_SAFE_NATIVE_MODE=off
-export PNPM_HOME=\"${PNPM_HOME_DIR}\"
-export PATH=\"\$PNPM_HOME:\$PATH\"
-export NODE_PATH=\"${GLOBAL_PNPM_ROOT}\"
+export NODE_PATH=\"${GLOBAL_NPM_ROOT}\"
 "
   chmod 0644 /etc/profile.d/golem-node-runtime.sh
   rm -f /etc/systemd/system.conf.d/node-runtime.conf /etc/systemd/user.conf.d/node-runtime.conf
   write_file /etc/systemd/system.conf.d/node-runtime.conf "[Manager]
-DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"FS_SAFE_NATIVE_MODE=off\" \"OPENCLAW_FS_SAFE_NATIVE_MODE=off\" \"PNPM_HOME=${PNPM_HOME_DIR}\" \"NODE_PATH=${GLOBAL_PNPM_ROOT}\"
+DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"FS_SAFE_NATIVE_MODE=off\" \"OPENCLAW_FS_SAFE_NATIVE_MODE=off\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
 "
   write_file /etc/systemd/user.conf.d/node-runtime.conf "[Manager]
-DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"FS_SAFE_NATIVE_MODE=off\" \"OPENCLAW_FS_SAFE_NATIVE_MODE=off\" \"PNPM_HOME=${PNPM_HOME_DIR}\" \"NODE_PATH=${GLOBAL_PNPM_ROOT}\"
+DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"FS_SAFE_NATIVE_MODE=off\" \"OPENCLAW_FS_SAFE_NATIVE_MODE=off\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
 "
   export NODE_OPTIONS="${NODE_OPTIONS_VALUE}"
   export NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE_DIR}"
   export OPENCLAW_NO_RESPAWN=1
-  export NODE_PATH="${GLOBAL_PNPM_ROOT}"
+  export NODE_PATH="${GLOBAL_NPM_ROOT}"
   export OPENCLAW_SKIP_CANVAS_HOST=1
   export OPENCLAW_LOG_LEVEL=debug
   prepare_root_user_systemd
@@ -800,13 +795,48 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     OPENCLAW_NO_RESPAWN \
     FS_SAFE_NATIVE_MODE \
     OPENCLAW_FS_SAFE_NATIVE_MODE \
-    PNPM_HOME \
     NODE_PATH \
     OPENCLAW_SKIP_CANVAS_HOST \
     OPENCLAW_LOG_LEVEL || true
-  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm --config.node-linker=hoisted add -g @openai/codex@latest openclaw@latest grammy playwright @grammyjs/runner @grammyjs/transformer-throttler @buape/carbon @larksuiteoapi/node-sdk @slack/bolt
-  CODEX_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/@openai/codex"
-  OPENCLAW_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/openclaw"
+  OPENCLAW_INSTALL_VERSION="$(npm view openclaw version)"
+  CODEX_INSTALL_VERSION="$(npm view @openai/codex version)"
+  echo "Selected OpenClaw ${OPENCLAW_INSTALL_VERSION}, Codex ${CODEX_INSTALL_VERSION}"
+  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g "@openai/codex@${CODEX_INSTALL_VERSION}" "openclaw@${OPENCLAW_INSTALL_VERSION}" grammy playwright @grammyjs/runner @grammyjs/transformer-throttler @buape/carbon @larksuiteoapi/node-sdk @slack/bolt
+  node --input-type=module - "${GLOBAL_NPM_ROOT}" <<'NPM_COMPANIONS'
+import fs from 'node:fs';
+import path from 'node:path';
+import {createRequire} from 'node:module';
+import {pathToFileURL} from 'node:url';
+const root = process.argv[2];
+const packageRoot = path.join(root, 'openclaw');
+const companions = ['grammy', 'playwright', '@grammyjs/runner', '@grammyjs/transformer-throttler', '@buape/carbon', '@larksuiteoapi/node-sdk', '@slack/bolt'];
+const require = createRequire(path.join(packageRoot, 'package.json'));
+for (const name of companions) {
+  const destination = path.join(packageRoot, 'node_modules', name);
+  // CJS NODE_PATH may resolve a global package that ESM cannot import.
+  if (!fs.existsSync(destination)) {
+    const target = path.join(root, name);
+    if (!fs.existsSync(path.join(target, 'package.json'))) throw new Error('Missing companion ' + name);
+    fs.mkdirSync(path.dirname(destination), {recursive:true});
+    // A dangling or foreign link is a blocker, never overwrite independent packages.
+    fs.symlinkSync(target, destination, 'dir');
+  }
+  await import(pathToFileURL(require.resolve(name)).href);
+}
+// Verify resolution from each shipped plugin too, where plugins import these companions.
+const extensions = path.join(packageRoot, 'extensions');
+if (fs.existsSync(extensions)) for (const entry of fs.readdirSync(extensions)) {
+  const manifest = path.join(extensions, entry, 'package.json');
+  if (!fs.existsSync(manifest)) continue;
+  const pkg = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+  const fromPlugin = createRequire(manifest);
+  for (const name of companions) if (pkg.dependencies?.[name] || pkg.optionalDependencies?.[name]) {
+    await import(pathToFileURL(fromPlugin.resolve(name)).href);
+  }
+}
+NPM_COMPANIONS
+  CODEX_PACKAGE_DIR="${GLOBAL_NPM_ROOT}/@openai/codex"
+  OPENCLAW_PACKAGE_DIR="${GLOBAL_NPM_ROOT}/openclaw"
   test -f "${CODEX_PACKAGE_DIR}/package.json"
   test -f "${OPENCLAW_PACKAGE_DIR}/package.json"
   OPENCLAW_INSTALLED_VERSION="$(node -e "const pkg=require('${OPENCLAW_PACKAGE_DIR}/package.json'); process.stdout.write(String(pkg.version || ''))")"
@@ -815,7 +845,7 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     exit 1
   fi
   node "${RELAY_REPO_DIR}/scripts/patch-openclaw-ai-attachment-replay.mjs" \
-    "${GLOBAL_PNPM_ROOT}/@openclaw/ai"
+    "${OPENCLAW_PACKAGE_DIR}/node_modules/@openclaw/ai"
   configure_openclaw_plugin_cli_args
   if [[ -n "${OPENCLAW_CODEX_PLUGIN_SPEC:-}" ]]; then
     CODEX_PLUGIN_NPM_SPEC="${OPENCLAW_CODEX_PLUGIN_SPEC}"
@@ -859,10 +889,6 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     PERPLEXITY_PLUGIN_INSTALL_SPEC="npm:@openclaw/perplexity-plugin@${PERPLEXITY_PLUGIN_VERSION}"
   fi
   echo "Using compatible Perplexity plugin: ${PERPLEXITY_PLUGIN_INSTALL_SPEC}"
-  test -x "${GLOBAL_PNPM_ROOT}/.bin/codex"
-  test -x "${GLOBAL_PNPM_ROOT}/.bin/openclaw"
-  ln -sfn "${GLOBAL_PNPM_ROOT}/.bin/codex" /usr/local/bin/codex
-  ln -sfn "${GLOBAL_PNPM_ROOT}/.bin/openclaw" /usr/local/bin/openclaw
   test -x /usr/local/bin/codex
   test -x /usr/local/bin/openclaw
   command -v codex >/dev/null 2>&1
@@ -906,9 +932,9 @@ mkdir -p \"\${MANAGED_CODEX_HOME}\"
 exec \"\${REAL_CODEX}\" --dangerously-bypass-approvals-and-sandbox -c sandbox_mode='\"danger-full-access\"' -c approval_policy='\"never\"' -c allow_login_shell=true -c web_search='\"live\"' -c features.hooks=false -c hooks.PreToolUse=[] -c hooks.PostToolUse=[] -c hooks.PermissionRequest=[] -c hooks.Stop=[] \"\$@\"
 "
   chmod 0755 "${CODEX_WRAPPER_PATH}"
-  OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/grammy"
-  OPENCLAW_GRAMMY_RUNNER_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/@grammyjs/runner"
-  OPENCLAW_GRAMMY_TRANSFORMER_THROTTLER_PACKAGE_DIR="${GLOBAL_PNPM_ROOT}/@grammyjs/transformer-throttler"
+  OPENCLAW_GRAMMY_PACKAGE_DIR="${GLOBAL_NPM_ROOT}/grammy"
+  OPENCLAW_GRAMMY_RUNNER_PACKAGE_DIR="${GLOBAL_NPM_ROOT}/@grammyjs/runner"
+  OPENCLAW_GRAMMY_TRANSFORMER_THROTTLER_PACKAGE_DIR="${GLOBAL_NPM_ROOT}/@grammyjs/transformer-throttler"
   test -f "${OPENCLAW_GRAMMY_PACKAGE_DIR}/package.json"
   test -f "${OPENCLAW_GRAMMY_RUNNER_PACKAGE_DIR}/package.json"
   test -f "${OPENCLAW_GRAMMY_TRANSFORMER_THROTTLER_PACKAGE_DIR}/package.json"
@@ -1307,7 +1333,7 @@ NODE
   set_step "openclaw_safe_skills_preinstall"
   preinstall_openclaw_safe_skills
 
-  test -f "${GLOBAL_PNPM_ROOT}/playwright/package.json"
+  test -f "${GLOBAL_NPM_ROOT}/playwright/package.json"
   if [[ "${RUN_OPENCLAW_ONBOARD}" == "1" ]]; then
     set_step "openclaw_onboard"
     run_openclaw_onboard_and_verify
