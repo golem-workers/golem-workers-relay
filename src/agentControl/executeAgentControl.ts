@@ -167,6 +167,13 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
     }
     const state = await readModelFence(input.configPath, !diagnosticOnly);
     const action = input.action;
+    const selection = ["model.set", "modelAssignment.set", "codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start", "codex.login.status"].includes(action.kind) && input.policyAuthority === "backend" && action.managedRuntimePolicy?.schemaVersion === 2;
+    // Credential writers change stores before their config projection. Reject a
+    // legacy/unbound request before stopping service or touching credentials,
+    // rather than discovering the model fence midway through an unsafe rollback.
+    if (state && ["codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start"].includes(action.kind) && !selection) {
+      throw new AgentControlError("MODEL_FENCE_REQUIRED", "Fenced credential mutations require backend-bound managed authority");
+    }
     if (action.kind === "model.verify" && (state || input.statusNudgeRunner)) {
       if (!input.statusNudgeRunner) throw new AgentControlError("MODEL_VERIFY_UNAVAILABLE", "Inference runner unavailable");
       const { config } = await readConfigFile(input.configPath);
@@ -300,7 +307,6 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
     if (state && ["model.set", "modelAssignment.set"].includes(action.kind)) {
       throw new AgentControlError("MODEL_FENCE_REQUIRED", "Legacy configuration mutations cannot bypass an established model fence");
     }
-    const selection = ["model.set", "modelAssignment.set", "codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start", "codex.login.status"].includes(action.kind) && input.policyAuthority === "backend" && action.managedRuntimePolicy?.schemaVersion === 2;
     return complete(await (selection ? withAuthorizedModelSelection(() => executeAgentControlUnfenced(input)) : executeAgentControlUnfenced(input)));
   }, { allowMissingAuth: ["codex.auth.clear", "gateway.restart"].includes(input.action.kind) })));
 }

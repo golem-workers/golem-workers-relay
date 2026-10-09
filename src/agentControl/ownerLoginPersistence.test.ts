@@ -1,5 +1,5 @@
 import { configRevision, writeOwnerFencedConfig } from "./ownerFence.js";
-import { withModelFenceLock } from "./modelFence.js";
+import { withModelFenceLock, writeModelFence } from "./modelFence.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __testing as codexLoginTesting } from "./codexLogin.js";
 import { __testing as githubAuthTesting } from "./githubAuth.js";
 import { executeAgentControl } from "./executeAgentControl.js";
+import type { AgentControlAction, CodexAuthBundle } from "./protocol.js";
 
 vi.mock("./runtimeAuthWriter.js", async () => ({
   writeRuntimeAuth: (await import("./__tests__/runtimeAuthWriter.fixture.js")).legacyRuntimeAuthWriter,
@@ -223,4 +224,33 @@ describe("owner-aware asynchronous login persistence", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
+});
+
+const refusedBundle: CodexAuthBundle = { formatVersion: 1, profileId: "openai:new", accessToken: "synthetic-new-access", refreshToken: "synthetic-new-refresh", idToken: "synthetic-new-id", expiresAtMs: 4700000000000, lastRefresh: null, email: null, accountId: null, chatgptPlanType: null };
+const unboundAuthActions: AgentControlAction[] = [
+  { kind: "codex.login.start" }, { kind: "codex.auth.set", mode: "openai_login" },
+  { kind: "codex.auth.import", bundle: refusedBundle },
+  { kind: "codex.auth.sync", bundleVersion: 2, bundle: refusedBundle }, { kind: "codex.auth.clear" },
+];
+it.each(unboundAuthActions)("refuses unbound fenced credential mutation $kind before service/network/store/config effects", async action => {
+  const systemctlLog = await installFakeSystemctl();
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "fenced-auth-no-effects-"));
+  try {
+    const configPath = path.join(root, "openclaw.json");
+    process.env.CODEX_HOME = path.join(root, ".codex"); process.env.HOME = root;
+    process.env.OPENCLAW_STATE_DIR = root; process.env.RELAY_ENV_PATH = path.join(root, "relay.env");
+    const stores = [path.join(root, "auth-profiles.json"), path.join(root, "agents/main/agent/auth-profiles.json")];
+    const existing = JSON.stringify({ version: 1, profiles: { "openai:existing": { provider: "openai", type: "oauth", access: "synthetic-existing-access", refresh: "synthetic-existing-refresh", expires: 4700000000000 } } });
+    for (const store of stores) { await fs.mkdir(path.dirname(store), { recursive: true }); await fs.writeFile(store, existing); }
+    const cli = path.join(process.env.CODEX_HOME, "auth.json"); await fs.mkdir(path.dirname(cli), { recursive: true });
+    await fs.writeFile(cli, JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "synthetic-existing-access", refresh_token: "synthetic-existing-refresh" } }));
+    await writeOwnerFencedConfig(configPath, JSON.stringify({ agents: { defaults: { model: { primary: "openai/gpt-5.5" }, models: { "openai/gpt-5.5": {} } } }, commands: { ownerAllowFrom: ["telegram:123"] } }), { revision: "1", active: ["123"], revoked: [] });
+    await withModelFenceLock(configPath, () => writeModelFence(configPath, { revision: "current-model", predecessor: null, status: "APPLIED", model: "openai/gpt-5.5" }));
+    const files = [configPath, ...stores, cli, configPath + ".owner-fence.json", configPath + ".model-fence.json"];
+    const before = await Promise.all(files.map(file => fs.readFile(file)));
+    const fetch = vi.fn(() => { throw new Error("Refused auth must not reach network"); }); global.fetch = fetch;
+    await expect(executeAgentControl({ action, configPath, policyAuthority: "backend", gateway: noopGateway })).rejects.toMatchObject({ code: "MODEL_FENCE_REQUIRED" });
+    expect(fetch).not.toHaveBeenCalled(); expect(fsSync.existsSync(systemctlLog)).toBe(false);
+    expect(await Promise.all(files.map(file => fs.readFile(file)))).toEqual(before);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
