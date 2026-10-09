@@ -75,3 +75,13 @@ export function activeManagedConfigPath(): string | undefined { return scope.get
 
 /** Must run inside the owner write lock, after CAS and schema validation. */
 export async function commitManagedRuntimePolicy(configPath: string): Promise<void> { await persistPolicy(configPath, await readManagedRuntimePolicy(configPath)); }
+
+/** Recheck persisted authority on lock acquisition, before auth/CLI side effects. */
+export async function recheckManagedRuntimePolicy(configPath: string): Promise<void> {
+  const active = scope.getStore();
+  if (active?.configPath !== path.resolve(configPath)) return;
+  let current: ManagedRuntimePolicy = managedRuntime.defaultPolicy;
+  try { current = managedRuntime.parsePolicy(JSON.parse(await fs.readFile(policyFile(configPath), "utf8"))); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  managedRuntime.acceptPolicy(current, active.policy);
+}

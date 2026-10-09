@@ -202,7 +202,7 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("cron.inventory.refresh"),
     requestId: z.string().min(1).max(200),
   }),
- ]).and(z.object({ managedRuntimeExpectedConfigRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(), managedRuntimePolicy: managedRuntimePolicySchema.optional(), managedRuntimePolicyDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }));
+ ]).and(z.object({ runtimeInstallActionId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/).optional(), managedRuntimeExpectedConfigRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(), managedRuntimePolicy: managedRuntimePolicySchema.optional(), managedRuntimePolicyDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }));
 
 export type AgentControlAction = z.infer<typeof agentControlActionSchema>;
 

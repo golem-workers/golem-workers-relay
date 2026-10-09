@@ -267,7 +267,7 @@ function createManagedRuntimePolicy() {
             const scope = record(value);
             if (!scope)
                 return undefined;
-            return Object.fromEntries(Object.entries(scope).filter(([key]) => ["id", "model", "models", "params", "api", "baseUrl", "apiKey", "auth", "headers", "requestTransportOverrides", "requestOptions", "fetch", "transport", "request", "localService", "authHeader", "compat"].includes(key) || key.endsWith("Model")));
+            return Object.fromEntries(Object.entries(scope).filter(([key]) => ["id", "model", "models", "params", "thinkingDefault", "api", "baseUrl", "apiKey", "auth", "headers", "requestTransportOverrides", "requestOptions", "fetch", "transport", "request", "localService", "authHeader", "compat"].includes(key) || key.endsWith("Model")));
         };
         const agents = {};
         if (sourceAgents.defaults !== undefined)
@@ -368,13 +368,30 @@ const managed = createManagedRuntimePolicy();
 const configPath = process.argv[2] || "/root/.openclaw/openclaw.json";
 const policyPath = process.argv[3] || "/var/lib/golem-workers/managed-runtime-policy.json";
 async function run() {
-const primaryConfigPath = configPath.replace(/\.managed-restore-candidate$/, "");
+const primaryConfigPath = process.env.GOLEM_MANAGED_RESTORE_TARGET || configPath.replace(/\.managed-restore-candidate$/, "");
 const fenceBase = primaryConfigPath === "/root/.openclaw/openclaw.json" ? "/var/lib/golem-workers/owner-fence/openclaw.json" : primaryConfigPath;
 fs.mkdirSync(path.dirname(fenceBase), { recursive: true });
-const { spawn } = process.getBuiltinModule("node:child_process");
-const lock = spawn("flock", ["-x", "-w", "30", fenceBase + ".owner-write.lock", "sh", "-c", "printf ready; cat >/dev/null"], { stdio: ["pipe", "pipe", "pipe"] });
+const { spawn, spawnSync } = process.getBuiltinModule("node:child_process");
+const inheritedModel = process.env.GOLEM_CONFIG_MODEL_FD;
+const inheritedOwner = process.env.GOLEM_CONFIG_OWNER_FD;
+if (inheritedModel !== undefined || inheritedOwner !== undefined) {
+ const descriptors = [Number(inheritedModel), Number(inheritedOwner)];
+ if (descriptors.some(fd => !Number.isInteger(fd) || fd < 3) || descriptors[0] === descriptors[1]) throw new Error("CONFIG_LOCK_DESCRIPTOR_INVALID");
+ for (const [index, suffix] of [".model-fence.lock", ".owner-write.lock"].entries()) {
+  const fd = descriptors[index], held = fs.fstatSync(fd), expected = fs.statSync(fenceBase + suffix);
+  if (held.dev !== expected.dev || held.ino !== expected.ino) throw new Error("CONFIG_LOCK_IDENTITY_MISMATCH");
+  if (!/FLOCK\s+ADVISORY\s+WRITE\s/.test(fs.readFileSync("/proc/self/fdinfo/" + fd, "utf8"))) throw new Error("INHERITED_CONFIG_LOCK_NOT_HELD");
+ }
+ for (const fd of ["3", "4"]) if (spawnSync("flock", ["-n", fd], { stdio: ["ignore", "ignore", "ignore", ...descriptors] }).status !== 0) throw new Error("INHERITED_CONFIG_LOCK_NOT_HELD");
+}
+const modelLock = inheritedModel ? null : spawn("flock", ["-x", "-w", "30", fenceBase + ".model-fence.lock", "sh", "-c", "printf ready; cat >/dev/null"], { stdio: ["pipe", "pipe", "pipe"] });
+if (modelLock) await new Promise((resolve, reject) => { modelLock.once("error", reject); modelLock.once("exit", () => reject(new Error("MODEL_FENCE_BUSY"))); modelLock.stdout.once("data", resolve); });
+const lock = inheritedOwner ? null : spawn("flock", ["-x", "-w", "30", fenceBase + ".owner-write.lock", "sh", "-c", "printf ready; cat >/dev/null"], { stdio: ["pipe", "pipe", "pipe"] });
 try {
-await new Promise((resolve, reject) => { lock.once("error", reject); lock.once("exit", () => reject(new Error("OWNER_CONFIG_LOCK_UNAVAILABLE"))); lock.stdout.once("data", resolve); });
+if (lock) await new Promise((resolve, reject) => { lock.once("error", reject); lock.once("exit", () => reject(new Error("OWNER_CONFIG_LOCK_UNAVAILABLE"))); lock.stdout.once("data", resolve); });
+for (const [descriptor, file] of [[inheritedModel, fenceBase + ".model-fence.lock"], [inheritedOwner, fenceBase + ".owner-write.lock"]]) {
+  if (descriptor) { const held = fs.fstatSync(Number(descriptor)), expected = fs.statSync(file); if (held.dev !== expected.dev || held.ino !== expected.ino) throw new Error("CONFIG_LOCK_IDENTITY_MISMATCH"); }
+}
 const current = fs.existsSync(policyPath) ? managed.parsePolicy(JSON.parse(fs.readFileSync(policyPath, "utf8"))) : managed.defaultPolicy;
 const incoming = process.env.GOLEM_MANAGED_RUNTIME_POLICY_JSON ? managed.parsePolicy(JSON.parse(process.env.GOLEM_MANAGED_RUNTIME_POLICY_JSON)) : current;
 // The backend's privileged target-scoped writer supplies incoming authority.
@@ -382,6 +399,17 @@ const incoming = process.env.GOLEM_MANAGED_RUNTIME_POLICY_JSON ? managed.parsePo
 // introducing a mandatory identity environment variable on existing agents.
 const policy = managed.acceptPolicy(current, incoming);
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+const modelFence = fenceBase + ".model-fence.json";
+if (primaryConfigPath === "/root/.openclaw/openclaw.json" && !fs.existsSync(modelFence) && fs.existsSync(primaryConfigPath + ".model-fence.json")) {
+  const modulePath = "/root/golem-workers-relay/dist/agentControl/modelFence.js";
+  if (!fs.existsSync(modulePath)) throw new Error("MODEL_FENCE_MODULE_REQUIRED");
+  const { readModelFence } = await import(modulePath);
+  await readModelFence(primaryConfigPath);
+}
+if (fs.existsSync(modelFence) || fs.existsSync(primaryConfigPath + ".model-fence.json")) {
+  const baseline = JSON.parse(fs.readFileSync(primaryConfigPath, "utf8"));
+  if (!process.getBuiltinModule("node:util").isDeepStrictEqual(managed.protectedRoute(baseline), managed.protectedRoute(config))) throw new Error("MODEL_FENCE_REQUIRED");
+}
 managed.normalizeConfig(config, policy, { ...(managed.needsAuthContext(config, policy) ? readOfflineRuntimeAuth(configPath) : {}), env: process.env, allowMissingAuth: current.chatHarness === "codex" && JSON.stringify(current) === JSON.stringify(policy) });
 function atomic(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -408,6 +436,6 @@ try {
 } finally { fs.rmSync(candidate, { force: true }); }
 atomic(policyPath, JSON.stringify(policy) + "\n");
 atomic(configPath, text);
-} finally { lock.stdin.end(); }
+} finally { lock?.stdin.end(); modelLock?.stdin.end(); }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

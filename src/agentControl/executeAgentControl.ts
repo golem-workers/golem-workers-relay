@@ -1,7 +1,7 @@
 import { readOfflineRuntimeAuth, MANAGED_RUNTIME_SOURCE_SHA256 } from "../managed-runtime/policy.generated.js";
 import { managedRuntime, withManagedRuntimePolicy, readManagedRuntimePolicy, runtimeContext, normalizeManagedConfigOnDisk, activeManagedConfigPath } from "../managed-runtime/runtime-policy.js";
-import { readModelFence, writeModelFence, withModelFenceLock } from "./modelFence.js";
-import { writeOwnerFencedConfig, withOwnerFenceLock, isConfigMutationPath, configRevision, type OwnerFence } from "./ownerFence.js";
+import { readModelFence, writeModelFence, withModelFenceLock, withAuthorizedModelSelection } from "./modelFence.js";
+import { writeOwnerFencedConfig, assertRuntimeActionNotCancelled, withOwnerFenceLock, withIndependentOwnerFenceLock, isConfigMutationPath, configRevision, type OwnerFence } from "./ownerFence.js";
 import { readOwnerRuntime } from "./ownerRuntime.js";
 import { normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
 import { ensureNativePiModelCompatibility } from "./nativePiModelCompatibility.js";
@@ -103,11 +103,13 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
   if (input.action.managedRuntimePolicy && !input.action.managedRuntimePolicyDigest) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend policy digest is required");
   // Older backends may attach authority even to pairing inventory. Validate
   // that authority below, but never activate it for a read-only list request.
-  const readOnlyPolicy = ["config.read", "managedRuntime.preflight", "channelPairing.list", "devicePairing.list"].includes(input.action.kind);
+  const diagnosticOnly = ["config.read", "codex.login.status", "model.fence.read", "modelAssignments.read", "codex.auth.export", "channels.status", "lifecycle.activeRuns", "channelPairing.list", "devicePairing.list"].includes(input.action.kind);
+  const readOnlyPolicy = ["config.read", "codex.login.status", "model.fence.read", "modelAssignments.read", "codex.auth.export", "channels.status", "lifecycle.activeRuns", "managedRuntime.preflight", "channelPairing.list", "devicePairing.list"].includes(input.action.kind);
   // Read config and persisted authority under the same owner lock, including CLI writers.
-  const withReadLock = (operation: () => Promise<AgentControlResult>) => readOnlyPolicy || input.action.managedRuntimeExpectedConfigRevision ? withOwnerFenceLock(input.configPath, operation) : operation();
+  const withReadLock = (operation: () => Promise<AgentControlResult>) => (readOnlyPolicy && !diagnosticOnly) || input.action.managedRuntimeExpectedConfigRevision ? withOwnerFenceLock(input.configPath, operation) : operation();
   // All ingress paths and all config writers share this lock, including legacy calls.
-  return withModelFenceLock(input.configPath, () => withReadLock(() => withManagedRuntimePolicy(input.configPath, readOnlyPolicy ? undefined : input.action.managedRuntimePolicy, async () => {
+  const withIngressLock = (operation: () => Promise<AgentControlResult>) => diagnosticOnly ? operation() : withModelFenceLock(input.configPath, () => input.action.runtimeInstallActionId ? withOwnerFenceLock(input.configPath, async () => { await assertRuntimeActionNotCancelled(input.action.runtimeInstallActionId!); return operation(); }) : operation());
+  return withIngressLock(() => withReadLock(() => withManagedRuntimePolicy(input.configPath, readOnlyPolicy ? undefined : input.action.managedRuntimePolicy, async () => {
     if (input.action.managedRuntimePolicyDigest && input.action.managedRuntimePolicyDigest !== MANAGED_RUNTIME_SOURCE_SHA256) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend and relay policy source digests differ; coordinated release required");
     const policy = await readManagedRuntimePolicy(input.configPath);
     if (input.action.managedRuntimePolicy) {
@@ -163,8 +165,15 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         return { kind: "managedRuntime.preflight", compatible: true, configRevision: configRevision(configText) };
       });
     }
-    const state = await readModelFence(input.configPath);
+    const state = await readModelFence(input.configPath, !diagnosticOnly);
     const action = input.action;
+    const selection = ["model.set", "modelAssignment.set", "codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start", "codex.login.status"].includes(action.kind) && input.policyAuthority === "backend" && action.managedRuntimePolicy?.schemaVersion === 2;
+    // Credential writers change stores before their config projection. Reject a
+    // legacy/unbound request before stopping service or touching credentials,
+    // rather than discovering the model fence midway through an unsafe rollback.
+    if (state && ["codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start"].includes(action.kind) && !selection) {
+      throw new AgentControlError("MODEL_FENCE_REQUIRED", "Fenced credential mutations require backend-bound managed authority");
+    }
     if (action.kind === "model.verify" && (state || input.statusNudgeRunner)) {
       if (!input.statusNudgeRunner) throw new AgentControlError("MODEL_VERIFY_UNAVAILABLE", "Inference runner unavailable");
       const { config } = await readConfigFile(input.configPath);
@@ -269,7 +278,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       const pending = { ...fence, status: "PENDING" as const, model: action.model };
       await writeModelFence(input.configPath, pending);
       try {
-        const result = await executeAgentControlUnfenced(input);
+        const result = await withAuthorizedModelSelection(() => executeAgentControlUnfenced(input));
         await writeModelFence(input.configPath, { ...pending, status: "APPLIED" });
         return complete(result);
       } catch (error) {
@@ -298,7 +307,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
     if (state && ["model.set", "modelAssignment.set"].includes(action.kind)) {
       throw new AgentControlError("MODEL_FENCE_REQUIRED", "Legacy configuration mutations cannot bypass an established model fence");
     }
-    return complete(await executeAgentControlUnfenced(input));
+    return complete(await (selection ? withAuthorizedModelSelection(() => executeAgentControlUnfenced(input)) : executeAgentControlUnfenced(input)));
   }, { allowMissingAuth: ["codex.auth.clear", "gateway.restart"].includes(input.action.kind) })));
 }
 
@@ -354,7 +363,7 @@ async function executeAgentControlUnfenced(input: {
                 ? await startCodexLogin(
                     input.configPath,
                     { forceRelink: input.action.forceRelink },
-                    (operation) => runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(input.configPath, () => withCleanOpenAiGatewayEnvironment(operation))),
+                    (operation) => withIndependentOwnerFenceLock(input.configPath, () => runCodexAuthMutationWithGatewayPaused(() => withCleanOpenAiGatewayEnvironment(operation)), 10),
                   )
               : input.action.kind === "codex.login.status"
                 ? await getCodexLoginStatus(input.configPath)
@@ -427,7 +436,7 @@ async function executeAgentControlUnfenced(input: {
   };
   // Do not serialize unrelated chat, pairing, lifecycle or login waits behind
   // config delivery. Only config-bearing read/modify/write operations share it.
-  const configActions = new Set(["config.read", "config.apply", "model.set", "modelAssignment.set", "relay.selfNudge.set"]);
+  const configActions = new Set(["config.apply", "model.set", "modelAssignment.set", "relay.selfNudge.set"]);
   return configActions.has(input.action.kind) ? withOwnerFenceLock(input.configPath, operation) : operation();
 }
 
@@ -570,7 +579,7 @@ async function readConfig(configPath: string, gateway: GatewayLike, includeRunti
     ...(auth ? { runtimeAuthContext: { version: 1 as const, subscriptionAuth: Boolean(auth.subscriptionAuth), apiKeyAuth: Boolean(auth.apiKeyAuth) } } : {}),
     configRevision: configRevision(configText),
     ownerFenceVersion: 1,
-    ownerRuntime: await readOwnerRuntime(configPath, gateway),
+    ownerRuntime: await readOwnerRuntime(configPath, gateway, true),
     configText,
     config,
   };

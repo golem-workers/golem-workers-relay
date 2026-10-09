@@ -208,7 +208,7 @@ export function createManagedRuntimePolicy() {
     const project = (value: unknown): Row | undefined => {
       const scope = record(value);
       if (!scope) return undefined;
-      return Object.fromEntries(Object.entries(scope).filter(([key]) => ["id", "model", "models", "params", "api", "baseUrl", "apiKey", "auth", "headers", "requestTransportOverrides", "requestOptions", "fetch", "transport", "request", "localService", "authHeader", "compat"].includes(key) || key.endsWith("Model")));
+      return Object.fromEntries(Object.entries(scope).filter(([key]) => ["id", "model", "models", "params", "thinkingDefault", "api", "baseUrl", "apiKey", "auth", "headers", "requestTransportOverrides", "requestOptions", "fetch", "transport", "request", "localService", "authHeader", "compat"].includes(key) || key.endsWith("Model")));
     };
     const agents: Row = {};
     if (sourceAgents.defaults !== undefined) agents.defaults = project(sourceAgents.defaults);

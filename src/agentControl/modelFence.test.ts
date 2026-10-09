@@ -9,7 +9,10 @@ it("excludes another descriptor and releases after rejection without deleting lo
   const config = path.join(dir, "config.json");
   try {
     await expect(withModelFenceLock(config, async () => {
-      await expect(withModelFenceLock(config, () => Promise.resolve(undefined))).rejects.toThrow("MODEL_FENCE_BUSY");
+      await expect(withModelFenceLock(config, () => Promise.resolve("reentrant"))).resolves.toBe("reentrant");
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      await expect(promisify(execFile)("flock", ["-n", config + ".model-fence.lock", "true"])).rejects.toThrow();
       throw new Error("interrupted");
     })).rejects.toThrow("interrupted");
     await withModelFenceLock(config, async () => {
