@@ -805,12 +805,13 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   node --input-type=module - "${GLOBAL_NPM_ROOT}" <<'NPM_COMPANIONS'
 import fs from 'node:fs';
 import path from 'node:path';
-import {createRequire} from 'node:module';
-import {pathToFileURL} from 'node:url';
+import {execFileSync} from 'node:child_process';
 const root = process.argv[2];
 const packageRoot = path.join(root, 'openclaw');
 const companions = ['grammy', 'playwright', '@grammyjs/runner', '@grammyjs/transformer-throttler', '@buape/carbon', '@larksuiteoapi/node-sdk', '@slack/bolt'];
-const require = createRequire(path.join(packageRoot, 'package.json'));
+const verifyImports = (names, cwd) => execFileSync(process.execPath,
+  ['--input-type=module', '--eval', 'for (const name of process.argv.slice(1)) await import(name)', ...names],
+  {cwd, stdio: 'inherit'});
 for (const name of companions) {
   const destination = path.join(packageRoot, 'node_modules', name);
   // CJS NODE_PATH may resolve a global package that ESM cannot import.
@@ -821,18 +822,16 @@ for (const name of companions) {
     // A dangling or foreign link is a blocker, never overwrite independent packages.
     fs.symlinkSync(target, destination, 'dir');
   }
-  await import(pathToFileURL(require.resolve(name)).href);
 }
+verifyImports(companions, packageRoot);
 // Verify resolution from each shipped plugin too, where plugins import these companions.
 const extensions = path.join(packageRoot, 'extensions');
 if (fs.existsSync(extensions)) for (const entry of fs.readdirSync(extensions)) {
   const manifest = path.join(extensions, entry, 'package.json');
   if (!fs.existsSync(manifest)) continue;
   const pkg = JSON.parse(fs.readFileSync(manifest, 'utf8'));
-  const fromPlugin = createRequire(manifest);
-  for (const name of companions) if (pkg.dependencies?.[name] || pkg.optionalDependencies?.[name]) {
-    await import(pathToFileURL(fromPlugin.resolve(name)).href);
-  }
+  const dependencies = companions.filter(name => pkg.dependencies?.[name] || pkg.optionalDependencies?.[name]);
+  if (dependencies.length) verifyImports(dependencies, path.dirname(manifest));
 }
 NPM_COMPANIONS
   CODEX_PACKAGE_DIR="${GLOBAL_NPM_ROOT}/@openai/codex"
