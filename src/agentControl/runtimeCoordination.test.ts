@@ -17,7 +17,7 @@ it("rechecks scoped authority at actual owner acquisition, before caller auth/co
   await fs.writeFile(policyFile(file), JSON.stringify(old));
   await expect(withManagedRuntimePolicy(file, old, async () => {
     await fs.writeFile(policyFile(file), JSON.stringify(newer));
-    await writeOwnerFencedConfig(file, '{}', undefined, { managedRuntimePolicy: old, managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256, validate: async () => { sideEffect = true; } });
+    await writeOwnerFencedConfig(file, '{}', undefined, { managedRuntimePolicy: old, managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256, validate: () => { sideEffect = true; return Promise.resolve(); } });
   })).rejects.toThrow('MANAGED_RUNTIME_POLICY_STALE');
   expect(sideEffect).toBe(false); expect(await fs.readFile(file, 'utf8')).toBe('{}');
 });
@@ -31,13 +31,13 @@ it("read-only config diagnostics work while another process holds installation c
   const ended = new Promise(resolve => holder.once('exit', resolve));
   await new Promise<void>((resolve, reject) => { holder.once('error', reject); holder.stdout.once('data', () => resolve()); });
   try {
-    const result = await executeAgentControl({ configPath: file, policyAuthority: 'backend', action: { kind: 'config.read' }, gateway: { request: async () => ({}) } });
+    const result = await executeAgentControl({ configPath: file, policyAuthority: 'backend', action: { kind: 'config.read' }, gateway: { request: () => Promise.resolve({}) } });
     expect(result).toMatchObject({ kind: 'config.read', managedRuntimePolicy: current });
-    await expect(executeAgentControl({ configPath: file, policyAuthority: 'backend', action: { kind: 'config.read', managedRuntimePolicy: { ...current, revision: 4 }, managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 }, gateway: { request: async () => ({}) } })).resolves.toMatchObject({ kind: 'config.read', managedRuntimePolicy: current });
+    await expect(executeAgentControl({ configPath: file, policyAuthority: 'backend', action: { kind: 'config.read', managedRuntimePolicy: { ...current, revision: 4 }, managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 }, gateway: { request: () => Promise.resolve({}) } })).resolves.toMatchObject({ kind: 'config.read', managedRuntimePolicy: current });
     for (const action of [
       { kind: 'config.read' as const, managedRuntimePolicy: current, managedRuntimePolicyDigest: 'obsolete' },
       { kind: 'config.read' as const, managedRuntimePolicy: { ...current, serverId: 'foreign' }, managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 },
-    ]) await expect(executeAgentControl({ configPath: file, policyAuthority: 'backend', action, gateway: { request: async () => ({}) } })).rejects.toThrow();
+    ]) await expect(executeAgentControl({ configPath: file, policyAuthority: 'backend', action, gateway: { request: () => Promise.resolve({}) } })).rejects.toThrow();
 
     expect(JSON.parse(await fs.readFile(policyFile(file), 'utf8'))).toEqual(current);
     await expect(writeOwnerFencedConfig(file, '{"bad":true}')).rejects.toThrow('MODEL_FENCE_BUSY');

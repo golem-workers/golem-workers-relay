@@ -31,6 +31,11 @@ export async function withModelFenceLock<T>(configPath: string, work: () => Prom
   } finally { await handle.close(); }
 }
 
+/** Detached background work must not borrow the completed request's descriptor. */
+export function withIndependentModelFenceLock<T>(configPath: string, work: () => Promise<T>, waitSeconds = 0): Promise<T> {
+  return lockScope.exit(() => withModelFenceLock(configPath, work, waitSeconds));
+}
+
 export type ModelFenceState = {
   revision: string;
   predecessor: string | null;

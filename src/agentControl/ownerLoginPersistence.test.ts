@@ -1,6 +1,8 @@
-import { writeOwnerFencedConfig } from "./ownerFence.js";
+import { configRevision, writeOwnerFencedConfig } from "./ownerFence.js";
+import { withModelFenceLock } from "./modelFence.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -115,12 +117,15 @@ exit 1
 }
 
 describe("owner-aware asynchronous login persistence", () => {
-  it.each([false, true])("async login persistence serializes revoke and safely rolls back failure=%s", async fail => {
-    await installFakeSystemctl();
+  it.each([false, true])("async login refuses a busy writer, serializes bounded revoke and safely rolls back failure=%s", async fail => {
+    const systemctlLog = await installFakeSystemctl();
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-login-success-"));
     const configPath = path.join(tempDir, "openclaw.json");
     const codexHome = path.join(tempDir, ".codex");
     process.env.CODEX_HOME = codexHome;
+    process.env.OPENCLAW_STATE_DIR = tempDir;
+    process.env.HOME = tempDir;
+    process.env.RELAY_ENV_PATH = path.join(tempDir, "relay.env");
     await fs.mkdir(codexHome, { recursive: true });
     await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
 
@@ -184,19 +189,33 @@ describe("owner-aware asynchronous login persistence", () => {
 
 
     await paused;
+    // An independent process proves actual kernel custody, not inherited ALS flags.
+    for (const suffix of [".model-fence.lock", ".owner-write.lock"]) {
+      expect(spawnSync("flock", ["-n", configPath + suffix, "true"]).status).toBe(1);
+    }
     let revoked = false;
-    const revoke = executeAgentControl({ action: { kind: "config.apply", configText: JSON.stringify({ commands: { ownerAllowFrom: ["telegram:123", "discord:123"] } }), ownerFence: { revision: "2", active: [], revoked: ["123"] } }, configPath, gateway: noopGateway }).then(() => { revoked = true; });
+    await expect(executeAgentControl({ action: { kind: "config.apply", configText: "{}", ownerFence: { revision: "2", active: [], revoked: ["123"] } }, configPath, gateway: noopGateway })).rejects.toThrow("MODEL_FENCE_BUSY");
+    // A retry must take fresh bytes under bounded custody, not replace model/auth
+    // fields with an owner-only stale snapshot from before login persistence.
+    const revoke = withModelFenceLock(configPath, async () => {
+      const current = await originalRead(configPath, "utf8");
+      await executeAgentControl({ action: { kind: "config.apply", configText: current, expectedRevision: configRevision(current), ownerFence: { revision: "2", active: [], revoked: ["123"] } }, configPath, gateway: noopGateway });
+      revoked = true;
+    }, 30);
+    // Attach a rejection handler immediately while the login barrier is held.
+    const revokeOutcome = revoke.then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error }));
     await new Promise(resolve => setTimeout(resolve, 30));
     expect(revoked).toBe(false);
     release();
     expect((await startPromise).kind).toBe("codex.login.start");
-    await revoke;
+    const outcome = await revokeOutcome;
+    if (!outcome.ok) throw outcome.error;
     let statusResult = await executeAgentControl({ action: { kind: "codex.login.status" }, configPath, gateway: noopGateway });
     for (let i = 0; i < 100 && statusResult.state === "pending"; i++) {
       await new Promise(resolve => setTimeout(resolve, 10));
       statusResult = await executeAgentControl({ action: { kind: "codex.login.status" }, configPath, gateway: noopGateway });
     }
-    expect(statusResult.state).toBe(fail ? "failed" : "connected");
+    expect(statusResult.state, (statusResult.lastError ?? statusResult.message) + "\n" + await originalRead(systemctlLog, "utf8")).toBe(fail ? "failed" : "connected");
     const final = JSON.parse(await originalRead(configPath, "utf8")) as { commands: { ownerAllowFrom: string[] } };
     expect(final.commands.ownerAllowFrom).toEqual(["discord:123"]);
     expect(JSON.parse(await originalRead(configPath + ".owner-fence.json", "utf8"))).toMatchObject({ revision: "2", revoked: ["123"] });

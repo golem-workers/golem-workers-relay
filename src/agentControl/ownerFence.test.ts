@@ -71,12 +71,12 @@ it("public port projection permits only operational metadata and retains model/a
  await writeOwnerFencedConfig(file, JSON.stringify({ agents: { defaults: { model: { primary: 'openai/current' } } }, env: { vars: { PROTECTED_KEY: 'synthetic', GW_AGENT_PUBLIC_HOST: 'old' } }, models: { providers: { openai: { apiKey: 'synthetic-auth' } } } }), active);
  await withModelFenceLock(file, () => writeModelFence(file, { revision: 'current', predecessor: null, status: 'APPLIED', model: 'openai/current' }));
  const before = await readFile(file, 'utf8');
- const candidate = JSON.parse(before); candidate.env.vars.GW_AGENT_PUBLIC_HOST = 'new'; candidate.env.vars.GW_AGENT_PUBLIC_PORT = '18005'; candidate.env.vars.GW_AGENT_PUBLIC_HTTP_URL = 'http://new:18005';
+ const candidate = JSON.parse(before) as { env: { vars: Record<string, string> }; agents: { defaults: { model: { primary: string } } }; models: { providers: { openai: { apiKey: string } } } }; candidate.env.vars.GW_AGENT_PUBLIC_HOST = 'new'; candidate.env.vars.GW_AGENT_PUBLIC_PORT = '18005'; candidate.env.vars.GW_AGENT_PUBLIC_HTTP_URL = 'http://new:18005';
  await expect(writeOwnerFencedConfig(file, JSON.stringify(candidate), undefined, { expectedConfigText: before })).rejects.toThrow('MODEL_FENCE_REQUIRED');
  await expect(writeOwnerFencedConfig(file, JSON.stringify(candidate), undefined, { operationalPublicPort: true })).rejects.toThrow('MODEL_FENCE_REQUIRED');
  await writeOwnerFencedConfig(file, JSON.stringify(candidate), undefined, { operationalPublicPort: true, expectedConfigText: before });
  const committed = await readFile(file, 'utf8');
- expect(JSON.parse(committed).env.vars.PROTECTED_KEY).toBe('synthetic');
+ expect((JSON.parse(committed) as typeof candidate).env.vars.PROTECTED_KEY).toBe('synthetic');
  for (const mutate of [(c: typeof candidate) => { c.env.vars.PROTECTED_KEY = 'changed'; }, (c: typeof candidate) => { c.agents.defaults.model.primary = 'openai/old'; }, (c: typeof candidate) => { c.models.providers.openai.apiKey = 'changed'; }]) {
   const changed = structuredClone(candidate); mutate(changed);
   await expect(writeOwnerFencedConfig(file, JSON.stringify(changed), undefined, { operationalPublicPort: true, expectedConfigText: committed })).rejects.toThrow('MODEL_FENCE_REQUIRED');

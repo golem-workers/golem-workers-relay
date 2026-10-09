@@ -1,5 +1,5 @@
 import { verifyInheritedConfigLocks } from "./inheritedConfigLocks.js";
-import { withModelFenceLock, readModelFence, isAuthorizedModelSelection } from "./modelFence.js";
+import { withModelFenceLock, withIndependentModelFenceLock, readModelFence, isAuthorizedModelSelection } from "./modelFence.js";
 import { withManagedRuntimePolicy, commitManagedRuntimePolicy, recheckManagedRuntimePolicy } from "../managed-runtime/runtime-policy.js";
 import { MANAGED_RUNTIME_SOURCE_SHA256, type ManagedRuntimePolicy } from "../managed-runtime/policy.generated.js";
 export { MANAGED_RUNTIME_SOURCE_SHA256 };
@@ -76,6 +76,11 @@ export async function withOwnerFenceLock<T>(configPath: string, operation: () =>
   } finally { lock.stdin.end(); }
   });
 }
+/** Async login outlives ingress; acquire independent custody through its full transaction. */
+export function withIndependentOwnerFenceLock<T>(configPath: string, operation: () => Promise<T>, waitSeconds = 0): Promise<T> {
+  return context.exit(() => withIndependentModelFenceLock(configPath, () => withOwnerFenceLock(configPath, operation), waitSeconds));
+}
+
 export async function writeOwnerFencedConfig(configPath: string, text: string, incoming?: OwnerFence, options: {
   runtimeInstallActionId?: string;
   operationalPublicPort?: boolean;
@@ -90,7 +95,7 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
     if (options.runtimeInstallActionId) {
       if (!/^[a-zA-Z0-9_-]{1,128}$/.test(options.runtimeInstallActionId)) throw new Error("RUNTIME_INSTALL_ID_INVALID");
       const receipt = "/var/lib/golem-workers/runtime-install/actions/" + options.runtimeInstallActionId + ".json";
-      try { if (await fs.stat(receipt.replace(/\.json$/, ".cancelled.json")).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; }) || JSON.parse(await fs.readFile(receipt, "utf8")).postInstallCancelled) throw new Error("RUNTIME_INSTALL_SUPERSEDED"); }
+      try { if (await fs.stat(receipt.replace(/\.json$/, ".cancelled.json")).then(() => true, error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }) || (JSON.parse(await fs.readFile(receipt, "utf8")) as { postInstallCancelled?: unknown }).postInstallCancelled) throw new Error("RUNTIME_INSTALL_SUPERSEDED"); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
     const previous = await readOwnerFence(configPath);
@@ -108,7 +113,12 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
     const model = await readModelFence(configPath);
     if (model && !isAuthorizedModelSelection()) {
       const { managedRuntime } = await import("../managed-runtime/runtime-policy.js");
-      if (current === undefined || (options.expectedRevision === undefined && options.expectedConfigText === undefined) || !isDeepStrictEqual(managedRuntime.protectedRoute(publicPortProjection(JSON5.parse(current), options.operationalPublicPort)), managedRuntime.protectedRoute(publicPortProjection(JSON5.parse(projected), options.operationalPublicPort)))) throw new Error("MODEL_FENCE_REQUIRED");
+      if (current === undefined || (options.expectedRevision === undefined && options.expectedConfigText === undefined)) throw new Error("MODEL_FENCE_REQUIRED");
+      // Canonical synchronization may add policy-owned catalog/runtime metadata.
+      // Compare the candidate with the same locked, normalized predecessor;
+      // CAS above still compares the actual on-disk bytes, never this projection.
+      const normalizedCurrent = await normalizeManagedConfigText(configPath, current);
+      if (!isDeepStrictEqual(managedRuntime.protectedRoute(publicPortProjection(JSON5.parse(normalizedCurrent), options.operationalPublicPort)), managedRuntime.protectedRoute(publicPortProjection(JSON5.parse(projected), options.operationalPublicPort)))) throw new Error("MODEL_FENCE_REQUIRED");
     }
     // Retain caller validation semantics. Owner projection itself validates the
     // narrow field; do not impose a new whole-config/media migration here.

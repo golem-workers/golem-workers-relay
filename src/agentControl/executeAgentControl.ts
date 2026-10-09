@@ -1,7 +1,7 @@
 import { readOfflineRuntimeAuth, MANAGED_RUNTIME_SOURCE_SHA256 } from "../managed-runtime/policy.generated.js";
 import { managedRuntime, withManagedRuntimePolicy, readManagedRuntimePolicy, runtimeContext, normalizeManagedConfigOnDisk, activeManagedConfigPath } from "../managed-runtime/runtime-policy.js";
 import { readModelFence, writeModelFence, withModelFenceLock, withAuthorizedModelSelection } from "./modelFence.js";
-import { writeOwnerFencedConfig, assertRuntimeActionNotCancelled, withOwnerFenceLock, isConfigMutationPath, configRevision, type OwnerFence } from "./ownerFence.js";
+import { writeOwnerFencedConfig, assertRuntimeActionNotCancelled, withOwnerFenceLock, withIndependentOwnerFenceLock, isConfigMutationPath, configRevision, type OwnerFence } from "./ownerFence.js";
 import { readOwnerRuntime } from "./ownerRuntime.js";
 import { normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
 import { ensureNativePiModelCompatibility } from "./nativePiModelCompatibility.js";
@@ -357,7 +357,7 @@ async function executeAgentControlUnfenced(input: {
                 ? await startCodexLogin(
                     input.configPath,
                     { forceRelink: input.action.forceRelink },
-                    (operation) => withModelFenceLock(input.configPath, () => runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(input.configPath, () => withCleanOpenAiGatewayEnvironment(operation))), 10),
+                    (operation) => withIndependentOwnerFenceLock(input.configPath, () => runCodexAuthMutationWithGatewayPaused(() => withCleanOpenAiGatewayEnvironment(operation)), 10),
                   )
               : input.action.kind === "codex.login.status"
                 ? await getCodexLoginStatus(input.configPath)
