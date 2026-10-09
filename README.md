@@ -563,3 +563,5 @@ canonical policy digest; do not disable owner, CAS or model fences.
 OAuth disconnect and startup of unchanged persisted Codex authority permit absent credentials for structural convergence only. Model/preflight activation remains credential-gated; unsupported routes and policy/owner/model fences remain enforced. Deploy with the matching backend canonical policy digest.
 
 Managed Linux runtime uses npm only; `NODE_PATH` points at `npm root -g` for CJS, while missing companion imports use package-local links and import checks. No pnpm binary or shim is installed. Rebuild provider OpenClaw snapshots and select new `activeSnapshotId` after a coordinated backend/Relay release. Existing agents migrate through backend Reinstall (#714), preserving data/settings and rebinding native service/runtime pin. Do not run this snapshot preparation script on existing agents for migration. Hermes and desktop connector builds remain outside this migration.
+
+Npm companion dependency checks use ESM import conditions from the installed OpenClaw and plugin directories, including import-only package exports.
