@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Firecracker guests may run Linux 4.14 (no openat2). Use fs-safe's supported
-# portable implementation, retaining archive validation and bounded writes.
-# Older OpenClaw releases ignore these variables.
-export FS_SAFE_NATIVE_MODE=off
-export OPENCLAW_FS_SAFE_NATIVE_MODE=off
+# Use fs-safe default auto mode (native when available), including on old snapshots.
+unset FS_SAFE_NATIVE_MODE OPENCLAW_FS_SAFE_NATIVE_MODE
 
 LOG_DIR="/var/log/golem-workers"
 LOG_FILE="${LOG_DIR}/prepare-agent-server.log"
@@ -757,30 +754,31 @@ EOF
   append_line_if_missing "${ROOT_BASHRC}" "export NODE_OPTIONS=\"${NODE_OPTIONS_VALUE}\""
   append_line_if_missing "${ROOT_BASHRC}" "export NODE_COMPILE_CACHE=\"${NODE_COMPILE_CACHE_DIR}\""
   append_line_if_missing "${ROOT_BASHRC}" 'export OPENCLAW_NO_RESPAWN=1'
-  append_line_if_missing "${ROOT_BASHRC}" 'export FS_SAFE_NATIVE_MODE=off'
-  append_line_if_missing "${ROOT_BASHRC}" 'export OPENCLAW_FS_SAFE_NATIVE_MODE=off'
+  # Remove obsolete native-mode overrides when reusing an existing image.
+  for runtime_env_file in "${ROOT_BASHRC}" /etc/environment; do
+    if [[ -f "${runtime_env_file}" ]]; then
+      sed -i -E '/^(export[[:space:]]+)?(OPENCLAW_)?FS_SAFE_NATIVE_MODE=/d' "${runtime_env_file}"
+    fi
+  done
+  systemctl --user unset-environment FS_SAFE_NATIVE_MODE OPENCLAW_FS_SAFE_NATIVE_MODE || true
   append_line_if_missing "${ROOT_BASHRC}" "export NODE_PATH=\"${GLOBAL_NPM_ROOT}\""
   upsert_env_file_key /etc/environment NODE_OPTIONS "${NODE_OPTIONS_VALUE}"
   upsert_env_file_key /etc/environment NODE_COMPILE_CACHE "${NODE_COMPILE_CACHE_DIR}"
   upsert_env_file_key /etc/environment OPENCLAW_NO_RESPAWN "1"
-  upsert_env_file_key /etc/environment FS_SAFE_NATIVE_MODE "off"
-  upsert_env_file_key /etc/environment OPENCLAW_FS_SAFE_NATIVE_MODE "off"
   upsert_env_file_key /etc/environment NODE_PATH "${GLOBAL_NPM_ROOT}"
   write_file /etc/profile.d/golem-node-runtime.sh "#!/usr/bin/env bash
 export NODE_OPTIONS=\"${NODE_OPTIONS_VALUE}\"
 export NODE_COMPILE_CACHE=\"${NODE_COMPILE_CACHE_DIR}\"
 export OPENCLAW_NO_RESPAWN=1
-export FS_SAFE_NATIVE_MODE=off
-export OPENCLAW_FS_SAFE_NATIVE_MODE=off
 export NODE_PATH=\"${GLOBAL_NPM_ROOT}\"
 "
   chmod 0644 /etc/profile.d/golem-node-runtime.sh
   rm -f /etc/systemd/system.conf.d/node-runtime.conf /etc/systemd/user.conf.d/node-runtime.conf
   write_file /etc/systemd/system.conf.d/node-runtime.conf "[Manager]
-DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"FS_SAFE_NATIVE_MODE=off\" \"OPENCLAW_FS_SAFE_NATIVE_MODE=off\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
+DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
 "
   write_file /etc/systemd/user.conf.d/node-runtime.conf "[Manager]
-DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"FS_SAFE_NATIVE_MODE=off\" \"OPENCLAW_FS_SAFE_NATIVE_MODE=off\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
+DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=${NODE_COMPILE_CACHE_DIR}\" \"OPENCLAW_NO_RESPAWN=1\" \"NODE_PATH=${GLOBAL_NPM_ROOT}\"
 "
   export NODE_OPTIONS="${NODE_OPTIONS_VALUE}"
   export NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE_DIR}"
@@ -793,8 +791,6 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     NODE_OPTIONS \
     NODE_COMPILE_CACHE \
     OPENCLAW_NO_RESPAWN \
-    FS_SAFE_NATIVE_MODE \
-    OPENCLAW_FS_SAFE_NATIVE_MODE \
     NODE_PATH \
     OPENCLAW_SKIP_CANVAS_HOST \
     OPENCLAW_LOG_LEVEL || true
