@@ -48,7 +48,7 @@ const CODEX_AUTH_REFRESH_TIMEOUT_MS = 120_000;
 // Gateway.request starts its RPC timer only after connecting. Bound cold-start
 // readiness too, so a dead Gateway cannot hold the auth transaction forever.
 const CODEX_AUTH_READY_AND_REFRESH_TIMEOUT_MS = 240_000;
-const VALID_THINKING_DEFAULTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "adaptive"]);
+const VALID_THINKING_DEFAULTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "adaptive", "ultra"]);
 let codexAuthMutationQueue: Promise<void> = Promise.resolve();
 
 type GatewayLike = {
@@ -941,7 +941,7 @@ async function setModel(input: {
   model: string;
   fallbacks: ModelSetFallbacks;
   contextTokens: number | null;
-  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "adaptive" | null;
+  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "adaptive" | "ultra" | null;
   fastMode?: boolean | "auto" | null;
 }): Promise<AgentControlResult> {
   const fallbacks = input.fallbacks
@@ -1148,7 +1148,7 @@ async function setModelAssignment(input: {
   primary: string;
   fallback: string | null;
   contextTokens: number | null;
-  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "adaptive" | null;
+  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "adaptive" | "ultra" | null;
   fastMode?: boolean | "auto" | null;
 }): Promise<AgentControlResult> {
   const { config } = await readConfigFile(input.configPath);

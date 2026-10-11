@@ -2082,7 +2082,7 @@ describe("executeAgentControl model set", () => {
     expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3-flash-preview"]).toEqual({ agentRuntime: { id: "openclaw" } });
   });
 
-  it("reads all model assignments from config", async () => {
+  it.each(["xhigh", "max", "adaptive", "ultra"] as const)("reads all model assignments including %s from config", async (thinkingDefault) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-assignments-read-"));
     const configPath = path.join(tempDir, "openclaw.json");
     await fs.writeFile(
@@ -2091,7 +2091,7 @@ describe("executeAgentControl model set", () => {
         {
           agents: {
             defaults: {
-              thinkingDefault: "xhigh",
+              thinkingDefault,
               models: {
                 "openai/gpt-image-2": { agentRuntime: { id: "openclaw" } },
                 "openai/sora-2": { agentRuntime: { id: "openclaw" } },
@@ -2132,7 +2132,7 @@ describe("executeAgentControl model set", () => {
           purpose: "main",
           primary: "openrouter/google/gemini-2.5-flash",
           fallback: "openrouter/openai/gpt-oss-120b",
-          thinkingDefault: "xhigh",
+          thinkingDefault,
         },
         {
           purpose: "image",

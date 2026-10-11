@@ -18,7 +18,7 @@ const modelAssignmentPurposeSchema = z.enum([
   "pdf",
 ]);
 const thinkingDefaultSchema = z
-  .enum(["off", "minimal", "low", "medium", "high", "xhigh", "max", "adaptive"])
+  .enum(["off", "minimal", "low", "medium", "high", "xhigh", "max", "adaptive", "ultra"])
   .nullable()
   .optional();
 const fastModeSchema = z.union([z.boolean(), z.literal("auto")]).nullable().optional();

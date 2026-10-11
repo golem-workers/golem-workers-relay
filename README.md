@@ -570,3 +570,7 @@ Runtime config commits use managed commit protocol 2: scoped policy generation, 
 
 Detached OAuth login persistence reacquires independent model/owner kernel custody rather than borrowing the ingress request’s asynchronous context. It rechecks policy before side effects and retains custody through credential/config writes, rollback and Gateway recovery. Unrelated diagnostics remain read-only; concurrent writers get the existing bounded busy/refusal contract.
 Established model fences reject legacy/unbound credential mutations before service, network or store changes. Matching authenticated backend schema-2 authority is required for login/auth mutation; ordinary status and credential export remain read-only. This prevents a refused config projection from stranding a partially changed credential store.
+
+### Reasoning selection
+
+The shared model wizard offers Off, Minimal, Low, Medium, High, Extra high, Max, Adaptive and Ultra for reasoning models, without a model-name allowlist. Models marked non-reasoning offer Off and Ultra. Native effort support is resolved by the runtime/provider; the catalog currently exposes only a reasoning boolean, not exact effort capabilities. Ultra is a harness orchestration mode, not a raw provider API reasoning effort. Backend and relay preserve `ultra` in model configuration, runtime readback and persisted reasoning snapshots. Deploy backend and relay support before enabling Ultra in the UI; agents need a runtime version supporting Ultra.
