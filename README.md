@@ -573,3 +573,6 @@ Established model fences reject legacy/unbound credential mutations before servi
 
 ### Enterprise credit-source activation probes
 `model.verify` optionally accepts a backend-signed `verificationGrant` (opaque, at most 2048 characters). It is appended only to the disposable connectivity-check user message; defaults, zero fallbacks, actual model/runtime identity verification and session cleanup remain unchanged. The local proxy redacts the capability in diagnostics while forwarding it to the authenticated backend, which validates its short-lived server/model/revision scope, removes it, enforces probe output/tool limits and retains normal billing controls. It is never saved to OpenClaw config/auth. Deploy Relay support before the corresponding backend activation fix; old relays fail closed. No new environment setting.
+
+## Model activation verification
+Isolated response checks allow 180 seconds for inference, preserving actual provider/model/harness validation and session cleanup. CLI checks allow an additional 30 seconds for startup/output; backend verification transport must allow at least 240 seconds.

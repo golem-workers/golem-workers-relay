@@ -221,7 +221,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         const { result } = await input.statusNudgeRunner.runChatTask({
           taskId: "enterprise_model_verify_" + randomUUID(), sessionKey,
           messageText: "Reply with OK only. This is a model connectivity check. Do not use tools." + (action.verificationGrant ? "\nGW_MODEL_VERIFY_GRANT:" + action.verificationGrant : ""),
-          deliverySystem: "relay_channel_v2", timeoutMs: 120_000,
+          deliverySystem: "relay_channel_v2", timeoutMs: 180_000,
         });
         if (result.outcome !== "reply") throw new AgentControlError("MODEL_VERIFY_FAILED", "Selected runtime model did not return a reply");
         // Session usage records the provider/model actually used, including fallback drift.
@@ -1218,10 +1218,10 @@ async function verifyConfiguredModel(configPath: string, model: string): Promise
       "agent", "--agent", "main", "--session-id", `authorization-check-${randomUUID()}`,
       "--session-key", `agent:main:authorization-check:${randomUUID()}`,
       "--message", `Reply exactly ${marker}. Do not use tools.`,
-      "--json", "--timeout", "90",
+      "--json", "--timeout", "180",
     ], {
       env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath },
-      timeout: 120_000,
+      timeout: 210_000,
       maxBuffer: 1024 * 1024,
     });
     const response: unknown = JSON.parse(stdout);

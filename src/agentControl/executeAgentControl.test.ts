@@ -2374,6 +2374,7 @@ describe("authoritative managed harness sequences", () => {
       const runner = { runChatTask: vi.fn(() => Promise.resolve({ result: { outcome: "reply" as const, reply: { runId: "fixture", message: "OK" } }, openclawMeta: {} })) };
       await expect(executeAgentControl({ configPath, gateway, statusNudgeRunner: runner, action: { kind: "model.verify", model: ref, managedRuntimePolicy } })).resolves.toMatchObject({ verified: true });
       expect(runner.runChatTask).toHaveBeenCalledTimes(1);
+      expect(runner.runChatTask).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 180_000 }));
       expect(await fs.readFile(log, "utf8")).toContain("restart openclaw-gateway.service");
     } finally { await fs.rm(dir, { recursive: true, force: true }); }
   });
