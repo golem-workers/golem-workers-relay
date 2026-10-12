@@ -1,3 +1,4 @@
+import * as probeTransport from "./modelVerificationProbe.js";
 import { afterEach, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -33,6 +34,7 @@ async function probe(input: { beforeRuntime: unknown; afterRuntime: unknown; aft
   vi.spyOn(auth, "hasPersistedChatGptSubscription").mockResolvedValue(true);
   vi.spyOn(auth, "hasPersistedOpenAiApiKey").mockResolvedValue(false);
   vi.spyOn(auth, "hasChatGptRouteOverrides").mockResolvedValue(false);
+  const proof = vi.spyOn(probeTransport, "runIsolatedModelProbe").mockImplementation(request => Promise.resolve({ status: "ok", result: { payloads: [{ text: request.messageText.split(" ")[2].slice(0, -1) }], meta: { agentMeta: { provider: "openai", model: "example", agentHarnessId: "openclaw" } } } }));
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "issue665-runtime-"));
   try {
     const configPath = path.join(root, "config.json");
@@ -50,7 +52,8 @@ async function probe(input: { beforeRuntime: unknown; afterRuntime: unknown; aft
     const result = executeAgentControl({ configPath, gateway, action: { kind: "model.verify", model: "codex/example" }, statusNudgeRunner: { runChatTask } });
     if (input.valid) await expect(result).resolves.toMatchObject({ kind: "model.verify", verified: true });
     else await expect(result).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });
-    expect(runChatTask).toHaveBeenCalledTimes(input.shouldInfer ? 1 : 0);
+    expect(proof).toHaveBeenCalledTimes(input.shouldInfer ? 1 : 0);
+    expect(runChatTask).not.toHaveBeenCalled();
     expect(calls.at(-1)).toBe("sessions.delete");
     expect(calls.includes("chat.abort")).toBe(!input.valid);
   } finally { await fs.rm(root, { recursive: true, force: true }); }

@@ -576,3 +576,5 @@ Established model fences reject legacy/unbound credential mutations before servi
 
 ## Model activation verification
 Isolated response checks allow 180 seconds for inference, preserving actual provider/model/harness validation and session cleanup. CLI checks allow an additional 30 seconds for startup/output; backend verification transport must allow at least 240 seconds.
+
+Fenced verification waits for a fresh isolated CLI execution result with actual `agentMeta.provider`, `model`, and `agentHarnessId`, and validates the current session/config afterwards. A display-only `chat.send` final is not inference/harness proof. Credit probe grants remain confined to the disposable fixed-prompt verification and are never saved in configuration.

@@ -1,3 +1,4 @@
+import * as probeTransport from "./modelVerificationProbe.js";
 import { expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -95,11 +96,12 @@ it("parses and dispatches real model.verify protocol against runtime defaults an
     await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({ agents: { defaults: { model: { primary: "openai/example", fallbacks: [] }, models: { "openai/example": { agentRuntime: { id: "openclaw" } } } } } }));
     const action = agentControlActionSchema.parse({ kind: "model.verify", model: "codex/example" });
     let calls = 0;
+    spies.push(vi.spyOn(probeTransport, "runIsolatedModelProbe").mockImplementation(request => { calls++; return Promise.resolve({ status: "ok", result: { payloads: [{ text: request.messageText.split(" ")[2].slice(0, -1) }], meta: { agentMeta: { provider: "openai", model: "example", agentHarnessId: "openclaw" } } } }); }) as unknown as typeof spies[number]);
     const gateway = { request: (method: string, params?: unknown) => {
       expect(["sessions.patch", "sessions.delete", "chat.abort"]).toContain(method); expect(params).not.toHaveProperty("model");
       return Promise.resolve({ resolved: { modelProvider: "openai", model: "example", agentRuntime: { id: "openclaw", source: "model" } }, entry: { modelProvider: "openai", model: "example", agentHarnessId: "openclaw" } });
     } };
-    const statusNudgeRunner = { runChatTask: () => { calls++; return Promise.resolve({ result: { outcome: "reply" as const, reply: { runId: "test", message: "OK" } }, openclawMeta: {} }); } };
+    const statusNudgeRunner = { runChatTask: () => { return Promise.resolve({ result: { outcome: "reply" as const, reply: { runId: "test", message: "OK" } }, openclawMeta: {} }); } };
     expect(agentControlResultSchema.parse(await executeAgentControl({ configPath: path.join(dir, "config.json"), action, gateway, statusNudgeRunner }))).toMatchObject({ kind: "model.verify", verified: true });
     expect(calls).toBe(1);
     await expect(executeAgentControl({ configPath: path.join(dir, "config.json"), action: { kind: "model.verify", model: "codex/other" }, gateway, statusNudgeRunner })).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });

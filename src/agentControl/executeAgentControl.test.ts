@@ -1,3 +1,4 @@
+import * as probeTransport from "./modelVerificationProbe.js";
 import { MANAGED_RUNTIME_SOURCE_SHA256 } from "../managed-runtime/policy.generated.js";
 import { createManagedRuntimePolicy } from "../managed-runtime/policy.generated.js";
 import fs from "node:fs/promises";
@@ -1212,18 +1213,18 @@ describe("executeAgentControl Codex login", () => {
       .toHaveLength(failRefresh ? 2 : 1);
   });
 
-  it.each(["ok", "wrong-model", "wrong-answer", "failure"])("verifies actual isolated model output: %s", async (mode) => {
+  it.each(["ok", "wrong-model", "wrong-answer", "wrong-provider", "wrong-harness", "missing-harness", "failure"])("verifies actual isolated model output: %s", async (mode) => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-model-verify-"));
     const configPath = path.join(dir, "openclaw.json");
     await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: { model: { primary: "openai/gpt-6-astra" } } } }));
     const binary = path.join(dir, "openclaw");
     await fs.writeFile(binary, `#!/usr/bin/env node
 const args = process.argv.slice(2);
-if (args.includes('--deliver') || !args.includes('--session-key') || !args.includes('--session-id')) process.exit(4);
+if (args.includes('--deliver') || args.includes('--model') || !args.includes('--session-key') || !args.includes('--session-id') || args[args.indexOf('--timeout') + 1] !== '180') process.exit(4);
 const prompt = args[args.indexOf('--message') + 1];
 console.log(JSON.stringify({status: ${JSON.stringify(mode === "failure" ? "error" : "ok")}, result: {
   payloads: [{text: ${mode === "wrong-answer" ? "'not the marker'" : "prompt.split(' ')[2].slice(0, -1)"}}],
-  meta: {agentMeta: {provider: "openai", agentHarnessId: "openclaw", model: ${JSON.stringify(mode === "wrong-model" ? "another-model" : "gpt-6-astra")}}}
+  meta: {agentMeta: {provider: ${JSON.stringify(mode === "wrong-provider" ? "anthropic" : "openai")}, agentHarnessId: ${mode === "missing-harness" ? "undefined" : JSON.stringify(mode === "wrong-harness" ? "codex" : "openclaw")}, model: ${JSON.stringify(mode === "wrong-model" ? "another-model" : "gpt-6-astra")}}}
 }}));
 `, { mode: 0o700 });
     process.env.PATH = `${dir}:${process.env.PATH}`;
@@ -2372,9 +2373,10 @@ describe("authoritative managed harness sequences", () => {
       expect(await fs.readFile(configPath, "utf8")).toBe(before);
       const gateway = { request: vi.fn(() => Promise.resolve({ resolved: { modelProvider: "openai", model: "gpt-6.1-sol", agentRuntime: { id: harness, source: "model" } }, entry: { modelProvider: "openai", model: "gpt-6.1-sol", agentHarnessId: harness } })) };
       const runner = { runChatTask: vi.fn(() => Promise.resolve({ result: { outcome: "reply" as const, reply: { runId: "fixture", message: "OK" } }, openclawMeta: {} })) };
+      const proof = vi.spyOn(probeTransport, "runIsolatedModelProbe").mockImplementation(request => Promise.resolve({ status: "ok", result: { payloads: [{ text: request.messageText.split(" ")[2].slice(0, -1) }], meta: { agentMeta: { provider: "openai", model: "gpt-6.1-sol", agentHarnessId: harness } } } }));
       await expect(executeAgentControl({ configPath, gateway, statusNudgeRunner: runner, action: { kind: "model.verify", model: ref, managedRuntimePolicy } })).resolves.toMatchObject({ verified: true });
-      expect(runner.runChatTask).toHaveBeenCalledTimes(1);
-      expect(runner.runChatTask).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 180_000 }));
+      expect(proof).toHaveBeenCalledTimes(1);
+      expect(runner.runChatTask).not.toHaveBeenCalled();
       expect(await fs.readFile(log, "utf8")).toContain("restart openclaw-gateway.service");
     } finally { await fs.rm(dir, { recursive: true, force: true }); }
   });
