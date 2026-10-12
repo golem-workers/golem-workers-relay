@@ -1,3 +1,4 @@
+import { runIsolatedModelProbe } from "./modelVerificationProbe.js";
 import { readOfflineRuntimeAuth, MANAGED_RUNTIME_SOURCE_SHA256 } from "../managed-runtime/policy.generated.js";
 import { managedRuntime, withManagedRuntimePolicy, readManagedRuntimePolicy, runtimeContext, normalizeManagedConfigOnDisk, activeManagedConfigPath } from "../managed-runtime/runtime-policy.js";
 import { readModelFence, writeModelFence, withModelFenceLock, withAuthorizedModelSelection } from "./modelFence.js";
@@ -175,7 +176,6 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       throw new AgentControlError("MODEL_FENCE_REQUIRED", "Fenced credential mutations require backend-bound managed authority");
     }
     if (action.kind === "model.verify" && (state || input.statusNudgeRunner)) {
-      if (!input.statusNudgeRunner) throw new AgentControlError("MODEL_VERIFY_UNAVAILABLE", "Inference runner unavailable");
       const { config } = await readConfigFile(input.configPath);
       const defaults = ensureOptionalRecord(ensureOptionalRecord(config.agents)?.defaults);
       const configured = ensureOptionalRecord(defaults?.model);
@@ -202,7 +202,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         }
       }
       const sessionKey = "agent:main:enterprise-model-verify:" + randomUUID();
-      type ProbeResponse = { resolved?: { modelProvider?: string; model?: string; agentRuntime?: unknown }; entry?: { modelProvider?: string; model?: string; agentHarnessId?: string } };
+      type ProbeResponse = { resolved?: { modelProvider?: string; model?: string; agentRuntime?: unknown }; entry?: { sessionId?: string; modelProvider?: string; model?: string; agentHarnessId?: string } };
       const identity = (provider?: string, model?: string, runtime?: unknown) => {
         const ref = provider && model ? provider + "/" + model : null;
         // sessions.patch returns selected runtime metadata { id, source }, not
@@ -218,12 +218,9 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         if (identity(before.resolved?.modelProvider, before.resolved?.model, before.resolved?.agentRuntime) !== action.model) {
           throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Runtime default model differs from selected model");
         }
-        const { result } = await input.statusNudgeRunner.runChatTask({
-          taskId: "enterprise_model_verify_" + randomUUID(), sessionKey,
-          messageText: "Reply with OK only. This is a model connectivity check. Do not use tools." + (action.verificationGrant ? "\nGW_MODEL_VERIFY_GRANT:" + action.verificationGrant : ""),
-          deliverySystem: "relay_channel_v2", timeoutMs: 120_000,
+        await verifyConfiguredModel(input.configPath, action.model, {
+          sessionKey, sessionId: before.entry?.sessionId, verificationGrant: action.verificationGrant,
         });
-        if (result.outcome !== "reply") throw new AgentControlError("MODEL_VERIFY_FAILED", "Selected runtime model did not return a reply");
         // Session usage records the provider/model actually used, including fallback drift.
         const after = await input.gateway.request("sessions.patch", { key: sessionKey }, { timeoutMs: 15_000 }) as ProbeResponse;
         if (identity(after.entry?.modelProvider, after.entry?.model, after.resolved?.agentRuntime) !== action.model || (after.entry?.agentHarnessId !== managedRuntime.expectedRuntime(config, action.model.replace(/^(?:codex|openai-codex)\//, "openai/"), "main", policy, context))) {
@@ -1198,7 +1195,7 @@ async function setModelAssignment(input: {
   };
 }
 
-async function verifyConfiguredModel(configPath: string, model: string): Promise<AgentControlResult> {
+async function verifyConfiguredModel(configPath: string, model: string, probe?: { sessionKey?: string; sessionId?: string; verificationGrant?: string }): Promise<AgentControlResult> {
   const { config } = await readConfigFile(configPath);
   const agents = isRecord(config.agents) ? config.agents : {};
   const defaults = isRecord(agents.defaults) ? agents.defaults : {};
@@ -1210,21 +1207,18 @@ async function verifyConfiguredModel(configPath: string, model: string): Promise
   const policy = await readManagedRuntimePolicy(configPath);
   const context = await runtimeContext(configPath);
   const expectedHarness = managedRuntime.expectedRuntime(config, expected.modelRef, "main", policy, context);
-  const marker = `AUTH_CHECK_${randomUUID().replaceAll("-", "")}`;
+  const marker = probe?.verificationGrant ? "OK" : `AUTH_CHECK_${randomUUID().replaceAll("-", "")}`;
   try {
     // A fresh session, no --deliver: never publish diagnostic text to a customer
     // channel, reuse their conversation or accept mere authStatus as success.
-    const { stdout } = await execFile("openclaw", [
-      "agent", "--agent", "main", "--session-id", `authorization-check-${randomUUID()}`,
-      "--session-key", `agent:main:authorization-check:${randomUUID()}`,
-      "--message", `Reply exactly ${marker}. Do not use tools.`,
-      "--json", "--timeout", "90",
-    ], {
-      env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath },
-      timeout: 120_000,
-      maxBuffer: 1024 * 1024,
+    const response = await runIsolatedModelProbe({
+      configPath,
+      sessionId: probe?.sessionId ?? `authorization-check-${randomUUID()}`,
+      sessionKey: probe?.sessionKey ?? `agent:main:authorization-check:${randomUUID()}`,
+      messageText: probe?.verificationGrant
+        ? `Reply with OK only. This is a model connectivity check. Do not use tools.\nGW_MODEL_VERIFY_GRANT:${probe.verificationGrant}`
+        : `Reply exactly ${marker}. Do not use tools.`,
     });
-    const response: unknown = JSON.parse(stdout);
     const result = isRecord(response) && isRecord(response.result) ? response.result : null;
     const meta = result && isRecord(result.meta) ? result.meta : null;
     const agentMeta = meta && isRecord(meta.agentMeta) ? meta.agentMeta : null;

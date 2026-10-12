@@ -1,3 +1,4 @@
+import * as probeTransport from "./modelVerificationProbe.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -16,6 +17,7 @@ beforeEach(() => {
 });
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true }))); });
 async function fixture(harness: "openclaw" | "codex" = "openclaw") {
+  const proof = vi.spyOn(probeTransport, "runIsolatedModelProbe").mockImplementation(request => Promise.resolve({ status: "ok", result: { payloads: [{ text: request.messageText.includes("GW_MODEL_VERIFY_GRANT:") ? "OK" : request.messageText.split(" ")[2].slice(0, -1) }], meta: { agentMeta: { provider: "openai", model: "gpt-6-astra", agentHarnessId: harness } } } }));
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "model-verify-runtime-")); directories.push(dir);
   const configPath = path.join(dir, "config.json");
   const config = { agents: { defaults: { model: { primary: "openai/gpt-6-astra", fallbacks: [] as string[] }, models: { "openai/gpt-6-astra": { agentRuntime: { id: harness } } } } } };
@@ -33,13 +35,13 @@ async function fixture(harness: "openclaw" | "codex" = "openclaw") {
   }) };
   const statusNudgeRunner = { runChatTask: vi.fn(() => Promise.resolve({ result: { outcome: "reply" as const, reply: { runId: "fixture", message: "OK" } }, openclawMeta: {} })) };
   const run = (verificationGrant?: string) => executeAgentControl({ configPath, gateway, statusNudgeRunner, action: agentControlActionSchema.parse({ kind: "model.verify", model: "codex/gpt-6-astra", ...(verificationGrant ? { verificationGrant } : {}) }) });
-  return { configPath, config, before, after, gateway, statusNudgeRunner, run };
+  return { configPath, config, before, after, gateway, statusNudgeRunner, proof, run };
 }
 it("carries the backend verification grant only in the disposable probe without persisting config", async () => {
   const f = await fixture();
   const before = await fs.readFile(f.configPath, "utf8");
   await expect(f.run("signed-payload.signature")).resolves.toMatchObject({ verified: true });
-  expect(f.statusNudgeRunner.runChatTask).toHaveBeenCalledWith(expect.objectContaining({ messageText: "Reply with OK only. This is a model connectivity check. Do not use tools.\nGW_MODEL_VERIFY_GRANT:signed-payload.signature" }));
+  expect(f.proof).toHaveBeenCalledWith(expect.objectContaining({ messageText: "Reply with OK only. This is a model connectivity check. Do not use tools.\nGW_MODEL_VERIFY_GRANT:signed-payload.signature" }));
   expect(await fs.readFile(f.configPath, "utf8")).toBe(before);
   expect(f.gateway.request.mock.calls.map(([method]) => method)).toEqual(["sessions.patch", "sessions.patch", "sessions.delete"]);
   expect(() => agentControlActionSchema.parse({ kind: "model.verify", model: "codex/gpt-6-astra", verificationGrant: "invalid!" })).toThrow();
@@ -48,7 +50,7 @@ it.each(["openclaw", "codex"] as const)("verifies actual metadata-object contrac
   const f = await fixture(harness);
   const configBefore = await fs.readFile(f.configPath, "utf8");
   await expect(f.run()).resolves.toMatchObject({ kind: "model.verify", verified: true });
-  expect(f.statusNudgeRunner.runChatTask).toHaveBeenCalledOnce();
+  expect(f.proof).toHaveBeenCalledOnce();
   expect(f.gateway.request.mock.calls.map(([method]) => method)).toEqual(["sessions.patch", "sessions.patch", "sessions.delete"]);
   expect(await fs.readFile(f.configPath, "utf8")).toBe(configBefore);
 });
@@ -60,7 +62,7 @@ it.each([
 ])("rejects %s selected runtime before inference and cleans up", async (_label, runtime) => {
   const f = await fixture(); f.before.resolved.agentRuntime = runtime;
   await expect(f.run()).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH", message: "Runtime default model differs from selected model" });
-  expect(f.statusNudgeRunner.runChatTask).not.toHaveBeenCalled();
+  expect(f.proof).not.toHaveBeenCalled();
   expect(f.gateway.request.mock.calls.map(([method]) => method)).toEqual(["sessions.patch", "chat.abort", "sessions.delete"]);
 });
 it.each(["missing-runtime", "wrong-runtime", "wrong-model", "wrong-provider", "missing-producer", "wrong-producer"])("rejects post-inference %s without confusing selection with producer identity", async kind => {
@@ -72,7 +74,7 @@ it.each(["missing-runtime", "wrong-runtime", "wrong-model", "wrong-provider", "m
   if (kind === "missing-producer") f.after.entry.agentHarnessId = undefined;
   if (kind === "wrong-producer") f.after.entry.agentHarnessId = "codex";
   await expect(f.run()).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH", message: "Inference used another provider/model or runtime" });
-  expect(f.statusNudgeRunner.runChatTask).toHaveBeenCalledOnce();
+  expect(f.proof).toHaveBeenCalledOnce();
   expect(f.gateway.request.mock.calls.map(([method]) => method)).toEqual(["sessions.patch", "sessions.patch", "chat.abort", "sessions.delete"]);
 });
 it.each(["wrong-model", "wrong-provider"])("rejects selected %s before inference", async kind => {
@@ -80,7 +82,7 @@ it.each(["wrong-model", "wrong-provider"])("rejects selected %s before inference
   if (kind === "wrong-model") f.before.resolved.model = "other";
   else f.before.resolved.modelProvider = "anthropic";
   await expect(f.run()).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });
-  expect(f.statusNudgeRunner.runChatTask).not.toHaveBeenCalled();
+  expect(f.proof).not.toHaveBeenCalled();
 });
 it("preserves zero-fallback guard before probing runtime", async () => {
   const f = await fixture(); f.config.agents.defaults.model.fallbacks = ["anthropic/other"];
@@ -91,5 +93,5 @@ it("preserves zero-fallback guard before probing runtime", async () => {
 it("does not substitute selected runtime for required subscription proof", async () => {
   const f = await fixture(); vi.mocked(auth.hasPersistedChatGptSubscription).mockResolvedValue(false);
   await expect(f.run()).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });
-  expect(f.statusNudgeRunner.runChatTask).not.toHaveBeenCalled();
+  expect(f.proof).not.toHaveBeenCalled();
 });
