@@ -168,6 +168,7 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("model.verify"),
     model: z.string().min(1),
+    verificationGrant: z.string().min(1).max(2048).regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/).optional(),
   }),
   z.object({
     kind: z.literal("codex.auth.clear"),

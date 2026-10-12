@@ -553,7 +553,7 @@ function summarizeBodyForLog(body: Uint8Array): {
     return { preview: null, truncated: false };
   }
   const text = Buffer.from(body).toString("utf8");
-  const normalized = normalizePreviewText(text);
+  const normalized = normalizePreviewText(text.replace(/GW_MODEL_VERIFY_GRANT:[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "GW_MODEL_VERIFY_GRANT:[REDACTED]"));
   if (!normalized) {
     return { preview: "", truncated: false };
   }
