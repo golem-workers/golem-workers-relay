@@ -141,6 +141,44 @@ describe("deliverSystemNotificationFromRelay", () => {
     );
   });
 
+  it("discovers native Telegram DMs stored in the main session from explicit delivery metadata", async () => {
+    const index = new ConversationActivityIndex({ filePath: await tempIndexPath() });
+    const deliverSystemNotification = vi.fn().mockResolvedValue({ accepted: true });
+    const gateway = {
+      request: vi.fn((method: string) => {
+        if (method === "sessions.list") return Promise.resolve({ sessions: [{
+          key: "agent:main:main", updatedAt: Date.now(), channel: "telegram", chatType: "direct",
+          origin: { provider: "telegram", chatType: "direct", to: "telegram:7278830001" },
+          deliveryContext: { channel: "telegram", to: "telegram:7278830001", accountId: "default" },
+        }] });
+        if (method === "chat.history") return Promise.resolve({ messages: [{ role: "user", content: "hello", timestamp: Date.now() }] });
+        if (method === "send") return Promise.resolve({ messageId: "native-main-msg" });
+        return Promise.resolve({});
+      }),
+    };
+    const result = await deliverSystemNotificationFromRelay({
+      backend: { deliverSystemNotification } as unknown as BackendClient,
+      activityIndex: index, message: systemNotificationMessage(), gateway,
+    });
+    expect(result).toEqual({ status: "delivered", selectedChannel: "telegram", sessionKey: "tg:7278830001:openclaw-direct", transportMessageId: "native-main-msg" });
+    expect(gateway.request).toHaveBeenCalledWith("chat.history", expect.objectContaining({ sessionKey: "agent:main:main" }), { timeoutMs: 5_000 });
+    expect(gateway.request).toHaveBeenCalledWith("send", expect.objectContaining({ to: "telegram:7278830001" }), { timeoutMs: 10_000 });
+  });
+
+  it.each([
+    { channel: "telegram", chatType: "group", deliveryContext: { channel: "telegram", to: "telegram:-123" } },
+    { channel: "webchat", chatType: "direct", deliveryContext: { channel: "webchat", to: "telegram:7278830001" } },
+    { channel: "telegram", chatType: "direct" },
+    { channel: "telegram", chatType: "direct", deliveryContext: { channel: "telegram", to: "not-a-chat" } },
+  ])("does not infer a native DM route from unrelated or incomplete main-session metadata: %j", async (metadata) => {
+    const index = new ConversationActivityIndex({ filePath: await tempIndexPath() });
+    const deliverSystemNotification = vi.fn();
+    const gateway = { request: vi.fn().mockResolvedValue({ sessions: [{ key: "agent:main:main", updatedAt: Date.now(), ...metadata }] }) };
+    expect(await deliverSystemNotificationFromRelay({ backend: { deliverSystemNotification } as unknown as BackendClient, activityIndex: index, message: systemNotificationMessage(), gateway })).toEqual({ status: "no_route" });
+    expect(deliverSystemNotification).not.toHaveBeenCalled();
+    expect(gateway.request).toHaveBeenCalledTimes(1);
+  });
+
   it("uses raw OpenClaw send for known direct Telegram OpenClaw routes", async () => {
     const index = new ConversationActivityIndex({ filePath: await tempIndexPath() });
     await index.recordTranscript({

@@ -228,7 +228,8 @@ function readDirectTelegramRuntimeSessionCandidates(payload: unknown): Array<{
       if (!isPlainObject(session)) return [];
       const gatewaySessionKey = readString(session.key);
       if (!gatewaySessionKey) return [];
-      const chatId = readDirectTelegramChatIdFromRuntimeSessionKey(gatewaySessionKey);
+      const chatId = readDirectTelegramChatIdFromRuntimeSessionKey(gatewaySessionKey) ??
+        readDirectTelegramChatIdFromRuntimeSessionMetadata(session);
       if (!chatId) return [];
       const updatedAtMs = readTimestampMs(session.lastUserMessageAt) ?? readTimestampMs(session.updatedAt);
       if (updatedAtMs == null) return [];
@@ -243,6 +244,20 @@ function readDirectTelegramChatIdFromRuntimeSessionKey(sessionKey: string): stri
   if (!normalized.startsWith(prefix)) return null;
   const chatId = normalized.slice(prefix.length).split(":")[0]?.trim();
   return chatId || null;
+}
+
+function readDirectTelegramChatIdFromRuntimeSessionMetadata(session: Record<string, unknown>): string | null {
+  if (session.isBackground === true || session.archived === true) return null;
+  const origin = isPlainObject(session.origin) ? session.origin : {};
+  const delivery = isPlainObject(session.deliveryContext) ? session.deliveryContext : {};
+  const channel = readString(delivery.channel) ?? readString(session.channel) ?? readString(origin.provider);
+  const chatType = readString(session.chatType) ?? readString(origin.chatType);
+  if (channel !== "telegram" || chatType !== "direct") return null;
+  const target = readString(delivery.to) ?? readString(origin.to);
+  // Main-session keys do not encode the recipient. Require an explicit native
+  // Telegram DM target rather than guessing from a display name or participant.
+  const match = target?.match(/^telegram:(\d+)$/);
+  return match?.[1] ?? null;
 }
 
 async function readRuntimeChatHistory(gateway: GatewayLike, sessionKey: string): Promise<unknown> {
