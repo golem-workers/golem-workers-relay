@@ -220,7 +220,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         }
         const { result } = await input.statusNudgeRunner.runChatTask({
           taskId: "enterprise_model_verify_" + randomUUID(), sessionKey,
-          messageText: "Reply with OK only. This is a model connectivity check. Do not use tools.",
+          messageText: "Reply with OK only. This is a model connectivity check. Do not use tools." + (action.verificationGrant ? "\nGW_MODEL_VERIFY_GRANT:" + action.verificationGrant : ""),
           deliverySystem: "relay_channel_v2", timeoutMs: 120_000,
         });
         if (result.outcome !== "reply") throw new AgentControlError("MODEL_VERIFY_FAILED", "Selected runtime model did not return a reply");

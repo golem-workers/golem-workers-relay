@@ -734,6 +734,27 @@ describe("startOpenAiProxyServer", () => {
     expect(receivedPath).toBe("/api/v1/relays/openai/responses");
   });
 
+  it("forwards the verification capability to backend but redacts it in proxy diagnostics", async () => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    const backendPort = await getFreePort();
+    let received = "";
+    const backendServer = http.createServer((req, res) => {
+      req.on("data", (chunk: Buffer) => { received += chunk.toString(); });
+      req.on("end", () => { res.setHeader("content-type", "application/json"); res.end("{}"); });
+    });
+    await listen(backendServer, backendPort); servers.push(backendServer);
+    const relayPort = await getFreePort();
+    const relayServer = startOpenRouterProxyServer({ port: relayPort, backendBaseUrl: `http://127.0.0.1:${backendPort}`, relayToken: "fixture-relay-token", pathPrefix: "/proxy", backendPathPrefix: "/api/v1/relays/openrouter" });
+    servers.push(relayServer); await waitForListening(relayServer);
+    const response = await fetch(`http://127.0.0.1:${relayPort}/proxy/api/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "openrouter/vendor/chosen", messages: [{ role: "user", content: "GW_MODEL_VERIFY_GRANT:signed-payload.signature" }] }) });
+    await response.text(); expect(response.status).toBe(200);
+    expect(received).toContain("signed-payload.signature");
+    const entry = infoSpy.mock.calls.find(call => call[1] === "relay-openrouter-proxy proxied request");
+    expect(entry?.[0]).toHaveProperty("requestBodyPreview");
+    expect(JSON.stringify(entry?.[0])).toContain("GW_MODEL_VERIFY_GRANT:[REDACTED]");
+    expect(JSON.stringify(entry?.[0])).not.toContain("signed-payload.signature");
+  });
+
   it("logs proxied request body previews with truncation", async () => {
     const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
     const backendPort = await getFreePort();

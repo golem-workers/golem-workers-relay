@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { agentControlActionSchema } from "./protocol.js";
 import { executeAgentControl } from "./executeAgentControl.js";
 import * as auth from "./codexLogin.js";
 import { policyFile } from "../managed-runtime/runtime-policy.js";
@@ -31,9 +32,18 @@ async function fixture(harness: "openclaw" | "codex" = "openclaw") {
     throw new Error("Unexpected RPC: " + method);
   }) };
   const statusNudgeRunner = { runChatTask: vi.fn(() => Promise.resolve({ result: { outcome: "reply" as const, reply: { runId: "fixture", message: "OK" } }, openclawMeta: {} })) };
-  const run = () => executeAgentControl({ configPath, gateway, statusNudgeRunner, action: { kind: "model.verify", model: "codex/gpt-6-astra" } });
+  const run = (verificationGrant?: string) => executeAgentControl({ configPath, gateway, statusNudgeRunner, action: agentControlActionSchema.parse({ kind: "model.verify", model: "codex/gpt-6-astra", ...(verificationGrant ? { verificationGrant } : {}) }) });
   return { configPath, config, before, after, gateway, statusNudgeRunner, run };
 }
+it("carries the backend verification grant only in the disposable probe without persisting config", async () => {
+  const f = await fixture();
+  const before = await fs.readFile(f.configPath, "utf8");
+  await expect(f.run("signed-payload.signature")).resolves.toMatchObject({ verified: true });
+  expect(f.statusNudgeRunner.runChatTask).toHaveBeenCalledWith(expect.objectContaining({ messageText: "Reply with OK only. This is a model connectivity check. Do not use tools.\nGW_MODEL_VERIFY_GRANT:signed-payload.signature" }));
+  expect(await fs.readFile(f.configPath, "utf8")).toBe(before);
+  expect(f.gateway.request.mock.calls.map(([method]) => method)).toEqual(["sessions.patch", "sessions.patch", "sessions.delete"]);
+  expect(() => agentControlActionSchema.parse({ kind: "model.verify", model: "codex/gpt-6-astra", verificationGrant: "invalid!" })).toThrow();
+});
 it.each(["openclaw", "codex"] as const)("verifies actual metadata-object contract with %s policy and empty pre-inference entry", async harness => {
   const f = await fixture(harness);
   const configBefore = await fs.readFile(f.configPath, "utf8");
