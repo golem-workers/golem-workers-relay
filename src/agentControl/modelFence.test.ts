@@ -3,7 +3,7 @@ import { expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { readModelFence, withModelFenceLock, writeModelFence } from "./modelFence.js";
+import { ModelFenceBusyError, readModelFence, withModelFenceLock, writeModelFence } from "./modelFence.js";
 
 it("excludes another descriptor and releases after rejection without deleting lock identity", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "model-fence-"));
@@ -42,7 +42,9 @@ it("releases kernel ownership on cross-process SIGKILL while retaining durable i
       child.stdout.once("data", () => resolve()); child.once("error", reject);
       child.once("exit", () => reject(new Error("owner exited before readiness")));
     });
-    await expect(withModelFenceLock(config, () => Promise.resolve())).rejects.toThrow("MODEL_FENCE_BUSY");
+    const mutation = vi.fn(() => Promise.resolve());
+    await expect(withModelFenceLock(config, mutation)).rejects.toBeInstanceOf(ModelFenceBusyError);
+    expect(mutation).not.toHaveBeenCalled();
     const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
     child.kill("SIGKILL"); await exited;
     await withModelFenceLock(config, async () => {

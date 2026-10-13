@@ -580,3 +580,5 @@ Isolated response checks allow 180 seconds for inference, preserving actual prov
 Fenced verification waits for a fresh isolated CLI execution result with actual `agentMeta.provider`, `model`, and `agentHarnessId`, and validates the current session/config afterwards. A display-only `chat.send` final is not inference/harness proof. Credit probe grants remain confined to the disposable fixed-prompt verification and are never saved in configuration.
 
 Native Telegram system notifications discover active DM routes from runtime session delivery metadata as well as legacy `telegram:direct:` keys. This includes DMs stored in `agent:main:main`; metadata discovery requires an explicit Telegram direct-chat target and excludes archived/background sessions. Group or unrelated internal sessions are not inferred as DM routes.
+
+Model lock contention before mutation returns HTTP 409 MODEL_FENCE_BUSY, not a generic HTTP 500. Only typed kernel-acquisition failures carry this retry-safe code; lock ownership and unknown-error handling are unchanged.
