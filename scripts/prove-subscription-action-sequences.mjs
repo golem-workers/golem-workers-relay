@@ -315,6 +315,20 @@ exit 0
     const r=await route(f,SOL); assert.ok(r.selected.kind!=='selected'||r.selected.selection.route.authRequirement!=='subscription');
     return { category:'intentional override, NOT subscription-loss pass', routeSelection:r.selected.kind };
   });
+  for (const ownership of ['shared', 'agent']) await check('account-migration/clear-then-sync/'+ownership, async () => {
+    const f = await fixture('migration-'+ownership, ownership);
+    const gateway = { async request(method) { assert.equal(method, 'models.authStatus'); return {}; } };
+    await run(f, {kind:'codex.auth.sync', bundleVersion:1, bundle:f.bundle}, gateway);
+    const cleared = await run(f, {kind:'codex.auth.clear'}, gateway);
+    assert.equal(cleared.applied, true);
+    const disconnected = await run(f, {kind:'codex.login.status'}, gateway);
+    assert.notEqual(disconnected.state, 'connected');
+    const destination = bundleFor('destination-'+ownership);
+    assert.equal((await run(f, {kind:'codex.auth.sync', bundleVersion:2, bundle:destination}, gateway)).applied, true);
+    assert.equal((await run(f, {kind:'codex.auth.export'}, gateway)).bundle.accountId, destination.accountId);
+    assert.equal((await snapshot(f)).integrity, 'ok');
+    return { selfContention:false, sequence:'sync source -> clear -> status -> sync destination -> export', ownership };
+  });
   await check('model-mutation/restart-failure-contract',async()=>{
     const f=await fixture('restart-failure'), before=await snapshot(f);
     process.env.MATRIX_FAIL_RESTART='1';
