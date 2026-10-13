@@ -5,6 +5,11 @@ import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
+/** Emitted only when kernel custody acquisition fails, before work starts. */
+export class ModelFenceBusyError extends Error {
+  constructor() { super("MODEL_FENCE_BUSY"); this.name = "ModelFenceBusyError"; }
+}
+
 const lockScope = new AsyncLocalStorage<{ path: string; active: boolean }>();
 const selectionScope = new AsyncLocalStorage<boolean>();
 export function withAuthorizedModelSelection<T>(operation: () => Promise<T>): Promise<T> { return selectionScope.run(true, operation); }
@@ -24,7 +29,7 @@ export async function withModelFenceLock<T>(configPath: string, work: () => Prom
     await new Promise<void>((resolve, reject) => {
       const child = spawn("flock", waitSeconds ? ["-w", String(waitSeconds), "3"] : ["-n", "3"], { stdio: ["ignore", "ignore", "ignore", handle.fd] });
       child.once("error", reject);
-      child.once("exit", code => code === 0 ? resolve() : reject(new Error("MODEL_FENCE_BUSY")));
+      child.once("exit", code => code === 0 ? resolve() : reject(new ModelFenceBusyError()));
     });
     const scope = { path: key, active: true };
     try { return await lockScope.run(scope, work); } finally { scope.active = false; }
