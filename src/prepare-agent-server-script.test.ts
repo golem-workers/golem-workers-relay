@@ -47,27 +47,27 @@ function patchGatewayUnit(unit: string) {
 }
 
 describe("prepare-agent-server.sh", () => {
-  it("selects portable filesystem safety before snapshot commands, overriding inherited native mode", () => {
+  it("clears obsolete native mode overrides before snapshot commands", () => {
     const result = spawnSync("bash", ["-s"], {
       encoding: "utf8",
       env: { ...process.env, FS_SAFE_NATIVE_MODE: "require", OPENCLAW_FS_SAFE_NATIVE_MODE: "auto" },
-      input: `${script.replace(/\nmain "\$@"\s*$/, "")}\nprintf '%s:%s' "$FS_SAFE_NATIVE_MODE" "$OPENCLAW_FS_SAFE_NATIVE_MODE"\n`,
+      input: `${script.replace(/\nmain "\$@"\s*$/, "")}\nprintf '%s:%s' "\${FS_SAFE_NATIVE_MODE:-}" "\${OPENCLAW_FS_SAFE_NATIVE_MODE:-}"\n`,
     });
     expect(result.status).toBe(0);
-    expect(result.stdout).toBe("off:off");
+    expect(result.stdout).toBe(":");
   });
 
-  it("passes portable filesystem safety through relay startup to subprocesses on existing agents", () => {
+  it("clears obsolete native overrides for relay subprocesses on existing agents", () => {
     const dir = mkdtempSync(resolve(tmpdir(), "relay-portable-fs-"));
     const npm = resolve(dir, "npm");
-    writeFileSync(npm, '#!/bin/sh\nprintf "%s:%s:%s" "$FS_SAFE_NATIVE_MODE" "$OPENCLAW_FS_SAFE_NATIVE_MODE" "$*"\n', { mode: 0o755 });
+    writeFileSync(npm, '#!/bin/sh\nprintf "%s:%s:%s" "${FS_SAFE_NATIVE_MODE:-}" "${OPENCLAW_FS_SAFE_NATIVE_MODE:-}" "$*"\n', { mode: 0o755 });
     try {
       const result = spawnSync("bash", [resolve(process.cwd(), "scripts/start.sh")], {
         encoding: "utf8",
         env: { ...process.env, NPM_BIN: npm, FS_SAFE_NATIVE_MODE: "require", OPENCLAW_FS_SAFE_NATIVE_MODE: "auto" },
       });
       expect(result.status).toBe(0);
-      expect(result.stdout).toBe("off:off:run start");
+      expect(result.stdout).toBe("::run start");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

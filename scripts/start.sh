@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Also covers relay-triggered plugin updates on pre-existing Linux 4.14 agents.
-# Keep fs-safe validation; only disable its optional openat2 native backend.
-export FS_SAFE_NATIVE_MODE=off
-export OPENCLAW_FS_SAFE_NATIVE_MODE=off
+# Use fs-safe default auto mode (native when available), including on old snapshots.
+unset FS_SAFE_NATIVE_MODE OPENCLAW_FS_SAFE_NATIVE_MODE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
