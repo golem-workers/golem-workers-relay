@@ -255,14 +255,15 @@ describe("rolling 24-hour usage", () => {
       aggregates: { byProvider: [
         { provider: 'openai', totals: { totalTokens: params.mode === 'specific' ? 42 : 9000 } },
         { provider: 'anthropic', totals: { totalTokens: 777 } },
-      ] }, cacheStatus: { status: 'fresh' },
+      ], byModel: [{ provider: 'openai', model: 'gpt-5.4', totals: { input: 10, output: 20, cacheRead: 12, totalTokens: 42 } }] }, cacheStatus: { status: 'fresh' },
     }));
     const reporter = createAuthorizationUsageReporter({ enabled: true, intervalMs: 300000, lookbackDays: 30,
       gateway: { getUsageStatus: vi.fn().mockResolvedValue({}), getSessionsUsage }, backend: { submitAuthorizationUsage } });
     await reporter.run();
     expect((submitAuthorizationUsage.mock.calls[0][0] as { body: RelayAuthorizationUsageRequest }).body).toMatchObject({
-      totals: { totalTokens: 9000 }, rolling24h: { totalTokens: 42 },
+      totals: { totalTokens: 9000 }, rolling24h: { totalTokens: 42, byModel: [{ provider: "openai", model: "gpt-5.4", totals: { input: 10, output: 20, cacheRead: 12, totalTokens: 42 } }] },
     });
+    expect(getSessionsUsage).toHaveBeenCalledTimes(2);
     expect(getSessionsUsage.mock.calls[1][0]).toMatchObject({ mode: 'specific', limit: 1 });
   });
 

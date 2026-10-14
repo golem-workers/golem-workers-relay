@@ -582,3 +582,7 @@ Fenced verification waits for a fresh isolated CLI execution result with actual 
 Native Telegram system notifications discover active DM routes from runtime session delivery metadata as well as legacy `telegram:direct:` keys. This includes DMs stored in `agent:main:main`; metadata discovery requires an explicit Telegram direct-chat target and excludes archived/background sessions. Group or unrelated internal sessions are not inferred as DM routes.
 
 Model lock contention before mutation returns HTTP 409 MODEL_FENCE_BUSY, not a generic HTTP 500. Only typed kernel-acquisition failures carry this retry-safe code; lock ownership and unknown-error handling are unchanged.
+
+### Displayed OpenAI tokens
+
+Company dashboard and OpenAI subscription token metrics use the equivalent cost of an uncached input text token, computed per model from local official rates: input + cache read × cache/input price + output × output/input price (cache writes use their own rate). Raw counters remain unchanged. Rolling 24h reports include model breakdowns using the existing background collection; page loading performs no extra provider or Relay calls. Missing breakdowns or prices produce an unavailable metric, not an unweighted estimate. Deploy backend before Relay and UI; older reports become weighted after the next report.
