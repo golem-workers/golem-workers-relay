@@ -271,7 +271,7 @@ export function createAuthorizationUsageReporter(input: {
       const result = await input.backend.submitAuthorizationUsage({
         body: { ...buildPayload({ status, usage, observedAt, periodStart, periodEnd }),
           rolling24h: { windowStart: window.windowStart, windowEnd: window.windowEnd,
-            totalTokens: rollingPayload.totals.totalTokens } },
+            totalTokens: rollingPayload.totals.totalTokens, byModel: rollingPayload.byModel } },
       });
       state.lastSuccessAtMs = Date.now();
       state.lastAssigned = result.assigned;
