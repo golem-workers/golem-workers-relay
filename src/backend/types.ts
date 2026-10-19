@@ -256,6 +256,7 @@ export const relayAuthorizationUsageRequestSchema = z
       windowStart: z.string().datetime(),
       windowEnd: z.string().datetime(),
       totalTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      byModel: z.array(z.record(z.string(), z.unknown())).optional(),
     }).strict().optional(),
     cacheStatus: z.record(z.string(), z.unknown()).nullable(),
   })

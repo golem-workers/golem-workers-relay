@@ -1,3 +1,4 @@
+import { ModelFenceBusyError } from "../agentControl/modelFence.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import fs from "node:fs/promises";
 import nodePath from "node:path";
@@ -324,6 +325,10 @@ export function startPushServer(input: {
       );
       sendJson(res, 200, { accepted: true });
     } catch (error) {
+      if (error instanceof ModelFenceBusyError) {
+        sendJson(res, 409, { code: "MODEL_FENCE_BUSY", message: "Agent model configuration is busy; operation was not started" });
+        return;
+      }
       if (error instanceof PushServerHttpError) {
         logger.warn(
           {

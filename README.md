@@ -428,7 +428,7 @@ When `RELAY_OPENCLAW_FORWARD_FINAL_ONLY=0`, relay keeps the legacy behavior and 
 A backend handshake performs a live gateway `health` RPC before reporting fresh `CONNECTED` readiness. This also works when a restored VM preserves its local websocket and emits no reconnect event; cached `hello-ok` alone is not liveness evidence. Failed probes do not advance readiness.
 
 ### Rolling OpenAI token usage
-Authorization usage reports include `rolling24h` (`windowStart`, `windowEnd`, `totalTokens`).
+Authorization usage reports include `rolling24h` (`windowStart`, `windowEnd`, raw `totalTokens`, and optional `byModel` token-type counters from the already-collected rolling response). The backend converts the counters using per-model text prices; no extra gateway requests are added.
 A separate `sessions.usage` query uses a supported fixed UTC offset so one date covers
 exactly the previous 24 hours ending at the report's current UTC minute. OpenClaw filters
 individual timestamped records; no calendar-day sums are prorated. Only OpenAI provider
@@ -580,6 +580,12 @@ Isolated response checks allow 180 seconds for inference, preserving actual prov
 Fenced verification waits for a fresh isolated CLI execution result with actual `agentMeta.provider`, `model`, and `agentHarnessId`, and validates the current session/config afterwards. A display-only `chat.send` final is not inference/harness proof. Credit probe grants remain confined to the disposable fixed-prompt verification and are never saved in configuration.
 
 Native Telegram system notifications discover active DM routes from runtime session delivery metadata as well as legacy `telegram:direct:` keys. This includes DMs stored in `agent:main:main`; metadata discovery requires an explicit Telegram direct-chat target and excludes archived/background sessions. Group or unrelated internal sessions are not inferred as DM routes.
+
+Model lock contention before mutation returns HTTP 409 MODEL_FENCE_BUSY, not a generic HTTP 500. Only typed kernel-acquisition failures carry this retry-safe code; lock ownership and unknown-error handling are unchanged.
+
+### Displayed OpenAI tokens
+
+Company dashboard and OpenAI subscription token metrics use the equivalent cost of an uncached input text token, computed per model from local official rates: input + cache read × cache/input price + output × output/input price (cache writes use their own rate). Raw counters remain unchanged. Rolling 24h reports include model breakdowns using the existing background collection; page loading performs no extra provider or Relay calls. Missing breakdowns or prices produce an unavailable metric, not an unweighted estimate. Deploy backend before Relay and UI; older reports become weighted after the next report.
 
 ### Docker in agent images
 

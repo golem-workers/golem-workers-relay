@@ -1,3 +1,4 @@
+import { ModelFenceBusyError } from "../agentControl/modelFence.js";
 import http from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startPushServer } from "./pushServer.js";
@@ -164,6 +165,18 @@ describe("pushServer", () => {
 
     expect(resp.status).toBe(200);
     expect(seenEvents).toHaveLength(1);
+  });
+
+  it.each([true, false])("only exposes typed pre-mutation model contention: %s", async busy => {
+    const onAgentControl = vi.fn().mockRejectedValue(busy ? new ModelFenceBusyError() : new Error("MODEL_FENCE_BUSY"));
+    const { port } = await startTestPushServer({ port: 0, path: "/relay/messages", relayToken: "token", onMessage: async () => {}, onAgentControl }, servers);
+    const resp = await fetch(`http://127.0.0.1:${port}/relay/messages`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: "Bearer token" },
+      body: JSON.stringify({ messageId: "busy", input: { kind: "agent_control", action: { kind: "codex.auth.clear" } } }),
+    });
+    expect(resp.status).toBe(busy ? 409 : 500);
+    expect(await resp.json()).toMatchObject({ code: busy ? "MODEL_FENCE_BUSY" : "PUSH_SERVER_ERROR" });
+    expect(onAgentControl).toHaveBeenCalledTimes(1);
   });
 
   it("handles agent_control payloads synchronously", async () => {
