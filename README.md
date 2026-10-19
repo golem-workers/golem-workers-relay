@@ -583,7 +583,7 @@ Native Telegram system notifications discover active DM routes from runtime sess
 
 ### Docker in agent images
 
-`prepare-agent-server.sh` installs Ubuntu's `docker.io` and `docker-compose-v2`,
+`prepare-agent-server.sh` installs Ubuntu's `docker.io`, `docker-compose-v2` and `docker-buildx`,
 enables Docker on boot and verifies daemon readiness. The builder must already
 use a container-capable external Provider kernel (Linux >=5.2, cgroup v2 with CPU,
 cpuset, memory and PIDs controllers; the Provider pins Linux 6.1). The old

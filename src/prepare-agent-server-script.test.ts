@@ -166,8 +166,9 @@ install_agent_docker
   it("installs Engine and Compose and enables persistent daemon startup", () => {
     const result = runDockerInstall("6.1.190-golem-docker1", "cpu cpuset memory pids");
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("APT:install -y docker.io docker-compose-v2");
+    expect(result.stdout).toContain("APT:install -y docker.io docker-compose-v2 docker-buildx");
     expect(result.stdout).toContain("SYSTEMCTL:enable --now docker.service");
     expect(result.stdout).toContain("DOCKER:compose version");
+    expect(result.stdout).toContain("DOCKER:buildx version");
   });
 });

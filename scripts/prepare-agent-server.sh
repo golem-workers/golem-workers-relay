@@ -249,10 +249,11 @@ install_agent_docker() {
       return 1
     fi
   done
-  apt-get install -y docker.io docker-compose-v2
+  apt-get install -y docker.io docker-compose-v2 docker-buildx
   systemctl enable --now docker.service
   docker info >/dev/null
   docker compose version
+  docker buildx version
 }
 
 default_prepare_apt_mirror() {
