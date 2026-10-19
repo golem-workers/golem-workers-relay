@@ -132,3 +132,43 @@ describe("prepare-agent-server.sh", () => {
     expect(environment.patched).not.toContain("--max-old-space-size=256");
   });
 });
+
+describe("agent Docker preparation", () => {
+  function runDockerInstall(kernel: string, controllers: string) {
+    const withoutMain = script.replace(/\nmain "\$@"\s*$/, "");
+    return spawnSync("bash", ["-s"], {
+      encoding: "utf8",
+      input: `${withoutMain}
+uname() { printf '%s\\n' '${kernel}'; }
+grep() { case "$2" in cpu|cpuset|memory|pids) [[ ' ${controllers} ' == *" $2 "* ]];; *) command grep "$@";; esac; }
+apt-get() { printf 'APT:%s\\n' "$*"; }
+systemctl() { printf 'SYSTEMCTL:%s\\n' "$*"; }
+docker() { printf 'DOCKER:%s\\n' "$*"; }
+install_agent_docker
+`,
+    });
+  }
+
+  it("rejects the old quickstart kernel before installing packages", () => {
+    const result = runDockerInstall("4.14.174", "cpu cpuset memory pids");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Update BASE_KERNEL_PATH and cold boot");
+    expect(result.stdout).not.toContain("APT:");
+  });
+
+  it("rejects missing container cgroup controllers", () => {
+    const result = runDockerInstall("6.1.190-golem-docker1", "memory pids");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("missing cgroup v2 controller: cpu");
+    expect(result.stdout).not.toContain("APT:");
+  });
+
+  it("installs Engine and Compose and enables persistent daemon startup", () => {
+    const result = runDockerInstall("6.1.190-golem-docker1", "cpu cpuset memory pids");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("APT:install -y docker.io docker-compose-v2 docker-buildx");
+    expect(result.stdout).toContain("SYSTEMCTL:enable --now docker.service");
+    expect(result.stdout).toContain("DOCKER:compose version");
+    expect(result.stdout).toContain("DOCKER:buildx version");
+  });
+});

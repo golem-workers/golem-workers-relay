@@ -586,3 +586,14 @@ Model lock contention before mutation returns HTTP 409 MODEL_FENCE_BUSY, not a g
 ### Displayed OpenAI tokens
 
 Company dashboard and OpenAI subscription token metrics use the equivalent cost of an uncached input text token, computed per model from local official rates: input + cache read × cache/input price + output × output/input price (cache writes use their own rate). Raw counters remain unchanged. Rolling 24h reports include model breakdowns using the existing background collection; page loading performs no extra provider or Relay calls. Missing breakdowns or prices produce an unavailable metric, not an unweighted estimate. Deploy backend before Relay and UI; older reports become weighted after the next report.
+
+### Docker in agent images
+
+`prepare-agent-server.sh` installs Ubuntu's `docker.io`, `docker-compose-v2` and `docker-buildx`,
+enables Docker on boot and verifies daemon readiness. The builder must already
+use a container-capable external Provider kernel (Linux >=5.2, cgroup v2 with CPU,
+cpuset, memory and PIDs controllers; the Provider pins Linux 6.1). The old
+Firecracker quickstart 4.14 kernel is rejected before installing Docker. Change
+Provider `BASE_KERNEL_PATH` and cold boot the builder first; a guest `apt` kernel
+installation or restoring a RAM snapshot cannot switch the running kernel.
+Image dependencies are baked here, not injected with per-agent platform secrets.
