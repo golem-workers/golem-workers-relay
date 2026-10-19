@@ -580,3 +580,14 @@ Isolated response checks allow 180 seconds for inference, preserving actual prov
 Fenced verification waits for a fresh isolated CLI execution result with actual `agentMeta.provider`, `model`, and `agentHarnessId`, and validates the current session/config afterwards. A display-only `chat.send` final is not inference/harness proof. Credit probe grants remain confined to the disposable fixed-prompt verification and are never saved in configuration.
 
 Native Telegram system notifications discover active DM routes from runtime session delivery metadata as well as legacy `telegram:direct:` keys. This includes DMs stored in `agent:main:main`; metadata discovery requires an explicit Telegram direct-chat target and excludes archived/background sessions. Group or unrelated internal sessions are not inferred as DM routes.
+
+### Docker in agent images
+
+`prepare-agent-server.sh` installs Ubuntu's `docker.io` and `docker-compose-v2`,
+enables Docker on boot and verifies daemon readiness. The builder must already
+use a container-capable external Provider kernel (Linux >=5.2, cgroup v2 with CPU,
+cpuset, memory and PIDs controllers; the Provider pins Linux 6.1). The old
+Firecracker quickstart 4.14 kernel is rejected before installing Docker. Change
+Provider `BASE_KERNEL_PATH` and cold boot the builder first; a guest `apt` kernel
+installation or restoring a RAM snapshot cannot switch the running kernel.
+Image dependencies are baked here, not injected with per-agent platform secrets.

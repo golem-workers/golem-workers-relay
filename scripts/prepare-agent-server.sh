@@ -229,6 +229,32 @@ prepare_architecture() {
   dpkg --print-architecture 2>/dev/null || uname -m
 }
 
+# Docker uses this VM's kernel, not nested virtualization. Fail before baking an
+# unusable image: installing linux-image inside the guest cannot change Provider's
+# external Firecracker boot kernel.
+install_agent_docker() {
+  local kernel_version controller
+  kernel_version="$(uname -r)"
+  if ! dpkg --compare-versions "${kernel_version%%-*}" ge 5.2; then
+    echo "Docker requires a container-capable Provider guest kernel >=5.2; got ${kernel_version}. Update BASE_KERNEL_PATH and cold boot this builder." >&2
+    return 1
+  fi
+  if [[ ! -f /sys/fs/cgroup/cgroup.controllers ]]; then
+    echo "Docker agent images require cgroup v2." >&2
+    return 1
+  fi
+  for controller in cpu cpuset memory pids; do
+    if ! grep -qw "${controller}" /sys/fs/cgroup/cgroup.controllers; then
+      echo "Guest kernel is missing cgroup v2 controller: ${controller}" >&2
+      return 1
+    fi
+  done
+  apt-get install -y docker.io docker-compose-v2
+  systemctl enable --now docker.service
+  docker info >/dev/null
+  docker compose version
+}
+
 default_prepare_apt_mirror() {
   local arch
   arch="$(prepare_architecture)"
@@ -664,6 +690,9 @@ main() {
     ripgrep \
     poppler-utils \
     imagemagick
+
+  set_step "docker"
+  install_agent_docker
 
   set_step "chrome"
   wget -q -O "${CHROME_DEB}" "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
