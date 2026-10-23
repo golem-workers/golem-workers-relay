@@ -195,7 +195,7 @@ async function main(): Promise<void> {
       return readOpenClawActiveRuns(
         await gateway.request(
           "sessions.list",
-          { agentId: "main", limit: 200 },
+          { limit: 200 },
           { timeoutMs: 5_000 },
         ),
       );

@@ -41,12 +41,14 @@ push. Backend can request one address-scoped forced refresh through existing
 agent control. System cron commands, OpenClaw prompt text, delivery targets,
 tokens, and environment values never leave guest.
 
-Before backend auto-hibernates an agent, `lifecycle.activeRuns` combines the
-OpenClaw session view with a fail-closed local process probe. The probe reports
-only sanitized process kind/id/executable metadata and treats active Codex CLI
-processes or descendants of the OpenClaw gateway as runtime workload. Missing
-gateway/process telemetry blocks hibernation instead of assuming the agent is
-idle.
+Agent work status is published through the lifecycle stream, not inferred from
+persistent process presence. Local status verification tracks both RUNNING and
+WAITING runs and repairs missed terminal events only after explicit terminal
+session evidence with no active run. Missing/ambiguous sessions or failed reads
+never mean completion. Newer live events invalidate in-flight observations.
+Reconnection observes all agents (including subagents), not only main.
+Backend automatic sleep consumes this same canonical status; process diagnostics
+must not become an independent sleep-only work-status heuristic.
 
 For `relay_channel_v2`, relay startup also checks the installed `relay-channel`
 plugin version against the current plugin repo ref and automatically rebuilds /

@@ -157,7 +157,7 @@ describe("agent lifecycle relay", () => {
     expect(registerGeneration).toHaveBeenCalledOnce();
   });
 
-  it("reconciles a disappeared run once on connection without polling", async () => {
+  it("retains a disappeared RUNNING status instead of fabricating cancellation", async () => {
     const pending: PendingAgentLifecycleEvent[] = [];
     const backend: AgentLifecycleBackend = {
       registerGeneration: ({ sourceGeneration }) =>
@@ -220,13 +220,7 @@ describe("agent lifecycle relay", () => {
     await relay.flush();
 
     expect(queryActiveRuns).toHaveBeenCalledTimes(1);
-    expect(pending).toHaveLength(1);
-    expect(pending[0]?.event).toMatchObject({
-      runId: "run-old",
-      status: "CANCELLED",
-      origin: "RECONCILIATION",
-      sequence: 1,
-    });
+    expect(pending).toHaveLength(0);
   });
 
   it("replays an old generation before rotating and retries only while pending", async () => {

@@ -117,7 +117,7 @@ describe("agent lifecycle exceptional reconciliation", () => {
           provider: "openclaw",
           sessionId: "session-waiting",
           runId: "run-waiting",
-          status: "WAITING",
+          status: "RUNNING",
         },
       },
       {
