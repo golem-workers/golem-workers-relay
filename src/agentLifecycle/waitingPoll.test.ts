@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentLifecycleEvent } from "./contract.js";
 import { createAgentLifecycleRelay } from "./relay.js";
+import type { AgentLifecycleActiveRun } from "./reconciliation.js";
 
 const run = {
   provider: "openclaw",
@@ -9,7 +10,10 @@ const run = {
   runId: "run-1",
   status: "WAITING" as const,
 };
-function fixture(query = vi.fn<() => Promise<unknown>>(), activeRuns = [run]) {
+function fixture(
+  query = vi.fn<() => Promise<unknown>>(),
+  activeRuns: AgentLifecycleActiveRun[] = [run],
+) {
   const events: AgentLifecycleEvent[] = [];
   const registerGeneration = vi.fn(
     ({ sourceGeneration }: { sourceGeneration: string }) =>
@@ -70,6 +74,101 @@ function payload(status: string, extra = {}) {
 
 describe("local WAITING reconciliation", () => {
   afterEach(() => vi.useRealTimers());
+  it("publishes a missed start from active session status, including a subagent", async () => {
+    vi.useFakeTimers();
+    const f = fixture(vi.fn<() => Promise<unknown>>(), []);
+    await f.relay.flush();
+    f.query.mockResolvedValue({
+      sessions: [
+        {
+          key: "agent:child:test",
+          agentId: "child",
+          sessionId: "child-session",
+          hasActiveRun: true,
+          activeRunIds: ["child-run"],
+          status: "running",
+        },
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.events.map((e) => [e.runId, e.status])).toEqual([
+      ["child-run", "RUNNING"],
+    ]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(f.events).toHaveLength(1);
+  });
+  it("repairs a stale RUNNING checkpoint only after explicit terminal evidence", async () => {
+    vi.useFakeTimers();
+    const f = fixture(vi.fn<() => Promise<unknown>>(), [
+      { ...run, status: "RUNNING" },
+    ]);
+    await f.relay.flush();
+    expect(f.events).toEqual([]);
+    f.query.mockResolvedValue({ sessions: [] });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.events).toEqual([]);
+    f.query.mockResolvedValue(payload("done"));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.events.map((e) => e.status)).toEqual(["COMPLETED"]);
+  });
+  it.each([
+    ["done", "COMPLETED"],
+    ["failed", "FAILED"],
+    ["killed", "CANCELLED"],
+    ["timeout", "FAILED"],
+  ])(
+    "repairs a missed RUNNING terminal event from explicit %s status",
+    async (status, expected) => {
+      vi.useFakeTimers();
+      const f = fixture();
+      await f.relay.flush();
+      f.relay.handleGatewayEvent({
+        type: "event",
+        event: "agent",
+        payload: {
+          agentId: "main",
+          sessionId: run.sessionId,
+          runId: run.runId,
+          stream: "lifecycle",
+          data: { phase: "start" },
+        },
+      });
+      await f.relay.flush();
+      f.query.mockResolvedValue(payload(status));
+      await vi.advanceTimersByTimeAsync(1000);
+      await f.relay.flush();
+      expect(f.events.map((e) => e.status)).toEqual(["RUNNING", expected]);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(f.query).toHaveBeenCalledTimes(4);
+    },
+  );
+  it.each([
+    payload("running", { hasActiveRun: true, activeRunIds: [run.runId] }),
+    { sessions: [] },
+    {},
+  ])(
+    "does not clear RUNNING on missing or active session evidence",
+    async (response) => {
+      vi.useFakeTimers();
+      const f = fixture();
+      await f.relay.flush();
+      f.relay.handleGatewayEvent({
+        type: "event",
+        event: "agent",
+        payload: {
+          agentId: "main",
+          sessionId: run.sessionId,
+          runId: run.runId,
+          stream: "lifecycle",
+          data: { phase: "start" },
+        },
+      });
+      await f.relay.flush();
+      f.query.mockResolvedValue(response);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(f.events.map((e) => e.status)).toEqual(["RUNNING"]);
+    },
+  );
   it.each([
     ["done", "COMPLETED"],
     ["failed", "FAILED"],
@@ -87,7 +186,7 @@ describe("local WAITING reconciliation", () => {
       await f.relay.flush();
       expect(f.events.map((e) => e.status)).toEqual([expected]);
       await vi.advanceTimersByTimeAsync(5000);
-      expect(f.query).toHaveBeenCalledTimes(1);
+      expect(f.query).toHaveBeenCalledTimes(6);
       expect(f.registerGeneration).toHaveBeenCalledTimes(1);
     },
   );

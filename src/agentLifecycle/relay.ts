@@ -17,6 +17,7 @@ import type { AgentLifecyclePublisher } from "./publisher.js";
 import {
   describeOpenClawActiveRunsPayload,
   planAgentLifecycleReconciliation,
+  readOpenClawActiveRuns,
   type AgentLifecycleActiveRun,
 } from "./reconciliation.js";
 import type {
@@ -56,10 +57,11 @@ export function createAgentLifecycleRelay(input: {
   let encoder = new AgentLifecycleTransitionEncoder();
   let serial: Promise<void> = Promise.resolve();
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
-  let waitingTimer: ReturnType<typeof setTimeout> | null = null;
+  let statusTimer: ReturnType<typeof setTimeout> | null = null;
   let polling = false;
   let connectionRevision = 0;
-  const waiting = new Map<string, AgentLifecycleActiveRun>();
+  let statusRevision = 0;
+  const trackedRuns = new Map<string, AgentLifecycleActiveRun>();
   const track = (
     run:
       | AgentLifecycleActiveRun
@@ -71,41 +73,37 @@ export function createAgentLifecycleRelay(input: {
           status: string;
         },
   ): void => {
-    for (const [key, old] of waiting) {
+    statusRevision += 1;
+    for (const [key, old] of trackedRuns) {
       if (old.sessionId === run.sessionId && old.agentId === run.agentId) {
-        // Invalidate in-flight session evidence, but retain other paused runs.
-        if (old.runId === run.runId) waiting.delete(key);
-        else waiting.set(key, { ...old });
+        // Invalidate in-flight session evidence, but retain other tracked runs.
+        if (old.runId === run.runId) trackedRuns.delete(key);
+        else trackedRuns.set(key, { ...old });
       }
     }
-    if (run.status === "WAITING")
-      waiting.set(run.runId, { ...run, status: "WAITING" });
-    scheduleWaitingPoll();
+    if (run.status === "WAITING" || run.status === "RUNNING")
+      trackedRuns.set(run.runId, { ...run, status: run.status });
+    scheduleStatusPoll();
   };
-  function scheduleWaitingPoll(): void {
-    if (
-      !connected ||
-      !input.querySessionStates ||
-      !waiting.size ||
-      waitingTimer ||
-      polling
-    )
+  function scheduleStatusPoll(): void {
+    if (!connected || !input.querySessionStates || statusTimer || polling)
       return;
-    waitingTimer = setTimeout(() => {
-      waitingTimer = null;
-      void pollWaiting();
+    statusTimer = setTimeout(() => {
+      statusTimer = null;
+      void pollStatuses();
     }, input.waitingPollIntervalMs ?? 30_000);
-    waitingTimer.unref?.();
+    statusTimer.unref?.();
   }
-  async function pollWaiting(): Promise<void> {
-    if (!connected || !input.querySessionStates || !waiting.size) return;
+  async function pollStatuses(): Promise<void> {
+    if (!connected || !input.querySessionStates) return;
     polling = true;
     const revision = connectionRevision;
-    const snapshot = [...waiting.values()];
+    const snapshot = [...trackedRuns.values()];
+    const observedRevision = statusRevision;
     try {
-      const result = describeOpenClawActiveRunsPayload(
-        await input.querySessionStates(),
-      );
+      const payload = await input.querySessionStates();
+      const result = describeOpenClawActiveRunsPayload(payload);
+      const observedRuns = readOpenClawActiveRuns(payload);
       enqueue(async () => {
         if (
           !connected ||
@@ -115,9 +113,31 @@ export function createAgentLifecycleRelay(input: {
         )
           return;
         let changed = false;
+        // A missing start is a lifecycle defect too: publish it here so all
+        // consumers (including UI and sleep) observe the same RUNNING status.
+        if (observedRevision === statusRevision) {
+          for (const run of observedRuns) {
+            if (trackedRuns.has(run.runId)) continue;
+            const event = encoder.observe(
+              openClawLifecycleAdapter,
+              { event: "active_run", hasActiveRun: true, waiting: false },
+              {
+                serverId: current.serverId,
+                ...run,
+                sourceGeneration: current.sourceGeneration,
+                occurredAt: now().toISOString(),
+                origin: "RECONCILIATION",
+              },
+            );
+            if (!event) continue;
+            track(event);
+            await input.outbox.enqueue(event);
+            changed = true;
+          }
+        }
         for (const run of snapshot) {
           // A live event received while the request was in flight wins.
-          if (waiting.get(run.runId) !== run) continue;
+          if (trackedRuns.get(run.runId) !== run) continue;
           const matches = result.sessions.filter(
             (s) =>
               s.sessionId === run.sessionId &&
@@ -151,7 +171,7 @@ export function createAgentLifecycleRelay(input: {
           );
           if (!event) continue;
           await input.outbox.enqueue(event);
-          waiting.delete(run.runId);
+          trackedRuns.delete(run.runId);
           changed = true;
         }
         if (changed) {
@@ -167,14 +187,14 @@ export function createAgentLifecycleRelay(input: {
     } catch (error) {
       logger.warn(
         {
-          event: "agent_lifecycle_waiting_poll_failed",
+          event: "agent_lifecycle_status_poll_failed",
           error: error instanceof Error ? error.message : String(error),
         },
-        "Waiting session verification deferred",
+        "Active session status verification deferred",
       );
     } finally {
       polling = false;
-      scheduleWaitingPoll();
+      scheduleStatusPoll();
     }
   }
   let retryAttempt = 0;
@@ -293,7 +313,7 @@ export function createAgentLifecycleRelay(input: {
         runId: run.runId,
         status: run.status,
       }));
-      waiting.clear();
+      trackedRuns.clear();
       const corrections = planAgentLifecycleReconciliation({
         checkpoint,
         observed,
@@ -310,36 +330,29 @@ export function createAgentLifecycleRelay(input: {
           occurredAt: now().toISOString(),
           origin: "RECONCILIATION" as const,
         };
-        if (correction.run.status === "WAITING") {
-          encoder.seedActiveRun(openClawLifecycleAdapter, context, "WAITING");
-          track(correction.run);
-          // Paused runs need explicit terminal evidence, not absence from active runs.
-          continue;
-        }
-        if (correction.kind === "DISAPPEARED") {
+        if (
+          correction.kind === "DISAPPEARED" ||
+          correction.run.status === "WAITING"
+        ) {
           encoder.seedActiveRun(
             openClawLifecycleAdapter,
             context,
             correction.run.status,
           );
+          track(correction.run);
+          // An absent run is not completion evidence: retain its status until
+          // the local verifier observes an explicit terminal session status.
+          continue;
         }
         const event = encoder.observe(
           openClawLifecycleAdapter,
-          correction.kind === "ACTIVE"
-            ? {
-                event: "active_run",
-                hasActiveRun: true,
-                waiting: false,
-              }
-            : {
-                event: "lifecycle",
-                phase: "end",
-                aborted: true,
-                livenessState: "reconciliation_missing_active_run",
-              },
+          { event: "active_run", hasActiveRun: true, waiting: false },
           context,
         );
-        if (event) await input.outbox.enqueue(event);
+        if (event) {
+          track(event);
+          await input.outbox.enqueue(event);
+        }
       }
       const result = await input.publisher.drain();
       if (result.anomaly === "SEQUENCE_GAP") {
@@ -544,11 +557,11 @@ export function createAgentLifecycleRelay(input: {
       if (state.connected === connected) return;
       connected = state.connected;
       connectionRevision += 1;
-      if (waitingTimer) clearTimeout(waitingTimer);
-      waitingTimer = null;
+      if (statusTimer) clearTimeout(statusTimer);
+      statusTimer = null;
       if (state.connected) {
         enqueue(activateConnected);
-        scheduleWaitingPoll();
+        scheduleStatusPoll();
       }
     },
 

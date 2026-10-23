@@ -54,7 +54,10 @@ export type OpenClawActiveRunsDiagnostics = Readonly<{
   >;
 }>;
 
-function readOptionalString(record: Record<string, unknown>, key: string): string | null {
+function readOptionalString(
+  record: Record<string, unknown>,
+  key: string,
+): string | null {
   const value = record[key];
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -90,7 +93,9 @@ export function describeOpenClawActiveRunsPayload(
   return {
     payloadValid: true,
     sessionCount: sessions.length,
-    activeSessionCount: sessions.filter((session) => session.hasActiveRun === true).length,
+    activeSessionCount: sessions.filter(
+      (session) => session.hasActiveRun === true,
+    ).length,
     activeRunIdCount: sessions.reduce(
       (total, session) => total + session.activeRunIds.length,
       0,
@@ -126,22 +131,18 @@ export function planAgentLifecycleReconciliation(input: {
   checkpoint: AgentLifecycleActiveRun[];
   observed: AgentLifecycleActiveRun[];
 }): AgentLifecycleCorrection[] {
-  const checkpointByRun = new Map(
-    input.checkpoint.map((run) => [run.runId, run] as const),
-  );
   const observedByRun = new Map(
     input.observed.map((run) => [run.runId, run] as const),
   );
   const corrections: AgentLifecycleCorrection[] = [];
 
   for (const observed of observedByRun.values()) {
-    const checkpoint = checkpointByRun.get(observed.runId);
     corrections.push({
       kind: "ACTIVE",
-      run: checkpoint ? { ...observed, status: checkpoint.status } : observed,
+      run: observed,
     });
   }
-  for (const checkpoint of checkpointByRun.values()) {
+  for (const checkpoint of input.checkpoint) {
     if (!observedByRun.has(checkpoint.runId)) {
       corrections.push({ kind: "DISAPPEARED", run: checkpoint });
     }
