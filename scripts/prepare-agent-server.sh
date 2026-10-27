@@ -1406,7 +1406,8 @@ import path from "node:path"
 const configDir = path.join(os.homedir(), ".openclaw")
 const configPath = path.join(configDir, "openclaw.json")
 const requiredPluginIds = ["relay-channel", "codex", "whatsapp", "moonshot", "perplexity"]
-const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram"]
+// Keep optional integrations installed for UI activation, but cold by default.
+const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram", "whatsapp", "moonshot", "perplexity"]
 const stalePluginIds = ["memory-lancedb-pro", "memory-lancedb"]
 const defaultExtensionsDir = path.join(configDir, "extensions")
 const pluginIndexPath = path.join(configDir, "plugins", "installs.json")
@@ -1570,7 +1571,7 @@ if (Object.keys(slotsCfg).length === 0) {
 }
 
 const pluginAllow = Array.from(
-  new Set(normalizeStringArray(pluginsCfg.allow).filter((item) => !stalePluginIds.includes(item)))
+  new Set(normalizeStringArray(pluginsCfg.allow).filter((item) => !stalePluginIds.includes(item) && !installedButDisabledPluginIds.includes(item)))
 )
 pluginsCfg.allow = pluginAllow
 pluginsCfg.deny = Array.from(

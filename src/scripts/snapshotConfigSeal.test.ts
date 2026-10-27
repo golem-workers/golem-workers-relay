@@ -8,7 +8,7 @@ const script = readFileSync(resolve("scripts/prepare-agent-server.sh"), "utf8");
 const seal = script.split('set_step "openclaw_snapshot_config_seal"')[1]
   .split("<<'NODE'\n")[1].split("\nNODE\n")[0];
 type SealedConfig = {
-  plugins: { installs?: Record<string, { installPath: string }>; deny: string[] };
+  plugins: { installs?: Record<string, { installPath: string }>; deny: string[]; allow: string[]; entries: Record<string, { enabled: boolean }> };
   channels?: unknown;
 };
 const roots: string[] = [];
@@ -28,8 +28,8 @@ function fixture(layout: "extensions" | "shared" | "projects" | "record" | "inde
     installs[id] = { installPath: dir };
   }
   writeFileSync(join(root, "openclaw.json"), JSON.stringify({
-    plugins: { ...(layout === "record" ? { installs } : {}), entries: { "relay-channel": { enabled: true } } },
-    channels: { "relay-channel": { accounts: [{ id: "default" }] } },
+    plugins: { ...(layout === "record" ? { installs } : {}), allow: ["telegram", "whatsapp", "moonshot", "perplexity", "browser"], entries: Object.fromEntries(["relay-channel", "whatsapp", "moonshot", "perplexity", "browser"].map(id => [id, { enabled: true }])) },
+    channels: { "relay-channel": { accounts: [{ id: "default" }] }, whatsapp: { enabled: true } },
   }));
   if (layout === "index") {
     mkdirSync(join(root, "plugins"));
@@ -55,6 +55,13 @@ describe("snapshot config sealing across OpenClaw install layouts", () => {
     expect(config.plugins.installs?.whatsapp.installPath).toBe(installs.whatsapp.installPath);
     expect(config.channels).toBeUndefined();
     expect(config.plugins.deny).toContain("relay-channel");
+    for (const id of ["whatsapp", "moonshot", "perplexity"]) {
+      expect(config.plugins.deny).toContain(id);
+      expect(config.plugins.allow).not.toContain(id);
+      expect(config.plugins.entries[id]).toBeUndefined();
+    }
+    expect(config.plugins.allow).toContain("browser");
+    expect(config.plugins.entries.browser.enabled).toBe(true);
   });
   it("validates modern npm projects without restoring retired authored installs", () => {
     const { root } = fixture("projects");
