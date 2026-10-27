@@ -202,7 +202,7 @@ describe("prepare-agent-server snapshot preparation", () => {
       'const requiredPluginIds = ["relay-channel", "codex", "whatsapp", "moonshot", "perplexity"]',
     );
     expect(script).toContain(
-      'const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram"]',
+      'const installedButDisabledPluginIds = ["relay-channel", "codex", "telegram", "whatsapp", "moonshot", "perplexity"]',
     );
     expect(
       script.indexOf('set_step "openclaw_whatsapp_plugin_install"'),
