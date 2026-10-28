@@ -84,8 +84,8 @@ describe("prepare-agent-server.sh", () => {
   });
 
   it("retains the actual global dependency tree and Node checksum in baked images", () => {
-    expect(script).toContain("/var/lib/golem-workers/managed-global-dependencies.json");
-    expect(script).toContain("/var/lib/golem-workers/node-runtime.sha256");
+    expect(script).toContain("/usr/local/share/golem-workers/bake/managed-global-dependencies.json");
+    expect(script).toContain("/usr/local/share/golem-workers/bake/node-runtime.sha256");
     expect(script).toContain('companion_specs+=("${companion}@${resolved_companion}")');
     expect(script).toContain('"${companion_specs[@]}"');
   });

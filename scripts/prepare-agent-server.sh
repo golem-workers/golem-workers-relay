@@ -832,12 +832,6 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
   done
   echo "Selected OpenClaw ${OPENCLAW_INSTALL_VERSION}, Codex ${CODEX_INSTALL_VERSION}"
   env SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g "@openai/codex@${CODEX_INSTALL_VERSION}" "openclaw@${OPENCLAW_INSTALL_VERSION}" "${companion_specs[@]}"
-  mkdir -p /var/lib/golem-workers
-  local global_inventory_status=0
-  npm ls -g --all --json > /var/lib/golem-workers/managed-global-dependencies.json || global_inventory_status=$?
-  printf '%s\n' "${global_inventory_status}" > /var/lib/golem-workers/managed-global-dependencies.exit
-  node -e 'console.log(JSON.stringify({node:process.version,executable:process.execPath,platform:process.platform,arch:process.arch}))' > /var/lib/golem-workers/node-runtime.json
-  sha256sum "$(readlink -f "$(command -v node)")" > /var/lib/golem-workers/node-runtime.sha256
   node --input-type=module - "${GLOBAL_NPM_ROOT}" <<'NPM_COMPANIONS'
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1842,6 +1836,13 @@ print(json.dumps({'sealed': True, 'database': 'fresh schema plus plugin provenan
 SEAL_PY
   rm -rf /tmp/openclaw
   sync
+
+  mkdir -p /usr/local/share/golem-workers/bake
+  local global_inventory_status=0
+  npm ls -g --all --json > /usr/local/share/golem-workers/bake/managed-global-dependencies.json || global_inventory_status=$?
+  printf '%s\n' "${global_inventory_status}" > /usr/local/share/golem-workers/bake/managed-global-dependencies.exit
+  node -e 'console.log(JSON.stringify({node:process.version,executable:process.execPath,platform:process.platform,arch:process.arch}))' > /usr/local/share/golem-workers/bake/node-runtime.json
+  sha256sum "$(readlink -f "$(command -v node)")" > /usr/local/share/golem-workers/bake/node-runtime.sha256
 
   set_step "done"
   echo "__GW_PREPARE_DONE__=1"
