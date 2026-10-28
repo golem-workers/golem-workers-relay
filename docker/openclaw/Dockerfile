@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim
+FROM node:24.22.1-bookworm-slim
 
 # `openclaw` may pull git-based deps; slim image doesn't ship git.
 RUN apt-get update && \
@@ -6,7 +6,8 @@ RUN apt-get update && \
   rm -rf /var/lib/apt/lists/*
 
 # Install OpenClaw CLI/Gateway from npm.
-RUN npm install -g openclaw@latest && npm cache clean --force
+ARG OPENCLAW_VERSION
+RUN test -n "$OPENCLAW_VERSION" && npm install -g "openclaw@${OPENCLAW_VERSION}" && npm cache clean --force
 
 USER node
 WORKDIR /home/node

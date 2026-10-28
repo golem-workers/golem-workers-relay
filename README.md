@@ -600,3 +600,17 @@ Firecracker quickstart 4.14 kernel is rejected before installing Docker. Change
 Provider `BASE_KERNEL_PATH` and cold boot the builder first; a guest `apt` kernel
 installation or restoring a RAM snapshot cannot switch the running kernel.
 Image dependencies are baked here, not injected with per-agent platform secrets.
+
+## Security runtime baseline (2026-10-28)
+
+Managed servers and newly baked agents use Node.js **24.22.1** (security floor
+`>=24.22.1 <25`; `.nvmrc` selects the tested patch). Node 22 is not supported.
+Provisioning upgrades older 22/24 installations and fails closed if the floor is
+not available; other newer majors require an explicit manual migration, not an
+automatic downgrade. Rebuild native dependencies with `npm ci` after changing Node.
+Existing agent VMs are updated separately by the owner; this change does not
+implement backend-updater migration or upgrade-on-wake. See backend issue #791.
+
+Inbound vision images are limited to 20 MiB encoded input and 40 million decoded pixels before conversion to a 640×480 PNG. Larger images fail without invoking unrestricted decoding.
+
+Docker OpenClaw builds require `OPENCLAW_VERSION` in `openclaw.env` (exact tested npm version; no floating latest). Snapshot baking records global resolved dependency inventory and Node binary SHA-256 under `/var/lib/golem-workers/`; backend baking still selects and injects the mature stable OpenClaw version.

@@ -83,17 +83,23 @@ describe("prepare-agent-server.sh", () => {
     expect(script).not.toContain('ln -sfn "${GLOBAL_NPM_ROOT}');
   });
 
+  it("retains the actual global dependency tree and Node checksum in baked images", () => {
+    expect(script).toContain("/var/lib/golem-workers/managed-global-dependencies.json");
+    expect(script).toContain("/var/lib/golem-workers/node-runtime.sha256");
+    expect(script).toContain('companion_specs+=("${companion}@${resolved_companion}")');
+    expect(script).toContain('"${companion_specs[@]}"');
+  });
+
   it("enforces the Node ranges required by current OpenClaw releases", () => {
-    for (const version of ["v24.16.0", "v24.17.1", "24.16.0", "v26.1.0", "v27.0.0"]) {
+    for (const version of ["v24.22.1", "v24.23.1", "24.22.1"]) {
       expect(runVersionCheck(version).status, version).toBe(0);
     }
 
-    for (const version of ["v24.15.9", "v25.99.99", "v26.0.9", "v24.16", "invalid", ""]) {
+    for (const version of ["v24.22.0", "v24.22.1-rc.1", "v25.99.99", "v26.1.0", "v27.0.0", "v24.16", "invalid", ""]) {
       expect(runVersionCheck(version).status, version || "empty version").not.toBe(0);
     }
 
-    expect(script).toContain('OPENCLAW_MIN_NODE_24_VERSION="24.16.0"');
-    expect(script).toContain('OPENCLAW_MIN_NODE_26_VERSION="26.1.0"');
+    expect(script).toContain('OPENCLAW_MIN_NODE_24_VERSION="24.22.1"');
     expect(script).toContain("https://deb.nodesource.com/setup_24.x");
     expect(script).toContain("install_openclaw_nodejs");
     expect(script).toContain('hash -r');
@@ -101,14 +107,14 @@ describe("prepare-agent-server.sh", () => {
   });
 
   it("upgrades an old Node patch and rejects an insufficient installed result", () => {
-    const upgraded = runInstall("v22.22.3", "v24.16.0");
+    const upgraded = runInstall("v22.22.3", "v24.22.1");
     expect(upgraded.status).toBe(0);
-    expect(upgraded.stdout).toContain("installed:v24.16.0");
+    expect(upgraded.stdout).toContain("installed:v24.22.1");
 
     const insufficient = runInstall("v22.22.3", "v24.15.9");
     expect(insufficient.status).not.toBe(0);
     expect(insufficient.stderr).toContain(
-      "Node.js 24.16.0 to <25 or 26.1.0+ is required; got v24.15.9"
+      "Node.js 24.22.1+ on major 24 is required; got v24.15.9"
     );
   });
 

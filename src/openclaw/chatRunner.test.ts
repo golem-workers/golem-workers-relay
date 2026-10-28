@@ -15,7 +15,7 @@ function startServer(handler: (ws: import("ws").WebSocket) => void) {
 }
 
 const ONE_BY_ONE_PNG_B64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=";
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgYGAAAAAEAAGjChXjAAAAAElFTkSuQmCC";
 
 function maybeHandleSessionsUsage(
   ws: import("ws").WebSocket,

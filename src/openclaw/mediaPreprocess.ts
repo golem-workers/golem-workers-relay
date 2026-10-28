@@ -2,6 +2,9 @@ import path from "node:path";
 import sharp from "sharp";
 import { type FileTaskMedia, type ImageTaskMedia, type TaskMedia, type VideoTaskMedia } from "./transcription.js";
 
+// Bound both encoded input memory and decoder work before resizing untrusted media.
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_INPUT_PIXELS = 40_000_000;
 const VISION_OUTPUT_MIME = "image/png";
 
 export type PreparedChatMedia = {
@@ -41,7 +44,13 @@ export async function prepareChatMedia(input: {
 }
 
 async function normalizeImageMedia(media: ImageTaskMedia): Promise<ImageTaskMedia> {
+  if (media.dataB64.length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4) {
+    throw new Error("Image exceeds the 20 MiB input limit");
+  }
   const inputBuffer = Buffer.from(media.dataB64, "base64");
+  if (inputBuffer.length > MAX_IMAGE_BYTES) {
+    throw new Error("Image exceeds the 20 MiB input limit");
+  }
   const outputBuffer = await compressVisionImageBuffer(inputBuffer);
   return {
     type: "image",
@@ -52,7 +61,7 @@ async function normalizeImageMedia(media: ImageTaskMedia): Promise<ImageTaskMedi
 }
 
 async function compressVisionImageBuffer(inputBuffer: Buffer): Promise<Buffer> {
-  return sharp(inputBuffer, { limitInputPixels: false })
+  return sharp(inputBuffer, { limitInputPixels: MAX_INPUT_PIXELS })
     .rotate()
     .resize(640, 480, {
       fit: "contain",

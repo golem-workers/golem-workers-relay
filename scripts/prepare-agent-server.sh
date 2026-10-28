@@ -28,8 +28,7 @@ OPENCLAW_GATEWAY_SNAPSHOT_NODE_OPTIONS="--max-old-space-size=${OPENCLAW_GATEWAY_
 OPENCLAW_GATEWAY_READINESS_ATTEMPTS="${OPENCLAW_GATEWAY_READINESS_ATTEMPTS:-360}"
 OPENCLAW_GATEWAY_READINESS_SLEEP_SECONDS="${OPENCLAW_GATEWAY_READINESS_SLEEP_SECONDS:-2}"
 NODE_COMPILE_CACHE_DIR="/var/tmp/openclaw-compile-cache"
-OPENCLAW_MIN_NODE_24_VERSION="24.16.0"
-OPENCLAW_MIN_NODE_26_VERSION="26.1.0"
+OPENCLAW_MIN_NODE_24_VERSION="24.22.1"
 OPENCLAW_WHATSAPP_PLUGIN_SPEC="${OPENCLAW_WHATSAPP_PLUGIN_SPEC:-}"
 OPENCLAW_MOONSHOT_PLUGIN_SPEC="${OPENCLAW_MOONSHOT_PLUGIN_SPEC:-}"
 OPENCLAW_PERPLEXITY_PLUGIN_SPEC="${OPENCLAW_PERPLEXITY_PLUGIN_SPEC:-}"
@@ -145,22 +144,14 @@ node_meets_openclaw_floor() {
   local raw_version="${1#v}"
   local major minor patch extra
 
-  raw_version="${raw_version%%[-+]*}"
+  [[ "${raw_version}" != *[-+]* ]] || return 1
   IFS=. read -r major minor patch extra <<<"${raw_version}"
   [[ -z "${extra:-}" ]] || return 1
   [[ "${major:-}" =~ ^[0-9]+$ ]] || return 1
   [[ "${minor:-}" =~ ^[0-9]+$ ]] || return 1
   [[ "${patch:-}" =~ ^[0-9]+$ ]] || return 1
 
-  if (( major == 24 )); then
-    (( minor > 16 || (minor == 16 && patch >= 0) ))
-    return
-  fi
-  if (( major >= 26 )); then
-    (( major > 26 || minor > 1 || (minor == 1 && patch >= 0) ))
-    return
-  fi
-  return 1
+  (( major == 24 && (minor > 22 || (minor == 22 && patch >= 1)) ))
 }
 
 install_openclaw_nodejs() {
@@ -172,13 +163,18 @@ install_openclaw_nodejs() {
     return
   fi
 
+  if [[ "${installed_node_version}" =~ ^v?([0-9]+)\. ]] && (( BASH_REMATCH[1] >= 25 )); then
+    echo "Refusing automatic Node.js major downgrade from ${installed_node_version}; migrate manually to major 24" >&2
+    return 1
+  fi
+
   curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
   apt-get install -y nodejs
   hash -r
 
   installed_node_version="$(node --version 2>/dev/null || true)"
   if ! node_meets_openclaw_floor "${installed_node_version}"; then
-    echo "Node.js ${OPENCLAW_MIN_NODE_24_VERSION} to <25 or ${OPENCLAW_MIN_NODE_26_VERSION}+ is required; got ${installed_node_version:-missing}" >&2
+    echo "Node.js ${OPENCLAW_MIN_NODE_24_VERSION}+ on major 24 is required; got ${installed_node_version:-missing}" >&2
     return 1
   fi
 }
@@ -826,8 +822,22 @@ DefaultEnvironment=\"NODE_OPTIONS=${NODE_OPTIONS_VALUE}\" \"NODE_COMPILE_CACHE=$
     OPENCLAW_LOG_LEVEL || true
   OPENCLAW_INSTALL_VERSION="$(npm view openclaw version)"
   CODEX_INSTALL_VERSION="$(npm view @openai/codex version)"
+  # Resolve global companions once, install exact specs, retain their bill of materials.
+  local companion resolved_companion
+  local -a companion_specs=()
+  for companion in grammy playwright @grammyjs/runner @grammyjs/transformer-throttler @buape/carbon @larksuiteoapi/node-sdk @slack/bolt; do
+    resolved_companion="$(npm view "${companion}" version)"
+    [[ -n "${resolved_companion}" ]] || { echo "Missing version for ${companion}" >&2; return 1; }
+    companion_specs+=("${companion}@${resolved_companion}")
+  done
   echo "Selected OpenClaw ${OPENCLAW_INSTALL_VERSION}, Codex ${CODEX_INSTALL_VERSION}"
-  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g "@openai/codex@${CODEX_INSTALL_VERSION}" "openclaw@${OPENCLAW_INSTALL_VERSION}" grammy playwright @grammyjs/runner @grammyjs/transformer-throttler @buape/carbon @larksuiteoapi/node-sdk @slack/bolt
+  env SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g "@openai/codex@${CODEX_INSTALL_VERSION}" "openclaw@${OPENCLAW_INSTALL_VERSION}" "${companion_specs[@]}"
+  mkdir -p /var/lib/golem-workers
+  local global_inventory_status=0
+  npm ls -g --all --json > /var/lib/golem-workers/managed-global-dependencies.json || global_inventory_status=$?
+  printf '%s\n' "${global_inventory_status}" > /var/lib/golem-workers/managed-global-dependencies.exit
+  node -e 'console.log(JSON.stringify({node:process.version,executable:process.execPath,platform:process.platform,arch:process.arch}))' > /var/lib/golem-workers/node-runtime.json
+  sha256sum "$(readlink -f "$(command -v node)")" > /var/lib/golem-workers/node-runtime.sha256
   node --input-type=module - "${GLOBAL_NPM_ROOT}" <<'NPM_COMPANIONS'
 import fs from 'node:fs';
 import path from 'node:path';
