@@ -569,7 +569,7 @@ Managed Linux runtime uses npm only; `NODE_PATH` points at `npm root -g` for CJS
 
 Npm companion dependency checks use ESM import conditions from the installed OpenClaw and plugin directories, including import-only package exports.
 
-Runtime config commits use managed commit protocol 2: scoped policy generation, model routing protection, captured-config CAS, and owner revocation projection under model then owner kernel locks. Model high-water marks on production agents survive `.openclaw` restore under `/var/lib/golem-workers/owner-fence`. Plain read-only diagnostics omit incoming authority and remain available under held writer locks. Explicitly supplied policy/digest must pass ingress, server binding, revision and digest checks even on diagnostics, without activation or sidecar writes; mutation/preflight peers must match the generated backend policy release. Legacy selection settlement retains a separate CAS-bound locked barrier. Doctor/config command children may inherit verified lock descriptors for the mutation interval. Rollback requires this compatible release; unmodified fdcb021/v1 writers must be drained before backend cutover. See the backend `docs/runtime-coordination.md` for the coordinated SQL/agent/backend rollout order.
+Runtime config commits use managed commit protocol 2: scoped policy generation, model routing protection, captured-config CAS, and owner revocation projection under model then owner kernel locks. Model high-water marks on production agents survive `.openclaw` restore under `/usr/local/share/golem-workers/bake/owner-fence`. Plain read-only diagnostics omit incoming authority and remain available under held writer locks. Explicitly supplied policy/digest must pass ingress, server binding, revision and digest checks even on diagnostics, without activation or sidecar writes; mutation/preflight peers must match the generated backend policy release. Legacy selection settlement retains a separate CAS-bound locked barrier. Doctor/config command children may inherit verified lock descriptors for the mutation interval. Rollback requires this compatible release; unmodified fdcb021/v1 writers must be drained before backend cutover. See the backend `docs/runtime-coordination.md` for the coordinated SQL/agent/backend rollout order.
 
 Detached OAuth login persistence reacquires independent model/owner kernel custody rather than borrowing the ingress request’s asynchronous context. It rechecks policy before side effects and retains custody through credential/config writes, rollback and Gateway recovery. Unrelated diagnostics remain read-only; concurrent writers get the existing bounded busy/refusal contract.
 Established model fences reject legacy/unbound credential mutations before service, network or store changes. Matching authenticated backend schema-2 authority is required for login/auth mutation; ordinary status and credential export remain read-only. This prevents a refused config projection from stranding a partially changed credential store.
@@ -600,3 +600,17 @@ Firecracker quickstart 4.14 kernel is rejected before installing Docker. Change
 Provider `BASE_KERNEL_PATH` and cold boot the builder first; a guest `apt` kernel
 installation or restoring a RAM snapshot cannot switch the running kernel.
 Image dependencies are baked here, not injected with per-agent platform secrets.
+
+## Security runtime baseline (2026-10-28)
+
+Managed servers and newly baked agents use Node.js **24.22.1** (security floor
+`>=24.22.1 <25`; `.nvmrc` selects the tested patch). Node 22 is not supported.
+Provisioning upgrades older 22/24 installations and fails closed if the floor is
+not available; other newer majors require an explicit manual migration, not an
+automatic downgrade. Rebuild native dependencies with `npm ci` after changing Node.
+Existing agent VMs are updated separately by the owner; this change does not
+implement backend-updater migration or upgrade-on-wake. See backend issue #791.
+
+Inbound vision images are limited to 20 MiB encoded input and 40 million decoded pixels before conversion to a 640×480 PNG. Larger images fail without invoking unrestricted decoding.
+
+Docker OpenClaw builds require `OPENCLAW_VERSION` in `openclaw.env` (exact tested npm version; no floating latest). Snapshot baking records global resolved dependency inventory and Node binary SHA-256 under `/usr/local/share/golem-workers/bake/`; backend baking still selects and injects the mature stable OpenClaw version.

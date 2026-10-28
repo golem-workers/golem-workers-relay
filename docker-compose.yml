@@ -2,6 +2,8 @@ services:
   openclaw-gateway:
     build:
       context: ./docker/openclaw
+      args:
+        OPENCLAW_VERSION: ${OPENCLAW_VERSION:?Set an exact tested OpenClaw version in openclaw.env}
     environment:
       HOME: /home/node
       TERM: xterm-256color
@@ -41,6 +43,8 @@ services:
     profiles: ["cli"]
     build:
       context: ./docker/openclaw
+      args:
+        OPENCLAW_VERSION: ${OPENCLAW_VERSION:?Set an exact tested OpenClaw version in openclaw.env}
     environment:
       HOME: /home/node
       TERM: xterm-256color

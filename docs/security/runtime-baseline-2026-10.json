@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "asOf": "2026-10-28",
+  "node": {
+    "version": "24.22.1",
+    "floor": ">=24.22.1 <25",
+    "source": "https://nodejs.org/dist/v24.22.1/SHASUMS256.txt",
+    "sha256": {
+      "node-v24.22.1-linux-arm64.tar.xz": "dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e",
+      "node-v24.22.1-linux-x64.tar.xz": "6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6"
+    }
+  },
+  "securityFloor": {
+    "body-parser": "2.4.0",
+    "sharp": "0.35.5",
+    "ws": "8.22.0",
+    "zod": "4.6.7",
+    "path-to-regexp": "8.4.0",
+    "certifi": "2026.10.23",
+    "baileys": "7.0.0-rc14"
+  },
+  "scope": "Code, backend/provider/search hosts, fresh snapshot builders and disposable new-agent canaries only. No updates to existing agent VMs; no backend-updater invocation."
+}
