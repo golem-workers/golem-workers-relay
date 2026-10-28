@@ -614,3 +614,7 @@ implement backend-updater migration or upgrade-on-wake. See backend issue #791.
 Inbound vision images are limited to 20 MiB encoded input and 40 million decoded pixels before conversion to a 640×480 PNG. Larger images fail without invoking unrestricted decoding.
 
 Docker OpenClaw builds require `OPENCLAW_VERSION` in `openclaw.env` (exact tested npm version; no floating latest). Snapshot baking records global resolved dependency inventory and Node binary SHA-256 under `/usr/local/share/golem-workers/bake/`; backend baking still selects and injects the mature stable OpenClaw version.
+
+### October 2026 toolchain security resolution
+
+The committed lockfile refreshes compatible development dependencies (without runtime API changes or new environment variables). Build/lint/test and the full dependency audit validate the selected graph; existing agent installations are not modified.
