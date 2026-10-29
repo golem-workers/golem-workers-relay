@@ -1,5 +1,8 @@
 # golem-workers-relay
 
+> Active QA: WhatsApp cases/runs and acceptance gates are excluded by owner decision.
+> See [QA scope](docs/qa/scope.md); historical WhatsApp gaps do not block releases.
+
 Runtime workload discovery recognizes the managed `/usr/local/bin/openclaw` and
 `/usr/bin/openclaw` Gateway launchers as well as installed OpenClaw package entry
 scripts. It checks the executable/script argument position and adjacent `gateway`
@@ -618,3 +621,18 @@ Docker OpenClaw builds require `OPENCLAW_VERSION` in `openclaw.env` (exact teste
 ### October 2026 toolchain security resolution
 
 The committed lockfile refreshes compatible development dependencies (without runtime API changes or new environment variables). Build/lint/test and the full dependency audit validate the selected graph; existing agent installations are not modified.
+
+
+## QA scope: WhatsApp excluded (owner decision, 2026-10-28)
+
+WhatsApp is hidden from the product UI and is outside active QA scope. Do not run
+WhatsApp-specific unit/component/browser/smoke cases, bootstrap a test client,
+request a test phone, or require pairing/reconnect/inbound/edit/revoke/history-sync
+or delivery evidence for acceptance, security follow-ups or releases. Excluded
+cases are not passes. Historical reports remain historical, not outstanding gates.
+Telegram/Discord, HTTP/WS, media and agent lifecycle checks remain in scope.
+Runtime integrations, saved credentials/auth sessions and dependency security
+inventory are retained; this decision does not declare dependencies fixed or safe.
+Reactivation of WhatsApp QA requires a new explicit owner instruction.
+
+See [active QA scope](docs/qa/scope.md).
