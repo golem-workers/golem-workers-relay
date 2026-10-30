@@ -99,6 +99,20 @@ function readFastMode(value: unknown): ModelSetFastMode {
   return value === true || value === false || value === "auto" ? value : null;
 }
 
+/** A disposable probe can receive a late metadata write after inference.
+ * Retry only its explicit cleanup CAS refusal, never inference or auth. */
+async function deleteModelVerificationSession(sessionKey: string, remove: () => Promise<unknown>): Promise<void> {
+  const changed = `Session ${sessionKey} changed before deletion. Retry.`;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try { await remove(); return; }
+    catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (attempt === 2 || (message !== changed && message !== `INVALID_REQUEST: ${changed}`)) throw error;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  }
+}
+
 export async function executeAgentControl(input: Parameters<typeof executeAgentControlUnfenced>[0] & { policyAuthority?: "backend" }): Promise<AgentControlResult> {
   if (input.action.managedRuntimePolicy && input.policyAuthority !== "backend") throw new AgentControlError("MANAGED_RUNTIME_POLICY_AUTHORITY_REQUIRED", "Only authenticated backend ingress may change managed harness authority");
   if (input.action.managedRuntimePolicy && !input.action.managedRuntimePolicyDigest) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend policy digest is required");
@@ -232,7 +246,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
         try {
           if (!completed) await input.gateway.request("chat.abort", { sessionKey }, { timeoutMs: 15_000 });
         } finally {
-          await input.gateway.request("sessions.delete", { key: sessionKey, deleteTranscript: true }, { timeoutMs: 15_000 });
+          await deleteModelVerificationSession(sessionKey, () => input.gateway.request("sessions.delete", { key: sessionKey, deleteTranscript: true }, { timeoutMs: 15_000 }));
         }
       }
     }
