@@ -640,3 +640,7 @@ See [active QA scope](docs/qa/scope.md).
 ## Authorization migration reliability
 
 Authorization probes accept exactly their response token with an optional final period; provider, model and harness checks remain exact. Other text is rejected.
+
+### Disposable model verification cleanup
+
+A successful model probe may receive a late metadata write while its own disposable session is being deleted. Relay retries only the exact same-session `changed before deletion. Retry.` CAS refusal, at most three deletion attempts. It never retries inference, changes credentials, disables session guards, deletes a different session, hides exhausted/unrelated cleanup failures, or turns a model/runtime mismatch into success. No new environment setting is required.

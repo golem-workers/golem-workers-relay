@@ -95,3 +95,39 @@ it("does not substitute selected runtime for required subscription proof", async
   await expect(f.run()).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });
   expect(f.proof).not.toHaveBeenCalled();
 });
+it.each([false, true])("retries only disposable-session cleanup CAS, preserving mismatch=%s", async mismatch => {
+  const f = await fixture("codex");
+  if (mismatch) f.after.entry.model = "gpt-6-other";
+  const request = f.gateway.request.getMockImplementation();
+  if (!request) throw new Error("fixture request missing");
+  let deletions = 0;
+  const keys: string[] = [];
+  f.gateway.request.mockImplementation((method: string, params?: unknown) => {
+    if (method === "sessions.delete") {
+      const key = (params as { key: string }).key; keys.push(key);
+      if (++deletions === 1) return Promise.reject(new Error(`INVALID_REQUEST: Session ${key} changed before deletion. Retry.`));
+    }
+    return request(method, params);
+  });
+  if (mismatch) await expect(f.run()).rejects.toMatchObject({ code: "MODEL_VERIFY_MISMATCH" });
+  else await expect(f.run()).resolves.toMatchObject({ verified: true });
+  expect(deletions).toBe(2); expect(new Set(keys).size).toBe(1);
+  expect(f.proof).toHaveBeenCalledOnce();
+});
+it.each(["exhausted", "foreign-key", "unrelated"]) ("does not hide %s cleanup failure", async mode => {
+  const f = await fixture("codex");
+  const request = f.gateway.request.getMockImplementation();
+  if (!request) throw new Error("fixture request missing");
+  let deletions = 0;
+  f.gateway.request.mockImplementation((method: string, params?: unknown) => {
+    if (method === "sessions.delete") {
+      deletions += 1;
+      const key = mode === "foreign-key" ? "other-session" : (params as { key: string }).key;
+      return Promise.reject(new Error(mode === "unrelated" ? "permission denied" : `INVALID_REQUEST: Session ${key} changed before deletion. Retry.`));
+    }
+    return request(method, params);
+  });
+  await expect(f.run()).rejects.toThrow(mode === "unrelated" ? "permission denied" : "changed before deletion");
+  expect(deletions).toBe(mode === "exhausted" ? 3 : 1);
+  expect(f.proof).toHaveBeenCalledOnce();
+});
