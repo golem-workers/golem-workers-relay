@@ -594,6 +594,33 @@ install_openclaw_capability_plugin() {
   openclaw plugins inspect "${plugin_id}" --runtime --json >/dev/null
 }
 
+install_openclaw_safe_skill() {
+  local skill_spec="$1"
+  local attempt output_file exit_code
+  local retry_delay=5
+  for attempt in 1 2 3 4; do
+    output_file="$(mktemp)"
+    if openclaw skills install "${skill_spec}" >"${output_file}" 2>&1; then
+      cat "${output_file}"
+      rm -f "${output_file}"
+      return 0
+    else
+      exit_code=$?
+    fi
+    cat "${output_file}"
+    # Retry only an unavailable upstream verdict, never a trust rejection or
+    # another installation error. Every attempt still uses the normal CLI gate.
+    if [[ "${attempt}" -ge 4 ]] || ! grep -Eq 'ClawHub /api/v1/skills/-/security-verdicts failed \(5[0-9][0-9]\):' "${output_file}"; then
+      rm -f "${output_file}"
+      return "${exit_code}"
+    fi
+    rm -f "${output_file}"
+    echo "ClawHub security verdict temporarily unavailable for ${skill_spec}; retrying after ${retry_delay}s (attempt ${attempt}/4)."
+    sleep "${retry_delay}"
+    retry_delay=$((retry_delay * 2))
+  done
+}
+
 preinstall_openclaw_safe_skills() {
   mkdir -p /root/.openclaw/workspace/skills
   for skill_spec in "${OPENCLAW_SAFE_SKILL_SPECS[@]}"; do
@@ -602,7 +629,7 @@ preinstall_openclaw_safe_skills() {
     if [[ -s "${skill_dir}/SKILL.md" ]]; then
       echo "OpenClaw skill ${skill_slug} already preinstalled."
     else
-      openclaw skills install "${skill_spec}"
+      install_openclaw_safe_skill "${skill_spec}"
     fi
     test -s "${skill_dir}/SKILL.md"
   done
