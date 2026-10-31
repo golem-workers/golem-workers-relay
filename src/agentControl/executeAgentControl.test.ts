@@ -1213,7 +1213,7 @@ describe("executeAgentControl Codex login", () => {
       .toHaveLength(failRefresh ? 2 : 1);
   });
 
-  it.each(["ok", "wrong-model", "wrong-answer", "wrong-provider", "wrong-harness", "missing-harness", "failure"])("verifies actual isolated model output: %s", async (mode) => {
+  it.each(["ok", "terminal-period", "extra-text", "wrong-model", "wrong-answer", "wrong-provider", "wrong-harness", "missing-harness", "failure"])("verifies actual isolated model output: %s", async (mode) => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-model-verify-"));
     const configPath = path.join(dir, "openclaw.json");
     await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: { model: { primary: "openai/gpt-6-astra" } } } }));
@@ -1222,14 +1222,15 @@ describe("executeAgentControl Codex login", () => {
 const args = process.argv.slice(2);
 if (args.includes('--deliver') || args.includes('--model') || !args.includes('--session-key') || !args.includes('--session-id') || args[args.indexOf('--timeout') + 1] !== '180') process.exit(4);
 const prompt = args[args.indexOf('--message') + 1];
+const marker = prompt.split(" ")[2].slice(0, -1);
 console.log(JSON.stringify({status: ${JSON.stringify(mode === "failure" ? "error" : "ok")}, result: {
-  payloads: [{text: ${mode === "wrong-answer" ? "'not the marker'" : "prompt.split(' ')[2].slice(0, -1)"}}],
+  payloads: [{text: ${mode === "wrong-answer" ? "'not the marker'" : mode === "terminal-period" ? "marker + '.'" : mode === "extra-text" ? "marker + ' extra text'" : "marker"}}],
   meta: {agentMeta: {provider: ${JSON.stringify(mode === "wrong-provider" ? "anthropic" : "openai")}, agentHarnessId: ${mode === "missing-harness" ? "undefined" : JSON.stringify(mode === "wrong-harness" ? "codex" : "openclaw")}, model: ${JSON.stringify(mode === "wrong-model" ? "another-model" : "gpt-6-astra")}}}
 }}));
 `, { mode: 0o700 });
     process.env.PATH = `${dir}:${process.env.PATH}`;
     const run = executeAgentControl({ configPath, action: { kind: "model.verify", model: "codex/gpt-6-astra" }, gateway: noopGateway });
-    if (mode === "ok") await expect(run).resolves.toEqual({ kind: "model.verify", model: "codex/gpt-6-astra", verified: true });
+    if (mode === "ok" || mode === "terminal-period") await expect(run).resolves.toEqual({ kind: "model.verify", model: "codex/gpt-6-astra", verified: true });
     else await expect(run).rejects.toMatchObject({ code: "MODEL_VERIFY_FAILED" });
   });
 
