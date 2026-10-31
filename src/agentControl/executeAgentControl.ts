@@ -1228,7 +1228,7 @@ async function verifyConfiguredModel(configPath: string, model: string, probe?: 
       || agentMeta?.provider !== expected.modelRef.slice(0, expected.modelRef.indexOf("/"))
       || agentMeta?.agentHarnessId !== expectedHarness
       || agentMeta?.model !== expectedModel
-      || !payloads.some((payload: unknown) => isRecord(payload) && typeof payload.text === "string" && payload.text.trim() === marker)) {
+      || !payloads.some((payload: unknown) => isRecord(payload) && typeof payload.text === "string" && [marker, `${marker}.`].includes(payload.text.trim()))) {
       throw new Error("Model response did not pass authorization verification.");
     }
     return { kind: "model.verify", model, verified: true };

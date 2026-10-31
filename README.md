@@ -636,3 +636,7 @@ inventory are retained; this decision does not declare dependencies fixed or saf
 Reactivation of WhatsApp QA requires a new explicit owner instruction.
 
 See [active QA scope](docs/qa/scope.md).
+
+## Authorization migration reliability
+
+Authorization probes accept exactly their response token with an optional final period; provider, model and harness checks remain exact. Other text is rejected.
