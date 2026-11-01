@@ -39,6 +39,23 @@ describe("snapshot safe-skill installation retry", () => {
     expect(result.stdout.match(/Server Error/g)).toHaveLength(2);
   });
 
+  it("retries the CLI install-service 5xx message through the full trust gate", () => {
+    const result = install(2, 'ClawHub is temporarily unavailable while installing skill "powerpoint-pptx". Try again later.');
+    expect(result.status).toBe(0);
+    expect(result.stdout.match(/call:skills install @ivangdavila\/powerpoint-pptx/g)).toHaveLength(3);
+    expect(result.stdout).toContain("backoff:5");
+    expect(result.stdout).toContain("backoff:10");
+    expect(result.stdout).toContain("Installed trusted skill");
+  });
+
+  it("bounds persistent install-service unavailability to four attempts", () => {
+    const result = install(8, 'ClawHub is temporarily unavailable while installing skill "powerpoint-pptx". Try again later.');
+    expect(result.status).toBe(23);
+    expect(result.stdout).toContain("attempts:4");
+    expect(result.stdout.match(/backoff:/g)).toHaveLength(3);
+    expect(result.stdout).not.toContain("Installed trusted skill");
+  });
+
   it("retains the actual failure code after four failed verdict attempts", () => {
     const result = install(8, unavailable.replace("(500)", "(503)"));
     expect(result.status).toBe(23);
@@ -52,6 +69,10 @@ describe("snapshot safe-skill installation retry", () => {
     unavailable.replace("(500)", "(403)"),
     unavailable.replace("(500)", "(429)"),
     "ClawHub /api/v1/download failed (500): Server Error",
+    'ClawHub authentication failed while installing skill "powerpoint-pptx". Authenticate with ClawHub and try again.',
+    'ClawHub denied access while installing skill "powerpoint-pptx". Check your ClawHub access and try again.',
+    'ClawHub rate limit reached while installing skill "powerpoint-pptx". Wait and try again later.',
+    'ClawHub is temporarily unavailable while verifying skill "powerpoint-pptx". Try again later.',
     "Archive integrity mismatch",
   ])("does not retry a trust rejection or unrelated failure: %s", (message) => {
     const result = install(8, message);
