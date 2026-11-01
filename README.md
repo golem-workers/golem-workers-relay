@@ -660,3 +660,17 @@ cleanup and disconnect may still restart it without a general normalization pass
 General managed-config convergence remains with explicit Update/config Sync and
 explicit settings/model operations. New backend auth refuses older Relay capability
 before credential mutation; updating Relay remains an explicit operator action.
+
+### Durable authorization receipts
+
+Agent-control pushes may include `durableOperation: {id, mode: "submit"}` for
+`codex.auth.clear` or `codex.auth.sync`. Relay fsyncs a nonsecret receipt before
+execution and acknowledges promptly. `mode: "status"` reads the same operation
+without requiring Gateway readiness. Duplicate IDs with the same action return
+the saved receipt; conflicting actions are rejected. Credential bundles are never
+stored in receipts. Receipts live in `relay-authorization-receipts` under the
+OpenClaw state directory and must be retained with that state. There is no TTL:
+expiry cannot prove a remote mutation finished. After a Relay restart, an
+unfinished receipt reports `UNKNOWN`; it is never executed again automatically.
+Only a pre-execution kernel-fence refusal reports `REFUSED`. Other failures retain
+unknown custody. Existing runtime/owner/model guards remain in force.

@@ -127,6 +127,7 @@ const transportEventTaskInputSchema = z.object({
 
 const agentControlTaskInputSchema = z.object({
   kind: z.literal("agent_control"),
+  durableOperation: z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{1,160}$/), mode: z.enum(["submit", "status"]) }).optional(),
   action: agentControlActionSchema,
 });
 
