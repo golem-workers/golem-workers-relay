@@ -10,7 +10,6 @@ import { normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js
 
 const OPENAI_AUTH_BASE_URL = "https://auth.openai.com";
 const OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const OPENAI_CODEX_DEFAULT_MODEL = "openai/gpt-5.5";
 const OPENAI_CODEX_DEVICE_CALLBACK_URL = `${OPENAI_AUTH_BASE_URL}/deviceauth/callback`;
 const OPENAI_CODEX_DEVICE_CODE_TIMEOUT_MS = 15 * 60_000;
 const OPENAI_CODEX_DEVICE_CODE_DEFAULT_INTERVAL_MS = 5_000;
@@ -754,9 +753,6 @@ async function persistCodexCredentials(input: {
     const currentAuth = isRecord(currentConfig.auth) ? currentConfig.auth : {};
     const currentProfiles = isRecord(currentAuth.profiles) ? currentAuth.profiles : {};
     const currentOrder = isRecord(currentAuth.order) ? currentAuth.order : {};
-    const currentAgents = isRecord(currentConfig.agents) ? currentConfig.agents : {};
-    const currentDefaults = isRecord(currentAgents.defaults) ? currentAgents.defaults : {};
-    const currentModels = isRecord(currentDefaults.models) ? currentDefaults.models : {};
     const retainedProfiles = Object.fromEntries(
       Object.entries(currentProfiles).filter(
         ([, profile]) =>
@@ -783,19 +779,6 @@ async function persistCodexCredentials(input: {
         order: {
           ...currentOrder,
           openai: [profileId],
-        },
-      },
-      agents: {
-        ...currentAgents,
-        defaults: {
-          ...currentDefaults,
-          models: {
-            ...currentModels,
-            [OPENAI_CODEX_DEFAULT_MODEL]: {
-              ...(isRecord(currentModels[OPENAI_CODEX_DEFAULT_MODEL]) ? currentModels[OPENAI_CODEX_DEFAULT_MODEL] : {}),
-              // The common fenced writer derives runtime from managed authority.
-            },
-          },
         },
       },
     };

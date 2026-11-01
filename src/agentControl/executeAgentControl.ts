@@ -1,6 +1,6 @@
 import { runIsolatedModelProbe } from "./modelVerificationProbe.js";
 import { readOfflineRuntimeAuth, MANAGED_RUNTIME_SOURCE_SHA256 } from "../managed-runtime/policy.generated.js";
-import { managedRuntime, withManagedRuntimePolicy, readManagedRuntimePolicy, runtimeContext, normalizeManagedConfigOnDisk, activeManagedConfigPath } from "../managed-runtime/runtime-policy.js";
+import { managedRuntime, commitManagedRuntimePolicy, withAuthorizationConfig, withManagedRuntimePolicy, readManagedRuntimePolicy, runtimeContext, normalizeManagedConfigOnDisk, activeManagedConfigPath } from "../managed-runtime/runtime-policy.js";
 import { readModelFence, writeModelFence, withModelFenceLock, withAuthorizedModelSelection } from "./modelFence.js";
 import { writeOwnerFencedConfig, assertRuntimeActionNotCancelled, withOwnerFenceLock, withIndependentOwnerFenceLock, isConfigMutationPath, configRevision, type OwnerFence } from "./ownerFence.js";
 import { readOwnerRuntime } from "./ownerRuntime.js";
@@ -124,7 +124,16 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
   const withReadLock = (operation: () => Promise<AgentControlResult>) => (readOnlyPolicy && !diagnosticOnly) || input.action.managedRuntimeExpectedConfigRevision ? withOwnerFenceLock(input.configPath, operation) : operation();
   // All ingress paths and all config writers share this lock, including legacy calls.
   const withIngressLock = (operation: () => Promise<AgentControlResult>) => diagnosticOnly ? operation() : withModelFenceLock(input.configPath, () => input.action.runtimeInstallActionId ? withOwnerFenceLock(input.configPath, async () => { await assertRuntimeActionNotCancelled(input.action.runtimeInstallActionId!); return operation(); }) : operation());
-  return withIngressLock(() => withReadLock(() => withManagedRuntimePolicy(input.configPath, readOnlyPolicy ? undefined : input.action.managedRuntimePolicy, async () => {
+  const authorizationOnly = ["codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start", "codex.login.status"].includes(input.action.kind);
+  const withConfigScope = async (operation: () => Promise<AgentControlResult>) => {
+    if (!authorizationOnly) return operation();
+    const current = await readManagedRuntimePolicy(input.configPath);
+    if (input.action.managedRuntimePolicy && current.chatHarness !== input.action.managedRuntimePolicy.chatHarness) {
+      throw new AgentControlError("AUTHORIZATION_RUNTIME_SYNC_REQUIRED", "Apply the requested harness with explicit Update/config Sync before changing authorization.");
+    }
+    return withAuthorizationConfig(input.configPath, operation);
+  };
+  return withIngressLock(() => withConfigScope(() => withReadLock(() => withManagedRuntimePolicy(input.configPath, readOnlyPolicy ? undefined : input.action.managedRuntimePolicy, async () => {
     if (input.action.managedRuntimePolicyDigest && input.action.managedRuntimePolicyDigest !== MANAGED_RUNTIME_SOURCE_SHA256) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend and relay policy source digests differ; coordinated release required");
     const policy = await readManagedRuntimePolicy(input.configPath);
     if (input.action.managedRuntimePolicy) {
@@ -318,8 +327,12 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
     if (state && ["model.set", "modelAssignment.set"].includes(action.kind)) {
       throw new AgentControlError("MODEL_FENCE_REQUIRED", "Legacy configuration mutations cannot bypass an established model fence");
     }
-    return complete(await (selection ? withAuthorizedModelSelection(() => executeAgentControlUnfenced(input)) : executeAgentControlUnfenced(input)));
-  }, { allowMissingAuth: ["codex.auth.clear", "gateway.restart"].includes(input.action.kind) })));
+    const result = await (selection ? withAuthorizedModelSelection(() => executeAgentControlUnfenced(input)) : executeAgentControlUnfenced(input));
+    // Retain monotonic authority even for an up-to-date credential no-op. This
+    // fences delayed older account changes; it does not normalize OpenClaw config.
+    if (authorizationOnly && !readOnlyPolicy) await withOwnerFenceLock(input.configPath, () => commitManagedRuntimePolicy(input.configPath));
+    return complete(result);
+  }, { allowMissingAuth: ["codex.auth.clear", "gateway.restart"].includes(input.action.kind) }))));
 }
 
 async function executeAgentControlUnfenced(input: {
@@ -440,9 +453,6 @@ async function executeAgentControlUnfenced(input: {
                     thinkingDefault: input.action.thinkingDefault,
                     fastMode: input.action.fastMode,
                   }) : (() => { throw new AgentControlError("MODEL_FENCE_INTERNAL", "Fence action must use central handler"); })();
-  if (["codex.auth.sync", "codex.auth.import", "codex.auth.set", "codex.auth.clear"].includes(input.action.kind)) {
-    if (await normalizeManagedConfigOnDisk(input.configPath)) await restartGatewayService();
-  }
   return agentControlResultSchema.parse(result);
   };
   // Do not serialize unrelated chat, pairing, lifecycle or login waits behind
@@ -590,6 +600,7 @@ async function readConfig(configPath: string, gateway: GatewayLike, includeRunti
     ...(auth ? { runtimeAuthContext: { version: 1 as const, subscriptionAuth: Boolean(auth.subscriptionAuth), apiKeyAuth: Boolean(auth.apiKeyAuth) } } : {}),
     configRevision: configRevision(configText),
     ownerFenceVersion: 1,
+    authorizationConfigVersion: 1,
     ownerRuntime: await readOwnerRuntime(configPath, gateway, true),
     configText,
     config,
