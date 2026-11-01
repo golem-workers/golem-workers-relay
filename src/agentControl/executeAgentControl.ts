@@ -601,6 +601,7 @@ async function readConfig(configPath: string, gateway: GatewayLike, includeRunti
     configRevision: configRevision(configText),
     ownerFenceVersion: 1,
     authorizationConfigVersion: 1,
+    durableAuthorizationVersion: 1,
     ownerRuntime: await readOwnerRuntime(configPath, gateway, true),
     configText,
     config,

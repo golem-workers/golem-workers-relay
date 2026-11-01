@@ -1,3 +1,4 @@
+import { AuthorizationReceipts } from "./authorizationReceipts.js";
 import { ModelFenceBusyError } from "../agentControl/modelFence.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import fs from "node:fs/promises";
@@ -103,6 +104,7 @@ export function startPushServer(input: {
     error?: string;
   }>;
 }): http.Server {
+  const authorizationReceipts = new AuthorizationReceipts(nodePath.join(resolveOpenclawStateDir(), "relay-authorization-receipts"));
   const pushPath = input.path.startsWith("/") ? input.path : `/${input.path}`;
   const mediaPath = replaceLastPathSegment(pushPath, "media");
   const healthPath = input.healthPath?.trim() || "/health";
@@ -269,6 +271,17 @@ export function startPushServer(input: {
             code: "AGENT_CONTROL_UNSUPPORTED",
             message: "Relay agent control ingress is not enabled",
           });
+        }
+        const durable = parsed.data.input.durableOperation;
+        if (durable) {
+          if (durable.mode === "submit" && !["codex.auth.clear", "codex.auth.sync"].includes(parsed.data.input.action.kind)) {
+            sendJson(res, 400, { code: "AUTH_OPERATION_ACTION_INVALID" }); return;
+          }
+          const message = parsed.data;
+          const receipt = durable.mode === "status"
+            ? await authorizationReceipts.status(durable.id)
+            : await authorizationReceipts.submit(durable.id, message.input.kind === "agent_control" ? message.input.action : null, () => input.onAgentControl!(message));
+          sendJson(res, 200, { accepted: true, receipt }); return;
         }
         const result = await input.onAgentControl(parsed.data);
         logger.info(
