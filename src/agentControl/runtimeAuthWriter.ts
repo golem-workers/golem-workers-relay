@@ -4,6 +4,10 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 
+export class RuntimeAuthWriterError extends Error {
+  constructor(readonly code: string, message: string) { super(message); this.name = "RuntimeAuthWriterError"; }
+}
+
 // Resolve the public SDK from the active executable first. NODE_PATH can still
 // point at an obsolete pnpm global root after an update (backend issue #656).
 // Loading that SDK against the current runtime database can reject its schema.
@@ -20,14 +24,14 @@ export async function resolveRuntimeAuthSdk(): Promise<string> {
       return createRequire(executable).resolve("openclaw/plugin-sdk/provider-auth");
     } catch {
       // Never silently substitute an older module installation for a known runtime.
-      throw new Error("Active OpenClaw public provider-auth SDK is unavailable; refusing stale SDK fallback.");
+      throw new RuntimeAuthWriterError("AUTH_WRITER_SDK_UNAVAILABLE", "Active OpenClaw public provider-auth SDK is unavailable; refusing stale SDK fallback.");
     }
   }
   const require = createRequire(import.meta.url);
   try {
     return require.resolve("openclaw/plugin-sdk/provider-auth");
   } catch { /* No resolvable executable or module installation. */ }
-  throw new Error("Installed OpenClaw public provider-auth SDK is unavailable; refusing to create an auth database.");
+  throw new RuntimeAuthWriterError("AUTH_WRITER_SDK_UNAVAILABLE", "Installed OpenClaw public provider-auth SDK is unavailable; refusing to create an auth database.");
 }
 
 // A separate process isolates runtime caches and state-root environment from the
@@ -74,15 +78,20 @@ export async function writeRuntimeAuth(input: {
       },
       stdio: ["pipe", "ignore", "ignore"],
     });
-    const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 30_000);
     child.once("error", () => {
       clearTimeout(timer);
-      reject(new Error("Unable to start OpenClaw auth writer."));
+      reject(new RuntimeAuthWriterError("AUTH_WRITER_SPAWN_FAILED", "Unable to start OpenClaw auth writer."));
     });
-    child.once("close", (code) => {
+    child.once("close", (code, signal) => {
       clearTimeout(timer);
       if (code === 0) resolve();
-      else reject(new Error("OpenClaw auth writer refused the update; inspect runtime schema ownership and SDK compatibility."));
+      else {
+        const stage = timedOut ? "TIMEOUT" : code === 2 ? "EXPORT_MISSING" : code === 3 ? "STORE_REFUSED" : "CALLBACK_FAILED";
+        const diagnostic = `AUTH_WRITER_${stage}_EXIT_${code ?? "NONE"}_${signal ?? "NONE"}`;
+        reject(new RuntimeAuthWriterError(diagnostic, `OpenClaw auth writer refused the update (${diagnostic}); inspect runtime schema ownership and SDK compatibility.`));
+      }
     });
     child.stdin.on("error", () => { /* close/error above reports a sanitized failure */ });
     child.stdin.end(JSON.stringify(input));
