@@ -5,6 +5,15 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import JSON5 from "json5";
 import { createManagedRuntimePolicy, type ManagedRuntimePolicy, type RuntimeContext } from "./policy.generated.js";
 export const managedRuntime = createManagedRuntimePolicy();
+// Internal auth-only scope: never sourced from wire/config. Credential mutations
+// retain owner/model locks, CAS and rollback without becoming configuration Sync.
+const authorizationScope = new AsyncLocalStorage<string>();
+export function withAuthorizationConfig<T>(configPath: string, operation: () => Promise<T>): Promise<T> {
+  return authorizationScope.run(path.resolve(configPath), operation);
+}
+function isAuthorizationConfig(configPath: string): boolean {
+  return authorizationScope.getStore() === path.resolve(configPath);
+}
 const scope = new AsyncLocalStorage<{ configPath: string; policy: ManagedRuntimePolicy; allowMissingAuth?: boolean }>();
 export function policyFile(configPath: string): string {
   return configPath === "/root/.openclaw/openclaw.json" ? "/var/lib/golem-workers/managed-runtime-policy.json" : configPath + ".managed-runtime-policy.json";
@@ -56,12 +65,14 @@ export async function runtimeContext(configPath: string): Promise<RuntimeContext
  * credentials/model refs/routes are not rewritten. Incompatible Codex choice fails
  * before either policy authority or configuration is committed. */
 export async function normalizeManagedConfigText(configPath: string, text: string): Promise<string> {
+  if (isAuthorizationConfig(configPath)) return text;
   const config: Record<string, unknown> = JSON5.parse(text);
   const policy = await readManagedRuntimePolicy(configPath);
   managedRuntime.normalizeConfig(config, policy, await runtimeContext(configPath));
   return JSON.stringify(config, null, 2) + "\n";
 }
 export async function normalizeManagedConfigOnDisk(configPath: string): Promise<boolean> {
+  if (isAuthorizationConfig(configPath)) return false;
   const { withOwnerFenceLock, writeOwnerFencedConfig } = await import("../agentControl/ownerFence.js");
   return withOwnerFenceLock(configPath, async () => {
     const current = await fs.readFile(configPath, "utf8");
