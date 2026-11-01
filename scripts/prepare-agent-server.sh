@@ -608,14 +608,16 @@ install_openclaw_safe_skill() {
       exit_code=$?
     fi
     cat "${output_file}"
-    # Retry only an unavailable upstream verdict, never a trust rejection or
-    # another installation error. Every attempt still uses the normal CLI gate.
-    if [[ "${attempt}" -ge 4 ]] || ! grep -Eq 'ClawHub /api/v1/skills/-/security-verdicts failed \(5[0-9][0-9]\):' "${output_file}"; then
+    # Retry only explicit upstream 5xx failures, never trust/auth rejections,
+    # integrity failures, or other installation errors. The CLI emits the second
+    # signature only for a ClawHub HTTP >=500 during installation. Every retry
+    # re-runs the complete normal CLI trust/download gate without force flags.
+    if [[ "${attempt}" -ge 4 ]] || ! grep -Eq 'ClawHub /api/v1/skills/-/security-verdicts failed \(5[0-9][0-9]\):|^ClawHub is temporarily unavailable while installing skill "[^"]+"\. Try again later\.$' "${output_file}"; then
       rm -f "${output_file}"
       return "${exit_code}"
     fi
     rm -f "${output_file}"
-    echo "ClawHub security verdict temporarily unavailable for ${skill_spec}; retrying after ${retry_delay}s (attempt ${attempt}/4)."
+    echo "ClawHub upstream temporarily unavailable for ${skill_spec}; retrying after ${retry_delay}s (attempt ${attempt}/4)."
     sleep "${retry_delay}"
     retry_delay=$((retry_delay * 2))
   done
