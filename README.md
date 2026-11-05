@@ -637,6 +637,10 @@ Reactivation of WhatsApp QA requires a new explicit owner instruction.
 
 See [active QA scope](docs/qa/scope.md).
 
+## Authorization migration reliability
+
+Authorization probes accept exactly their response token with an optional final period; provider, model and harness checks remain exact. Other text is rejected.
+
 ### Disposable model verification cleanup
 
 A successful model probe may receive a late metadata write while its own disposable session is being deleted. Relay retries only the exact same-session `changed before deletion. Retry.` CAS refusal, at most three deletion attempts. It never retries inference, changes credentials, disables session guards, deletes a different session, hides exhausted/unrelated cleanup failures, or turns a model/runtime mismatch into success. No new environment setting is required.
@@ -650,3 +654,33 @@ Promotion is atomic per file, not a transaction across the entire application: a
 promotion can leave a mix of complete old/new files, and dependency/build failures still
 require a retry. A pending-build receipt makes the next run retry installation/build
 even when HEAD has already advanced. The updater uses mode `0755` for the two shell entrypoints.
+
+## Credential-only OpenAI authorization
+
+`config.read` advertises `authorizationConfigVersion: 1`. Login, auth import/sync,
+auth-mode changes and clear retain config CAS, owner/model fencing, credential
+identity validation and rollback, but do not normalize managed runtime config or
+change the effective harness. Monotonic authority revisions remain persisted to
+fence delayed stale credential requests. A changed harness must first be applied
+with explicit Update/config Sync. They change only OpenAI credentials, auth profiles
+and session bindings, and OpenAI authentication routing. They never add a default
+model/catalog entry, rewrite unrelated runtimes/settings or install components.
+Ordinary token sync refreshes live without restarting Gateway. Legacy OpenAI route
+cleanup and disconnect may still restart it without a general normalization pass.
+General managed-config convergence remains with explicit Update/config Sync and
+explicit settings/model operations. New backend auth refuses older Relay capability
+before credential mutation; updating Relay remains an explicit operator action.
+
+### Durable authorization receipts
+
+Agent-control pushes may include `durableOperation: {id, mode: "submit"}` for
+`codex.auth.clear` or `codex.auth.sync`. Relay fsyncs a nonsecret receipt before
+execution and acknowledges promptly. `mode: "status"` reads the same operation
+without requiring Gateway readiness. Duplicate IDs with the same action return
+the saved receipt; conflicting actions are rejected. Credential bundles are never
+stored in receipts. Receipts live in `relay-authorization-receipts` under the
+OpenClaw state directory and must be retained with that state. There is no TTL:
+expiry cannot prove a remote mutation finished. After a Relay restart, an
+unfinished receipt reports `UNKNOWN`; it is never executed again automatically.
+Only a pre-execution kernel-fence refusal reports `REFUSED`. Other failures retain
+unknown custody. Existing runtime/owner/model guards remain in force.

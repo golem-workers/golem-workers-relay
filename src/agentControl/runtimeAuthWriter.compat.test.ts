@@ -44,9 +44,31 @@ it.each(["2026.6.11", "2026.9.8"])("uses the public callback contract on %s with
   await expect(fs.access(path.join(root, "agents"))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-it("fails closed without a public SDK, creating no database", async () => {
+it("fails closed when the active runtime lacks its public SDK, without creating a database", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "relay-no-auth-sdk-")); roots.push(root);
-  process.env.PATH = root;
-  await expect(writeRuntimeAuth({ configPath: path.join(root, "openclaw.json"), profileId: "openai:test", credential: {} })).rejects.toThrow("SDK is unavailable");
-  expect(await fs.readdir(root)).toEqual([]);
+  const pkg = path.join(root, "node_modules/openclaw");
+  await fs.mkdir(pkg, { recursive: true }); await fs.mkdir(path.join(root, "bin"));
+  await fs.writeFile(path.join(pkg, "package.json"), JSON.stringify({ name: "openclaw", type: "module", exports: {} }));
+  await fs.writeFile(path.join(pkg, "openclaw.mjs"), "");
+  await fs.symlink(path.join(pkg, "openclaw.mjs"), path.join(root, "bin/openclaw"));
+  process.env.PATH = path.join(root, "bin");
+  await expect(writeRuntimeAuth({ configPath: path.join(root, "openclaw.json"), profileId: "openai:test", credential: {} })).rejects.toMatchObject({ code: "AUTH_WRITER_SDK_UNAVAILABLE" });
+  expect((await fs.readdir(root)).sort()).toEqual(["bin", "node_modules"]);
+});
+
+it.each([
+  ["export const other = true", "EXPORT_MISSING", 2],
+  ["export function updateAuthProfileStoreWithLock() { return null }", "STORE_REFUSED", 3],
+  ["export function updateAuthProfileStoreWithLock() { throw new Error('must-never-log-child-secret') }", "CALLBACK_FAILED", 1],
+])("retains bounded writer stage/exit diagnostics without stdin or stderr: %s", async (source, stage, exit) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "relay-auth-diagnostics-")); roots.push(root);
+  const pkg = path.join(root, "node_modules/openclaw");
+  await fs.mkdir(pkg, { recursive: true }); await fs.mkdir(path.join(root, "bin"));
+  await fs.writeFile(path.join(pkg, "package.json"), JSON.stringify({ name: "openclaw", type: "module", exports: { "./plugin-sdk/provider-auth": "./auth.js" } }));
+  await fs.writeFile(path.join(pkg, "openclaw.mjs"), ""); await fs.writeFile(path.join(pkg, "auth.js"), source);
+  await fs.symlink(path.join(pkg, "openclaw.mjs"), path.join(root, "bin/openclaw"));
+  process.env.PATH = path.join(root, "bin");
+  const error = await writeRuntimeAuth({ configPath: path.join(root, "openclaw.json"), profileId: "openai:test", credential: { access: "must-never-log-stdin-secret" } }).catch((value: unknown) => value) as Error & { code: string };
+  expect(error.code).toBe(`AUTH_WRITER_${stage}_EXIT_${exit}_NONE`);
+  expect(error.message).not.toContain("must-never-log");
 });

@@ -594,6 +594,35 @@ install_openclaw_capability_plugin() {
   openclaw plugins inspect "${plugin_id}" --runtime --json >/dev/null
 }
 
+install_openclaw_safe_skill() {
+  local skill_spec="$1"
+  local attempt output_file exit_code
+  local retry_delay=5
+  for attempt in 1 2 3 4; do
+    output_file="$(mktemp)"
+    if openclaw skills install "${skill_spec}" >"${output_file}" 2>&1; then
+      cat "${output_file}"
+      rm -f "${output_file}"
+      return 0
+    else
+      exit_code=$?
+    fi
+    cat "${output_file}"
+    # Retry only explicit upstream 5xx failures, never trust/auth rejections,
+    # integrity failures, or other installation errors. The CLI emits the second
+    # signature only for a ClawHub HTTP >=500 during installation. Every retry
+    # re-runs the complete normal CLI trust/download gate without force flags.
+    if [[ "${attempt}" -ge 4 ]] || ! grep -Eq 'ClawHub /api/v1/skills/-/security-verdicts failed \(5[0-9][0-9]\):|^ClawHub is temporarily unavailable while installing skill "[^"]+"\. Try again later\.$' "${output_file}"; then
+      rm -f "${output_file}"
+      return "${exit_code}"
+    fi
+    rm -f "${output_file}"
+    echo "ClawHub upstream temporarily unavailable for ${skill_spec}; retrying after ${retry_delay}s (attempt ${attempt}/4)."
+    sleep "${retry_delay}"
+    retry_delay=$((retry_delay * 2))
+  done
+}
+
 preinstall_openclaw_safe_skills() {
   mkdir -p /root/.openclaw/workspace/skills
   for skill_spec in "${OPENCLAW_SAFE_SKILL_SPECS[@]}"; do
@@ -602,7 +631,7 @@ preinstall_openclaw_safe_skills() {
     if [[ -s "${skill_dir}/SKILL.md" ]]; then
       echo "OpenClaw skill ${skill_slug} already preinstalled."
     else
-      openclaw skills install "${skill_spec}"
+      install_openclaw_safe_skill "${skill_spec}"
     fi
     test -s "${skill_dir}/SKILL.md"
   done
