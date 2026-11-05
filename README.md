@@ -640,3 +640,13 @@ See [active QA scope](docs/qa/scope.md).
 ### Disposable model verification cleanup
 
 A successful model probe may receive a late metadata write while its own disposable session is being deleted. Relay retries only the exact same-session `changed before deletion. Retry.` CAS refusal, at most three deletion attempts. It never retries inference, changes credentials, disables session guards, deletes a different session, hides exhausted/unrelated cleanup failures, or turns a model/runtime mismatch into success. No new environment setting is required.
+
+Relay's scheduled updater stages the fetched Git tree with a separate index and validates
+both shell entrypoints before changing live files. Files are promoted with same-filesystem
+atomic renames; checkout failures (including ENOSPC or a killed checkout) leave the live
+launchers intact. Python 3 is required. An unchanged commit still repairs damaged tracked
+files and triggers a rebuild. Private `.env`, logs, PID locks and dependencies are retained.
+Promotion is atomic per file, not a transaction across the entire application: a crash during
+promotion can leave a mix of complete old/new files, and dependency/build failures still
+require a retry. A pending-build receipt makes the next run retry installation/build
+even when HEAD has already advanced. The updater uses mode `0755` for the two shell entrypoints.

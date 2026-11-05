@@ -230,14 +230,25 @@ echo "Git branch: ${BRANCH}"
 
 OLD_HEAD="$(git rev-parse HEAD)"
 git fetch "${REMOTE}" "${BRANCH}"
-git reset --hard FETCH_HEAD
+# Leave a retry receipt before promotion: a killed update or failed build must
+# rebuild on the next run even if HEAD already points at the fetched revision.
+BUILD_PENDING_FILE="${PID_DIR}/relay-build.pending"
+HAD_PENDING_BUILD=0
+if [[ -f "${BUILD_PENDING_FILE}" ]]; then
+  HAD_PENDING_BUILD=1
+fi
+printf '%s\n' "$(git rev-parse FETCH_HEAD)" > "${BUILD_PENDING_FILE}"
+# Never check out directly over the live launcher or this running script.
+# A disk/write failure must be confined to staging, even at an unchanged HEAD.
+INSTALL_RESULT="$(python3 "${ROOT_DIR}/scripts/install-relay-tree.py" "${ROOT_DIR}" FETCH_HEAD)"
+echo "${INSTALL_RESULT}"
 NEW_HEAD="$(git rev-parse HEAD)"
 
 # Keep scripts executable even if checkout resets modes.
-chmod 0777 "${ROOT_DIR}/scripts/update-repo.sh" "${ROOT_DIR}/scripts/start.sh" 2>/dev/null || true
+chmod 0755 "${ROOT_DIR}/scripts/update-repo.sh" "${ROOT_DIR}/scripts/start.sh" 2>/dev/null || true
 
 HAS_CHANGES=0
-if [[ "${OLD_HEAD}" != "${NEW_HEAD}" ]]; then
+if [[ "${OLD_HEAD}" != "${NEW_HEAD}" || "${INSTALL_RESULT}" == *"__GW_RELAY_FILES_CHANGED__=1"* || "${HAD_PENDING_BUILD}" -eq 1 ]]; then
   HAS_CHANGES=1
 fi
 
@@ -249,6 +260,7 @@ if [[ "${HAS_CHANGES}" -eq 1 || "${FORCE_RESTART}" -eq 1 ]]; then
   fi
   "${NPM_BIN}" ci
   "${NPM_BIN}" run build
+  rm -f "${BUILD_PENDING_FILE}"
 fi
 
 if [[ "${HAS_CHANGES}" -eq 1 || "${FORCE_RESTART}" -eq 1 ]]; then
@@ -281,6 +293,7 @@ if [[ "${HAS_CHANGES}" -eq 1 || "${FORCE_RESTART}" -eq 1 ]]; then
     echo "SERVICE_NAME is empty; skipping service restart."
   fi
 else
+  rm -f "${BUILD_PENDING_FILE}"
   echo "No changes detected. Nothing to do."
 fi
 
