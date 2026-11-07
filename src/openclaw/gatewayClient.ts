@@ -240,9 +240,8 @@ export class GatewayClient {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
-    if (this.tickTimer) clearInterval(this.tickTimer);
-    this.tickTimer = null;
-    this.lastTickWatchdogCheckMs = null;
+    this.clearTickWatchdog();
+    this.hello = null;
     this.clearConnectReadyTimeout();
     this.ws?.close();
     this.ws = null;
@@ -370,6 +369,7 @@ export class GatewayClient {
     if (this.stopped) return;
     if (this.ws) return;
 
+    this.clearTickWatchdog();
     this.connectNonce = null;
     this.connectSent = false;
     this.hello = null;
@@ -401,6 +401,7 @@ export class GatewayClient {
     ws.on("close", (code, reason) => {
       if (this.ws !== ws) return;
       this.clearConnectReadyTimeout();
+      this.clearTickWatchdog();
       const reasonText = typeof reason === "string" ? reason : reason.toString("utf8");
       logger.warn({ code, reason: reasonText }, "Gateway websocket closed");
       this.ws = null;
@@ -570,15 +571,25 @@ export class GatewayClient {
     this.opts.onEvent?.(evt);
   }
 
+  private clearTickWatchdog(): void {
+    if (this.tickTimer) clearInterval(this.tickTimer);
+    this.tickTimer = null;
+    this.lastTickMs = null;
+    this.lastTickWatchdogCheckMs = null;
+  }
+
   private startTickWatchdog(intervalMs: number): void {
     this.tickIntervalMs = intervalMs;
     if (this.tickTimer) clearInterval(this.tickTimer);
+    const socket = this.ws;
     this.lastTickWatchdogCheckMs = Date.now();
     const watchdogPollIntervalMs = Math.max(250, Math.min(1000, Math.floor(intervalMs / 2)));
     const runtimePauseThresholdMs = Math.max(5000, Math.min(15_000, intervalMs));
     this.tickTimer = setInterval(() => {
-      if (!this.ws) return;
-      if (!this.lastTickMs) return;
+      // Heartbeat history belongs only to the socket that completed hello.
+      // A suspended/queued callback must never kill its replacement handshake.
+      if (!socket || this.ws !== socket || !this.hello) return;
+      if (this.lastTickMs === null) return;
       const nowMs = Date.now();
       const watchdogGapMs = this.lastTickWatchdogCheckMs == null ? 0 : nowMs - this.lastTickWatchdogCheckMs;
       this.lastTickWatchdogCheckMs = nowMs;
