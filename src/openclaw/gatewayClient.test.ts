@@ -488,6 +488,45 @@ describe("GatewayClient", () => {
     await new Promise<void>((resolve) => wss.close(() => resolve()));
   });
 
+  it.each(["tick", "pause"])("does not apply a stale %s watchdog to a slow replacement handshake", async stale => {
+    vi.stubEnv("OPENCLAW_STATE_DIR", `/tmp/gw-generation-${Date.now()}-${Math.random()}`);
+    let connections = 0;
+    let first: WebSocket | undefined;
+    const { wss, port } = startServer(ws => {
+      const generation = ++connections;
+      if (generation === 1) first = ws;
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: `n${generation}`, ts: 1 } }));
+      ws.on("message", data => {
+        const frame = JSON.parse(rawDataToString(data)) as { method: string; id: string };
+        if (frame.method !== "connect") return;
+        setTimeout(() => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: {
+            type: "hello-ok", protocol: 3,
+            policy: { tickIntervalMs: 1000, maxPayload: 1, maxBufferedBytes: 1 },
+            server: { version: "x", connId: `c${generation}` }, snapshot: {}, features: { methods: [], events: [] },
+          } }));
+        }, generation === 1 ? 0 : 1400);
+      });
+    });
+    const client = new GatewayClient({ url: `ws://127.0.0.1:${port}`, token: "t", tickTimeoutMultiplier: 3 });
+    try {
+      await client.start();
+      first!.terminate();
+      await vi.waitFor(() => expect(client.isReady()).toBe(false), { interval: 10 });
+      // Reproduce retained heartbeat state while the new socket is connecting.
+      const internal = client as unknown as { lastTickMs: number; lastTickWatchdogCheckMs: number };
+      internal.lastTickMs = stale === "tick" ? Date.now() - 60_000 : Date.now();
+      internal.lastTickWatchdogCheckMs = stale === "pause" ? Date.now() - 60_000 : Date.now();
+      await vi.waitFor(() => expect(client.isReady()).toBe(true), { timeout: 4000, interval: 20 });
+      expect(connections).toBe(2);
+    } finally {
+      client.stop();
+      for (const ws of wss.clients) ws.terminate();
+      await new Promise<void>(resolve => wss.close(() => resolve()));
+    }
+  });
+
   it("uses the configured tick timeout multiplier before closing the socket", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
