@@ -200,3 +200,22 @@ describe("pool allowlist is not bypassed by retained OAuth aliases", () => {
     expect(store.order?.openai).toEqual(["openai:golem-b"]);
   });
 });
+
+
+it.each(["openai", "openai-codex"])("refuses an unowned %s token profile before any store mutation", provider => {
+  const a = member("a");
+  a.credential.accountId = "workspace-a";
+  const store: PoolAuthStore = {profiles:{
+    "openai:old-a": {...a.credential, accountId:"workspace-a"},
+    "openai:foreign-token": {type:"token",provider,token:"synthetic-token"},
+    "openai:api": {type:"api_key",provider:"openai",key:"synthetic-api"},
+    "anthropic:keep": {type:"token",provider:"anthropic",token:"synthetic-other"},
+  },order:{openai:["openai:foreign-token"]}};
+  const before = structuredClone(store);
+  expect(() => updateSubscriptionPoolStore(store, prepareSubscriptionPool(null,1,[a]), [a])).toThrow(/OPENAI_POOL_UNMANAGED_SUBSCRIPTION/);
+  expect(store).toEqual(before);
+});
+
+it.each([{homeScope:"user"},{transport:"websocket",url:"ws://127.0.0.1:1234"},{transport:"unix"}])("refuses a non-pool Codex credential owner before authorization effects (%j)", appServer => {
+  expect(() => assertSubscriptionOnlyConfiguration({plugins:{entries:{codex:{config:{appServer}}}}})).toThrow("managed per-agent Codex auth bridge");
+});

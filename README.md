@@ -723,3 +723,19 @@ requestId is an observation correlation, not a provider request ID. Inventory fa
 No truncation/reclassification or model request is used to repair these limits.
 Reader failure still permits already-journaled Relay events to drain. This adds
 observation only, not a native-entry-point fallback guard or exact attempt billing.
+
+Pool activation additionally requires a live loaded owned-channel guard on the
+unchanged official OpenClaw >=2026.11.2. Explicit setup must provision its supported
+hook consent separately; pool authorization never grants it or installs/repairs a
+plugin. `OPENAI_POOL_GUARD_UPDATE_REQUIRED` is a pre-effect refusal, not permission
+to choose API credits or another model. Authored fallbacks remain on disk but the
+qualified guard replaces each managed run's chain with an empty list. A foreign
+plain token profile and unsupported Codex user-home/remote bridge are refused.
+See the channel plugin's subscription guard setup contract.
+
+Transcript recovery uses current request/idempotency metadata when the official
+Gateway supplies it. A repeated identical prompt cannot reuse an older keyed
+assistant reply while the current user transcript entry is still pending. Legacy
+unkeyed recovery remains a compatibility path, not a billing or dispatch identity.
+
+Pool removal also clears obsolete OpenAI session pins for every configured agent through the public session-store SDK, preserving transcript/activity metadata. Unsupported session-store/agent-scope SDKs refuse pool mutation rather than updating only the main agent.

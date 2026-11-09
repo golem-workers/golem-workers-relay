@@ -1,3 +1,4 @@
+import { assertRuntimeSubscriptionGuard } from "./subscriptionGuard.js";
 import { assertSubscriptionOnlyConfiguration, SubscriptionPoolError } from "./openAiSubscriptionPool.js";
 import { syncSubscriptionPool, readSubscriptionPoolState, assertLegacyAuthMutationAllowed } from "./subscriptionPoolManager.js";
 import { runIsolatedModelProbe } from "./modelVerificationProbe.js";
@@ -410,6 +411,7 @@ async function executeAgentControlUnfenced(input: {
                       credential: { type: "oauth" as const, provider: "openai" as const, access: member.bundle.accessToken, refresh: member.bundle.refreshToken, expires: member.bundle.expiresAtMs, ...(member.bundle.email ? { email: member.bundle.email } : {}), ...(member.bundle.accountId ? { accountId: member.bundle.accountId } : {}), ...(member.bundle.chatgptPlanType ? { chatgptPlanType: member.bundle.chatgptPlanType } : {}) },
                     })),
                     refreshRuntimeAuth: () => refreshCodexRuntimeAuth(input.gateway),
+                    assertRuntimeGuard: () => assertRuntimeSubscriptionGuard(input.gateway),
                   }).then(state => ({ kind: "codex.auth.pool.sync" as const, revision: state.revision, phase: state.phase, members: state.members }))
               : input.action.kind === "codex.auth.pool.status"
                 ? await readSubscriptionPoolState(input.configPath).then(state => ({ kind: "codex.auth.pool.status" as const, revision: state?.revision ?? 0, phase: state?.phase ?? null, members: state?.members ?? [] }))
@@ -616,8 +618,8 @@ async function readConfig(configPath: string, gateway: GatewayLike, includeRunti
     ownerFenceVersion: 1,
     authorizationConfigVersion: 1,
     subscriptionPoolVersion: 1,
-    subscriptionPoolCompatibility: (() => {
-      try { assertSubscriptionOnlyConfiguration(config); return { compatible: true }; }
+    subscriptionPoolCompatibility: await (async () => {
+      try { await assertRuntimeSubscriptionGuard(gateway); assertSubscriptionOnlyConfiguration(config, process.env, {runScopedFallbacks:true}); return { compatible: true }; }
       catch (error) { return { compatible: false, reason: error instanceof SubscriptionPoolError ? error.code : "OPENAI_POOL_ROUTE_UNSUPPORTED" }; }
     })(),
     durableAuthorizationVersion: 1,

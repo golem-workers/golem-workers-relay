@@ -57,7 +57,13 @@ export function subscriptionProfileId(accountId: string): string {
 export function assertSubscriptionOnlyConfiguration(
   config: Record<string, unknown>,
   env: NodeJS.ProcessEnv = process.env,
+  guard?: { runScopedFallbacks: true },
 ): void {
+  const codex = object(object(object(object(config.plugins).entries).codex).config);
+  const appServer = object(codex.appServer);
+  if (appServer.homeScope === "user" || (appServer.transport !== undefined && appServer.transport !== "stdio") || appServer.url) {
+    throw new SubscriptionPoolError("OPENAI_POOL_CODEX_AUTH_OWNER_UNSUPPORTED", "Subscription pools require the managed per-agent Codex auth bridge; native user-home or remote app-server auth is not pool-owned.");
+  }
   const agents = object(config.agents),
     defaults = object(agents.defaults);
   const scopes = [
@@ -69,10 +75,10 @@ export function assertSubscriptionOnlyConfiguration(
   for (const scope of scopes) {
     const assignment = scope.model ?? defaults.model;
     const model = object(assignment);
-    if (
+    if (!guard?.runScopedFallbacks && (
       (Array.isArray(model.fallbacks) && model.fallbacks.length) ||
       model.fallback
-    ) {
+    )) {
       throw new SubscriptionPoolError(
         "OPENAI_POOL_MODEL_FALLBACK_FORBIDDEN",
         "Remove model fallback explicitly before enabling subscription-only rotation.",
@@ -231,7 +237,12 @@ export function updateSubscriptionPoolStore(
   // Unknown subscription profiles are not silently deleted or imported.
   const aliases: Array<[string, string]> = [];
   for (const [id, value] of Object.entries(store.profiles)) {
-    const credential = value as Partial<PoolOAuthCredential> | null;
+    const credential = value as { type?: string; provider?: string; accountId?: string } | null;
+    // The runtime accepts token profiles on the ChatGPT route too. Preserve
+    // them, but refuse activating a pool beside an unowned subscription source:
+    // a stale-order repair or explicit pin must not select an unassigned account.
+    if (credential?.type === "token" && ["openai", "openai-codex"].includes(credential.provider ?? ""))
+      throw new Error("OPENAI_POOL_UNMANAGED_SUBSCRIPTION: explicitly remove or migrate OpenAI token profiles before enabling the pool.");
     if (
       state.managedProfileIds.includes(id) ||
       credential?.type !== "oauth" ||

@@ -46,11 +46,12 @@ describe.skipIf(!sdk)("installed OpenClaw public auth SDK (synthetic credentials
     await writeRuntimeAuth({ ...input, profileId: "anthropic:keep", credential: { type: "api_key", provider: "anthropic", key: "synthetic" } });
     await writeRuntimeAuth({ ...input, profileId: "openai:key", credential: { type: "api_key", provider: "openai", key: "synthetic" } });
     await writeRuntimeAuth({ ...input, profileId: "openai:legacy-a", credential: { ...credential, accountId: "a" } });
+    await fs.writeFile(input.configPath, JSON.stringify({ agents: { ownership: "explicit", defaults: { systemAgent: { agentId: "main" } }, entries: { main: {}, child: {} } } }));
     const sessionSdk = path.join(path.dirname(sdk!), "session-store-runtime.js");
     const env = { ...process.env, OPENCLAW_STATE_DIR: input.root, OPENCLAW_CONFIG_PATH: input.configPath, OPENCLAW_AGENT_DIR: path.join(input.root,"agents/main/agent") };
     await promisify(execFile)(process.execPath,["--input-type=module","-e",`
       const { upsertSessionEntry, resolveStorePath } = await import(process.argv[1]);
-      await upsertSessionEntry({agentId:"main",env:process.env,sessionKey:"agent:main:pool-proof",storePath:resolveStorePath(undefined,{agentId:"main",env:process.env}),maintenanceConfig:{mode:"off"},entry:{sessionId:"history-preserved",updatedAt:1234,inputTokens:42,authProfileOverride:"openai:legacy-a",authProfileOverrideSource:"user"},requireWriteSuccess:true});
+      for (const agentId of ["main", "child"]) await upsertSessionEntry({agentId,env:process.env,sessionKey:"agent:"+agentId+":pool-proof",storePath:resolveStorePath(undefined,{agentId,env:process.env}),maintenanceConfig:{mode:"off"},entry:{sessionId:"history-preserved-"+agentId,updatedAt:1234,inputTokens:42,authProfileOverride:"openai:legacy-a",authProfileOverrideSource:"user"},requireWriteSuccess:true});
     `,pathToFileURL(sessionSdk).href],{env});
     const first = prepareSubscriptionPool(null, 1, [members[0]]);
     await writeRuntimeAuthPool({ ...input, state: first, members: [members[0]] });
@@ -58,10 +59,10 @@ describe.skipIf(!sdk)("installed OpenClaw public auth SDK (synthetic credentials
     await writeRuntimeAuthPool({ ...input, state: next, members });
     const session = await promisify(execFile)(process.execPath,["--input-type=module","-e",`
       const { listSessionEntries, resolveStorePath } = await import(process.argv[1]);
-      const entry = listSessionEntries({agentId:"main",env:process.env,storePath:resolveStorePath(undefined,{agentId:"main",env:process.env})}).find(r=>r.sessionKey==="agent:main:pool-proof").entry;
-      process.stdout.write(JSON.stringify({sessionId:entry.sessionId,updatedAt:entry.updatedAt,inputTokens:entry.inputTokens,pin:entry.authProfileOverride??null}));
+      const result = ["main", "child"].map(agentId => { const entry = listSessionEntries({agentId,env:process.env,storePath:resolveStorePath(undefined,{agentId,env:process.env})}).find(r=>r.sessionKey==="agent:"+agentId+":pool-proof").entry; return {sessionId:entry.sessionId,updatedAt:entry.updatedAt,inputTokens:entry.inputTokens,pin:entry.authProfileOverride??null}; });
+      process.stdout.write(JSON.stringify(result));
     `,pathToFileURL(sessionSdk).href],{env});
-    expect(JSON.parse(session.stdout)).toEqual({sessionId:"history-preserved",updatedAt:1234,inputTokens:42,pin:null});
+    expect(JSON.parse(session.stdout)).toEqual(["main", "child"].map(id=>({sessionId:"history-preserved-"+id,updatedAt:1234,inputTokens:42,pin:null})));
     const profiles = inspect(input.root).store?.profiles;
     expect(profiles?.["openai:legacy-a"]).toBeUndefined();
     expect(Object.keys(profiles ?? {})).toHaveLength(4);

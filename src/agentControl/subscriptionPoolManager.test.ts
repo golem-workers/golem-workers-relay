@@ -52,6 +52,7 @@ describe("subscription pool durable ack", () => {
     writer.mockResolvedValue(undefined);
     await expect(
       syncSubscriptionPool({
+        assertRuntimeGuard: async () => {},
         configPath,
         revision: 1,
         members,
@@ -66,6 +67,7 @@ describe("subscription pool durable ack", () => {
     );
     await expect(
       syncSubscriptionPool({
+        assertRuntimeGuard: async () => {},
         configPath,
         revision: 1,
         members: [],
@@ -75,7 +77,8 @@ describe("subscription pool durable ack", () => {
     expect(
       (
         await syncSubscriptionPool({
-          configPath,
+          assertRuntimeGuard: async () => {},
+        configPath,
           revision: 1,
           members,
           refreshRuntimeAuth: async () => {},
@@ -90,16 +93,17 @@ describe("subscription pool durable ack", () => {
     expect(state).not.toContain("synthetic");
     expect(state).not.toContain("refresh");
   });
-  it("rejects unsafe fallback before runtime-store or receipt effects", async () => {
+  it("rejects missing live guard before runtime-store or receipt effects", async () => {
     const { configPath, text } = await fixture(["openai/other"]);
     await expect(
       syncSubscriptionPool({
+        assertRuntimeGuard: () => Promise.reject(Error("guard missing")),
         configPath,
         revision: 1,
         members,
         refreshRuntimeAuth: async () => {},
       }),
-    ).rejects.toThrow(/fallback explicitly/);
+    ).rejects.toThrow(/guard missing/);
     expect(writer).not.toHaveBeenCalled();
     expect(await readSubscriptionPoolState(configPath)).toBeNull();
     expect(await fs.readFile(configPath, "utf8")).toBe(text);
@@ -110,6 +114,7 @@ describe("subscription pool durable ack", () => {
     const refresh = vi.fn();
     await expect(
       syncSubscriptionPool({
+        assertRuntimeGuard: async () => {},
         configPath,
         revision: 3,
         members,
@@ -122,6 +127,7 @@ describe("subscription pool durable ack", () => {
     );
     await expect(
       syncSubscriptionPool({
+        assertRuntimeGuard: async () => {},
         configPath,
         revision: 2,
         members,
@@ -129,4 +135,14 @@ describe("subscription pool durable ack", () => {
       }),
     ).rejects.toThrow(/superseded/);
   });
+});
+
+it("preserves an authored fallback chain when the live guard is confirmed separately",async()=>{
+ const {configPath,text}=await fixture(["anthropic/paid"]);
+ const assertRuntimeGuard=vi.fn(async()=>{});
+ writer.mockResolvedValue(undefined);
+ await syncSubscriptionPool({configPath,revision:1,members,assertRuntimeGuard,refreshRuntimeAuth:async()=>{}});
+ expect(assertRuntimeGuard).toHaveBeenCalledOnce();
+ expect(await fs.readFile(configPath,"utf8")).toBe(text);
+ expect((await readSubscriptionPoolState(configPath))?.phase).toBe("applied");
 });

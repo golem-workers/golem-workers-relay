@@ -110,6 +110,7 @@ export async function writeRuntimeAuthPool(input: {
   const configPath = path.resolve(input.configPath);
   const sessionSdk = createRequire(sdk).resolve("openclaw/plugin-sdk/session-store-runtime");
   const snapshotSdk = createRequire(sdk).resolve("openclaw/plugin-sdk/runtime-config-snapshot");
+  const agentScopeSdk = createRequire(sdk).resolve("openclaw/plugin-sdk/agent-scope-runtime");
   const runtimeConfig: unknown = JSON5.parse(await fs.readFile(configPath, "utf8"));
   const body = `
 try {
@@ -118,8 +119,9 @@ try {
  const { updateAuthProfileStoreWithLock } = await import(process.argv[1]);
  const { listSessionEntries, patchSessionEntry } = await import(process.argv[2]);
  const { setRuntimeConfigSnapshot } = await import(process.argv[3]);
+ const { listAgentIds } = await import(process.argv[4]);
  setRuntimeConfigSnapshot(input.runtimeConfig);
- if (typeof listSessionEntries !== "function" || typeof patchSessionEntry !== "function") process.exit(2);
+ if (typeof listSessionEntries !== "function" || typeof patchSessionEntry !== "function" || typeof listAgentIds !== "function") process.exit(2);
  const openAiProfiles = new Set(input.state.managedProfileIds);
  if (typeof updateAuthProfileStoreWithLock !== "function") process.exit(2);
  const updated = await updateAuthProfileStoreWithLock({
@@ -133,8 +135,8 @@ try {
  });
  if (!updated) process.exit(3);
  const enabled = new Set(input.state.members.filter(m => m.enabled).map(m => m.profileId));
- for (const { sessionKey } of listSessionEntries({ agentId: "main", env: process.env, readConsistency: "latest" })) {
-  await patchSessionEntry({ agentId: "main", env: process.env, sessionKey, preserveActivity: true, requireWriteSuccess: true, update: entry => {
+ for (const agentId of listAgentIds(input.runtimeConfig)) for (const { sessionKey } of listSessionEntries({ agentId, env: process.env, readConsistency: "latest" })) {
+  await patchSessionEntry({ agentId, env: process.env, sessionKey, preserveActivity: true, requireWriteSuccess: true, update: entry => {
    const id = entry.authProfileOverride;
    if (!id || !openAiProfiles.has(id) && !/^openai(?:-codex)?:/.test(id)) return null;
    return { authProfileOverride: enabled.has(id) ? id : undefined, authProfileOverrideSource: enabled.has(id) ? "auto" : undefined, authProfileOverrideCompactionCount: undefined };
@@ -144,7 +146,7 @@ try {
 } catch { process.exit(1); }
 `;
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, ["--input-type=module", "-e", body, pathToFileURL(sdk).href, pathToFileURL(sessionSdk).href, pathToFileURL(snapshotSdk).href], {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", body, pathToFileURL(sdk).href, pathToFileURL(sessionSdk).href, pathToFileURL(snapshotSdk).href, pathToFileURL(agentScopeSdk).href], {
       env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: path.dirname(configPath), OPENCLAW_AGENT_DIR: path.join(path.dirname(configPath), "agents", "main", "agent") },
       stdio: ["pipe", "ignore", "ignore"],
     });

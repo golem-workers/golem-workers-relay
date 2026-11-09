@@ -638,10 +638,18 @@ function readMessageRunId(message: unknown): string | null {
     : null;
 }
 
+function readMessageRequestKey(message: unknown): string | null {
+  if (!isPlainObject(message)) return null;
+  const metadata = isPlainObject(message.__openclaw) ? message.__openclaw : {};
+  const key = message.idempotencyKey ?? metadata.idempotencyKey;
+  return typeof key === "string" && key.length > 0 ? key : null;
+}
+
 function readLatestAssistantMessageFromGatewayHistory(input: {
   history: unknown;
   requestMessage: GatewayChatMessage;
   runId: string;
+  requestKey?: string;
 }): unknown {
   if (!isPlainObject(input.history)) {
     return undefined;
@@ -666,10 +674,17 @@ function readLatestAssistantMessageFromGatewayHistory(input: {
 
   const requestText = normalizeComparableText(extractTextFromMessage(input.requestMessage));
   if (!requestText) return undefined;
+  const requestKeys = new Set([input.runId, input.requestKey].filter((key): key is string => !!key));
+  const matchesRequestKey = (key: string) => requestKeys.has(key) || (key.endsWith(":user") && requestKeys.has(key.slice(0, -5)));
+  const hasRequestMetadata = messages.some(message => readMessageRequestKey(message) !== null);
   let matchingUserIndex = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const candidate = messages[index];
     if (readMessageRole(candidate) !== "user") continue;
+    const key = readMessageRequestKey(candidate);
+    // Identical prompts are not identities. Once the host exposes a request
+    // key, never recover an earlier answer while the current user row is late.
+    if (hasRequestMetadata && (!key || !matchesRequestKey(key))) continue;
     const candidateText = extractTextFromMessage(candidate);
     if (candidateText && matchesTranscriptUserMessage(candidateText, requestText)) {
       matchingUserIndex = index;
@@ -684,6 +699,8 @@ function readLatestAssistantMessageFromGatewayHistory(input: {
     const role = readMessageRole(candidate);
     if (role === "user") break;
     if (role !== "assistant") continue;
+    const key = readMessageRequestKey(candidate);
+    if (key && !matchesRequestKey(key)) continue;
     if (messageContainsToolActivity(candidate) || messageIsNonterminalAssistant(candidate)) continue;
     if (!extractTextFromMessage(candidate)) continue;
     latestAssistantMessage = candidate;
@@ -890,6 +907,7 @@ export class ChatRunner {
   private runSessionByRunId = new Map<string, string>();
   private runEventsByRunId = new Map<string, ChatEvent[]>();
   private runTraceByRunId = new Map<string, { backendMessageId: string }>();
+  private runRequestKeyByRunId = new Map<string, string>();
   private runTraceCleanupTimersByRunId = new Map<string, NodeJS.Timeout>();
   private activeRunByTaskId = new Map<string, { runId: string; sessionKey: string }>();
   private sessionMaintenanceLock: Promise<void> | null = null;
@@ -1072,6 +1090,7 @@ export class ChatRunner {
       history,
       requestMessage: input.requestMessage,
       runId: input.runId,
+      requestKey: this.runRequestKeyByRunId.get(input.runId),
     });
     return await restoreReplyDeliveryMetadata({ message, sessionKey: input.sessionKey, runId: input.runId });
   }
@@ -1401,6 +1420,7 @@ export class ChatRunner {
     this.clearRunTraceCleanupTimer(runId);
     const timer = setTimeout(() => {
       this.runTraceByRunId.delete(runId);
+      this.runRequestKeyByRunId.delete(runId);
       this.runTraceCleanupTimersByRunId.delete(runId);
       if (this.devLogEnabled) {
         logger.debug({ runId, reason }, "Released retained OpenClaw run trace");
@@ -1537,6 +1557,7 @@ export class ChatRunner {
             openclawMeta: { method: "chat.send" },
           };
         }
+        this.runRequestKeyByRunId.set(runId, idempotencyKey);
         this.registerRunTrace(runId, { sessionKey: input.sessionKey, backendMessageId: input.taskId });
         this.activeRunByTaskId.set(input.taskId, { runId, sessionKey: input.sessionKey });
         await this.onRunStarted?.({
