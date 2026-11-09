@@ -26,7 +26,13 @@ export class AuthorizationReceipts {
   async status(id: string): Promise<AuthorizationReceipt | { operationId: string; state: "NOT_FOUND" }> {
     try {
       const receipt = JSON.parse(await fs.readFile(this.file(id), "utf8")) as AuthorizationReceipt;
-      if (receipt.state === "RUNNING" && !this.executing.has(id)) return { ...receipt, state: "UNKNOWN", code: "AUTH_OPERATION_INTERRUPTED" };
+      if (receipt.state === "RUNNING" && !this.executing.has(id)) {
+        // Completion can atomically replace the file while this read is in
+        // flight, then remove executing before the old read resumes. Re-read
+        // before classifying a live completion as an interrupted operation.
+        const current = JSON.parse(await fs.readFile(this.file(id), "utf8")) as AuthorizationReceipt;
+        return current.state === "RUNNING" ? { ...current, state: "UNKNOWN", code: "AUTH_OPERATION_INTERRUPTED" } : current;
+      }
       return receipt;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return { operationId: id, state: "NOT_FOUND" };

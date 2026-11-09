@@ -48,6 +48,17 @@ export const codexAuthBundleSchema = z
   })
   .strict();
 export type CodexAuthBundle = z.infer<typeof codexAuthBundleSchema>;
+const subscriptionPoolMemberSchema = z.object({
+  accountId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+  credentialVersion: z.number().int().positive(),
+  enabled: z.boolean(),
+  bundle: codexAuthBundleSchema,
+}).strict();
+const subscriptionPoolSummarySchema = z.object({
+  revision: z.number().int().nonnegative(),
+  phase: z.enum(["pending", "applied"]).nullable(),
+  members: z.array(z.object({ accountId: z.string(), profileId: z.string(), credentialVersion: z.number().int().positive(), enabled: z.boolean() })).max(32),
+});
 const selfNudgeSettingsSchema = z.object({
   enabled: z.boolean(),
   analyzedRecentMessageCount: z.number().int().min(0).max(50),
@@ -160,6 +171,8 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("codex.auth.import"),
     bundle: codexAuthBundleSchema,
   }),
+  z.object({ kind: z.literal("codex.auth.pool.sync"), revision: z.number().int().positive(), members: z.array(subscriptionPoolMemberSchema).max(32) }),
+  z.object({ kind: z.literal("codex.auth.pool.status") }),
   z.object({
     kind: z.literal("codex.auth.sync"),
     bundleVersion: z.number().int().positive(),
@@ -219,6 +232,8 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     configRevision: z.string().optional(),
     ownerFenceVersion: z.literal(1).optional(),
     authorizationConfigVersion: z.literal(1).optional(),
+    subscriptionPoolVersion: z.literal(1).optional(),
+    subscriptionPoolCompatibility: z.object({ compatible: z.boolean(), reason: z.string().optional() }).optional(),
     durableAuthorizationVersion: z.literal(1).optional(),
     ownerRuntime: z.object({ version: z.literal(1), state: z.enum(["pending", "applied", "unavailable", "unsupported"]), enrolledFence: ownerFenceSchema.nullable(), configRevisionHash: z.string().nullable(), appliedConfigHash: z.string().nullable(), config: jsonRecordSchema.nullable() }).optional(),
   }),
@@ -390,6 +405,8 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     expiresAtMs: z.number().int().positive(),
     authModes: codexAuthModesSchema,
   }),
+  subscriptionPoolSummarySchema.extend({ kind: z.literal("codex.auth.pool.sync") }),
+  subscriptionPoolSummarySchema.extend({ kind: z.literal("codex.auth.pool.status") }),
   z.object({
     kind: z.literal("codex.auth.sync"),
     applied: z.boolean(),

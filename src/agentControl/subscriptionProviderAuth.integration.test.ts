@@ -1,0 +1,25 @@
+import {execFile} from "node:child_process";
+import {promisify} from "node:util";
+import path from "node:path";
+import {pathToFileURL} from "node:url";
+import {expect,it} from "vitest";
+import {z} from "zod";
+import {resolveRuntimeAuthSdk} from "./runtimeAuthWriter.js";
+
+// Exercise the installed supported SDK, not a fake credential selector. All
+// credentials and state are sterile; fetch and Node HTTP(S) are forbidden.
+it("real subscription resolver excludes API/env keys and selects healthy B after expired A",async()=>{
+ const sdk=await resolveRuntimeAuthSdk();
+ const script="import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';\nconst root=await fs.mkdtemp(path.join(os.tmpdir(),'pool-public-auth-proof-'));\nprocess.env.OPENCLAW_STATE_DIR=root;process.env.OPENCLAW_CONFIG_PATH=path.join(root,'openclaw.json');process.env.OPENCLAW_AGENT_DIR=path.join(root,'agents/main/agent');process.env.CODEX_HOME=path.join(root,'codex');\nprocess.env.OPENAI_API_KEY='synthetic-api-sentinel';process.env.CODEX_API_KEY='synthetic-codex-sentinel';\nconst http=await import('node:http');const https=await import('node:https');const {syncBuiltinESMExports}=await import('node:module');\nlet network=0;const refuse=()=>{network++;throw new Error('NETWORK_FORBIDDEN');};http.default.request=refuse;http.default.get=refuse;https.default.request=refuse;https.default.get=refuse;syncBuiltinESMExports();\nglobalThis.fetch=()=>{network++;throw new Error('NETWORK_FORBIDDEN');};\nconst sdkRoot=process.argv[1];\nconst {updateAuthProfileStoreWithLock}=await import(sdkRoot+'provider-auth.js');\nconst {setRuntimeConfigSnapshot}=await import(sdkRoot+'runtime-config-snapshot.js');\nconst {getRuntimeAuthForModel}=await import(sdkRoot+'provider-auth-runtime.js');\nconst cfg={agents:{defaults:{model:{primary:'openai/gpt-6.1-sol'}}},models:{providers:{openai:{api:'openai-chatgpt-responses',baseUrl:'https://chatgpt.com/backend-api/codex',models:[{id:'gpt-6.1-sol',name:'test',api:'openai-chatgpt-responses',contextWindow:100000,maxTokens:1000,cost:{input:0,output:0,cacheRead:0,cacheWrite:0},input:['text']}]}}}};\nawait fs.writeFile(process.env.OPENCLAW_CONFIG_PATH,JSON.stringify(cfg));setRuntimeConfigSnapshot(cfg);\nconst model={...cfg.models.providers.openai.models[0],provider:'openai',baseUrl:'https://chatgpt.com/backend-api/codex',reasoning:true};\ntry {\n for(const scenario of ['healthy','a-expired-b-healthy','expired','removed','token-foreign']){\n  await updateAuthProfileStoreWithLock({stateDir:root,agentDir:process.env.OPENCLAW_AGENT_DIR,sharedStoreWrite:true,saveOptions:{syncExternalCli:false,filterExternalAuthProfiles:false},updater:s=>{s.profiles={'openai:api':{type:'api_key',provider:'openai',key:'synthetic-api-sentinel'}};s.order={openai:[]};if(scenario==='healthy'||scenario==='expired'){s.profiles['openai:golem-a']={type:'oauth',provider:'openai',access:'synthetic-oauth',refresh:'',expires:scenario==='healthy'?Date.now()+3600000:1,copyToAgents:true};s.order.openai=['openai:golem-a'];}if(scenario==='a-expired-b-healthy'){s.profiles['openai:golem-a']={type:'oauth',provider:'openai',access:'synthetic-a',refresh:'',expires:1,copyToAgents:true};s.profiles['openai:golem-b']={type:'oauth',provider:'openai',access:'synthetic-b',refresh:'',expires:Date.now()+3600000,copyToAgents:true};s.order.openai=['openai:golem-a','openai:golem-b'];}if(scenario==='token-foreign'){s.profiles['openai:foreign-token']={type:'token',provider:'openai',token:'synthetic-token'};s.order.openai=['openai:foreign-token'];}return true;}});\n  try {const auth=await getRuntimeAuthForModel({model,cfg});console.log(JSON.stringify({scenario,outcome:'resolved',mode:auth.mode,profileId:auth.profileId,network}));}\n  catch(e){console.log(JSON.stringify({scenario,outcome:'refused',message:String(e.message).slice(0,300),network}));}\n }\n}finally{await fs.rm(root,{recursive:true,force:true});}\n";
+ const {stdout}=await promisify(execFile)(process.execPath,["--input-type=module","-e",script,pathToFileURL(path.dirname(sdk)+path.sep).href],{timeout:55000,maxBuffer:1024*1024});
+ const rows=stdout.split("\n").filter(l=>l.startsWith('{"scenario"')).map(l=>z.object({scenario:z.string(),outcome:z.string(),mode:z.string().optional(),profileId:z.string().optional(),network:z.number()}).parse(JSON.parse(l)));
+ expect(rows.map(r=>({scenario:r.scenario,outcome:r.outcome,mode:r.mode,profileId:r.profileId,network:r.network}))).toEqual([
+  {scenario:"healthy",outcome:"resolved",mode:"oauth",profileId:"openai:golem-a",network:0},
+  {scenario:"a-expired-b-healthy",outcome:"resolved",mode:"oauth",profileId:"openai:golem-b",network:0},
+  {scenario:"expired",outcome:"refused",mode:undefined,profileId:undefined,network:0},
+  {scenario:"removed",outcome:"refused",mode:undefined,profileId:undefined,network:0},
+  // This positive control explains why pool apply/admission must reject
+  // foreign token profiles even though provider auth excludes API keys.
+  {scenario:"token-foreign",outcome:"resolved",mode:"token",profileId:"openai:foreign-token",network:0},
+ ]);
+},60000);

@@ -684,3 +684,58 @@ expiry cannot prove a remote mutation finished. After a Relay restart, an
 unfinished receipt reports `UNKNOWN`; it is never executed again automatically.
 Only a pre-execution kernel-fence refusal reports `REFUSED`. Other failures retain
 unknown custody. Existing runtime/owner/model guards remain in force.
+
+## OpenAI OAuth subscription pools (draft)
+
+See [protocol, custody and qualification boundaries](docs/openai-subscription-pool.md). Backend epic [#841](https://github.com/golem-workers/golem-workers-backend/issues/841) coordinates the feature-gated cross-repository rollout. No API/credits/model fallback.
+
+Subscription pools additionally journal **Relay-observed** per-answer token windows
+and durably deliver idempotent events to backend (backend usage-event migration
+first). Pool counters are cumulative from observation start; ambiguous/recovered
+windows remain unattributed. Native/cron/external Gateway requests are not implied
+coverage. The existing authorization reporter retries delivery; `RELAY_AUTHORIZATION_USAGE_ENABLED=false` also disables the production observation collector. No new environment
+settings or credit/provider fallback. See [pool behavior](docs/openai-subscription-pool.md).
+
+
+Managed pool profiles contain access tokens only and inherit from the shared
+machine auth store into main/nested native agent scopes; refresh tokens remain
+backend-owned. Codex commentary is progress, not transcript-only completion:
+Relay waits for the final reply before releasing or cleaning up its run.
+
+### Subscription usage observation boundary
+
+With authorization usage enabled and a managed subscription pool present, the
+collector also reads settled transcripts through the unchanged public session SDK.
+Configured agents (including persisted native/channel/cron/nested/external sessions)
+are enumerated read-only; active or concurrently changed entries are deferred.
+These additional assistant messages are always UNKNOWN: a current session pin is
+not dispatch-account proof. Observation starts when the durable outbox is first
+created/upgraded, not at the beginning of pre-existing history. Resets/deletions
+before a scan, unconfigured agents, calls without persisted usage, and provider
+retry attempts without separate transcript messages remain outside coverage.
+
+The stable `(sessionId, messageId)` key is shared with Relay windows and retained
+after delivery/restart. A durable per-session scan cursor advances only after a
+complete settled inventory, never from a newer Relay window; the inclusive time
+boundary and immutable IDs preserve equal-timestamp messages. The inventory
+requestId is an observation correlation, not a provider request ID. Inventory fails explicitly above 500 listed sessions or
+2000 eligible messages per scan; the durable observer retains at most 200000 IDs.
+No truncation/reclassification or model request is used to repair these limits.
+Reader failure still permits already-journaled Relay events to drain. This adds
+observation only, not a native-entry-point fallback guard or exact attempt billing.
+
+Pool activation additionally requires a live loaded owned-channel guard on the
+unchanged official OpenClaw >=2026.11.2. Explicit setup must provision its supported
+hook consent separately; pool authorization never grants it or installs/repairs a
+plugin. `OPENAI_POOL_GUARD_UPDATE_REQUIRED` is a pre-effect refusal, not permission
+to choose API credits or another model. Authored fallbacks remain on disk but the
+qualified guard replaces each managed run's chain with an empty list. A foreign
+plain token profile and unsupported Codex user-home/remote bridge are refused.
+See the channel plugin's subscription guard setup contract.
+
+Transcript recovery uses current request/idempotency metadata when the official
+Gateway supplies it. A repeated identical prompt cannot reuse an older keyed
+assistant reply while the current user transcript entry is still pending. Legacy
+unkeyed recovery remains a compatibility path, not a billing or dispatch identity.
+
+Pool removal also clears obsolete OpenAI session pins for every configured agent through the public session-store SDK, preserving transcript/activity metadata. Unsupported session-store/agent-scope SDKs refuse pool mutation rather than updating only the main agent.
