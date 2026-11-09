@@ -7,6 +7,7 @@ import {
   subscriptionSnapshotSchema,
   type SubscriptionSnapshot,
 } from "./subscriptionRuntime.js";
+import { readSubscriptionInventory } from "./subscriptionInventory.js";
 import { resolveOpenclawStateDir } from "../common/utils/paths.js";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 export type SubscriptionUsageEvent = {
@@ -39,6 +40,9 @@ type State = {
   version: 1;
   pending: Pending[];
   events: SubscriptionUsageEvent[];
+  observingSince: string;
+  observedEventIds: string[];
+  sessionCursors: Record<string, number>;
 };
 const pendingSchema = z.object({
   id: z.string(),
@@ -70,6 +74,9 @@ const stateSchema = z.object({
   version: z.literal(1),
   pending: z.array(pendingSchema),
   events: z.array(eventSchema),
+  observingSince: z.string().datetime().default(() => new Date().toISOString()),
+  observedEventIds: z.array(z.string()).max(200000).default([]),
+  sessionCursors: z.record(z.string(), z.number().int().nonnegative().safe()).default({}),
 });
 export function deriveSubscriptionUsage(
   p: Pending,
@@ -116,11 +123,13 @@ export function createSubscriptionUsageCollector(opts: {
   };
   statePath?: string;
   read?: typeof readSubscriptionRuntime;
+  inventory?: typeof readSubscriptionInventory;
 }) {
   const file =
     opts.statePath ??
     path.join(resolveOpenclawStateDir(), "golem-subscription-usage.json");
   const read = opts.read ?? readSubscriptionRuntime;
+  const inventory = opts.inventory ?? readSubscriptionInventory;
   let state: State | undefined,
     tail: Promise<unknown> = Promise.resolve(),
     recovered = false;
@@ -131,9 +140,10 @@ export function createSubscriptionUsageCollector(opts: {
         state = stateSchema.parse(JSON.parse(await fs.readFile(file, "utf8")));
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-        state = { version: 1, pending: [], events: [] };
+        state = { version: 1, pending: [], events: [], observingSince: new Date().toISOString(), observedEventIds: [], sessionCursors: {} };
       }
     }
+    for (const event of state.events) if (!state.observedEventIds.includes(event.eventId)) state.observedEventIds.push(event.eventId);
     return state;
   }
   async function save() {
@@ -151,13 +161,47 @@ export function createSubscriptionUsageCollector(opts: {
     tail = result.catch(() => {});
     return result;
   }
+  async function append(events: SubscriptionUsageEvent[]) {
+    const s = await load();
+    const seen = new Set(s.observedEventIds);
+    for (const event of events) {
+      if (seen.has(event.eventId)) continue;
+      if (seen.size >= 200000) throw new Error("SUBSCRIPTION_USAGE_OBSERVER_LIMIT");
+      seen.add(event.eventId); s.events.push(event); s.observedEventIds.push(event.eventId);
+    }
+  }
+  async function observeSettledSessions() {
+    const s = await load();
+    const sinceMs = Date.parse(s.observingSince);
+    const snapshots = await inventory({ sinceMs, after: s.sessionCursors });
+    for (const { sessionKey, snapshot } of snapshots) {
+      if (!snapshot.sessionId || snapshot.activeRunId || s.pending.some(p => p.sessionKey === sessionKey)) continue;
+      const events = snapshot.rows.filter(r => Date.parse(r.at) >= sinceMs).map(r => ({
+        eventId: hash(`${snapshot.sessionId}\0${r.messageId}`),
+        sessionId: snapshot.sessionId!, sessionKeyHash: hash(sessionKey),
+        requestId: hash(`transcript-observation\0${snapshot.sessionId}\0${r.messageId}`),
+        messageId: r.messageId, basis: "UNKNOWN" as const, reason: "SETTLED_TRANSCRIPT_NO_DISPATCH_PROOF",
+        startedAt: r.at, completedAt: new Date(snapshot.observedAtMs).toISOString(),
+        at: r.at, model: r.model, input: r.input, output: r.output,
+        cacheRead: r.cacheRead, cacheWrite: r.cacheWrite, total: r.total,
+      }));
+      await append(events);
+      // Advance only after a complete settled inventory, never from a newer
+      // Relay window that could otherwise skip earlier unseen native messages.
+      if (events.length) s.sessionCursors[`session:${snapshot.sessionId}`] = Math.max(
+        s.sessionCursors[`session:${snapshot.sessionId}`] ?? sinceMs,
+        ...events.map(event => Date.parse(event.at)),
+      );
+    }
+    await save();
+  }
   async function recover() {
     if (recovered) return;
     const s = await load();
     for (const p of [...s.pending]) {
       const after = await read({ sessionKey: p.sessionKey });
       if (!after) continue;
-      s.events.push(...deriveSubscriptionUsage(p, after, false, true));
+      await append(deriveSubscriptionUsage(p, after, false, true));
       s.pending = s.pending.filter((x) => x.id !== p.id);
     }
     await save();
@@ -193,7 +237,7 @@ export function createSubscriptionUsageCollector(opts: {
         if (!p) return;
         const after = await read({ sessionKey: p.sessionKey });
         if (!after) return;
-        s.events.push(...deriveSubscriptionUsage(p, after, succeeded));
+        await append(deriveSubscriptionUsage(p, after, succeeded));
         s.pending = s.pending.filter((x) => x.id !== id);
         await save();
       });
@@ -202,12 +246,15 @@ export function createSubscriptionUsageCollector(opts: {
       return locked(async () => {
         await recover();
         const s = await load();
+        let inventoryError: unknown;
+        try { await observeSettledSessions(); } catch (error) { inventoryError = error; }
         while (s.events.length) {
           const batch = s.events.slice(0, 100);
           await opts.backend.submitSubscriptionUsageEvents({ events: batch });
           s.events.splice(0, batch.length);
           await save();
         }
+        if (inventoryError) throw inventoryError instanceof Error ? inventoryError : new Error("SUBSCRIPTION_INVENTORY_READ_FAILED");
       });
     },
   };

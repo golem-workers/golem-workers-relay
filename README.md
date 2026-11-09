@@ -701,3 +701,25 @@ Managed pool profiles contain access tokens only and inherit from the shared
 machine auth store into main/nested native agent scopes; refresh tokens remain
 backend-owned. Codex commentary is progress, not transcript-only completion:
 Relay waits for the final reply before releasing or cleaning up its run.
+
+### Subscription usage observation boundary
+
+With authorization usage enabled and a managed subscription pool present, the
+collector also reads settled transcripts through the unchanged public session SDK.
+Configured agents (including persisted native/channel/cron/nested/external sessions)
+are enumerated read-only; active or concurrently changed entries are deferred.
+These additional assistant messages are always UNKNOWN: a current session pin is
+not dispatch-account proof. Observation starts when the durable outbox is first
+created/upgraded, not at the beginning of pre-existing history. Resets/deletions
+before a scan, unconfigured agents, calls without persisted usage, and provider
+retry attempts without separate transcript messages remain outside coverage.
+
+The stable `(sessionId, messageId)` key is shared with Relay windows and retained
+after delivery/restart. A durable per-session scan cursor advances only after a
+complete settled inventory, never from a newer Relay window; the inclusive time
+boundary and immutable IDs preserve equal-timestamp messages. The inventory
+requestId is an observation correlation, not a provider request ID. Inventory fails explicitly above 500 listed sessions or
+2000 eligible messages per scan; the durable observer retains at most 200000 IDs.
+No truncation/reclassification or model request is used to repair these limits.
+Reader failure still permits already-journaled Relay events to drain. This adds
+observation only, not a native-entry-point fallback guard or exact attempt billing.

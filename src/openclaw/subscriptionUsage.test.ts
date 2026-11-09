@@ -92,6 +92,7 @@ it("persists failed delivery across collector restart and replays the same messa
     .mockResolvedValue({ accepted: true });
   const opts = {
     statePath: path.join(root, "outbox"),
+    inventory: () => Promise.resolve([]),
     read,
     backend: { submitSubscriptionUsageEvents: send },
   };
@@ -114,6 +115,7 @@ it("recovers an interrupted request as unknown without reclassifying it from the
   const send = vi.fn<(body: {events: SubscriptionUsageEvent[]}) => Promise<unknown>>().mockResolvedValue({ accepted: true });
   const opts = {
     statePath: path.join(root, "outbox"),
+    inventory: () => Promise.resolve([]),
     read: () => Promise.resolve(current),
     backend: { submitSubscriptionUsageEvents: send },
   };
@@ -131,6 +133,7 @@ it("marks both concurrent same-session observations unknown", async () => {
   const send = vi.fn<(body: {events: SubscriptionUsageEvent[]}) => Promise<unknown>>().mockResolvedValue({ accepted: true });
   const c = createSubscriptionUsageCollector({
     statePath: path.join(root, "outbox"),
+    inventory: () => Promise.resolve([]),
     read: () => Promise.resolve(current),
     backend: { submitSubscriptionUsageEvents: send },
   });
@@ -145,4 +148,58 @@ it("marks both concurrent same-session observations unknown", async () => {
       (e: { basis: string }) => e.basis === "UNKNOWN",
     ),
   ).toBe(true);
+});
+
+it('observes persisted native/cron/nested messages as UNKNOWN and deduplicates them across restart and Relay windows', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'usage-inventory-'));
+  const now = Date.now(); const message = { ...row, at: new Date(now).toISOString() };
+  let current = { ...snap(), observedAtMs: now + 10 };
+  const send = vi.fn<(body: {events: SubscriptionUsageEvent[]}) => Promise<unknown>>().mockResolvedValue({ accepted: true });
+  const inventory = vi.fn(() => Promise.resolve([{ sessionKey: 'agent:main:cron:native', snapshot: { ...snap([message], 'latest-pin-not-proof'), observedAtMs: now + 100 } }]));
+  const opts = { statePath: path.join(root, 'outbox'), read: () => Promise.resolve(current), inventory, backend: { submitSubscriptionUsageEvents: send } };
+  const collector = createSubscriptionUsageCollector(opts);
+  const id = await collector.begin('agent:main:relay');
+  // Start observation at a known pre-message boundary without importing old history.
+  const state = JSON.parse(await fs.readFile(opts.statePath, 'utf8')) as {observingSince: string};
+  expect(Date.parse(state.observingSince)).toBeLessThanOrEqual(Date.now());
+  // A live Relay request owns its own session window; inventory of another key
+  // sharing the transcript is still immutable-message deduplicated.
+  current = { ...snap([{ ...message, at: new Date(Date.now() + 5).toISOString() }]), observedAtMs: Date.now() + 100 };
+  await collector.finish(id, true);
+  inventory.mockResolvedValue([{ sessionKey: "agent:main:cron:native", snapshot: current }]);
+  await collector.flush();
+  expect(send.mock.calls.flatMap(c => c[0].events)).toHaveLength(1);
+  await createSubscriptionUsageCollector(opts).flush();
+  expect(send).toHaveBeenCalledTimes(1);
+  const durable = JSON.parse(await fs.readFile(opts.statePath, "utf8")) as {sessionCursors: Record<string, number>};
+  expect(durable.sessionCursors["session:same"]).toBe(Date.parse(current.rows[0].at));
+  // A distinct native response never inherits the current session pin.
+  const native = { ...message, messageId: 'native-response', at: new Date(Date.now()).toISOString() };
+  inventory.mockResolvedValue([{ sessionKey: 'agent:worker:subagent:native', snapshot: { ...snap([native], 'latest-pin-not-proof'), observedAtMs: Date.now() + 100 } }]);
+  await createSubscriptionUsageCollector(opts).flush();
+  expect(send.mock.calls[1][0].events[0]).toMatchObject({ basis: 'UNKNOWN', reason: 'SETTLED_TRANSCRIPT_NO_DISPATCH_PROOF', total: 112 });
+  expect(send.mock.calls[1][0].events[0]).not.toHaveProperty('profileId');
+});
+
+it('does not consume active writers, pending Relay windows or pre-observation history', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'usage-inventory-pending-'));
+  const now = Date.now();
+  const send = vi.fn().mockResolvedValue({ accepted: true });
+  const inventory = vi.fn(() => Promise.resolve([
+    { sessionKey: 'active', snapshot: { ...snap([{ ...row, at: new Date(now + 100).toISOString() }]), activeRunId: 'writer' } },
+    { sessionKey: 'pending', snapshot: snap([{ ...row, at: new Date(now + 100).toISOString() }]) },
+    { sessionKey: 'old', snapshot: snap([{ ...row, at: new Date(now - 60000).toISOString() }]) },
+  ]));
+  const c = createSubscriptionUsageCollector({ statePath: path.join(root, 'outbox'), read: () => Promise.resolve(snap()), inventory, backend: { submitSubscriptionUsageEvents: send } });
+  await c.begin('pending'); await c.flush(); expect(send).not.toHaveBeenCalled();
+});
+
+it('still flushes durable Relay events when the public inventory reader fails', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'usage-inventory-failure-'));
+  let current = snap(); const send = vi.fn().mockResolvedValue({ accepted: true });
+  const c = createSubscriptionUsageCollector({ statePath: path.join(root, 'outbox'), read: () => Promise.resolve(current),
+    inventory: () => Promise.reject(new Error('SUBSCRIPTION_INVENTORY_READ_FAILED')), backend: { submitSubscriptionUsageEvents: send } });
+  const id = await c.begin('relay'); current = snap([row]); await c.finish(id, true);
+  await expect(c.flush()).rejects.toThrow('SUBSCRIPTION_INVENTORY_READ_FAILED');
+  expect(send).toHaveBeenCalledTimes(1);
 });

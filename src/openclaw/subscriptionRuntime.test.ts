@@ -6,6 +6,7 @@ const mock = vi.hoisted(() => ({ sdk: "" }));
 vi.mock("../agentControl/runtimeAuthWriter.js", () => ({
   resolveRuntimeAuthSdk: () => Promise.resolve(mock.sdk),
 }));
+import { readSubscriptionInventory } from "./subscriptionInventory.js";
 import { readSubscriptionRuntime } from "./subscriptionRuntime.js";
 let root: string;
 let configPath: string;
@@ -213,4 +214,43 @@ it("refuses all-exhausted dispatch even if an API profile exists, without changi
 it("refuses an API credential substituted into a managed profile", async () => {
   const s=state();await write({...s,profiles:{[a]:{type:"api_key",provider:"openai",key:"synthetic"}}});
   await expect(readSubscriptionRuntime({configPath,sessionKey:"agent:main:x",prepare:true})).rejects.toThrow("OPENAI_SUBSCRIPTIONS_EXHAUSTED");
+});
+
+it("reads configured-agent settled transcript inventory via public async APIs, without using pins or disclosing content", async () => {
+  await fs.writeFile(configPath, JSON.stringify({ agents: { list: [{id:"worker"}] } }));
+  const now = Date.now();
+  const fixture = { ...state(), inventory: [
+    { agentId: "main", sessionKey: "agent:main:cron:job", entry: {sessionId:"cron",updatedAt:now} },
+    { agentId: "worker", sessionKey: "agent:worker:subagent:x", entry: {sessionId:"nested",updatedAt:now} },
+    { agentId: "main", sessionKey: "active", entry: {sessionId:"busy",updatedAt:now,activeWriterRunId:"live"} },
+    { agentId: "main", sessionKey: "old", entry: {sessionId:"old",updatedAt:now-60000} },
+    { agentId: "main", sessionKey: "race", entry: {sessionId:"race",updatedAt:now} },
+  ] };
+  await write(fixture);
+  await fs.writeFile(path.join(root,"session.mjs"), `import fs from 'node:fs';const read=()=>JSON.parse(fs.readFileSync(process.env.OPENCLAW_STATE_DIR+'/fixture.json'));
+  export async function listSessionEntriesAsync({agentId}){return read().inventory.filter(e=>e.agentId===agentId);}
+  export async function getSessionEntryAsync({sessionKey}){const e=read().inventory.find(e=>e.sessionKey===sessionKey)?.entry;return sessionKey==='race'?{...e,updatedAt:e.updatedAt+1}:e;}
+  export async function loadTranscriptEvents(){return [{id:'observed',timestamp:new Date(${now}).toISOString(),message:{role:'assistant',provider:'openai',model:'test',content:'private prompt never report',usage:{input:10,output:2,totalTokens:12}}}];}`);
+  const result = await readSubscriptionInventory({configPath,sinceMs:now-1000});
+  expect(result.map(r=>r.sessionKey)).toEqual(["agent:main:cron:job","agent:worker:subagent:x"]);
+  expect(result.every(r=>!r.snapshot.profileId&&r.snapshot.rows[0].total===12)).toBe(true);
+  expect(JSON.stringify(result)).not.toMatch(/private prompt|never-report-this|authProfileOverride|access/);
+});
+it("leaves legacy non-pool agents untouched by inventory", async () => {
+  await fs.rm(configPath + ".golem-openai-pool.json");
+  expect(await readSubscriptionInventory({configPath,sinceMs:Date.now()})).toEqual([]);
+});
+
+it("uses a per-session cursor so delivered history does not permanently saturate the scan bound", async () => {
+  const now = Date.now();
+  await fs.writeFile(path.join(root, "session.mjs"), `
+    const entry={sessionId:'long-lived',updatedAt:${now}};
+    export async function listSessionEntriesAsync(){return [{sessionKey:'agent:main:native',entry}];}
+    export async function getSessionEntryAsync(){return entry;}
+    export async function loadTranscriptEvents(){return Array.from({length:2001},(_,i)=>({id:'m-'+i,timestamp:new Date(${now}-((i===2000)?0:60000)).toISOString(),message:{role:'assistant',provider:'openai',model:'test',usage:{input:1,output:1,totalTokens:2}}}));}
+  `);
+  await expect(readSubscriptionInventory({configPath,sinceMs:now-120000})).rejects.toThrow("SUBSCRIPTION_INVENTORY_READ_FAILED");
+  const next = await readSubscriptionInventory({configPath,sinceMs:now-120000,after:{'session:long-lived':now-1000}});
+  expect(next[0].snapshot.rows).toMatchObject([{messageId:'m-2000',total:2}]);
+  expect(next[0].snapshot.rows).toHaveLength(1);
 });
