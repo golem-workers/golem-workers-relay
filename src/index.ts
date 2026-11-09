@@ -1,3 +1,4 @@
+import { createSubscriptionUsageCollector } from "./openclaw/subscriptionUsage.js";
 import { recoverGatewayConnection } from "./managed-runtime/gatewayRecovery.js";
 import { convergeManagedRuntimeAtStartup } from "./managed-runtime/startup.js";
 import "dotenv/config";
@@ -351,7 +352,9 @@ async function main(): Promise<void> {
   nodePairingAutoApprover.start();
   execApprovalAutoApprover = createExecApprovalAutoApprover({ gateway });
   execApprovalAutoApprover.start();
+  const subscriptionUsage = createSubscriptionUsageCollector({backend});
   chatRunner = new ChatRunner(gateway, {
+    subscriptionUsage,
     devLogEnabled: cfg.devLogEnabled,
     devLogTextMaxLen: cfg.devLogTextMaxLen,
     onRunCompleted: (runId, reason) => {
@@ -420,6 +423,7 @@ async function main(): Promise<void> {
   }
   const authorizationUsageReporter = createAuthorizationUsageReporter({
     ...cfg.authorizationUsage,
+    flushSubscriptionUsage: () => subscriptionUsage.flush(),
     gateway,
     backend,
   });

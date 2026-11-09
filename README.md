@@ -688,3 +688,10 @@ unknown custody. Existing runtime/owner/model guards remain in force.
 ## OpenAI OAuth subscription pools (draft)
 
 See [protocol, custody and qualification boundaries](docs/openai-subscription-pool.md). Backend epic [#841](https://github.com/golem-workers/golem-workers-backend/issues/841) coordinates the feature-gated cross-repository rollout. No API/credits/model fallback.
+
+Subscription pools additionally journal **Relay-observed** per-answer token windows
+and durably deliver idempotent events to backend (backend usage-event migration
+first). Pool counters are cumulative from observation start; ambiguous/recovered
+windows remain unattributed. Native/cron/external Gateway requests are not implied
+coverage. The existing authorization reporter retries delivery; no new environment
+settings or credit/provider fallback. See [pool behavior](docs/openai-subscription-pool.md).

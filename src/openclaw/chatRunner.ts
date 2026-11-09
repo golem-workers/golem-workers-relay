@@ -1,3 +1,5 @@
+import type { SubscriptionUsageCollector } from "./subscriptionUsage.js";
+import { readSubscriptionRuntime } from "./subscriptionRuntime.js";
 import { GatewayClient } from "./gatewayClient.js";
 import { type ChatEvent, chatEventSchema, type EventFrame } from "./protocol.js";
 import { promises as fs } from "node:fs";
@@ -897,6 +899,7 @@ export class ChatRunner {
   constructor(
     private readonly gateway: GatewayClient,
     opts?: {
+      subscriptionUsage?: SubscriptionUsageCollector;
       devLogEnabled?: boolean;
       devLogTextMaxLen?: number;
       transcriptCompletionSettleMs?: number;
@@ -918,6 +921,7 @@ export class ChatRunner {
       }) => void | Promise<void>;
     }
   ) {
+    this.subscriptionUsage = opts?.subscriptionUsage;
     this.devLogEnabled = opts?.devLogEnabled ?? false;
     this.devLogTextMaxLen = opts?.devLogTextMaxLen ?? 200;
     this.transcriptCompletionSettleMs = Math.max(
@@ -953,6 +957,7 @@ export class ChatRunner {
     this.onRunStarted = opts?.onRunStarted;
   }
 
+  private readonly subscriptionUsage?: SubscriptionUsageCollector;
   private readonly onRunCompleted?: (runId: string, reason: string) => void;
   private readonly onRunStarted?: (input: {
     taskId: string;
@@ -1406,6 +1411,21 @@ export class ChatRunner {
     timeoutMs: number;
     onActivity?: (activity: ChatRunActivity) => void;
   }): Promise<{ result: ChatRunResult; openclawMeta: OpenclawChatMeta }> {
+    let observation: string | null = null;
+    try { observation = await this.subscriptionUsage?.begin(input.sessionKey) ?? null; }
+    catch { logger.warn("Subscription usage observation unavailable; request will not be attributed"); }
+    let succeeded = false;
+    try {
+      const result = await this.runChatTaskCore(input);
+      succeeded = result.result.outcome === "reply";
+      return result;
+    } finally {
+      try { await this.subscriptionUsage?.finish(observation, succeeded); await this.subscriptionUsage?.flush(); }
+      catch { logger.warn("Subscription usage observation retained for recovery"); }
+    }
+  }
+
+  private async runChatTaskCore(input: Parameters<ChatRunner["runChatTask"]>[0]): Promise<{ result: ChatRunResult; openclawMeta: OpenclawChatMeta }> {
     try {
     await this.waitForSessionMaintenance();
     let baseMessageText: string;
@@ -1486,6 +1506,8 @@ export class ChatRunner {
           attempt,
           retryKeySuffix,
         });
+        const subscriptionState = await readSubscriptionRuntime({ sessionKey: input.sessionKey, prepare: true });
+        if (subscriptionState?.clearedAutoPin) logger.info({event: "subscription_auto_pin_released", sessionKey: input.sessionKey}, "Released unavailable automatic subscription pin");
         const payload = await this.gateway.request("chat.send", {
           sessionKey: input.sessionKey,
           message: attemptMessage,

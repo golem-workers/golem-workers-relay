@@ -1,3 +1,4 @@
+import type { SubscriptionUsageEvent } from "../openclaw/subscriptionUsage.js";
 import { logger } from "../logger.js";
 import { z } from "zod";
 import { retryWithBackoff } from "../common/resilience/retry.js";
@@ -142,6 +143,10 @@ export class BackendClient {
       }
     });
     return { accepted: true };
+  }
+
+  async submitSubscriptionUsageEvents(body: {events: SubscriptionUsageEvent[]}): Promise<unknown> {
+    return acceptedResponseSchema.parse(await postJson(`${this.opts.baseUrl}/api/v1/relays/authorization-usage-events`, this.opts.relayToken, body, 15000));
   }
 
   async submitAuthorizationUsage(input: {

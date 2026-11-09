@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthorizationReceipts } from "./authorizationReceipts.js";
+import { logger } from "../logger.js";
 import { ModelFenceBusyError } from "../agentControl/modelFence.js";
 
 describe("durable credential receipts", () => {
@@ -29,7 +30,17 @@ describe("durable credential receipts", () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
   it("does not mistake a read racing with terminal completion for a restarted operation", async () => {
-    await store.submit("operation", {}, () => Promise.resolve({ kind: "codex.auth.clear", applied: true }));
+    // Terminal rename precedes directory fsync and release of the executing marker.
+    // Wait for the real completion event; observing SUCCEEDED alone races that cleanup.
+    let completed!: () => void;
+    const completion = new Promise<void>(resolve => { completed = resolve; });
+    const info = vi.spyOn(logger, "info").mockImplementation((...args: unknown[]) => {
+      if (args[1] === "Authorization mutation completed") completed();
+    });
+    try {
+      await store.submit("operation", {}, () => Promise.resolve({ kind: "codex.auth.clear", applied: true }));
+      await completion;
+    } finally { info.mockRestore(); }
     expect((await terminal()).state).toBe("SUCCEEDED");
     // Simulate a read that captured RUNNING before the atomic terminal rename,
     // but resumed after the in-memory executing marker was released.
