@@ -693,5 +693,5 @@ Subscription pools additionally journal **Relay-observed** per-answer token wind
 and durably deliver idempotent events to backend (backend usage-event migration
 first). Pool counters are cumulative from observation start; ambiguous/recovered
 windows remain unattributed. Native/cron/external Gateway requests are not implied
-coverage. The existing authorization reporter retries delivery; no new environment
+coverage. The existing authorization reporter retries delivery; `RELAY_AUTHORIZATION_USAGE_ENABLED=false` also disables the production observation collector. No new environment
 settings or credit/provider fallback. See [pool behavior](docs/openai-subscription-pool.md).

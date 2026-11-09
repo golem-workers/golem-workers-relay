@@ -55,8 +55,10 @@ Before/after public session/transcript observations feed a durable mode-0600
 only bounded metadata/counters, never prompts or OAuth credentials. Delivery uses
 `POST /api/v1/relays/authorization-usage-events`; backend migration must land first.
 Normal completion flushes immediately; the existing enabled authorization reporter
-also retries the outbox. If that reporter is disabled, a later request/restart and
-flush can replay pending delivery. Backend failures do not change the chat outcome.
+also retries the outbox. Existing `RELAY_AUTHORIZATION_USAGE_ENABLED=false` disables
+both this production collector and the aggregate reporter; reenabling it allows
+the durable outbox to replay. Eligibility/pin safety is independent of usage opt-out.
+Backend failures do not change the chat outcome.
 
 The method is `SESSION_WINDOW`, not guaranteed per-dispatch billing attribution.
 Only one new assistant usage row in a successful, nonoverlapping observed window

@@ -352,7 +352,9 @@ async function main(): Promise<void> {
   nodePairingAutoApprover.start();
   execApprovalAutoApprover = createExecApprovalAutoApprover({ gateway });
   execApprovalAutoApprover.start();
-  const subscriptionUsage = createSubscriptionUsageCollector({backend});
+  const subscriptionUsage = cfg.authorizationUsage.enabled
+    ? createSubscriptionUsageCollector({ backend })
+    : undefined;
   chatRunner = new ChatRunner(gateway, {
     subscriptionUsage,
     devLogEnabled: cfg.devLogEnabled,
@@ -423,7 +425,7 @@ async function main(): Promise<void> {
   }
   const authorizationUsageReporter = createAuthorizationUsageReporter({
     ...cfg.authorizationUsage,
-    flushSubscriptionUsage: () => subscriptionUsage.flush(),
+    flushSubscriptionUsage: subscriptionUsage ? () => subscriptionUsage.flush() : undefined,
     gateway,
     backend,
   });
