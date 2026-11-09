@@ -65,7 +65,7 @@ describe.skipIf(!sdk)("installed OpenClaw public auth SDK (synthetic credentials
     const profiles = inspect(input.root).store?.profiles;
     expect(profiles?.["openai:legacy-a"]).toBeUndefined();
     expect(Object.keys(profiles ?? {})).toHaveLength(4);
-    expect(profiles?.["openai:golem-a"]).toMatchObject({ accountId: "a", type: "oauth", refresh: "", copyToAgents: false });
+    expect(profiles?.["openai:golem-a"]).toMatchObject({ accountId: "a", type: "oauth", refresh: "", copyToAgents: true });
     expect(profiles?.["openai:golem-b"]).toMatchObject({ accountId: "b" });
     expect(profiles?.["openai:key"]).toMatchObject({ type: "api_key" });
     const removed = prepareSubscriptionPool(next, 3, [members[1]]);

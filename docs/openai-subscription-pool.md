@@ -19,7 +19,8 @@ aliases are adopted, not copied into two independently refreshed profiles;
 unassigned unknown OAuth identities reject the operation before mutation.
 Disabled/removed subscriptions are absent from the active auth store. Only the
 backend holds the shared refresh token; runtime copies are access-only and
-`copyToAgents: false`. Main-agent session pins are cleared/reclassified through
+`copyToAgents: true` so the shared machine store is visible to main/nested native
+agent scopes. Refresh material never leaves backend custody. Main-agent session pins are cleared/reclassified through
 the public session SDK without changing session history/activity.
 
 A qualified explicit `openai-chatgpt-responses` route is required. Do not change
@@ -30,15 +31,16 @@ exhausted pool is an error, never API/credits/provider/model fallback.
 
 Manifest presence fences legacy provider-wide writers, even after last-member
 removal. Do not delete it to bypass policy. An explicit pool-exit workflow is not
-part of this draft. Local main-agent SDK storage/session preservation is tested;
-active-turn/tool exactly-once, nested-agent stores and explicit Codex Harness
-remain qualification gates, not inferred guarantees.
+part of this draft. Public-SDK local store/session preservation and fresh nested
+store inheritance are tested. Attended dev-api qualification additionally proved
+real native/Codex A/B, shared refresh/fanout, refresh racing removal, tool-effect
+exactly-once, controlled exhaustion before dispatch and lossless flag-off reconcile.
+See the backend's `docs/architecture/openai-subscription-pool-attended.md` in PR #852.
 
-Real dev-api evidence: actual empty sync APPLIED, unchanged Harness, actual no-auth
-request fails both without credentials and with a synthetic OpenAI API-key profile
-available. Real A/B requests, refresh fanout and per-attempt attribution are still
-pending. Public model/LLM hooks do not expose actual OAuth-profile selection, so
-this draft must not invent per-account request usage from membership order.
+These controlled observed windows are not guaranteed per-attempt usage telemetry.
+Nested inference, native/cron/external completeness and the broader provider
+lifecycle matrix remain release gates. Public model/LLM hooks do not expose actual
+OAuth-profile selection; never infer it from preferred membership order.
 
 ## Observed token journal and automatic-pin recovery
 
@@ -77,3 +79,12 @@ satisfy this condition, even if substituted under a managed profile name. If eve
 subscription is unavailable, `OPENAI_SUBSCRIPTIONS_EXHAUSTED` is raised before
 `chat.send`. This deliberately prevents the installed runtime's least-cooled
 probe behavior; it is not an API/model fallback or an auth-store rewrite.
+
+
+## Codex progress is not turn completion
+
+Standalone Codex commentary records may contain text and `stopReason: stop` while
+an app-server tool is still running. Transcript and Gateway-history recovery
+exclude explicitly marked commentary (including Codex mirror identity metadata).
+Only a final assistant reply can release the queue or trigger transcript-completion
+cleanup; progress text must never cause a running tool to be aborted/replayed.

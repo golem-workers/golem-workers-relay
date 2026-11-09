@@ -268,12 +268,15 @@ export function updateSubscriptionPoolStore(
   // rotating refresh token to N machines lets one machine invalidate every
   // other copy. Access-only OAuth remains an OAuth subscription route; once it
   // expires the runtime fails closed until the next acknowledged refresh.
+  // The shared machine store is inherited even by the main agent. Access-only
+  // profiles must be portable or a fresh native agent sees no subscription.
+  // No refresh custody is inherited; removal stays authoritative in this store.
   for (const [index, member] of members.entries()) {
     if (member.enabled)
       store.profiles[state.members[index].profileId] = {
         ...member.credential,
         refresh: "",
-        copyToAgents: false,
+        copyToAgents: true,
       };
   }
   const enabled = state.members

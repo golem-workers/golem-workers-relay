@@ -49,7 +49,7 @@ describe("subscription-only pool", () => {
     expect(store.profiles["openai:golem-a"]).toMatchObject({
       type: "oauth",
       refresh: "",
-      copyToAgents: false,
+      copyToAgents: true,
     });
     expect(store.order?.openai).toEqual(["openai:golem-b", "openai:golem-a"]);
     expect(store.lastGood?.openai).toBe("openai:golem-a");
@@ -155,7 +155,7 @@ describe("pool allowlist is not bypassed by retained OAuth aliases", () => {
     expect(store.profiles["openai:old-email"]).toBeUndefined();
     expect(store.profiles["openai:golem-a"]).toMatchObject({
       refresh: "",
-      copyToAgents: false,
+      copyToAgents: true,
     });
     expect(store.usageStats?.["openai:golem-a"]).toEqual({
       cooldownUntil: 4700000000000,

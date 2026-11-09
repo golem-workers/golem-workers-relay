@@ -695,3 +695,9 @@ first). Pool counters are cumulative from observation start; ambiguous/recovered
 windows remain unattributed. Native/cron/external Gateway requests are not implied
 coverage. The existing authorization reporter retries delivery; `RELAY_AUTHORIZATION_USAGE_ENABLED=false` also disables the production observation collector. No new environment
 settings or credit/provider fallback. See [pool behavior](docs/openai-subscription-pool.md).
+
+
+Managed pool profiles contain access tokens only and inherit from the shared
+machine auth store into main/nested native agent scopes; refresh tokens remain
+backend-owned. Codex commentary is progress, not transcript-only completion:
+Relay waits for the final reply before releasing or cleaning up its run.

@@ -289,7 +289,7 @@ function maybeApplyTransportRecoveryNote(message: GatewayChatMessage, enabled: b
 function readLatestUserFacingMessage(events: ChatEvent[]): unknown {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const message = events[i]?.message;
-    if (message !== undefined && extractTextFromMessage(message)) {
+    if (message !== undefined && !messageIsNonterminalAssistant(message) && extractTextFromMessage(message)) {
       return message;
     }
   }
@@ -325,6 +325,16 @@ function extractTextFromMessage(message: unknown): string | null {
     })
     .filter((part): part is string => typeof part === "string");
   return parts.length > 0 ? parts.join("\n") : null;
+}
+
+// Codex mirrors commentary as standalone assistant text with stopReason=stop.
+// That record is progress, not proof that its app-server turn/tools have settled.
+function messageIsNonterminalAssistant(message: unknown): boolean {
+  if (!isPlainObject(message)) return false;
+  if (message.phase === "commentary" || message.channel === "commentary" || message.channel === "analysis") return true;
+  const metadata = isPlainObject(message.__openclaw) ? message.__openclaw : null;
+  return metadata?.mirrorOrigin === "codex-app-server" &&
+    typeof metadata.mirrorIdentity === "string" && metadata.mirrorIdentity.includes(":commentary:");
 }
 
 function messageContainsToolActivity(message: unknown): boolean {
@@ -609,7 +619,7 @@ async function readLatestAssistantMessageFromResolvedSessionTranscript(input: {
     const role = readMessageRole(candidate);
     if (role === "user") break;
     if (role !== "assistant") continue;
-    if (messageContainsToolActivity(candidate)) continue;
+    if (messageContainsToolActivity(candidate) || messageIsNonterminalAssistant(candidate)) continue;
     if (!extractTextFromMessage(candidate)) continue;
     latestAssistantMessage = candidate;
   }
@@ -647,7 +657,7 @@ function readLatestAssistantMessageFromGatewayHistory(input: {
       const candidate = messages[index];
       if (readMessageRole(candidate) !== "assistant") continue;
       if (readMessageRunId(candidate) !== input.runId) continue;
-      if (messageContainsToolActivity(candidate)) continue;
+      if (messageContainsToolActivity(candidate) || messageIsNonterminalAssistant(candidate)) continue;
       if (!extractTextFromMessage(candidate)) continue;
       return candidate;
     }
@@ -674,7 +684,7 @@ function readLatestAssistantMessageFromGatewayHistory(input: {
     const role = readMessageRole(candidate);
     if (role === "user") break;
     if (role !== "assistant") continue;
-    if (messageContainsToolActivity(candidate)) continue;
+    if (messageContainsToolActivity(candidate) || messageIsNonterminalAssistant(candidate)) continue;
     if (!extractTextFromMessage(candidate)) continue;
     latestAssistantMessage = candidate;
   }
