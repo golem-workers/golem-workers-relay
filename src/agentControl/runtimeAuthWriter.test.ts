@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveRuntimeAuthSdk, writeRuntimeAuth } from "./runtimeAuthWriter.js";
+import { resolveRuntimeAuthSdk, writeRuntimeAuth, writeRuntimeAuthPool } from "./runtimeAuthWriter.js";
 import { syncCodexAuthBundle } from "./codexLogin.js";
 
 const roots: string[] = [];
@@ -39,6 +39,41 @@ function inspect(root: string, agent = false) {
 }
 
 describe.skipIf(!sdk)("installed OpenClaw public auth SDK (synthetic credentials only)", () => {
+  it("preserves A, an API key, and another provider when adding B through the installed SDK", async () => {
+    const input = await fixture();
+    const { prepareSubscriptionPool } = await import("./openAiSubscriptionPool.js");
+    const members = ["a", "b"].map(accountId => ({ accountId, credentialVersion: 1, enabled: true, credential: { ...credential, type: "oauth" as const, provider: "openai" as const, accountId } }));
+    await writeRuntimeAuth({ ...input, profileId: "anthropic:keep", credential: { type: "api_key", provider: "anthropic", key: "synthetic" } });
+    await writeRuntimeAuth({ ...input, profileId: "openai:key", credential: { type: "api_key", provider: "openai", key: "synthetic" } });
+    await writeRuntimeAuth({ ...input, profileId: "openai:legacy-a", credential: { ...credential, accountId: "a" } });
+    const sessionSdk = path.join(path.dirname(sdk!), "session-store-runtime.js");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: input.root, OPENCLAW_CONFIG_PATH: input.configPath, OPENCLAW_AGENT_DIR: path.join(input.root,"agents/main/agent") };
+    await promisify(execFile)(process.execPath,["--input-type=module","-e",`
+      const { upsertSessionEntry, resolveStorePath } = await import(process.argv[1]);
+      await upsertSessionEntry({agentId:"main",env:process.env,sessionKey:"agent:main:pool-proof",storePath:resolveStorePath(undefined,{agentId:"main",env:process.env}),maintenanceConfig:{mode:"off"},entry:{sessionId:"history-preserved",updatedAt:1234,inputTokens:42,authProfileOverride:"openai:legacy-a",authProfileOverrideSource:"user"},requireWriteSuccess:true});
+    `,pathToFileURL(sessionSdk).href],{env});
+    const first = prepareSubscriptionPool(null, 1, [members[0]]);
+    await writeRuntimeAuthPool({ ...input, state: first, members: [members[0]] });
+    const next = prepareSubscriptionPool(first, 2, members);
+    await writeRuntimeAuthPool({ ...input, state: next, members });
+    const session = await promisify(execFile)(process.execPath,["--input-type=module","-e",`
+      const { listSessionEntries, resolveStorePath } = await import(process.argv[1]);
+      const entry = listSessionEntries({agentId:"main",env:process.env,storePath:resolveStorePath(undefined,{agentId:"main",env:process.env})}).find(r=>r.sessionKey==="agent:main:pool-proof").entry;
+      process.stdout.write(JSON.stringify({sessionId:entry.sessionId,updatedAt:entry.updatedAt,inputTokens:entry.inputTokens,pin:entry.authProfileOverride??null}));
+    `,pathToFileURL(sessionSdk).href],{env});
+    expect(JSON.parse(session.stdout)).toEqual({sessionId:"history-preserved",updatedAt:1234,inputTokens:42,pin:null});
+    const profiles = inspect(input.root).store?.profiles;
+    expect(profiles?.["openai:legacy-a"]).toBeUndefined();
+    expect(Object.keys(profiles ?? {})).toHaveLength(4);
+    expect(profiles?.["openai:golem-a"]).toMatchObject({ accountId: "a", type: "oauth", refresh: "", copyToAgents: false });
+    expect(profiles?.["openai:golem-b"]).toMatchObject({ accountId: "b" });
+    expect(profiles?.["openai:key"]).toMatchObject({ type: "api_key" });
+    const removed = prepareSubscriptionPool(next, 3, [members[1]]);
+    await writeRuntimeAuthPool({ ...input, state: removed, members: [members[1]] });
+    expect(inspect(input.root).store?.profiles["openai:golem-a"]).toBeUndefined();
+    expect(inspect(input.root).store?.profiles["openai:golem-b"]).toBeDefined();
+  }, 30_000);
+
   it("initializes a sterile modern global DB with no marker without an auth-only agent DB", async () => {
     const input = await fixture();
     // Bootstrap through the runtime, then return the global store to sterile

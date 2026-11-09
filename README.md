@@ -684,3 +684,7 @@ expiry cannot prove a remote mutation finished. After a Relay restart, an
 unfinished receipt reports `UNKNOWN`; it is never executed again automatically.
 Only a pre-execution kernel-fence refusal reports `REFUSED`. Other failures retain
 unknown custody. Existing runtime/owner/model guards remain in force.
+
+## OpenAI OAuth subscription pools (draft)
+
+See [protocol, custody and qualification boundaries](docs/openai-subscription-pool.md). Backend epic [#841](https://github.com/golem-workers/golem-workers-backend/issues/841) coordinates the feature-gated cross-repository rollout. No API/credits/model fallback.

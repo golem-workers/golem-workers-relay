@@ -110,6 +110,14 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
     const { normalizeManagedConfigText } = await import("../managed-runtime/runtime-policy.js");
     const normalized = await normalizeManagedConfigText(configPath, text);
     const projected = fence ? projectOwners(normalized, fence) : normalized;
+    // A subsequent model/config writer must not reopen API/model fallback for
+    // an active or ambiguous subscription-only pool. This is validation only.
+    const { readSubscriptionPoolState } = await import("./subscriptionPoolManager.js");
+    if (await readSubscriptionPoolState(configPath)) {
+      const { assertSubscriptionOnlyConfiguration } = await import("./openAiSubscriptionPool.js");
+      assertSubscriptionOnlyConfiguration(object(JSON5.parse(projected)));
+    }
+
     const model = await readModelFence(configPath);
     if (model && !isAuthorizedModelSelection()) {
       const { managedRuntime } = await import("../managed-runtime/runtime-policy.js");

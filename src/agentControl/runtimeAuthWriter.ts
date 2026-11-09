@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import JSON5 from "json5";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -95,5 +96,62 @@ export async function writeRuntimeAuth(input: {
     });
     child.stdin.on("error", () => { /* close/error above reports a sanitized failure */ });
     child.stdin.end(JSON.stringify(input));
+  });
+}
+
+/** Pool updates preserve all non-pool credentials; the SDK owns SQLite schema/locks. */
+export async function writeRuntimeAuthPool(input: {
+  configPath: string;
+  state: import("./openAiSubscriptionPool.js").SubscriptionPoolState;
+  members: import("./openAiSubscriptionPool.js").SubscriptionPoolMember[];
+}): Promise<void> {
+  const { updateSubscriptionPoolStore } = await import("./openAiSubscriptionPool.js");
+  const sdk = await resolveRuntimeAuthSdk();
+  const configPath = path.resolve(input.configPath);
+  const sessionSdk = createRequire(sdk).resolve("openclaw/plugin-sdk/session-store-runtime");
+  const snapshotSdk = createRequire(sdk).resolve("openclaw/plugin-sdk/runtime-config-snapshot");
+  const runtimeConfig: unknown = JSON5.parse(await fs.readFile(configPath, "utf8"));
+  const body = `
+try {
+ let raw = ""; for await (const chunk of process.stdin) raw += chunk;
+ const input = JSON.parse(raw);
+ const { updateAuthProfileStoreWithLock } = await import(process.argv[1]);
+ const { listSessionEntries, patchSessionEntry } = await import(process.argv[2]);
+ const { setRuntimeConfigSnapshot } = await import(process.argv[3]);
+ setRuntimeConfigSnapshot(input.runtimeConfig);
+ if (typeof listSessionEntries !== "function" || typeof patchSessionEntry !== "function") process.exit(2);
+ const openAiProfiles = new Set(input.state.managedProfileIds);
+ if (typeof updateAuthProfileStoreWithLock !== "function") process.exit(2);
+ const updated = await updateAuthProfileStoreWithLock({
+  agentDir: process.env.OPENCLAW_AGENT_DIR, stateDir: process.env.OPENCLAW_STATE_DIR,
+  sharedStoreWrite: true,
+  saveOptions: { syncExternalCli: false, filterExternalAuthProfiles: false },
+  updater: store => {
+   for (const [id, value] of Object.entries(store.profiles)) if (["openai", "openai-codex"].includes(value.provider)) openAiProfiles.add(id);
+   (${updateSubscriptionPoolStore.toString()})(store, input.state, input.members); return true;
+  },
+ });
+ if (!updated) process.exit(3);
+ const enabled = new Set(input.state.members.filter(m => m.enabled).map(m => m.profileId));
+ for (const { sessionKey } of listSessionEntries({ agentId: "main", env: process.env, readConsistency: "latest" })) {
+  await patchSessionEntry({ agentId: "main", env: process.env, sessionKey, preserveActivity: true, requireWriteSuccess: true, update: entry => {
+   const id = entry.authProfileOverride;
+   if (!id || !openAiProfiles.has(id) && !/^openai(?:-codex)?:/.test(id)) return null;
+   return { authProfileOverride: enabled.has(id) ? id : undefined, authProfileOverrideSource: enabled.has(id) ? "auto" : undefined, authProfileOverrideCompactionCount: undefined };
+  } });
+ }
+ process.exit(0);
+} catch { process.exit(1); }
+`;
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", body, pathToFileURL(sdk).href, pathToFileURL(sessionSdk).href, pathToFileURL(snapshotSdk).href], {
+      env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: path.dirname(configPath), OPENCLAW_AGENT_DIR: path.join(path.dirname(configPath), "agents", "main", "agent") },
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    child.once("error", () => { clearTimeout(timer); reject(new RuntimeAuthWriterError("AUTH_POOL_WRITER_SPAWN_FAILED", "Unable to start runtime subscription writer.")); });
+    child.once("close", code => { clearTimeout(timer); if (code === 0) resolve(); else reject(new RuntimeAuthWriterError("AUTH_POOL_WRITER_REFUSED", "Runtime subscription writer refused the update; no success acknowledgement was recorded.")); });
+    child.stdin.on("error", () => { /* sanitized close result owns failure */ });
+    child.stdin.end(JSON.stringify({ ...input, runtimeConfig }));
   });
 }

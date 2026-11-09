@@ -28,6 +28,15 @@ describe("durable credential receipts", () => {
     expect((await new AuthorizationReceipts(directory).submit("operation", action, execute)).state).toBe("SUCCEEDED");
     expect(execute).toHaveBeenCalledTimes(1);
   });
+  it("does not mistake a read racing with terminal completion for a restarted operation", async () => {
+    await store.submit("operation", {}, () => Promise.resolve({ kind: "codex.auth.clear", applied: true }));
+    expect((await terminal()).state).toBe("SUCCEEDED");
+    // Simulate a read that captured RUNNING before the atomic terminal rename,
+    // but resumed after the in-memory executing marker was released.
+    const read = vi.spyOn(fs, "readFile").mockResolvedValueOnce(JSON.stringify({ operationId: "operation", state: "RUNNING" }));
+    try { expect((await store.status("operation")).state).toBe("SUCCEEDED"); }
+    finally { read.mockRestore(); }
+  });
   it("retains interrupted mutation identity after restart without executing again", async () => {
     let finish!: () => void;
     const wait = new Promise<void>(resolve => { finish = resolve; });
