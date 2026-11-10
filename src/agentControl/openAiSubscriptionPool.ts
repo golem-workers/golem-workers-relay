@@ -53,14 +53,14 @@ export function subscriptionProfileId(accountId: string): string {
   return `openai:golem-${accountId}`;
 }
 
-/** Required by the 9.8 adapter: no authored source of outer fallback, even
+/** Required by strict host adapters: no authored source of outer fallback, even
  * nested/subagent/cron policy. This read-only check never normalizes config. */
 export function assertNoConfiguredFallbacks(value: unknown): void {
   if (!value || typeof value !== "object") return;
   for (const [key, child] of Object.entries(value)) {
     if ((key === "fallback" || key === "fallbacks") && child != null &&
         !(Array.isArray(child) && child.length === 0) && child !== "") {
-      throw new SubscriptionPoolError("OPENAI_POOL_MODEL_FALLBACK_FORBIDDEN", "OpenClaw 2026.9.8 subscription pools require no configured model fallbacks. Remove fallbacks explicitly or update OpenClaw; model settings were not changed.");
+      throw new SubscriptionPoolError("OPENAI_POOL_MODEL_FALLBACK_FORBIDDEN", "The loaded strict subscription-pool guard requires no configured model fallbacks. Remove fallbacks explicitly or update OpenClaw; model settings were not changed.");
     }
     assertNoConfiguredFallbacks(child);
   }

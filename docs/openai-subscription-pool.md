@@ -90,11 +90,12 @@ Only a final assistant reply can release the queue or trigger transcript-complet
 cleanup; progress text must never cause a running tool to be aborted/replayed.
 
 
-## Official 2026.9.8 strict compatibility
+## Official >=2026.9.8 continuous compatibility
 
 The loaded plugin, not a version string inferred by Relay, supplies the live
 capability. Existing v1 means `runScopedFallbacks: true` and
-`readOnlyAdmission: true` (qualified official >=2026.11.2). The 9.8 adapter uses
+`readOnlyAdmission: true` (qualified official >=2026.11.2 with async SDK). The
+strict adapter (>=2026.9.8 and <2026.11.2, or newer sync-only SDK) uses
 v2 with `runScopedFallbacks: false`, `configuredFallbacksForbidden: true` and
 `readOnlyAdmission: true`. Relay accepts only these exact policy shapes; old
 Relay rejects v2 rather than activating an unguarded pool.
@@ -107,11 +108,15 @@ A fallback introduced later is blocked by the channel plugin at run admission.
 Injected cron/session fallback candidates must also match the agent's saved
 primary model, so unsupported overrides cannot escape into another model/API.
 
-The plugin reads the synchronous public auth SDK with `readOnly: true`,
-`syncExternalCli: false`, `allowKeychainPrompt: false`. It emits the explicit 9.8
-`pass`/`block` decision shape; its hook merge does not support suppressing the
-outer fallback chain. No OpenClaw code changes are needed. Other pre-11.2 hosts
-are not implicitly qualified. Real installed 9.8 SDK tests cover pool A/B,
+The plugin prefers the async reader when available, otherwise the synchronous
+public auth SDK, with `readOnly: true`,
+`syncExternalCli: false`, `allowKeychainPrompt: false`. It emits explicit
+`pass`/`block` decisions in both modes. Strict mode does not
+claim suppression of the outer fallback chain. No OpenClaw code changes are
+needed. The plugin admits continuous >=2026.9.8, with no upper version cutoff;
+unknown versions or missing required SDK/hooks still fail closed. This is not a
+guarantee against future upstream SDK/hook incompatibilities. Real installed
+9.8 SDK tests cover pool A/B,
 unrelated key/provider and session metadata preservation; the plugin's isolated
 Gateway qualification covers synthetic A/429-to-B native dispatch and exhaustion.
 Synthetic transport is not a claim of real OAuth native/Codex acceptance.
