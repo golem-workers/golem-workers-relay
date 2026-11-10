@@ -53,9 +53,37 @@ Reconnection observes all agents (including subagents), not only main.
 Backend automatic sleep consumes this same canonical status; process diagnostics
 must not become an independent sleep-only work-status heuristic.
 
-For `relay_channel_v2`, relay startup also checks the installed `relay-channel`
-plugin version against the current plugin repo ref and automatically rebuilds /
-reinstalls the plugin when the installed version is behind.
+For `relay_channel_v2`, Relay runs non-blocking periodic maintenance for the
+already-enabled, npm-managed `@golemworkers/relay-channel` plugin. It checks the
+published npm `latest` stable release hourly, with up to five minutes of startup
+and per-check jitter. Newer installed versions are never downgraded. Missing,
+disabled, custom/path and prerelease installations are not changed.
+
+The updater shares the platform Update/Doctor install, model and owner kernel
+locks (in that order), defers when Gateway is busy, and uses the native
+`openclaw plugins update @golemworkers/relay-channel@<exact-version>` transaction.
+Host compatibility, install policy and existing capability consent remain enforced;
+no automatic capability acceptance, uninstall, enable, config normalization,
+authentication change or OpenClaw upgrade is performed. Runtime plugin activation
+and Gateway health are checked, not merely the on-disk package version. A safe
+Gateway restart is requested only if hot activation is absent; it is never forced.
+A busy/unreachable/unsupported host or registry failure cannot prevent Relay startup.
+
+Set `RELAY_CHANNEL_PLUGIN_AUTO_UPDATE_ENABLED=0` to opt out;
+`RELAY_CHANNEL_PLUGIN_UPDATE_INTERVAL_MS` defaults to `3600000` (minimum `60000`),
+and `RELAY_CHANNEL_PLUGIN_UPDATE_INITIAL_JITTER_MS` defaults to `300000`.
+Only local loopback Gateways are maintained. The old plugin Git repository/ref
+settings remain for provisioning; periodic maintenance uses published npm releases.
+
+Maintenance receipts are persisted beside `openclaw.json` as
+`openclaw.json.relay-channel-update.json`, with version, phase and a protected
+configuration hash (no credentials). An interrupted/ambiguous install is not
+blindly repeated: subsequent checks first verify the installed/runtime version.
+An `installing` receipt with the old package still present, configuration drift,
+or an unverified restart requires operator inspection. After confirming no
+installer is running and repairing/validating the current installation/config,
+the operator can remove the receipt to authorize a new attempt. No automatic
+SQLite/config restore or repeated restart storm is attempted.
 
 For `relay_channel_v2` agents, the relay now advertises provider-aware control
 plane capability profiles on the local control plane. The top-level hello frame
@@ -136,7 +164,7 @@ The script:
 - pre-pulls and builds `golem-workers-relay` from `release` by default, or from explicit `RELAY_GIT_REF` when exported before running the script;
 - installs the relay-channel plugin from explicit `RELAY_CHANNEL_PLUGIN_GIT_REF` when exported, otherwise keeps the existing default coupling to the relay ref (`main` -> `main`, everything else -> `release`);
 - applies OpenClaw plugin capability consent only when supported, explicitly confirms the trusted local relay-channel archive, and stops writing retired `plugins.installs` authored config on database-first releases, so noninteractive image preparation works across OpenClaw 2026.7.1 and 2026.8.1+;
-- at runtime, relay also re-checks the installed `relay-channel` package version against the selected plugin repo ref and auto-updates the plugin before opening the relay control plane when the installed version is older;
+- at runtime, Relay periodically checks the published npm release and updates an enabled, npm-managed `relay-channel` installation without blocking the control plane (see maintenance above);
 - resolves latest OpenClaw and official `@openai/codex` versions once, installs them with npm using `/usr/local` as the global prefix and npm-owned `/usr/local/bin/openclaw` and `/usr/local/bin/codex` launchers, writes managed `~/.codex/config.toml`, `~/.codex/auth.json`, and `/usr/local/bin/golem-codex-proxy` files so Codex pins `CODEX_HOME` to `~/.codex`, uses explicit API-key login state, explicit `danger-full-access` / `never` defaults, disabled Codex hooks, and wrapper-level CLI overrides together with the local OpenAI proxy, prepares runtime dependencies (`grammy`, `@grammyjs/runner`, `@grammyjs/transformer-throttler`, `@buape/carbon`, `@larksuiteoapi/node-sdk`, `@slack/bolt` for the current OpenClaw bundled-plugin import bugs), preinstalls `relay-channel` and a compatible independently-revisioned `@openclaw/codex` package through `openclaw plugins install`, preinstalls the curated safe OpenClaw skills used by the agent creation quiz, patches the installed Codex harness default so OpenClaw native hook relay stays disabled, leaves those prepared plugins disabled until backend provisioning wires runtime config, plus full `playwright`; the relay only allows OpenAI `/v1/responses` websocket upgrades while the active OpenClaw model is `codex/*`
 - uses fs-safe default `auto` mode (native when available), without native-mode environment overrides. Preparation removes legacy overrides from login and service environments; Relay startup clears inherited overrides from older snapshots. Compatible native bindings retain guarded filesystem safety on older kernels;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);

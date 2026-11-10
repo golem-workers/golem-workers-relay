@@ -1,388 +1,126 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
-import { execFile as execFileCallback } from "node:child_process";
-import { promisify } from "node:util";
+import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import JSON5 from "json5";
-import { logger } from "../logger.js";
-import type { RelayConfig } from "../config/env.js";
 
-const execFile = promisify(execFileCallback);
-const RELAY_CHANNEL_PLUGIN_ID = "relay-channel";
-
-type RelayChannelPluginConfig = RelayConfig["relayChannel"]["plugin"];
-
-type ExecOptions = {
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-};
-
-type ExecRunner = (
-  command: string,
-  args: string[],
-  options?: ExecOptions
-) => Promise<{ stdout: string; stderr: string }>;
-
-type Deps = {
-  exec: ExecRunner;
+export const RELAY_CHANNEL_PACKAGE = "@golemworkers/relay-channel";
+const PLUGIN_ID = "relay-channel";
+const STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+type Row = Record<string, unknown>;
+const row = (value: unknown): Row => value && typeof value === "object" && !Array.isArray(value) ? value as Row : {};
+export type PluginUpdateDeps = {
+  exec: (command: string, args: string[], timeoutMs?: number) => Promise<string>;
   sleep: (ms: number) => Promise<void>;
 };
+export type PluginUpdateResult = { status: "unchanged" | "updated" | "deferred"; version?: string; reason?: string };
 
-type PluginInstallState = {
-  installPath: string | null;
-  version: string | null;
-  enabled: boolean;
-  entryConfig: Record<string, unknown> | null;
-  channelConfig: Record<string, unknown> | null;
-};
-
-const defaultDeps: Deps = {
-  exec: (command, args, options) =>
-    execFile(command, args, {
-      cwd: options?.cwd,
-      env: options?.env,
-      maxBuffer: 10 * 1024 * 1024,
-    }).then(({ stdout, stderr }) => ({
-      stdout: stdout ?? "",
-      stderr: stderr ?? "",
-    })),
-  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-};
-
-export async function ensureRelayChannelPluginUpToDate(
-  input: {
-    openclawConfigPath: string;
-    plugin: RelayChannelPluginConfig;
-  },
-  deps: Partial<Deps> = {}
-): Promise<void> {
-  if (!input.plugin.autoUpdateEnabled) {
-    logger.info("Relay-channel plugin auto-update is disabled");
-    return;
-  }
-
-  const runtime = { ...defaultDeps, ...deps };
-  const plugin = {
-    id: RELAY_CHANNEL_PLUGIN_ID,
-    repoDir: input.plugin.repoDir,
-    repoUrl: input.plugin.repoUrl,
-    gitRef: input.plugin.gitRef,
-  };
-
-  const desiredVersion = await syncPluginRepoAndReadVersion(plugin, runtime);
-  const installed = await readInstalledPluginState(input.openclawConfigPath, plugin.id);
-
-  if (installed.version && comparePluginVersions(installed.version, desiredVersion) >= 0) {
-    logger.info(
-      {
-        event: "relay_channel_plugin_update",
-        installedVersion: installed.version,
-        desiredVersion,
-        installPath: installed.installPath,
-        pluginGitRef: plugin.gitRef,
-      },
-      "Installed relay-channel plugin is already up to date"
-    );
-    return;
-  }
-
-  logger.info(
-    {
-      event: "relay_channel_plugin_update",
-      installedVersion: installed.version,
-      desiredVersion,
-      installPath: installed.installPath,
-      pluginGitRef: plugin.gitRef,
-      pluginRepoDir: plugin.repoDir,
-    },
-    installed.version
-      ? "Updating outdated relay-channel plugin in the background"
-      : "Installing missing relay-channel plugin in the background"
-  );
-
-  const bundlePath = await buildPluginBundle(plugin, runtime);
-
-  const desiredChannelConfig = installed.channelConfig ?? installed.entryConfig ?? { accounts: [{ id: "default" }] };
-  await writePluginRuntimeConfig({
-    configPath: input.openclawConfigPath,
-    pluginId: plugin.id,
-    enabled: installed.enabled,
-    entryConfig: installed.entryConfig ?? desiredChannelConfig,
-    channelConfig: desiredChannelConfig,
-  });
-
-  await uninstallExistingPlugin(plugin.id, installed.installPath, runtime);
-  await installPluginBundle(bundlePath, runtime);
-  await writePluginRuntimeConfig({
-    configPath: input.openclawConfigPath,
-    pluginId: plugin.id,
-    enabled: installed.enabled,
-    entryConfig: installed.entryConfig ?? desiredChannelConfig,
-    channelConfig: desiredChannelConfig,
-  });
-  await runtime.exec("openclaw", ["plugins", installed.enabled ? "enable" : "disable", plugin.id]);
-
-  const updated = await readInstalledPluginState(input.openclawConfigPath, plugin.id);
-  if (!updated.version || comparePluginVersions(updated.version, desiredVersion) < 0) {
-    throw new Error(
-      `Relay-channel plugin update did not reach ${desiredVersion}; installed=${updated.version ?? "missing"}`
-    );
-  }
-
-  logger.info(
-    {
-      event: "relay_channel_plugin_update",
-      installedVersion: updated.version,
-      desiredVersion,
-      installPath: updated.installPath,
-      pluginGitRef: plugin.gitRef,
-    },
-    "Relay-channel plugin is ready on disk"
-  );
-}
-
-export function comparePluginVersions(leftRaw: string, rightRaw: string): number {
-  const left = leftRaw.trim();
-  const right = rightRaw.trim();
-  const leftParts = parseNumericVersion(left);
-  const rightParts = parseNumericVersion(right);
-  if (!leftParts || !rightParts) {
-    return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
-  }
-  const max = Math.max(leftParts.length, rightParts.length);
-  for (let index = 0; index < max; index += 1) {
-    const leftPart = leftParts[index] ?? 0;
-    const rightPart = rightParts[index] ?? 0;
-    if (leftPart !== rightPart) {
-      return leftPart < rightPart ? -1 : 1;
-    }
-  }
+export function comparePluginVersions(left: string, right: string): number {
+  if (!STABLE_VERSION.test(left) || !STABLE_VERSION.test(right)) throw new Error("PLUGIN_VERSION_INVALID");
+  const a = left.split(".").map(BigInt), b = right.split(".").map(BigInt);
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i] ? 1 : -1;
   return 0;
 }
-
-export function buildOpenclawPluginInstallArgs(bundlePath: string, installHelp: string): string[] {
-  const args = ["plugins", "install", "--force"];
-  if (installHelp.includes("--accept-capabilities")) {
-    args.push("--accept-capabilities");
-  }
-  args.push(bundlePath);
-  return args;
+function installedPlugin(value: unknown): Row | undefined {
+  const plugins = row(value).plugins;
+  return Array.isArray(plugins) ? plugins.map(row).find(p => p.id === PLUGIN_ID) : undefined;
+}
+function protectedConfig(value: unknown): Row {
+  const config = structuredClone(row(value));
+  // Old hosts track install metadata in JSON; newer hosts own it in SQLite.
+  const plugins = row(config.plugins);
+  delete plugins.installs;
+  return config;
 }
 
-function parseNumericVersion(version: string): number[] | null {
-  if (!/^\d+(?:\.\d+)*$/.test(version)) {
-    return null;
-  }
-  return version.split(".").map((part) => Number.parseInt(part, 10));
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
+  if (value && typeof value === "object") return "{" + Object.entries(row(value)).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => JSON.stringify(key) + ":" + canonical(entry)).join(",") + "}";
+  return JSON.stringify(value);
 }
 
-async function syncPluginRepoAndReadVersion(
-  plugin: { repoDir: string; repoUrl: string; gitRef: string },
-  deps: Deps
-): Promise<string> {
-  await fs.mkdir(path.dirname(plugin.repoDir), { recursive: true });
-  const gitDir = path.join(plugin.repoDir, ".git");
-  if (await pathExists(gitDir)) {
-    await deps.exec("git", ["fetch", "--prune", "origin", plugin.gitRef], { cwd: plugin.repoDir });
-    await deps.exec("git", ["checkout", plugin.gitRef], { cwd: plugin.repoDir });
-    await deps.exec("git", ["reset", "--hard", `origin/${plugin.gitRef}`], { cwd: plugin.repoDir });
-  } else {
-    await fs.rm(plugin.repoDir, { recursive: true, force: true });
-    await deps.exec("git", ["clone", "--branch", plugin.gitRef, "--single-branch", plugin.repoUrl, plugin.repoDir]);
+/** Caller holds the shared install -> model -> owner locks through activation.
+ * Use the host's transactional lifecycle, never uninstall, rewrite config, grant
+ * capabilities or enable a plugin. npm/Gateway failures are not startup failures.
+ */
+export async function ensureRelayChannelPluginUpToDate(
+  input: { openclawConfigPath: string }, deps: PluginUpdateDeps,
+): Promise<PluginUpdateResult> {
+  const configPath = input.openclawConfigPath;
+  const receiptPath = configPath + ".relay-channel-update.json";
+  const readConfig = async (): Promise<Row> => protectedConfig(JSON5.parse(await fs.readFile(configPath, "utf8")));
+  const before = await readConfig();
+  const configSha256 = createHash("sha256").update(canonical(before)).digest("hex");
+  const json = async (command: string, args: string[], timeout?: number): Promise<unknown> => JSON.parse(await deps.exec(command, args, timeout)) as unknown;
+  const rpc = (method: string): Promise<unknown> => json("openclaw", ["gateway", "call", method, "--json"], 15_000);
+  const plugin = installedPlugin(await json("openclaw", ["plugins", "list", "--json"], 30_000));
+  const trust = row(plugin?.trust);
+  if (!plugin || plugin.enabled !== true || trust.installSource !== "npm" ||
+      typeof trust.installSpec !== "string" || !/^@golemworkers\/relay-channel(?:@(?:latest|\d+\.\d+\.\d+))?$/.test(trust.installSpec)) {
+    return { status: "deferred", reason: "not-enabled-managed-npm-install" };
   }
-
-  const pkg = parseJsonObject(
-    await fs.readFile(path.join(plugin.repoDir, "package.json"), "utf8"),
-    `${plugin.repoDir}/package.json`
-  );
-  const version = typeof pkg.version === "string" ? pkg.version.trim() : "";
-  if (!version) {
-    throw new Error(`Missing relay-channel plugin version in ${plugin.repoDir}/package.json`);
-  }
-  return version;
-}
-
-async function buildPluginBundle(plugin: { id: string; repoDir: string }, deps: Deps): Promise<string> {
-  await deps.exec("npm", ["ci", "--include=dev"], { cwd: plugin.repoDir });
-  await deps.exec("npm", ["run", "bundle:agent"], { cwd: plugin.repoDir });
-  const bundlePath = path.join(plugin.repoDir, ".artifacts", plugin.id, `${plugin.id}-bundle.tgz`);
-  if (!(await pathExists(bundlePath))) {
-    throw new Error(`Relay-channel bundle was not produced at ${bundlePath}`);
-  }
-  return bundlePath;
-}
-
-async function installPluginBundle(bundlePath: string, deps: Deps): Promise<void> {
-  let installHelp = "";
-  try {
-    const result = await deps.exec("openclaw", ["plugins", "install", "--help"]);
-    installHelp = `${result.stdout}\n${result.stderr}`;
-  } catch {
-    // Older OpenClaw builds can reject subcommand help; --force remains supported.
-  }
-  await deps.exec("openclaw", buildOpenclawPluginInstallArgs(bundlePath, installHelp));
-}
-
-async function readInstalledPluginState(configPath: string, pluginId: string): Promise<PluginInstallState> {
-  const root = await readOpenclawConfig(configPath);
-  const plugins = ensureRecord(root, "plugins");
-  const installs = ensureRecord(plugins, "installs");
-  const installRecord = asRecord(installs[pluginId]);
-  const entries = ensureRecord(plugins, "entries");
-  const entryRecord = asRecord(entries[pluginId]);
-  const channels = ensureRecord(root, "channels");
-  const channelRecord = asRecord(channels[pluginId]);
-  const installPath = await resolveInstalledPluginPath(
-    typeof installRecord?.installPath === "string" && installRecord.installPath.trim()
-      ? installRecord.installPath.trim()
-      : null,
-    pluginId
-  );
-
-  let version: string | null = null;
-  if (installPath) {
-    try {
-      const packagePath = path.join(await fs.realpath(installPath), "package.json");
-      const pkg = parseJsonObject(await fs.readFile(packagePath, "utf8"), packagePath);
-      version = typeof pkg.version === "string" && pkg.version.trim() ? pkg.version.trim() : null;
-    } catch {
-      version = null;
-    }
-  }
-
-  return {
-    installPath,
-    version,
-    enabled: entryRecord?.enabled === true,
-    entryConfig: asRecord(entryRecord?.config) ?? null,
-    channelConfig: channelRecord,
+  const current = plugin.version;
+  if (typeof current !== "string" || !STABLE_VERSION.test(current)) return { status: "deferred", reason: "non-stable-install" };
+  let receipt: Row = {};
+  try { receipt = row(JSON.parse(await fs.readFile(receiptPath, "utf8")) as unknown); }
+  catch (err) { if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err; }
+  const save = async (phase: string, version: string): Promise<void> => {
+    const temporary = receiptPath + ".tmp";
+    const handle = await fs.open(temporary, "w", 0o600);
+    try { await handle.writeFile(JSON.stringify({ phase, version, configSha256, updatedAt: new Date().toISOString() }) + "\n"); await handle.sync(); }
+    finally { await handle.close(); }
+    await fs.rename(temporary, receiptPath);
+    const directory = await fs.open(path.dirname(receiptPath), "r");
+    try { await directory.sync(); } finally { await directory.close(); }
+    receipt = { phase, version, configSha256 };
   };
-}
-
-async function resolveInstalledPluginPath(
-  installPathFromConfig: string | null,
-  pluginId: string
-): Promise<string | null> {
-  const candidates = [
-    installPathFromConfig,
-    path.join(os.homedir(), ".openclaw", "extensions", pluginId),
-  ];
-
-  for (const candidate of candidates) {
-    if (!candidate) {
-      continue;
-    }
-    const resolved = await resolvePluginInstallDir(candidate);
-    if (resolved) {
-      return resolved;
-    }
+  // Recover an accepted install/activation before looking for another release.
+  const pending = receipt.phase === "installing" || receipt.phase === "installed" || receipt.phase === "restarting";
+  if (pending && receipt.configSha256 !== configSha256) throw new Error("PLUGIN_CONFIG_PRESERVATION_FAILED");
+  const desired: unknown = pending ? receipt.version : await json("npm", ["view", `${RELAY_CHANNEL_PACKAGE}@latest`, "version", "--json", "--registry=https://registry.npmjs.org"], 30_000);
+  if (typeof desired !== "string" || !STABLE_VERSION.test(desired)) throw new Error("PLUGIN_RELEASE_INVALID");
+  if (!pending && comparePluginVersions(current, desired) >= 0) return { status: "unchanged", version: current };
+  if (pending && current !== desired) throw new Error("PLUGIN_UPDATE_OUTCOME_UNRESOLVED");
+  if (!pending) {
+    const preflight = row(await rpc("gateway.restart.preflight"));
+    if (preflight.safe !== true || row(preflight.counts).totalActive !== 0) return { status: "deferred", reason: "gateway-busy" };
+    // Compatibility, install policy and capability consent remain host-owned.
+    // No --accept-capabilities/--force, no --all, and stdin is never interactive.
+    await deps.exec("openclaw", ["plugins", "update", `${RELAY_CHANNEL_PACKAGE}@${desired}`, "--dry-run"], 120_000);
+    if (!isDeepStrictEqual(before, await readConfig())) throw new Error("PLUGIN_CONFIG_CHANGED_BEFORE_UPDATE");
+    await save("installing", desired);
+    await deps.exec("openclaw", ["plugins", "update", `${RELAY_CHANNEL_PACKAGE}@${desired}`], 600_000);
+    const updated = installedPlugin(await json("openclaw", ["plugins", "list", "--json"], 30_000));
+    if (updated?.version !== desired) throw new Error("PLUGIN_INSTALLED_VERSION_UNVERIFIED");
+    await save("installed", desired);
   }
-
-  return null;
-}
-
-async function resolvePluginInstallDir(candidate: string): Promise<string | null> {
-  if (!candidate.trim()) {
-    return null;
-  }
-
-  try {
-    const resolved = await fs.realpath(candidate);
-    const manifestPath = path.join(resolved, "openclaw.plugin.json");
-    const packagePath = path.join(resolved, "package.json");
-    if ((await pathExists(manifestPath)) || (await pathExists(packagePath))) {
-      return resolved;
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-}
-
-async function uninstallExistingPlugin(pluginId: string, installPath: string | null, deps: Deps): Promise<void> {
-  try {
-    await deps.exec("openclaw", ["plugins", "uninstall", pluginId, "--force"]);
-  } catch (error) {
-    logger.warn(
-      {
-        event: "relay_channel_plugin_update",
-        pluginId,
-        err: error instanceof Error ? error.message : String(error),
-      },
-      "OpenClaw uninstall failed; continuing with a clean install"
-    );
-  }
-
-  const removePath =
-    installPath && installPath.trim()
-      ? installPath.trim()
-      : path.join(os.homedir(), ".openclaw", "extensions", pluginId);
-  await fs.rm(removePath, { recursive: true, force: true });
-}
-
-async function writePluginRuntimeConfig(input: {
-  configPath: string;
-  pluginId: string;
-  enabled: boolean;
-  entryConfig: Record<string, unknown>;
-  channelConfig: Record<string, unknown>;
-}): Promise<void> {
-  const root = await readOpenclawConfig(input.configPath);
-  const plugins = ensureRecord(root, "plugins");
-  const entries = ensureRecord(plugins, "entries");
-  const previousEntry = asRecord(entries[input.pluginId]) ?? {};
-  entries[input.pluginId] = {
-    ...previousEntry,
-    enabled: input.enabled,
-    config: input.entryConfig,
+  const verify = async (): Promise<boolean> => {
+    if (!isDeepStrictEqual(before, await readConfig())) throw new Error("PLUGIN_CONFIG_PRESERVATION_FAILED");
+    const live = installedPlugin(await rpc("plugins.list"));
+    if (live?.version !== desired || row(live.runtime).state !== "active") return false;
+    return row(await rpc("health")).ok === true;
   };
-
-  const channels = ensureRecord(root, "channels");
-  channels[input.pluginId] = input.channelConfig;
-
-  await fs.mkdir(path.dirname(input.configPath), { recursive: true });
-  await fs.writeFile(input.configPath, `${JSON.stringify(root, null, 2)}\n`, "utf8");
-}
-
-async function readOpenclawConfig(configPath: string): Promise<Record<string, unknown>> {
-  if (!(await pathExists(configPath))) {
-    return {};
+  const tryVerify = async (): Promise<boolean> => {
+    try { return await verify(); }
+    catch (err) {
+      if (err instanceof Error && err.message === "PLUGIN_CONFIG_PRESERVATION_FAILED") throw err;
+      return false;
+    }
+  };
+  if (!await tryVerify()) {
+    // The host schedules an idle/draining restart; never bypass deferral/force.
+    // Persist before requesting so a lost acknowledgement cannot cause a storm.
+    if (receipt.phase !== "restarting") {
+      await save("restarting", desired);
+      await deps.exec("openclaw", ["gateway", "restart", "--safe", "--json"], 30_000);
+    }
+    let ready = false;
+    for (let i = 0; i < 12; i++) {
+      await deps.sleep(5_000);
+      if (await tryVerify()) { ready = true; break; }
+    }
+    if (!ready) throw new Error("PLUGIN_RUNTIME_ACTIVATION_UNVERIFIED");
   }
-  const raw = await fs.readFile(configPath, "utf8");
-  return parseJsonObject(raw, configPath);
-}
-
-function parseJsonObject(text: string, filePath: string): Record<string, unknown> {
-  const parsed: unknown = JSON5.parse(text);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`Expected object JSON in ${filePath}`);
-  }
-  return parsed as Record<string, unknown>;
-}
-
-function ensureRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> {
-  const current = asRecord(parent[key]);
-  if (current) {
-    return current;
-  }
-  const next: Record<string, unknown> = {};
-  parent[key] = next;
-  return next;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  return value as Record<string, unknown>;
-}
-
-async function pathExists(targetPath: string): Promise<boolean> {
-  try {
-    await fs.stat(targetPath);
-    return true;
-  } catch {
-    return false;
-  }
+  await save("complete", desired);
+  return { status: "updated", version: desired };
 }
