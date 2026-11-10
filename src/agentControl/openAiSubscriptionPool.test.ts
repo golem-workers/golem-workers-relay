@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertNoConfiguredFallbacks,
   assertSubscriptionOnlyConfiguration,
   prepareSubscriptionPool,
   updateSubscriptionPoolStore,
@@ -218,4 +219,10 @@ it.each(["openai", "openai-codex"])("refuses an unowned %s token profile before 
 
 it.each([{homeScope:"user"},{transport:"websocket",url:"ws://127.0.0.1:1234"},{transport:"unix"}])("refuses a non-pool Codex credential owner before authorization effects (%j)", appServer => {
   expect(() => assertSubscriptionOnlyConfiguration({plugins:{entries:{codex:{config:{appServer}}}}})).toThrow("managed per-agent Codex auth bridge");
+});
+
+
+describe("9.8 strict fallback configuration",()=>{
+ it.each([{agents:{defaults:{subagents:{model:{fallbacks:["paid/model"]}}}}},{cron:{payload:{fallbacks:["openai/other"]}}},{agents:{entries:{child:{model:{fallback:"paid/model"}}}}}])("rejects nested sources before effects %j",cfg=>expect(()=>assertNoConfiguredFallbacks(cfg)).toThrow("Remove fallbacks explicitly"));
+ it("accepts an explicit subscription route with no fallback sources",()=>expect(()=>assertSubscriptionOnlyConfiguration(config(),{},{runScopedFallbacks:false})).not.toThrow());
 });

@@ -619,7 +619,7 @@ async function readConfig(configPath: string, gateway: GatewayLike, includeRunti
     authorizationConfigVersion: 1,
     subscriptionPoolVersion: 1,
     subscriptionPoolCompatibility: await (async () => {
-      try { await assertRuntimeSubscriptionGuard(gateway); assertSubscriptionOnlyConfiguration(config, process.env, {runScopedFallbacks:true}); return { compatible: true }; }
+      try { const guard = await assertRuntimeSubscriptionGuard(gateway); assertSubscriptionOnlyConfiguration(config, process.env, guard); return { compatible: true }; }
       catch (error) { return { compatible: false, reason: error instanceof SubscriptionPoolError ? error.code : "OPENAI_POOL_ROUTE_UNSUPPORTED" }; }
     })(),
     durableAuthorizationVersion: 1,

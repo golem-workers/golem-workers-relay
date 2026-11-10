@@ -89,14 +89,14 @@ export async function syncSubscriptionPool(input: {
   revision: number;
   members: SubscriptionPoolMember[];
   refreshRuntimeAuth: () => Promise<void>;
-  assertRuntimeGuard: () => Promise<void>;
+  assertRuntimeGuard: () => Promise<{ runScopedFallbacks: boolean }>;
 }): Promise<SubscriptionPoolState> {
   return withOwnerFenceLock(input.configPath, async () => {
     const config = z
       .record(z.string(), z.unknown())
       .parse(JSON5.parse(await fs.readFile(input.configPath, "utf8")));
-    await input.assertRuntimeGuard();
-    assertSubscriptionOnlyConfiguration(config, process.env, {runScopedFallbacks:true});
+    const guard = await input.assertRuntimeGuard();
+    assertSubscriptionOnlyConfiguration(config, process.env, guard);
     const previous = await readSubscriptionPoolState(input.configPath);
     const next = prepareSubscriptionPool(
       previous,

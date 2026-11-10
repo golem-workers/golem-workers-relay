@@ -52,7 +52,7 @@ describe("subscription pool durable ack", () => {
     writer.mockResolvedValue(undefined);
     await expect(
       syncSubscriptionPool({
-        assertRuntimeGuard: async () => {},
+        assertRuntimeGuard: () => Promise.resolve({runScopedFallbacks:true}),
         configPath,
         revision: 1,
         members,
@@ -67,7 +67,7 @@ describe("subscription pool durable ack", () => {
     );
     await expect(
       syncSubscriptionPool({
-        assertRuntimeGuard: async () => {},
+        assertRuntimeGuard: () => Promise.resolve({runScopedFallbacks:true}),
         configPath,
         revision: 1,
         members: [],
@@ -77,7 +77,7 @@ describe("subscription pool durable ack", () => {
     expect(
       (
         await syncSubscriptionPool({
-          assertRuntimeGuard: async () => {},
+          assertRuntimeGuard: () => Promise.resolve({runScopedFallbacks:true}),
         configPath,
           revision: 1,
           members,
@@ -114,7 +114,7 @@ describe("subscription pool durable ack", () => {
     const refresh = vi.fn();
     await expect(
       syncSubscriptionPool({
-        assertRuntimeGuard: async () => {},
+        assertRuntimeGuard: () => Promise.resolve({runScopedFallbacks:true}),
         configPath,
         revision: 3,
         members,
@@ -127,7 +127,7 @@ describe("subscription pool durable ack", () => {
     );
     await expect(
       syncSubscriptionPool({
-        assertRuntimeGuard: async () => {},
+        assertRuntimeGuard: () => Promise.resolve({runScopedFallbacks:true}),
         configPath,
         revision: 2,
         members,
@@ -139,10 +139,22 @@ describe("subscription pool durable ack", () => {
 
 it("preserves an authored fallback chain when the live guard is confirmed separately",async()=>{
  const {configPath,text}=await fixture(["anthropic/paid"]);
- const assertRuntimeGuard=vi.fn(async()=>{});
+ const assertRuntimeGuard=vi.fn(()=>Promise.resolve({runScopedFallbacks:true}));
  writer.mockResolvedValue(undefined);
  await syncSubscriptionPool({configPath,revision:1,members,assertRuntimeGuard,refreshRuntimeAuth:async()=>{}});
  expect(assertRuntimeGuard).toHaveBeenCalledOnce();
  expect(await fs.readFile(configPath,"utf8")).toBe(text);
  expect((await readSubscriptionPoolState(configPath))?.phase).toBe("applied");
+});
+
+
+it("refuses the 9.8 fallback policy before pending receipt or credential effects", async () => {
+ const {configPath,text}=await fixture(["anthropic/paid"]);
+ await expect(syncSubscriptionPool({configPath,revision:1,members,assertRuntimeGuard:()=>Promise.resolve({runScopedFallbacks:false}),refreshRuntimeAuth:async()=>{}})).rejects.toMatchObject({code:"OPENAI_POOL_MODEL_FALLBACK_FORBIDDEN"});
+ expect(writer).not.toHaveBeenCalled();expect(await readSubscriptionPoolState(configPath)).toBeNull();expect(await fs.readFile(configPath,"utf8")).toBe(text);
+});
+it("syncs a 9.8 pool without rewriting empty fallback settings", async () => {
+ const {configPath,text}=await fixture();writer.mockResolvedValue(undefined);
+ await expect(syncSubscriptionPool({configPath,revision:1,members,assertRuntimeGuard:()=>Promise.resolve({runScopedFallbacks:false}),refreshRuntimeAuth:async()=>{}})).resolves.toMatchObject({phase:"applied"});
+ expect(writer).toHaveBeenCalledOnce();expect(await fs.readFile(configPath,"utf8")).toBe(text);
 });
