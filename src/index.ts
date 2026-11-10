@@ -1,3 +1,4 @@
+import { createPluginUpdateScheduler } from "./relayChannel/pluginUpdateScheduler.js";
 import { createSubscriptionUsageCollector } from "./openclaw/subscriptionUsage.js";
 import { recoverGatewayConnection } from "./managed-runtime/gatewayRecovery.js";
 import { convergeManagedRuntimeAtStartup } from "./managed-runtime/startup.js";
@@ -430,6 +431,14 @@ async function main(): Promise<void> {
     backend,
   });
   authorizationUsageReporter.start();
+  const pluginUpdater = createPluginUpdateScheduler({
+    enabled: cfg.relayChannel.enabled && cfg.relayChannel.plugin.autoUpdateEnabled &&
+      ["127.0.0.1", "localhost", "[::1]"].includes(new URL(openclaw.gateway.wsUrl).hostname),
+    intervalMs: cfg.relayChannel.plugin.updateIntervalMs,
+    initialJitterMs: cfg.relayChannel.plugin.updateInitialJitterMs,
+    configPath: openclaw.configPath,
+  });
+  pluginUpdater.start();
   const runner = chatRunner;
   if (!runner) {
     throw new Error("ChatRunner not initialized");
@@ -1066,6 +1075,7 @@ async function main(): Promise<void> {
   shuttingDown = true;
   cronInventorySync?.stop();
   authorizationUsageReporter.stop();
+  await pluginUpdater.stop();
   diagnosticNotifier.stop();
   selfNudgeRunner?.stop();
   queue.stopAccepting();
