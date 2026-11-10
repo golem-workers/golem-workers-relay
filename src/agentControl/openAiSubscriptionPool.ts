@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { visitSubscriptionModelFallbacks, clearSubscriptionModelFallbacks } from "./subscriptionModelFallbacks.js";
+export { clearSubscriptionModelFallbacks };
 
 export type PoolOAuthCredential = {
   type: "oauth";
@@ -56,14 +58,11 @@ export function subscriptionProfileId(accountId: string): string {
 /** Required by strict host adapters: no authored source of outer fallback, even
  * nested/subagent/cron policy. This read-only check never normalizes config. */
 export function assertNoConfiguredFallbacks(value: unknown): void {
-  if (!value || typeof value !== "object") return;
-  for (const [key, child] of Object.entries(value)) {
-    if ((key === "fallback" || key === "fallbacks") && child != null &&
-        !(Array.isArray(child) && child.length === 0) && child !== "") {
-      throw new SubscriptionPoolError("OPENAI_POOL_MODEL_FALLBACK_FORBIDDEN", "The loaded strict subscription-pool guard requires no configured model fallbacks. Remove fallbacks explicitly or update OpenClaw; model settings were not changed.");
+  visitSubscriptionModelFallbacks(value, assignment => {
+    if ((Array.isArray(assignment.fallbacks) ? assignment.fallbacks.length > 0 : assignment.fallbacks != null && assignment.fallbacks !== "") || assignment.fallback) {
+      throw new SubscriptionPoolError("OPENAI_POOL_MODEL_FALLBACK_FORBIDDEN", "The loaded strict subscription-pool guard requires empty model fallbacks. Connect clears configured model fallbacks before applying the pool.");
     }
-    assertNoConfiguredFallbacks(child);
-  }
+  });
 }
 
 /** Never convert a preserved API key into OAuth material or silently rewrite models. */
@@ -136,7 +135,7 @@ export function assertSubscriptionOnlyConfiguration(
       ...object(object(config.env).vars),
     };
     const endpoint =
-      route.baseUrl ??
+      (route.baseUrl === "" ? undefined : route.baseUrl) ??
       environment.OPENAI_BASE_URL ??
       "https://chatgpt.com/backend-api/codex";
     if (

@@ -223,6 +223,13 @@ it.each([{homeScope:"user"},{transport:"websocket",url:"ws://127.0.0.1:1234"},{t
 
 
 describe("9.8 strict fallback configuration",()=>{
- it.each([{agents:{defaults:{subagents:{model:{fallbacks:["paid/model"]}}}}},{cron:{payload:{fallbacks:["openai/other"]}}},{agents:{entries:{child:{model:{fallback:"paid/model"}}}}}])("rejects nested sources before effects %j",cfg=>expect(()=>assertNoConfiguredFallbacks(cfg)).toThrow("Remove fallbacks explicitly"));
+ it.each([{agents:{defaults:{subagents:{model:{fallbacks:["paid/model"]}}}}},{cron:{payload:{fallbacks:["openai/other"]}}},{agents:{entries:{child:{model:{fallback:"paid/model"}}}}}])("rejects nested sources before effects %j",cfg=>expect(()=>assertNoConfiguredFallbacks(cfg)).toThrow("requires empty model fallbacks"));
  it("accepts an explicit subscription route with no fallback sources",()=>expect(()=>assertSubscriptionOnlyConfiguration(config(),{},{runScopedFallbacks:false})).not.toThrow());
+});
+
+it("accepts host-normalized empty ChatGPT baseUrl but refuses custom endpoints",()=>{
+ const cfg=config();Object.assign(cfg.models.providers.openai,{baseUrl:""});
+ expect(()=>assertSubscriptionOnlyConfiguration(cfg,{}, {runScopedFallbacks:false})).not.toThrow();
+ Object.assign(cfg.models.providers.openai,{baseUrl:"https://api.openai.com/v1"});
+ expect(()=>assertSubscriptionOnlyConfiguration(cfg,{}, {runScopedFallbacks:false})).toThrow(/endpoints/);
 });

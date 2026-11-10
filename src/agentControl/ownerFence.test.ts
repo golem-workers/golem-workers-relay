@@ -84,3 +84,19 @@ it("public port projection permits only operational metadata and retains model/a
  await expect(writeOwnerFencedConfig(file, JSON.stringify(candidate), undefined, { operationalPublicPort: true, expectedConfigText: before })).rejects.toThrow('CONFIG_CONFLICT');
  expect(await readFile(file, 'utf8')).toBe(committed);
 });
+
+it("fallback cleanup authority cannot change model, reasoning, auth or bypass CAS",async()=>{
+ const {writeFile}=await import("node:fs/promises");
+ const {withAuthorizationConfig}=await import("../managed-runtime/runtime-policy.js");
+ const {clearSubscriptionModelFallbacks}=await import("./subscriptionModelFallbacks.js");
+ const file=await fixture();
+ const before=JSON.stringify({agents:{defaults:{model:{primary:"openai/current",fallbacks:["paid/other"]},thinkingDefault:"high"}},env:{KEEP:"synthetic"}});
+ await writeFile(file,before);
+ const candidate=clearSubscriptionModelFallbacks(JSON.parse(before) as Record<string,unknown>);
+ const write=(c:unknown, expected=before)=>withAuthorizationConfig(file,()=>writeOwnerFencedConfig(file,JSON.stringify(c),undefined,{expectedConfigText:expected,subscriptionPoolFallbackCleanup:true}));
+ for(const patch of [{agents:{}},{env:{KEEP:"changed"}}]) await expect(write({...candidate,...patch})).rejects.toThrow("MODEL_FENCE_REQUIRED");
+ await expect(write(candidate,"{}")).rejects.toThrow("CONFIG_CONFLICT");
+ expect(await readFile(file,"utf8")).toBe(before);
+ await write(candidate);
+ expect(JSON.parse(await readFile(file,"utf8"))).toEqual(candidate);
+});

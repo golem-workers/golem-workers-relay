@@ -733,10 +733,12 @@ hook consent separately; pool authorization never grants it or installs/repairs 
 plugin. `OPENAI_POOL_GUARD_UPDATE_REQUIRED` is a pre-effect refusal, not permission
 to choose API credits or another model. Authored fallbacks remain on disk but the
 qualified >=2026.11.2 guard replaces each managed run's chain with an empty list.
-Strict capability v2 instead forbids nonempty configured fallback sources
-before pool effects and on every run; runtime model candidates must match the
-authored selected primary. It uses the available public auth reader without mutation.
-It never claims run-scoped fallback suppression or silently removes fallbacks.
+Strict capability v2 instead clears configured model fallback lists during explicit
+Connect, using a narrow CAS-protected write and verified Gateway application before
+credentials. It preserves primary, Harness, reasoning and unrelated settings.
+A failed application stays Pending, never a false success. Every run still forbids
+model fallback; runtime candidates must match the saved primary. Admission remains
+read-only and does not claim run-scoped suppression.
 Unknown/partial capability proofs still fail closed. A foreign
 plain token profile and unsupported Codex user-home/remote bridge are refused.
 See the channel plugin's subscription guard setup contract.

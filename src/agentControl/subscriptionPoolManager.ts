@@ -3,10 +3,13 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import JSON5 from "json5";
 import { z } from "zod";
-import { withOwnerFenceLock } from "./ownerFence.js";
+import { withAuthorizationConfig } from "../managed-runtime/runtime-policy.js";
+import { isDeepStrictEqual } from "node:util";
+import { withOwnerFenceLock, writeOwnerFencedConfig } from "./ownerFence.js";
 import { writeRuntimeAuthPool } from "./runtimeAuthWriter.js";
 import {
   assertSubscriptionOnlyConfiguration,
+  clearSubscriptionModelFallbacks,
   prepareSubscriptionPool,
   SubscriptionPoolError,
   type SubscriptionPoolMember,
@@ -90,13 +93,18 @@ export async function syncSubscriptionPool(input: {
   members: SubscriptionPoolMember[];
   refreshRuntimeAuth: () => Promise<void>;
   assertRuntimeGuard: () => Promise<{ runScopedFallbacks: boolean }>;
+  waitForConfigApplied?: (configText: string) => Promise<void>;
 }): Promise<SubscriptionPoolState> {
   return withOwnerFenceLock(input.configPath, async () => {
+    const configText = await fs.readFile(input.configPath, "utf8");
     const config = z
       .record(z.string(), z.unknown())
-      .parse(JSON5.parse(await fs.readFile(input.configPath, "utf8")));
+      .parse(JSON5.parse(configText));
     const guard = await input.assertRuntimeGuard();
-    assertSubscriptionOnlyConfiguration(config, process.env, guard);
+    const candidate = guard.runScopedFallbacks
+      ? config
+      : clearSubscriptionModelFallbacks(config);
+    assertSubscriptionOnlyConfiguration(candidate, process.env, guard);
     const previous = await readSubscriptionPoolState(input.configPath);
     const next = prepareSubscriptionPool(
       previous,
@@ -105,7 +113,27 @@ export async function syncSubscriptionPool(input: {
     );
     // Durable intent before the first credential effect. A failure remains
     // pending instead of overwriting concurrent refreshed tokens on rollback.
+    if (!guard.runScopedFallbacks && !input.waitForConfigApplied)
+      throw new SubscriptionPoolError(
+        "OPENAI_POOL_GUARD_UPDATE_REQUIRED",
+        "Strict pool connection requires runtime configuration verification.",
+      );
     await writeState(input.configPath, next);
+    let appliedText = configText;
+    if (!isDeepStrictEqual(candidate, config)) {
+      appliedText = JSON.stringify(candidate, null, 2) + "\n";
+      await withAuthorizationConfig(input.configPath, () =>
+        writeOwnerFencedConfig(input.configPath, appliedText, undefined, {
+          expectedConfigText: configText,
+          subscriptionPoolFallbackCleanup: true,
+        }),
+      );
+      appliedText = await fs.readFile(input.configPath, "utf8");
+    }
+    if (!guard.runScopedFallbacks)
+      await input.waitForConfigApplied!(appliedText);
+    if ((await fs.readFile(input.configPath, "utf8")) !== appliedText)
+      throw new Error("CONFIG_CONFLICT");
     await writeRuntimeAuthPool({
       configPath: input.configPath,
       state: next,

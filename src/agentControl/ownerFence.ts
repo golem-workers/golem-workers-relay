@@ -84,6 +84,7 @@ export function withIndependentOwnerFenceLock<T>(configPath: string, operation: 
 export async function writeOwnerFencedConfig(configPath: string, text: string, incoming?: OwnerFence, options: {
   runtimeInstallActionId?: string;
   operationalPublicPort?: boolean;
+  subscriptionPoolFallbackCleanup?: boolean;
   managedRuntimePolicy?: ManagedRuntimePolicy;
   managedRuntimePolicyDigest?: string;
   expectedConfigText?: string | null;
@@ -106,6 +107,11 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     if (options.expectedRevision !== undefined && (current === undefined || configRevision(current) !== options.expectedRevision)) throw new Error("CONFIG_CONFLICT");
     if (options.expectedConfigText !== undefined && (options.expectedConfigText === null ? current !== undefined : (current === undefined || !isDeepStrictEqual(JSON5.parse(current), JSON5.parse(options.expectedConfigText))))) throw new Error("CONFIG_CONFLICT");
+    if (options.subscriptionPoolFallbackCleanup) {
+      const { clearSubscriptionModelFallbacks } = await import("./subscriptionModelFallbacks.js");
+      if (current === undefined || (options.expectedRevision === undefined && options.expectedConfigText === undefined) ||
+          !isDeepStrictEqual(clearSubscriptionModelFallbacks(object(JSON5.parse(current))), object(JSON5.parse(text)))) throw new Error("MODEL_FENCE_REQUIRED");
+    }
     const fence = incoming ?? previous;
     const { normalizeManagedConfigText } = await import("../managed-runtime/runtime-policy.js");
     const normalized = await normalizeManagedConfigText(configPath, text);
@@ -125,7 +131,11 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
       // Canonical synchronization may add policy-owned catalog/runtime metadata.
       // Compare the candidate with the same locked, normalized predecessor;
       // CAS above still compares the actual on-disk bytes, never this projection.
-      const normalizedCurrent = await normalizeManagedConfigText(configPath, current);
+      let normalizedCurrent = await normalizeManagedConfigText(configPath, current);
+      if (options.subscriptionPoolFallbackCleanup) {
+        const { clearSubscriptionModelFallbacks } = await import("./subscriptionModelFallbacks.js");
+        normalizedCurrent = JSON.stringify(clearSubscriptionModelFallbacks(object(JSON5.parse(normalizedCurrent))));
+      }
       if (!isDeepStrictEqual(managedRuntime.protectedRoute(publicPortProjection(JSON5.parse(normalizedCurrent), options.operationalPublicPort)), managedRuntime.protectedRoute(publicPortProjection(JSON5.parse(projected), options.operationalPublicPort)))) throw new Error("MODEL_FENCE_REQUIRED");
     }
     // Retain caller validation semantics. Owner projection itself validates the

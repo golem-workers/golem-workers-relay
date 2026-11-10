@@ -1,5 +1,6 @@
+import { refreshSubscriptionPoolAuth, waitForSubscriptionConfigApplied } from "./subscriptionPoolRuntime.js";
 import { assertRuntimeSubscriptionGuard } from "./subscriptionGuard.js";
-import { assertSubscriptionOnlyConfiguration, SubscriptionPoolError } from "./openAiSubscriptionPool.js";
+import { assertSubscriptionOnlyConfiguration, clearSubscriptionModelFallbacks, SubscriptionPoolError } from "./openAiSubscriptionPool.js";
 import { syncSubscriptionPool, readSubscriptionPoolState, assertLegacyAuthMutationAllowed } from "./subscriptionPoolManager.js";
 import { runIsolatedModelProbe } from "./modelVerificationProbe.js";
 import { readOfflineRuntimeAuth, MANAGED_RUNTIME_SOURCE_SHA256 } from "../managed-runtime/policy.generated.js";
@@ -410,8 +411,9 @@ async function executeAgentControlUnfenced(input: {
                       accountId: member.accountId, credentialVersion: member.credentialVersion, enabled: member.enabled,
                       credential: { type: "oauth" as const, provider: "openai" as const, access: member.bundle.accessToken, refresh: member.bundle.refreshToken, expires: member.bundle.expiresAtMs, ...(member.bundle.email ? { email: member.bundle.email } : {}), ...(member.bundle.accountId ? { accountId: member.bundle.accountId } : {}), ...(member.bundle.chatgptPlanType ? { chatgptPlanType: member.bundle.chatgptPlanType } : {}) },
                     })),
-                    refreshRuntimeAuth: () => refreshCodexRuntimeAuth(input.gateway),
+                    refreshRuntimeAuth: () => refreshSubscriptionPoolAuth(input.gateway),
                     assertRuntimeGuard: () => assertRuntimeSubscriptionGuard(input.gateway),
+                    waitForConfigApplied: text => waitForSubscriptionConfigApplied(input.configPath, text, input.gateway),
                   }).then(state => ({ kind: "codex.auth.pool.sync" as const, revision: state.revision, phase: state.phase, members: state.members }))
               : input.action.kind === "codex.auth.pool.status"
                 ? await readSubscriptionPoolState(input.configPath).then(state => ({ kind: "codex.auth.pool.status" as const, revision: state?.revision ?? 0, phase: state?.phase ?? null, members: state?.members ?? [] }))
@@ -619,7 +621,7 @@ async function readConfig(configPath: string, gateway: GatewayLike, includeRunti
     authorizationConfigVersion: 1,
     subscriptionPoolVersion: 1,
     subscriptionPoolCompatibility: await (async () => {
-      try { const guard = await assertRuntimeSubscriptionGuard(gateway); assertSubscriptionOnlyConfiguration(config, process.env, guard); return { compatible: true }; }
+      try { const guard = await assertRuntimeSubscriptionGuard(gateway); assertSubscriptionOnlyConfiguration(guard.runScopedFallbacks ? config : clearSubscriptionModelFallbacks(config), process.env, guard); return { compatible: true }; }
       catch (error) { return { compatible: false, reason: error instanceof SubscriptionPoolError ? error.code : "OPENAI_POOL_ROUTE_UNSUPPORTED" }; }
     })(),
     durableAuthorizationVersion: 1,
