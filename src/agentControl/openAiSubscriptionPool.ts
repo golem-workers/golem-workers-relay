@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { visitSubscriptionModelFallbacks, clearSubscriptionModelFallbacks } from "./subscriptionModelFallbacks.js";
+export { clearSubscriptionModelFallbacks };
 
 export type PoolOAuthCredential = {
   type: "oauth";
@@ -53,12 +55,23 @@ export function subscriptionProfileId(accountId: string): string {
   return `openai:golem-${accountId}`;
 }
 
+/** Required by strict host adapters: no authored source of outer fallback, even
+ * nested/subagent/cron policy. This read-only check never normalizes config. */
+export function assertNoConfiguredFallbacks(value: unknown): void {
+  visitSubscriptionModelFallbacks(value, assignment => {
+    if ((Array.isArray(assignment.fallbacks) ? assignment.fallbacks.length > 0 : assignment.fallbacks != null && assignment.fallbacks !== "") || assignment.fallback) {
+      throw new SubscriptionPoolError("OPENAI_POOL_MODEL_FALLBACK_FORBIDDEN", "The loaded strict subscription-pool guard requires empty model fallbacks. Connect clears configured model fallbacks before applying the pool.");
+    }
+  });
+}
+
 /** Never convert a preserved API key into OAuth material or silently rewrite models. */
 export function assertSubscriptionOnlyConfiguration(
   config: Record<string, unknown>,
   env: NodeJS.ProcessEnv = process.env,
-  guard?: { runScopedFallbacks: true },
+  guard?: { runScopedFallbacks: boolean },
 ): void {
+  if (guard?.runScopedFallbacks === false) assertNoConfiguredFallbacks(config);
   const codex = object(object(object(object(config.plugins).entries).codex).config);
   const appServer = object(codex.appServer);
   if (appServer.homeScope === "user" || (appServer.transport !== undefined && appServer.transport !== "stdio") || appServer.url) {
@@ -122,7 +135,7 @@ export function assertSubscriptionOnlyConfiguration(
       ...object(object(config.env).vars),
     };
     const endpoint =
-      route.baseUrl ??
+      (route.baseUrl === "" ? undefined : route.baseUrl) ??
       environment.OPENAI_BASE_URL ??
       "https://chatgpt.com/backend-api/codex";
     if (

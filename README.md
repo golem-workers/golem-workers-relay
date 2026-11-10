@@ -725,11 +725,21 @@ Reader failure still permits already-journaled Relay events to drain. This adds
 observation only, not a native-entry-point fallback guard or exact attempt billing.
 
 Pool activation additionally requires a live loaded owned-channel guard on the
-unchanged official OpenClaw >=2026.11.2. Explicit setup must provision its supported
+unchanged official OpenClaw >=2026.9.8 with matching channel-plugin/SDK support.
+Hosts before 2026.11.2 use strict mode; >=2026.11.2 uses run-scoped suppression
+with the async public reader, otherwise strict mode. There is no upper version
+cutoff. Explicit setup must provision its supported
 hook consent separately; pool authorization never grants it or installs/repairs a
 plugin. `OPENAI_POOL_GUARD_UPDATE_REQUIRED` is a pre-effect refusal, not permission
 to choose API credits or another model. Authored fallbacks remain on disk but the
-qualified guard replaces each managed run's chain with an empty list. A foreign
+qualified >=2026.11.2 guard replaces each managed run's chain with an empty list.
+Strict capability v2 instead clears configured model fallback lists during explicit
+Connect, using a narrow CAS-protected write and verified Gateway application before
+credentials. It preserves primary, Harness, reasoning and unrelated settings.
+A failed application stays Pending, never a false success. Every run still forbids
+model fallback; runtime candidates must match the saved primary. Admission remains
+read-only and does not claim run-scoped suppression.
+Unknown/partial capability proofs still fail closed. A foreign
 plain token profile and unsupported Codex user-home/remote bridge are refused.
 See the channel plugin's subscription guard setup contract.
 

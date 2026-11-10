@@ -88,3 +88,51 @@ an app-server tool is still running. Transcript and Gateway-history recovery
 exclude explicitly marked commentary (including Codex mirror identity metadata).
 Only a final assistant reply can release the queue or trigger transcript-completion
 cleanup; progress text must never cause a running tool to be aborted/replayed.
+
+
+## Official >=2026.9.8 continuous compatibility
+
+The loaded plugin, not a version string inferred by Relay, supplies the live
+capability. Existing v1 means `runScopedFallbacks: true` and
+`readOnlyAdmission: true` (qualified official >=2026.11.2 with async SDK). The
+strict adapter (>=2026.9.8 and <2026.11.2, or newer sync-only SDK) uses
+v2 with `runScopedFallbacks: false`, `configuredFallbacksForbidden: true` and
+`readOnlyAdmission: true`. Relay accepts only these exact policy shapes; old
+Relay rejects v2 rather than activating an unguarded pool.
+
+For v2, `config.read` plans against a cleared clone without mutating configuration.
+Explicit `codex.auth.pool.sync` (Connect) clears model-assignment fallback lists,
+including nested/subagent/cron assignments, under the ordinary owner/model lock
+and config CAS. This narrowly authorized exception does not change primary,
+Harness, reasoning, catalogs, credentials or unrelated memory/transport/Harness
+fallback policies. Pending intent is persisted before cleanup; credentials are
+written only after `config.get` confirms matching source/applied Gateway hashes
+and an empty model fallback configuration. Pool writes then call the public
+`models.authRefresh {operation:"update",agentId}` for each live `agents.list`
+entry and require `refreshed:true` before acknowledgment. This invalidates shared
+auth ownership as well as auth caches; `models.authStatus {refresh:true}` alone
+can miss newly created shared-store ownership on a running host. No implicit
+runtime update, general normalization or restart is performed. Failed/disabled hot reload leaves the
+receipt pending with no credential effect or success acknowledgment; retry the
+same revision after applying the saved configuration. Stale/conflicting pool
+snapshots refuse before cleanup, and a failed operation never restores an unsafe
+fallback chain. Empty lists are not rewritten. Modern v1 retains authored lists
+and suppresses them per run.
+A fallback introduced later is blocked by the channel plugin at run admission.
+Injected cron/session fallback candidates must also match the agent's saved
+primary model, so unsupported overrides cannot escape into another model/API.
+
+The post-mutation refresh RPC exists in all 18 audited stable packages from
+2026.9.8 through 2026.11.2, as do the applied config hash fields in `config.get`.
+The plugin prefers the async reader when available, otherwise the synchronous
+public auth SDK, with `readOnly: true`,
+`syncExternalCli: false`, `allowKeychainPrompt: false`. It emits explicit
+`pass`/`block` decisions in both modes. Strict mode does not
+claim suppression of the outer fallback chain. No OpenClaw code changes are
+needed. The plugin admits continuous >=2026.9.8, with no upper version cutoff;
+unknown versions or missing required SDK/hooks still fail closed. This is not a
+guarantee against future upstream SDK/hook incompatibilities. Real installed
+9.8 SDK tests cover pool A/B,
+unrelated key/provider and session metadata preservation; the plugin's isolated
+Gateway qualification covers synthetic A/429-to-B native dispatch and exhaustion.
+Synthetic transport is not a claim of real OAuth native/Codex acceptance.
