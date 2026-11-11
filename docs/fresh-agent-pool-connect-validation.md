@@ -57,3 +57,13 @@ No application behavior was changed to accommodate the test environment.
 Tests cover exact generated-row/env eligibility and foreign/custom negatives,
 read-only admission, v1/v2 fallback semantics, CAS/model fences, pending-before-
 credentials ordering, applied-config/guard proof and reload-off activation.
+
+## Fixture cleanup
+
+The standard pool API removed the test member at revision 4, and the standard
+authorization-delete API disabled the synthetic account and cleared its encrypted
+credential payload. The company-scoped audited deletion workflow returned
+`SUCCEEDED` for both task-created agents; subsequent read-only inventory confirmed
+both `DELETED` with deletion timestamps. The task-created Luna template is
+`ARCHIVED`; the shared QA template and existing real accounts were not modified.
+The temporary tunnel SSH key was removed.
