@@ -136,3 +136,32 @@ guarantee against future upstream SDK/hook incompatibilities. Real installed
 unrelated key/provider and session metadata preservation; the plugin's isolated
 Gateway qualification covers synthetic A/429-to-B native dispatch and exhaustion.
 Synthetic transport is not a claim of real OAuth native/Codex acceptance.
+
+### Fresh-agent Connect routing
+
+The pool preflight and explicit Connect share `prepareSubscriptionPoolConfig`.
+They recognize only the exact generated OpenAI/Codex proxy provider rows for this
+Relay's `BACKEND_BASE_URL`, with an empty catalog and optional exact canonical
+OpenClaw runtime metadata. Connect can replace this auth route with direct
+`openai-chatgpt-responses` without selecting a model or changing its Harness.
+Explicit API/custom routes, credentials, unknown provider fields and foreign
+proxy endpoints remain authoritative and fail closed when incompatible. No
+component installation or general config normalization is performed.
+
+Preflight prepares a clone without writing config, auth stores or receipts. The
+actual Connect recomputes the candidate under the common owner/model lock and
+requires exact CAS-protected transformation equality. Any route change (including
+with a run-scoped v1 guard) must be observed applied by Gateway before credential
+installation; a failure stays pending and is replayable rather than reported ACTIVE.
+Strict v2 additionally clears authored model fallbacks through the existing narrow
+Connect policy. Primary model, reasoning, runtime metadata and unrelated provider,
+channel/tool and operational settings are preserved.
+
+Generated `config.env` / `env.vars` OpenAI proxy credentials are recognized only
+when **both** the endpoint matches this deployment and the key matches this
+agent's `RELAY_TOKEN`. A foreign key, endpoint, or missing authority is preserved.
+When `gateway.reload.mode=off`, a supported saved/applied hash mismatch triggers
+one auth-route restart with the existing OpenAI service-environment cleanup;
+Gateway reconnection, applied hash equality, and the unchanged loaded guard are
+required before any credential effect. Already-applied Connect/rotation does not
+restart Gateway. This path stays within authorization-only config scope.

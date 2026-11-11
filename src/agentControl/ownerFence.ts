@@ -85,6 +85,7 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
   runtimeInstallActionId?: string;
   operationalPublicPort?: boolean;
   subscriptionPoolFallbackCleanup?: boolean;
+  subscriptionPoolConnect?: { runScopedFallbacks: boolean };
   managedRuntimePolicy?: ManagedRuntimePolicy;
   managedRuntimePolicyDigest?: string;
   expectedConfigText?: string | null;
@@ -112,6 +113,11 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
       if (current === undefined || (options.expectedRevision === undefined && options.expectedConfigText === undefined) ||
           !isDeepStrictEqual(clearSubscriptionModelFallbacks(object(JSON5.parse(current))), object(JSON5.parse(text)))) throw new Error("MODEL_FENCE_REQUIRED");
     }
+    if (options.subscriptionPoolConnect) {
+      const { prepareSubscriptionPoolConfig } = await import("./subscriptionPoolConfig.js");
+      if (current === undefined || (options.expectedRevision === undefined && options.expectedConfigText === undefined) ||
+          !isDeepStrictEqual(prepareSubscriptionPoolConfig(object(JSON5.parse(current)), options.subscriptionPoolConnect), object(JSON5.parse(text)))) throw new Error("MODEL_FENCE_REQUIRED");
+    }
     const fence = incoming ?? previous;
     const { normalizeManagedConfigText } = await import("../managed-runtime/runtime-policy.js");
     const normalized = await normalizeManagedConfigText(configPath, text);
@@ -121,7 +127,7 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
     const { readSubscriptionPoolState } = await import("./subscriptionPoolManager.js");
     if (await readSubscriptionPoolState(configPath)) {
       const { assertSubscriptionOnlyConfiguration } = await import("./openAiSubscriptionPool.js");
-      assertSubscriptionOnlyConfiguration(object(JSON5.parse(projected)));
+      assertSubscriptionOnlyConfiguration(object(JSON5.parse(projected)), process.env, options.subscriptionPoolConnect);
     }
 
     const model = await readModelFence(configPath);
@@ -135,6 +141,10 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
       if (options.subscriptionPoolFallbackCleanup) {
         const { clearSubscriptionModelFallbacks } = await import("./subscriptionModelFallbacks.js");
         normalizedCurrent = JSON.stringify(clearSubscriptionModelFallbacks(object(JSON5.parse(normalizedCurrent))));
+      }
+      if (options.subscriptionPoolConnect) {
+        const { prepareSubscriptionPoolConfig } = await import("./subscriptionPoolConfig.js");
+        normalizedCurrent = JSON.stringify(prepareSubscriptionPoolConfig(object(JSON5.parse(normalizedCurrent)), options.subscriptionPoolConnect));
       }
       if (!isDeepStrictEqual(managedRuntime.protectedRoute(publicPortProjection(JSON5.parse(normalizedCurrent), options.operationalPublicPort)), managedRuntime.protectedRoute(publicPortProjection(JSON5.parse(projected), options.operationalPublicPort)))) throw new Error("MODEL_FENCE_REQUIRED");
     }

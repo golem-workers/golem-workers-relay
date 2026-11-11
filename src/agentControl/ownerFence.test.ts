@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { writeOwnerFencedConfig } from "./ownerFence.js";
 type Config = { commands: { ownerAllowFrom: string[] }; channels: unknown; tools: unknown };
 function parse(text: string) { return JSON.parse(text) as Config; }
@@ -99,4 +99,28 @@ it("fallback cleanup authority cannot change model, reasoning, auth or bypass CA
  expect(await readFile(file,"utf8")).toBe(before);
  await write(candidate);
  expect(JSON.parse(await readFile(file,"utf8"))).toEqual(candidate);
+});
+
+it("Connect route authority permits only the exact generated auth repair, retaining model/owner fences and CAS", async () => {
+ const {writeFile}=await import("node:fs/promises");
+ const {withAuthorizationConfig}=await import("../managed-runtime/runtime-policy.js");
+ const {prepareSubscriptionPoolConfig}=await import("./subscriptionPoolConfig.js");
+ const {withModelFenceLock,writeModelFence,readModelFence}=await import("./modelFence.js");
+ vi.stubEnv("BACKEND_BASE_URL","https://dev-api.golemworkers.com");
+ try {
+ const file=await fixture();
+ const before=JSON.stringify({agents:{defaults:{model:{primary:"openai/gpt-5.6-luna",fallbacks:[]},thinkingDefault:"high"}},models:{providers:{openai:{baseUrl:"https://dev-api.golemworkers.com/api/v1/relays/openai/v1",models:[],agentRuntime:{id:"openclaw"}}}},env:{KEEP:"synthetic"}});
+ await writeFile(file,before);
+ await withModelFenceLock(file,()=>writeModelFence(file,{revision:"fresh",predecessor:null,status:"APPLIED",model:"openai/gpt-5.6-luna"}));
+ const fence=await readModelFence(file);
+ const guard={runScopedFallbacks:false};
+ const candidate=prepareSubscriptionPoolConfig(JSON.parse(before) as Record<string,unknown>,guard);
+ const write=(c:unknown,expected=before)=>withAuthorizationConfig(file,()=>writeOwnerFencedConfig(file,JSON.stringify(c),undefined,{expectedConfigText:expected,subscriptionPoolConnect:guard}));
+ for(const patch of [{agents:{}},{env:{KEEP:"changed"}},{models:{providers:{openai:{apiKey:"bad"}}}}])await expect(write({...candidate,...patch})).rejects.toThrow("MODEL_FENCE_REQUIRED");
+ await expect(write(candidate,"{}")).rejects.toThrow("CONFIG_CONFLICT");
+ expect(await readFile(file,"utf8")).toBe(before);
+ await write(candidate);
+ expect(JSON.parse(await readFile(file,"utf8"))).toEqual(candidate);
+ expect(await readModelFence(file)).toEqual(fence);
+ }finally{vi.unstubAllEnvs();}
 });

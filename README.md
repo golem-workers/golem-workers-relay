@@ -779,7 +779,14 @@ to choose API credits or another model. Authored fallbacks remain on disk but th
 qualified >=2026.11.2 guard replaces each managed run's chain with an empty list.
 Strict capability v2 instead clears configured model fallback lists during explicit
 Connect, using a narrow CAS-protected write and verified Gateway application before
-credentials. It preserves primary, Harness, reasoning and unrelated settings.
+credentials. Explicit Connect also prepares the subscription auth route for a
+freshly provisioned OpenAI agent: only exact platform-generated empty proxy rows
+(including canonical OpenClaw runtime metadata) may be replaced by the direct
+ChatGPT Responses route. Preflight evaluates the same candidate read-only; the
+mutation uses whole-config CAS and an exact transformation allowlist under the
+owner/model lock, then verifies Gateway application before installing credentials.
+Custom/API-key routes are never silently converted, and a non-OpenAI primary is
+not changed to an OpenAI model. It preserves primary, Harness, reasoning and unrelated settings.
 A failed application stays Pending, never a false success. Every run still forbids
 model fallback; runtime candidates must match the saved primary. Admission remains
 read-only and does not claim run-scoped suppression.

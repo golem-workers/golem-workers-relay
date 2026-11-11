@@ -2483,3 +2483,18 @@ it("preflights strict Connect with fallback cleanup planned but no filesystem mu
  expect(await fs.readFile(configPath,"utf8")).toBe(text);expect((await fs.readdir(dir)).sort()).toEqual(["openclaw.json"]);
  }finally{await fs.rm(dir,{recursive:true,force:true});}
 });
+
+it("preflights fresh native OpenAI proxy routing read-only, before OAuth installation", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "fresh-pool-preflight-")), configPath = path.join(dir, "openclaw.json");
+  vi.stubEnv("BACKEND_BASE_URL", "https://dev-api.golemworkers.com");
+  const row = { baseUrl: "https://dev-api.golemworkers.com/api/v1/relays/openai/v1", models: [], agentRuntime: { id: "openclaw" } };
+  const text = JSON.stringify({ agents: { defaults: { model: { primary: "openai/gpt-5.6-luna", fallbacks: [] } } }, models: { providers: { openai: row, codex: row } } });
+  await fs.writeFile(configPath, text);
+  try {
+    const request = vi.fn((method: string) => Promise.resolve(method === "relay-channel.subscriptionGuard.status" ? { version: 2, runScopedFallbacks: false, configuredFallbacksForbidden: true, readOnlyAdmission: true } : {}));
+    const read = await executeAgentControl({ configPath, gateway: { request }, action: { kind: "config.read" } });
+    expect(read).toMatchObject({ kind: "config.read", subscriptionPoolCompatibility: { compatible: true }, configText: text });
+    expect(await fs.readFile(configPath, "utf8")).toBe(text);
+    expect((await fs.readdir(dir)).sort()).toEqual(["openclaw.json"]);
+  } finally { vi.unstubAllEnvs(); await fs.rm(dir, { recursive: true, force: true }); }
+});

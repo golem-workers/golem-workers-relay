@@ -328,3 +328,34 @@ it("stale or invalid enrollment never clears an existing fallback chain", async 
   expect(writer).not.toHaveBeenCalled();
   expect(await fs.readFile(configPath, "utf8")).toBe(text);
 });
+
+it.each([false, true])("connects a fresh generated route only after runtime application, preserving model fence (runScoped=%s)", async runScopedFallbacks => {
+  vi.stubEnv("BACKEND_BASE_URL", "https://dev-api.golemworkers.com");
+  vi.stubEnv("RELAY_TOKEN", "synthetic-managed-token");
+  try {
+    const { configPath } = await fixture();
+    const proxy = { baseUrl: "https://dev-api.golemworkers.com/api/v1/relays/openai/v1", models: [], agentRuntime: { id: "openclaw" } };
+    const before = { agents: { defaults: { model: { primary: "openai/gpt-5.6-luna", fallbacks: runScopedFallbacks ? ["anthropic/retained"] : [] }, thinkingDefault: "high", models: { "openai/gpt-5.6-luna": { agentRuntime: { id: "openclaw" } } } } }, models: { providers: { openai: proxy, codex: proxy } }, env: { vars: { OPENAI_API_KEY: "synthetic-managed-token", OPENAI_BASE_URL: "https://dev-api.golemworkers.com/api/v1/relays/openai/v1", KEEP: "untouched" } }, channels: { telegram: { enabled: true } } };
+    await fs.writeFile(configPath, JSON.stringify(before));
+    const { withModelFenceLock, writeModelFence, readModelFence } = await import("./modelFence.js");
+    await withModelFenceLock(configPath, () => writeModelFence(configPath, { revision: "fresh-connect", predecessor: null, status: "APPLIED", model: before.agents.defaults.model.primary }));
+    const fence = await readModelFence(configPath);
+    const wait = vi.fn(async (text: string) => {
+      expect(writer).not.toHaveBeenCalled();
+      expect(JSON.parse(text)).toMatchObject({ agents: before.agents, channels: before.channels, models: { providers: { openai: { api: "openai-chatgpt-responses", baseUrl: "https://chatgpt.com/backend-api/codex" } } } });
+      expect((await readSubscriptionPoolState(configPath))?.phase).toBe("pending");
+    });
+    writer.mockImplementation(() => { expect(wait).toHaveBeenCalledOnce(); return Promise.resolve(); });
+    await expect(syncSubscriptionPool({ configPath, revision: 1, members, assertRuntimeGuard: () => Promise.resolve({ runScopedFallbacks }), waitForConfigApplied: wait, refreshRuntimeAuth: async () => {} })).resolves.toMatchObject({ phase: "applied" });
+    expect(await readModelFence(configPath)).toEqual(fence);
+    expect(writer).toHaveBeenCalledOnce();
+  } finally { vi.unstubAllEnvs(); }
+});
+
+it("refuses changed guard proof after runtime application before installing credentials", async () => {
+  const { configPath } = await fixture();
+  const assertRuntimeGuard = vi.fn().mockResolvedValueOnce({ runScopedFallbacks: false }).mockResolvedValueOnce({ runScopedFallbacks: true });
+  await expect(syncSubscriptionPool({ configPath, revision: 1, members, assertRuntimeGuard, waitForConfigApplied: () => Promise.resolve(), refreshRuntimeAuth: () => Promise.resolve() })).rejects.toMatchObject({ code: "OPENAI_POOL_GUARD_UPDATE_REQUIRED" });
+  expect(writer).not.toHaveBeenCalled();
+  expect((await readSubscriptionPoolState(configPath))?.phase).toBe("pending");
+});

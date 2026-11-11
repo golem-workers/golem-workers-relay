@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import JSON5 from "json5";
 import { z } from "zod";
 import { assertSubscriptionOnlyConfiguration } from "./openAiSubscriptionPool.js";
 
@@ -13,22 +14,35 @@ export async function waitForSubscriptionConfigApplied(
       options?: { timeoutMs: number },
     ): Promise<unknown>;
   },
+  guard: { runScopedFallbacks: boolean } = { runScopedFallbacks: false },
+  restartGateway?: () => Promise<void>,
 ): Promise<void> {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 60_000;
+  if ((await fs.readFile(configPath, "utf8")) !== expectedText) throw new Error("CONFIG_CONFLICT");
+  const expected: { gateway?: { reload?: { mode?: string } } } = JSON5.parse(expectedText);
+  const reloadDisabled = expected.gateway?.reload?.mode === "off";
+  let restarted = false;
   do {
     if ((await fs.readFile(configPath, "utf8")) !== expectedText)
       throw new Error("CONFIG_CONFLICT");
-    const state = (await gateway.request(
-      "config.get",
-      {},
-      { timeoutMs: 3000 },
-    )) as {
-      valid?: boolean;
-      path?: string;
-      config?: Record<string, unknown>;
-      configRevisionHash?: string;
-      appliedConfigHash?: string;
+    let state: {
+      valid?: boolean; path?: string; config?: Record<string, unknown>;
+      configRevisionHash?: string; appliedConfigHash?: string;
     };
+    try {
+      state = (await gateway.request("config.get", {}, { timeoutMs: 3000 })) as typeof state;
+    } catch (error) {
+      // Only the restart we initiated grants a bounded reconnect wait.
+      if (!restarted) throw error;
+      await new Promise(resolve => setTimeout(resolve, 100));
+      continue;
+    }
+    if (!restarted && restartGateway && reloadDisabled && state.valid === true && state.path === configPath &&
+        state.configRevisionHash && state.appliedConfigHash && state.configRevisionHash !== state.appliedConfigHash) {
+      restarted = true;
+      await restartGateway();
+      continue;
+    }
     if (
       state.valid === true &&
       state.path === configPath &&
@@ -37,9 +51,7 @@ export async function waitForSubscriptionConfigApplied(
       state.configRevisionHash === state.appliedConfigHash
     ) {
       try {
-        assertSubscriptionOnlyConfiguration(state.config, process.env, {
-          runScopedFallbacks: false,
-        });
+        assertSubscriptionOnlyConfiguration(state.config, process.env, guard);
         return;
       } catch {
         /* A cached pre-reload snapshot is not an applied cleanup. */
@@ -48,7 +60,7 @@ export async function waitForSubscriptionConfigApplied(
     await new Promise((resolve) => setTimeout(resolve, 100));
   } while (Date.now() < deadline);
   throw new Error(
-    "OPENAI_POOL_CONFIG_RUNTIME_PENDING: fallback cleanup is saved; Gateway has not applied it. Pool remains pending.",
+    "OPENAI_POOL_CONFIG_RUNTIME_PENDING: subscription configuration is saved; Gateway has not applied it. Pool remains pending.",
   );
 }
 

@@ -8,7 +8,7 @@ const record = (value: unknown): RecordValue | undefined =>
 /** Match the backend's generated direct route, not a URL substring or a list
  * of public hosts. BACKEND_BASE_URL is relay deployment authority. Historical
  * endpoints after a deployment move are deliberately not guessed. */
-function managedBaseUrl(env: NodeJS.ProcessEnv): string | undefined {
+export function managedOpenAiRelayBaseUrl(env: NodeJS.ProcessEnv): string | undefined {
   const base = env.BACKEND_BASE_URL?.trim().replace(/\/+$/, "");
   if (!base) return;
   try {
@@ -40,7 +40,7 @@ export function normalizeManagedSubscriptionRoute(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   if (!hasSubscription) return false;
-  const endpoint = managedBaseUrl(env);
+  const endpoint = managedOpenAiRelayBaseUrl(env);
   if (!endpoint) return false;
   const configEnv = record(config.env);
   if ([configEnv, record(configEnv?.vars), env].some((entry) =>
@@ -56,7 +56,9 @@ export function normalizeManagedSubscriptionRoute(
   for (const name of ["openai", "codex"]) {
     const provider = record(providers[name]);
     if (!provider || provider.baseUrl !== endpoint || !Array.isArray(provider.models)) continue;
-    if (provider.models.length === 0 && Object.keys(provider).every((key) => key === "baseUrl" || key === "models")) {
+    const generatedRuntime = provider.agentRuntime === undefined || isDeepStrictEqual(provider.agentRuntime, { id: "openclaw" });
+    const generatedPicker = provider.pickerRuntimes === undefined || isDeepStrictEqual(provider.pickerRuntimes, ["openclaw"]);
+    if (provider.models.length === 0 && generatedRuntime && generatedPicker && Object.keys(provider).every((key) => ["baseUrl", "models", "agentRuntime", "pickerRuntimes"].includes(key))) {
       delete providers[name];
       changed = true;
     } else if (name === "openai" && isGeneratedSolCatalog(provider)) {
