@@ -27,7 +27,7 @@ const stateSchema = z.object({
   version: z.literal(1),
   revision: z.number().int().positive(),
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-  phase: z.enum(["pending", "applied"]),
+  phase: z.enum(["pending", "applied", "exiting", "exited"]),
   members: z.array(memberMetadata).max(32),
   managedProfileIds: z.array(z.string().min(1)),
 });
@@ -50,7 +50,7 @@ export async function readSubscriptionPoolState(
     throw error;
   }
 }
-async function writeState(
+export async function writeSubscriptionPoolState(
   configPath: string,
   state: SubscriptionPoolState,
 ): Promise<void> {
@@ -79,7 +79,8 @@ async function writeState(
 export async function assertLegacyAuthMutationAllowed(
   configPath: string,
 ): Promise<void> {
-  if (await readSubscriptionPoolState(configPath))
+  const state = await readSubscriptionPoolState(configPath);
+  if (state && state.phase !== "exited")
     throw new SubscriptionPoolError(
       "OPENAI_POOL_SCOPED_OPERATION_REQUIRED",
       "This agent has a subscription pool. Use account-scoped authorization operations, not provider-wide replacement/clear.",
@@ -117,7 +118,7 @@ export async function syncSubscriptionPool(input: {
         "OPENAI_POOL_GUARD_UPDATE_REQUIRED",
         "Strict pool connection requires runtime configuration verification.",
       );
-    await writeState(input.configPath, next);
+    await writeSubscriptionPoolState(input.configPath, next);
     let appliedText = configText;
     if (configChanged) {
       appliedText = JSON.stringify(candidate, null, 2) + "\n";
@@ -147,7 +148,7 @@ export async function syncSubscriptionPool(input: {
       phase: "applied" as const,
       managedProfileIds: next.members.map((m) => m.profileId),
     };
-    await writeState(input.configPath, applied);
+    await writeSubscriptionPoolState(input.configPath, applied);
     return applied;
   });
 }

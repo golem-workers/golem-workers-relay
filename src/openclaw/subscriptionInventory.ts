@@ -54,7 +54,7 @@ export async function readSubscriptionInventory(input: {
 }): Promise<SubscriptionInventory> {
   const configPath = input.configPath ?? resolveOpenclawConfigPath();
   const pool = await readSubscriptionPoolState(configPath);
-  if (!pool) return [];
+  if (!pool || pool.phase === "exited") return [];
   const require = createRequire(await resolveRuntimeAuthSdk());
   const sdk = require.resolve('openclaw/plugin-sdk/session-store-runtime');
   const configSdk = require.resolve('openclaw/plugin-sdk/runtime-config-snapshot');

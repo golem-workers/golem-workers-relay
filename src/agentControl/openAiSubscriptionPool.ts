@@ -22,7 +22,7 @@ export type SubscriptionPoolState = {
   version: 1;
   revision: number;
   fingerprint: string;
-  phase: "pending" | "applied";
+  phase: "pending" | "applied" | "exiting" | "exited";
   members: Array<{
     accountId: string;
     profileId: string;
@@ -197,6 +197,8 @@ export function prepareSubscriptionPool(
         "Credential version was superseded.",
       );
   }
+  if (previous && ["exiting", "exited"].includes(previous.phase) && revision <= previous.revision)
+    throw new SubscriptionPoolError("OPENAI_POOL_REVISION_CONFLICT", "Subscription revision predates explicit pool exit.");
   const fingerprint = createHash("sha256")
     .update(
       JSON.stringify(

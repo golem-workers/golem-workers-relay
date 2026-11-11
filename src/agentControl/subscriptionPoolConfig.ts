@@ -1,4 +1,4 @@
-import { managedOpenAiRelayBaseUrl, normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
+import { isGeneratedSolCatalog, managedOpenAiRelayBaseUrl, normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
 import { clearSubscriptionModelFallbacks } from "./subscriptionModelFallbacks.js";
 
 /** Explicit Connect prepares auth routing, not model intent. Only exact platform-
@@ -19,13 +19,25 @@ export function prepareSubscriptionPoolConfig(
   const endpoint = managedOpenAiRelayBaseUrl(env);
   const token = env.RELAY_TOKEN?.trim();
   const envRoot = next.env as Record<string, unknown> | undefined;
+  let generatedEnvironment = false;
   for (const row of [envRoot, envRoot?.vars as Record<string, unknown> | undefined]) {
     if (row && endpoint && token && row.OPENAI_BASE_URL === endpoint && row.OPENAI_API_KEY === token) {
+      generatedEnvironment = true;
       delete row.OPENAI_API_KEY;
       delete row.OPENAI_BASE_URL;
     }
   }
   const priorProvider = (next.models as { providers?: { openai?: Record<string, unknown> } } | undefined)?.providers?.openai;
+  // A prior explicit exit writes this exact platform API route. Its per-agent
+  // environment pair proves custody; authored API routes remain untouched.
+  if (generatedEnvironment && priorProvider?.api === "openai-responses" && priorProvider.baseUrl === endpoint) {
+    const withoutApi = { ...priorProvider }; delete withoutApi.api;
+    if (isGeneratedSolCatalog(withoutApi, false)) {
+      delete priorProvider.api;
+      for (const row of priorProvider.models as Record<string, unknown>[]) row.api = "openai-chatgpt-responses";
+    } else if (Array.isArray(priorProvider.models) && !priorProvider.models.length &&
+      Object.keys(priorProvider).every(k => ["api", "baseUrl", "models", "agentRuntime", "pickerRuntimes"].includes(k))) delete priorProvider.api;
+  }
   if (normalizeManagedSubscriptionRoute(next, true, env)) {
     const providers = (next.models as { providers: Record<string, unknown> }).providers;
     // The normalizer deletes only the exact generated empty provider. Preserve
