@@ -54,18 +54,31 @@ Backend automatic sleep consumes this same canonical status; process diagnostics
 must not become an independent sleep-only work-status heuristic.
 
 For `relay_channel_v2`, Relay runs non-blocking periodic maintenance for the
-already-enabled, npm-managed `@golemworkers/relay-channel` plugin. It checks the
+already-enabled, npm-managed `@golemworkers/relay-channel` plugin and the standard
+Golem snapshot archive installation. It checks the
 published npm `latest` stable release hourly, with up to five minutes of startup
 and per-check jitter. Newer installed versions are never downgraded. Missing,
-disabled, custom/path and prerelease installations are not changed.
+disabled, custom/path and prerelease installations are not changed. The snapshot
+archive is recognized only by matching host-owned install metadata: the exact
+`/root/golem-workers-openclaw-channel-plugin/.artifacts/relay-channel/relay-channel-bundle.tgz`
+source, the global `extensions/relay-channel` install/root, and the package name.
+Other archives are not migrated; a newer-than-npm archive is not downgraded.
+Host `plugins inspect` metadata is used when the list omits install provenance.
 
 The updater shares the platform Update/Doctor install, model and owner kernel
 locks (in that order), defers when Gateway is busy, and uses the native
 `openclaw plugins update @golemworkers/relay-channel@<exact-version>` transaction.
+For the recognized snapshot archive, it performs a one-time native
+`openclaw plugins install --force @golemworkers/relay-channel@<exact-version>`
+replacement instead (archive records cannot be updated by `plugins update`).
+This is a host-managed replacement, never uninstall-then-install; `--force` only
+selects replacement and does not accept capability consent. npm provenance is
+verified after migration. Host install has no dry-run for archive replacement.
 Host compatibility, install policy and existing capability consent remain enforced;
 no automatic capability acceptance, uninstall, enable, config normalization,
 authentication change or OpenClaw upgrade is performed. Runtime plugin activation
-and Gateway health are checked, not merely the on-disk package version. A safe
+and Gateway health are checked even when the on-disk package version is already
+current. Stale loaded code is repaired without reinstalling or downgrading. A safe
 Gateway restart is requested only if hot activation is absent; it is never forced.
 A busy/unreachable/unsupported host or registry failure cannot prevent Relay startup.
 
@@ -83,7 +96,10 @@ An `installing` receipt with the old package still present, configuration drift,
 or an unverified restart requires operator inspection. After confirming no
 installer is running and repairing/validating the current installation/config,
 the operator can remove the receipt to authorize a new attempt. No automatic
-SQLite/config restore or repeated restart storm is attempted.
+SQLite/config restore or repeated restart storm is attempted. A failed same-version
+archive migration is not considered complete unless npm provenance is confirmed.
+Plugin maintenance never grants conversation/hook access: missing consent or an
+unsupported host still requires a separate Setup/Update before pool Connect.
 
 For `relay_channel_v2` agents, the relay now advertises provider-aware control
 plane capability profiles on the local control plane. The top-level hello frame
