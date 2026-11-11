@@ -1023,9 +1023,7 @@ async function setModel(input: {
     ensureAllowedModelEntry(defaultsCfg, fallbackModel.modelRef);
   }
   applyModelFastMode(defaultsCfg, storedPrimaryModel.modelRef, input.fastMode);
-  if (typeof input.contextTokens === "number" && Number.isFinite(input.contextTokens) && input.contextTokens > 0) {
-    defaultsCfg.contextTokens = Math.floor(input.contextTokens);
-  }
+  delete defaultsCfg.contextTokens;
   if (typeof input.thinkingDefault === "string" && input.thinkingDefault.trim()) {
     defaultsCfg.thinkingDefault = input.thinkingDefault;
   } else if (input.thinkingDefault === null) {
@@ -1040,7 +1038,7 @@ async function setModel(input: {
     restarted: true,
     model: input.model,
     fallbacks,
-    contextTokens: input.contextTokens,
+    contextTokens: null,
     thinkingDefault: readThinkingDefault(defaultsCfg.thinkingDefault),
     fastMode: readModelFastMode(defaultsCfg, storedPrimaryModel.modelRef),
     activeState: restart.activeState,
@@ -1228,9 +1226,7 @@ async function setModelAssignment(input: {
   if (input.purpose === "main") {
     applyModelFastMode(defaultsCfg, storedPrimaryModel.modelRef, input.fastMode);
   }
-  if (input.purpose === "main" && typeof input.contextTokens === "number" && Number.isFinite(input.contextTokens) && input.contextTokens > 0) {
-    defaultsCfg.contextTokens = Math.floor(input.contextTokens);
-  }
+  delete defaultsCfg.contextTokens;
   if (input.purpose === "main" && typeof input.thinkingDefault === "string" && input.thinkingDefault.trim()) {
     defaultsCfg.thinkingDefault = input.thinkingDefault;
   } else if (input.purpose === "main" && input.thinkingDefault === null) {
@@ -1246,7 +1242,7 @@ async function setModelAssignment(input: {
     purpose: input.purpose,
     primary: input.primary,
     fallback: input.fallback,
-    contextTokens: input.contextTokens,
+    contextTokens: null,
     thinkingDefault: input.purpose === "main" ? readThinkingDefault(defaultsCfg.thinkingDefault) : null,
     fastMode: input.purpose === "main"
       ? readModelFastMode(defaultsCfg, storedPrimaryModel.modelRef)

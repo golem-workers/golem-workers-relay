@@ -802,3 +802,5 @@ unkeyed recovery remains a compatibility path, not a billing or dispatch identit
 Pool removal also clears obsolete OpenAI session pins for every configured agent through the public session-store SDK, preserving transcript/activity metadata. Unsupported session-store/agent-scope SDKs refuse pool mutation rather than updating only the main agent.
 
 Explicit selection of API/credits after a subscription pool now uses a revisioned, Gateway-confirmed pool exit. Removing subscriptions alone never enables API spending. This requires matching Relay and loaded channel-plugin exit capabilities; failed exits remain pending and recover only through the saved model/source operation. See [pool protocol](docs/openai-subscription-pool.md).
+
+Managed model configuration does not set `agents.defaults.contextTokens`; model changes remove any legacy value. The runtime uses the model context window. Legacy relay protocol fields remain accepted for compatibility and return `null`.
