@@ -20,9 +20,9 @@ export function managedOpenAiRelayBaseUrl(env: NodeJS.ProcessEnv): string | unde
 
 // Reuse the generator as a strict fingerprint: arbitrary nonempty catalogs and
 // authored model/provider fields must remain authoritative.
-function isGeneratedSolCatalog(provider: RecordValue): boolean {
+export function isGeneratedSolCatalog(provider: RecordValue, subscriptionRoute = true): boolean {
   const expected: RecordValue = { agents: { defaults: { models: { "openai/gpt-6.1-sol": {} } } } };
-  ensureNativePiModelCompatibility(expected, true, {});
+  ensureNativePiModelCompatibility(expected, subscriptionRoute, {});
   const catalog = record(record(expected.models)?.providers)?.openai;
   const withoutEndpoint = { ...provider };
   delete withoutEndpoint.baseUrl;

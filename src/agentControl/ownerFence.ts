@@ -85,6 +85,7 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
   runtimeInstallActionId?: string;
   operationalPublicPort?: boolean;
   subscriptionPoolFallbackCleanup?: boolean;
+  subscriptionPoolExitRevision?: number;
   subscriptionPoolConnect?: { runScopedFallbacks: boolean };
   managedRuntimePolicy?: ManagedRuntimePolicy;
   managedRuntimePolicyDigest?: string;
@@ -125,7 +126,13 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
     // A subsequent model/config writer must not reopen API/model fallback for
     // an active or ambiguous subscription-only pool. This is validation only.
     const { readSubscriptionPoolState } = await import("./subscriptionPoolManager.js");
-    if (await readSubscriptionPoolState(configPath)) {
+    const poolState = await readSubscriptionPoolState(configPath);
+    if (options.subscriptionPoolExitRevision !== undefined) {
+      const { prepareSubscriptionPoolExitConfig } = await import("./subscriptionPoolExit.js");
+      if (poolState?.phase !== "exiting" || poolState.revision !== options.subscriptionPoolExitRevision || current === undefined || options.expectedConfigText === undefined ||
+          !isDeepStrictEqual(prepareSubscriptionPoolExitConfig(object(JSON5.parse(current))), object(JSON5.parse(text)))) throw new Error("MODEL_FENCE_REQUIRED");
+    }
+    if (poolState && poolState.phase !== "exited" && options.subscriptionPoolExitRevision === undefined) {
       const { assertSubscriptionOnlyConfiguration } = await import("./openAiSubscriptionPool.js");
       assertSubscriptionOnlyConfiguration(object(JSON5.parse(projected)), process.env, options.subscriptionPoolConnect);
     }
@@ -145,6 +152,10 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
       if (options.subscriptionPoolConnect) {
         const { prepareSubscriptionPoolConfig } = await import("./subscriptionPoolConfig.js");
         normalizedCurrent = JSON.stringify(prepareSubscriptionPoolConfig(object(JSON5.parse(normalizedCurrent)), options.subscriptionPoolConnect));
+      }
+      if (options.subscriptionPoolExitRevision !== undefined) {
+        const { prepareSubscriptionPoolExitConfig } = await import("./subscriptionPoolExit.js");
+        normalizedCurrent = JSON.stringify(prepareSubscriptionPoolExitConfig(object(JSON5.parse(normalizedCurrent))));
       }
       if (!isDeepStrictEqual(managedRuntime.protectedRoute(publicPortProjection(JSON5.parse(normalizedCurrent), options.operationalPublicPort)), managedRuntime.protectedRoute(publicPortProjection(JSON5.parse(projected), options.operationalPublicPort)))) throw new Error("MODEL_FENCE_REQUIRED");
     }

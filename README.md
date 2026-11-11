@@ -800,3 +800,5 @@ assistant reply while the current user transcript entry is still pending. Legacy
 unkeyed recovery remains a compatibility path, not a billing or dispatch identity.
 
 Pool removal also clears obsolete OpenAI session pins for every configured agent through the public session-store SDK, preserving transcript/activity metadata. Unsupported session-store/agent-scope SDKs refuse pool mutation rather than updating only the main agent.
+
+Explicit selection of API/credits after a subscription pool now uses a revisioned, Gateway-confirmed pool exit. Removing subscriptions alone never enables API spending. This requires matching Relay and loaded channel-plugin exit capabilities; failed exits remain pending and recover only through the saved model/source operation. See [pool protocol](docs/openai-subscription-pool.md).

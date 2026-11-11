@@ -97,7 +97,7 @@ export async function readSubscriptionRuntime(input: {
 }): Promise<SubscriptionSnapshot | null> {
   const configPath = input.configPath ?? resolveOpenclawConfigPath();
   const pool = await readSubscriptionPoolState(configPath);
-  if (!pool || /^agent:(?!main:)/i.test(input.sessionKey)) return null;
+  if (!pool || pool.phase === "exited" || /^agent:(?!main:)/i.test(input.sessionKey)) return null;
   const sdkPath = await resolveRuntimeAuthSdk();
   const require = createRequire(sdkPath);
   const sessionSdk =

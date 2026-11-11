@@ -7,3 +7,9 @@ describe("loaded subscription guard capability",()=>{
  it.each([{version:2,runScopedFallbacks:false,readOnlyAdmission:true},{version:2,runScopedFallbacks:true,configuredFallbacksForbidden:true,readOnlyAdmission:true},{version:3,runScopedFallbacks:false,configuredFallbacksForbidden:true,readOnlyAdmission:true}])("rejects ambiguous legacy proof %j",async status=>{await expect(assertRuntimeSubscriptionGuard({request:()=>Promise.resolve(status)})).rejects.toMatchObject({code:"OPENAI_POOL_GUARD_UPDATE_REQUIRED"});});
  it("normalizes missing method/offline errors without leaking payloads",async()=>{await expect(assertRuntimeSubscriptionGuard({request:()=>Promise.reject(Error("private fixture contents"))})).rejects.toThrow("authorization did not install or change plugins");});
 });
+
+it("requires explicit loaded plugin exit support before advertising or beginning exit", async () => {
+ const old = {version:2,runScopedFallbacks:false,configuredFallbacksForbidden:true,readOnlyAdmission:true};
+ await expect(assertRuntimeSubscriptionGuard({request:()=>Promise.resolve(old)}, true)).rejects.toMatchObject({code:"OPENAI_POOL_GUARD_UPDATE_REQUIRED"});
+ await expect(assertRuntimeSubscriptionGuard({request:()=>Promise.resolve({...old,poolExitVersion:1})}, true)).resolves.toEqual({runScopedFallbacks:false});
+});

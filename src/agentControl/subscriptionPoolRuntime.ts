@@ -16,6 +16,7 @@ export async function waitForSubscriptionConfigApplied(
   },
   guard: { runScopedFallbacks: boolean } = { runScopedFallbacks: false },
   restartGateway?: () => Promise<void>,
+  validateConfig?: (config: Record<string, unknown>) => void,
 ): Promise<void> {
   const deadline = Date.now() + 60_000;
   if ((await fs.readFile(configPath, "utf8")) !== expectedText) throw new Error("CONFIG_CONFLICT");
@@ -51,7 +52,8 @@ export async function waitForSubscriptionConfigApplied(
       state.configRevisionHash === state.appliedConfigHash
     ) {
       try {
-        assertSubscriptionOnlyConfiguration(state.config, process.env, guard);
+        if (validateConfig) validateConfig(state.config);
+        else assertSubscriptionOnlyConfiguration(state.config, process.env, guard);
         return;
       } catch {
         /* A cached pre-reload snapshot is not an applied cleanup. */

@@ -165,3 +165,36 @@ one auth-route restart with the existing OpenAI service-environment cleanup;
 Gateway reconnection, applied hash equality, and the unchanged loaded guard are
 required before any credential effect. Already-applied Connect/rotation does not
 restart Gateway. This path stays within authorization-only config scope.
+
+## Explicit API-source exit
+
+Removing the last subscription does **not** opt the agent into paid API/credits.
+An explicit main-model API choice or company `GOLEM_CREDITS` /
+`ORGANIZATION_PROVIDER` selection uses the coordinated `codex.auth.pool.exit`
+protocol. Relay advertises `subscriptionPoolExitVersion: 1` only when the live
+loaded plugin acknowledges `poolExitVersion: 1`; missing components fail before
+exit effects and require a separate setup/update.
+
+The existing durable selection lock reserves a disabled pool at the next revision.
+Relay persists `exiting`, removes only pool-owned OAuth via the public SDK,
+restores the exact platform-owned OpenAI Responses proxy endpoint and per-agent
+proxy identity, and confirms the actual Gateway config before writing `exited`.
+Saved bytes are CAS-checked; Gateway's redacted credentials are not compared to
+plaintext tokens. No selected model/Harness/reasoning or authored endpoint/key is
+silently replaced. Custom routing refuses with no config overwrite.
+
+Only an exact empty `exited` receipt releases plugin admission. An interrupted
+exit stays fail-closed and replays its exact revision. Backend acknowledges the
+revision and retires assignments only after the matching runtime receipt; normal
+model/source activation and inference verification must still succeed. API source
+activation is not implied by an exit acknowledgment. Stale syncs cannot resurrect
+an exited pool; a subsequent explicit Connect uses a higher revision and
+recreates the subscription route. Disabled pending exits recover through the
+saved source/model operation, never ordinary empty pool sync.
+
+API activation keeps the existing signed, short-lived server/model/revision
+verification grant. Both Chat Completions and OpenAI Responses are supported;
+Responses accepts only the current authored user input (or its adjacent known
+data-only native context), not older conversation markers. The grant is stripped
+and replaced with a fixed no-tools probe capped at 512 output tokens before
+dispatch. Ordinary requests remain blocked while the source is Pending.

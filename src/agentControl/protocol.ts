@@ -56,7 +56,7 @@ const subscriptionPoolMemberSchema = z.object({
 }).strict();
 const subscriptionPoolSummarySchema = z.object({
   revision: z.number().int().nonnegative(),
-  phase: z.enum(["pending", "applied"]).nullable(),
+  phase: z.enum(["pending", "applied", "exiting", "exited"]).nullable(),
   members: z.array(z.object({ accountId: z.string(), profileId: z.string(), credentialVersion: z.number().int().positive(), enabled: z.boolean() })).max(32),
 });
 const selfNudgeSettingsSchema = z.object({
@@ -173,6 +173,7 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
   }),
   z.object({ kind: z.literal("codex.auth.pool.sync"), revision: z.number().int().positive(), members: z.array(subscriptionPoolMemberSchema).max(32) }),
   z.object({ kind: z.literal("codex.auth.pool.status") }),
+  z.object({ kind: z.literal("codex.auth.pool.exit"), revision: z.number().int().positive() }),
   z.object({
     kind: z.literal("codex.auth.sync"),
     bundleVersion: z.number().int().positive(),
@@ -233,6 +234,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     ownerFenceVersion: z.literal(1).optional(),
     authorizationConfigVersion: z.literal(1).optional(),
     subscriptionPoolVersion: z.literal(1).optional(),
+    subscriptionPoolExitVersion: z.literal(1).optional(),
     subscriptionPoolCompatibility: z.object({ compatible: z.boolean(), reason: z.string().optional() }).optional(),
     durableAuthorizationVersion: z.literal(1).optional(),
     ownerRuntime: z.object({ version: z.literal(1), state: z.enum(["pending", "applied", "unavailable", "unsupported"]), enrolledFence: ownerFenceSchema.nullable(), configRevisionHash: z.string().nullable(), appliedConfigHash: z.string().nullable(), config: jsonRecordSchema.nullable() }).optional(),
@@ -407,6 +409,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
   }),
   subscriptionPoolSummarySchema.extend({ kind: z.literal("codex.auth.pool.sync") }),
   subscriptionPoolSummarySchema.extend({ kind: z.literal("codex.auth.pool.status") }),
+  subscriptionPoolSummarySchema.extend({ kind: z.literal("codex.auth.pool.exit") }),
   z.object({
     kind: z.literal("codex.auth.sync"),
     applied: z.boolean(),
