@@ -48,7 +48,7 @@ describe("managed subscription route normalization", () => {
   it.each([
     { api: "openai-responses" }, { auth: "api-key" }, { apiKey: "synthetic" },
     { headers: {} }, { request: { allowPrivateNetwork: true } }, { unknown: "keep" },
-    { agentRuntime: { id: "openclaw" } }, { models: [{ id: "gpt-6.1-sol", api: "openai-responses" }] },
+    { agentRuntime: { id: "codex" } }, { agentRuntime: { id: "openclaw", custom: true } }, { pickerRuntimes: ["codex"] }, { models: [{ id: "gpt-6.1-sol", api: "openai-responses" }] },
     { models: undefined }, { models: null },
     { baseUrl: "https://custom.test/api/v1/relays/openai/v1" },
     { baseUrl: baseUrl + "/" }, { baseUrl: baseUrl + "?custom=1" },
@@ -79,6 +79,11 @@ describe("managed subscription route normalization", () => {
     const cfg = { ...fixture(), ...extra }; const before = structuredClone(cfg);
     expect(normalizeManagedSubscriptionRoute(cfg, true, env)).toBe(false);
     expect(cfg).toEqual(before);
+  });
+  it("recognizes exact canonical runtime metadata on generated empty providers", () => {
+    const cfg = fixture({ ...row(), agentRuntime: { id: "openclaw" }, pickerRuntimes: ["openclaw"] });
+    expect(normalizeManagedSubscriptionRoute(cfg, true, env)).toBe(true);
+    expect(cfg.models.providers).not.toHaveProperty("openai");
   });
   it("requires saved subscription, not a model alias", () => {
     const cfg = fixture(); const before = structuredClone(cfg);
