@@ -56,3 +56,30 @@ Regression coverage includes exact replay after auth/apply failures, stale sync
 rejection, higher-revision re-entry, authored endpoint/key preservation, explicit
 main-source authority (not auxiliary or ordinary OpenAI model changes), strict
 loaded-plugin capability, malformed/partial exits and redacted Gateway snapshots.
+
+## Independent successful API-source run
+
+A second freshly provisioned agent `cmwbogeg6000t6ioc8pxoe12a` used the final
+Relay, plugin and backend candidates. Standard Connect batch
+`cmwbol2x9002b6iocmx9st8y3` completed SUCCESS: enabled/ready, pending=false,
+revision/appliedRevision=1/1. The standard company model-source API then explicitly
+selected `GOLEM_CREDITS` with model `openai/gpt-5.4-mini` (an intentional model
+choice, not fallback). It returned ACTIVE with runtime model
+`openrouter/openai/gpt-5.4-mini` after the real isolated response verification.
+The test fixture alone opted into API credits, limited to 1 daily/monthly credit.
+
+The pool was disabled, pending=false, revision/appliedRevision=2/2. Runtime receipt
+was `exited`, with zero members/managed IDs. Read-only public auth SDK inventory
+confirmed zero owned OAuth profiles. OpenAI provider remained the restored
+`openai-responses` platform proxy; no model fallback was enabled.
+
+A subsequent attempt to change this company agent back to Luna through the
+personal model API was refused by its existing enterprise model fence; model and
+exit receipt remained unchanged. It is not evidence of a successful company
+source re-entry. Higher-revision re-entry and exact retry are covered by the
+regression suite, not claimed as a positive live full round trip here.
+
+Companion changes: [Relay #107](https://github.com/golem-workers/golem-workers-relay/pull/107),
+[backend #861](https://github.com/golem-workers/golem-workers-backend/pull/861),
+[plugin #13](https://github.com/golem-workers/golem-workers-openclaw-channel-plugin/pull/13).
+Relay #107 is stacked on fresh-agent Connect [#106](https://github.com/golem-workers/golem-workers-relay/pull/106).
