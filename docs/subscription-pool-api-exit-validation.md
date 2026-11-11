@@ -83,3 +83,13 @@ Companion changes: [Relay #107](https://github.com/golem-workers/golem-workers-r
 [backend #861](https://github.com/golem-workers/golem-workers-backend/pull/861),
 [plugin #13](https://github.com/golem-workers/golem-workers-openclaw-channel-plugin/pull/13).
 Relay #107 is stacked on fresh-agent Connect [#106](https://github.com/golem-workers/golem-workers-relay/pull/106).
+
+## Cleanup and restore
+
+Both task-created agents were deleted through audited company APIs; DB-only
+verification confirmed DELETED/deletedAt. Both synthetic accounts are DISABLED
+with erased encrypted payloads; the task-owned template is ARCHIVED. The
+temporary access-key file is absent. All temporary dev backend dist overlays were
+compared with the staged candidates before restoring the exact backed-up files;
+the added exit module was removed and `gwb` restarted active. No production
+deployment, PR merge or release was performed.
