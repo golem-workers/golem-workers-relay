@@ -1903,7 +1903,7 @@ describe("executeAgentControl model set", () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-set-"));
     const configPath = path.join(tempDir, "openclaw.json");
     await installFakeSystemctl();
-    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: { contextTokens: 9999 } } }, null, 2), "utf8");
 
     const result = await executeAgentControl({
       action: {
@@ -1931,7 +1931,7 @@ describe("executeAgentControl model set", () => {
       kind: "model.set",
       model: "openrouter/google/gemini-3.1-pro-preview",
       fallbacks: ["openrouter/google/gemini-3-flash-preview", "openrouter/meta-llama/llama-4-scout"],
-      contextTokens: 300000,
+      contextTokens: null,
       thinkingDefault: "minimal",
       activeState: "active",
       subState: "running",
@@ -1942,7 +1942,7 @@ describe("executeAgentControl model set", () => {
     expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3.1-pro-preview"]).toEqual({ agentRuntime: { id: "openclaw" } });
     expect(config.agents?.defaults?.models?.["openrouter/google/gemini-3-flash-preview"]).toEqual({ agentRuntime: { id: "openclaw" } });
     expect(config.agents?.defaults?.models?.["openrouter/meta-llama/llama-4-scout"]).toEqual({ agentRuntime: { id: "openclaw" } });
-    expect(config.agents?.defaults?.contextTokens).toBe(300000);
+    expect(config.agents?.defaults?.contextTokens).toBeUndefined();
     expect(config.agents?.defaults?.thinkingDefault).toBe("minimal");
   });
 
@@ -1980,7 +1980,7 @@ describe("executeAgentControl model set", () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-fast-"));
     const configPath = path.join(tempDir, "openclaw.json");
     await installFakeSystemctl();
-    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: { contextTokens: 9999 } } }, null, 2), "utf8");
 
     const result = await executeAgentControl({
       action: {
@@ -2023,7 +2023,7 @@ describe("executeAgentControl model set", () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-codex-oauth-"));
     const configPath = path.join(tempDir, "openclaw.json");
     await installFakeSystemctl();
-    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: { contextTokens: 9999 } } }, null, 2), "utf8");
     await fs.writeFile(
       path.join(tempDir, "auth-profiles.json"),
       JSON.stringify(
@@ -2071,7 +2071,7 @@ describe("executeAgentControl model set", () => {
       kind: "model.set",
       model: "codex/gpt-5.3-codex",
       fallbacks: ["codex/gpt-5.4", "openrouter/google/gemini-3-flash-preview"],
-      contextTokens: 272000,
+      contextTokens: null,
       thinkingDefault: "high",
     });
     expect(config.agents?.defaults?.model?.primary).toBe("openai/gpt-5.3-codex");
@@ -2234,7 +2234,7 @@ describe("executeAgentControl model set", () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-model-assignment-codex-oauth-"));
     const configPath = path.join(tempDir, "openclaw.json");
     await installFakeSystemctl();
-    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: {} } }, null, 2), "utf8");
+    await fs.writeFile(configPath, JSON.stringify({ agents: { defaults: { contextTokens: 9999 } } }, null, 2), "utf8");
     await fs.writeFile(
       path.join(tempDir, "auth-profiles.json"),
       JSON.stringify(
@@ -2284,9 +2284,10 @@ describe("executeAgentControl model set", () => {
       purpose: "main",
       primary: "codex/gpt-5.5",
       fallback: "codex/gpt-5.4",
-      contextTokens: 400000,
+      contextTokens: null,
       thinkingDefault: "medium",
     });
+    expect(config).not.toHaveProperty("agents.defaults.contextTokens");
     expect(config.agents?.defaults?.model?.primary).toBe("openai/gpt-5.5");
     expect(config.agents?.defaults?.model?.fallbacks).toEqual(["openai/gpt-5.4"]);
     expect(config.agents?.defaults?.models?.["openai/gpt-5.5"]).toEqual({
