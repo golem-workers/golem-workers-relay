@@ -1,3 +1,4 @@
+import { hasVerifiedSubscriptionRoute } from "./modelSubscriptionRoute.js";
 import { exitSubscriptionPool, assertSubscriptionPoolApiRoute } from "./subscriptionPoolExit.js";
 import { prepareSubscriptionPoolConfig } from "./subscriptionPoolConfig.js";
 import { refreshSubscriptionPoolAuth, waitForSubscriptionConfigApplied } from "./subscriptionPoolRuntime.js";
@@ -215,19 +216,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       // OAuth route identity is independent of the native Pi harness. Never
       // interpret openclaw runtime metadata alone as subscription billing proof.
       if (action.model.startsWith("codex/")) {
-        const auth = await getCodexLoginStatus(input.configPath);
-        const providers = ensureOptionalRecord(ensureOptionalRecord(config.models)?.providers);
-        const provider = ensureOptionalRecord(providers?.openai);
-        const modelRow = readUnknownArray(provider?.models).map(ensureOptionalRecord).find(row => row?.id === action.model.slice("codex/".length));
-        const effectiveApi = modelRow?.api ?? provider?.api;
-        const environment = ensureOptionalRecord(config.env);
-        const environmentVars = ensureOptionalRecord(environment?.vars);
-        const hasEnvironmentRoute = [environment, environmentVars, process.env].some(env =>
-          env && ["OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY"].some(key => env[key] !== undefined));
-        if ((effectiveApi !== undefined && effectiveApi !== "openai-chatgpt-responses") || hasEnvironmentRoute || auth.state !== "connected" || !auth.authModes?.openaiLogin.active ||
-            !await hasPersistedChatGptSubscription(input.configPath) ||
-            await hasPersistedOpenAiApiKey(input.configPath) ||
-            await hasChatGptRouteOverrides(input.configPath)) {
+        if (!await hasVerifiedSubscriptionRoute(input.configPath, config, action.model, input.gateway)) {
           throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Native subscription route is not active");
         }
       }
