@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { writeRuntimeAuth } from "./runtimeAuthWriter.js";
+import { writeRuntimeAuth, writeRuntimeAuthPool } from "./runtimeAuthWriter.js";
 const originalPath = process.env.PATH;
 const roots: string[] = [];
 afterEach(async () => {
@@ -74,4 +74,19 @@ it.each([
   const error = await writeRuntimeAuth({ configPath: path.join(root, "openclaw.json"), profileId: "openai:test", credential: { access: "must-never-log-stdin-secret" } }).catch((value: unknown) => value) as Error & { code: string };
   expect(error.code).toBe(`AUTH_WRITER_${stage}_EXIT_${exit}_NONE`);
   expect(error.message).not.toContain("must-never-log");
+});
+
+it("does not acquire mutation custody for unrelated session history while clearing managed and legacy pins", async () => {
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),"relay-session-scope-"));roots.push(root);const pkg=path.join(root,"node_modules/openclaw");await fs.mkdir(pkg,{recursive:true});await fs.mkdir(path.join(root,"bin"));
+ await fs.writeFile(path.join(pkg,"package.json"),JSON.stringify({name:"openclaw",type:"module",exports:{"./plugin-sdk/provider-auth":"./auth.js","./plugin-sdk/session-store-runtime":"./sessions.js","./plugin-sdk/runtime-config-snapshot":"./snapshot.js","./plugin-sdk/agent-scope-runtime":"./scope.js"}}));await fs.writeFile(path.join(pkg,"openclaw.mjs"),"");await fs.symlink(path.join(pkg,"openclaw.mjs"),path.join(root,"bin/openclaw"));
+ await fs.writeFile(path.join(pkg,"auth.js"),'export function updateAuthProfileStoreWithLock({updater}){const store={version:1,profiles:{"openai:legacy":{provider:"openai",type:"oauth",accountId:"a"}}};updater(store);return store;}');
+ await fs.writeFile(path.join(pkg,"snapshot.js"),'export function setRuntimeConfigSnapshot(){}');await fs.writeFile(path.join(pkg,"scope.js"),'export function listAgentIds(){return ["main"]}');
+ await fs.writeFile(path.join(pkg,"sessions.js"),`
+ import fs from "node:fs";
+ export function listSessionEntries(){return [{sessionKey:"unrelated",entry:{authProfileOverride:"anthropic:keep"}},{sessionKey:"no-pin",entry:{}},{sessionKey:"legacy",entry:{authProfileOverride:"openai:legacy"}},{sessionKey:"managed",entry:{authProfileOverride:"openai:golem-a"}},{sessionKey:"opaque"}];}
+ export async function patchSessionEntry({sessionKey,update,preserveActivity,requireWriteSuccess}){if(["unrelated","no-pin"].includes(sessionKey))throw Error("Unrelated session mutation lock is unavailable");const id=sessionKey==="managed"?"openai:golem-a":"openai:legacy";const patch=update({authProfileOverride:id});let rows=[];try{rows=JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH+".session-result","utf8"))}catch{}rows.push({sessionKey,patch,preserveActivity,requireWriteSuccess});fs.writeFileSync(process.env.OPENCLAW_CONFIG_PATH+".session-result",JSON.stringify(rows));}
+ `);
+ process.env.PATH=path.join(root,"bin");const configPath=path.join(root,"openclaw.json");await fs.writeFile(configPath,"{}");const {prepareSubscriptionPool}=await import("./openAiSubscriptionPool.js");const members=[{accountId:"a",credentialVersion:1,enabled:true,credential:{type:"oauth" as const,provider:"openai" as const,accountId:"a",access:"synthetic",refresh:"synthetic",expires:4700000000000}}];await writeRuntimeAuthPool({configPath,state:prepareSubscriptionPool(null,1,members),members});
+ const rows=JSON.parse(await fs.readFile(configPath+".session-result","utf8")) as Array<{sessionKey:string;patch:{authProfileOverride?:string};preserveActivity:boolean;requireWriteSuccess:boolean}>;
+ expect(rows.map(r=>r.sessionKey)).toEqual(["legacy","managed","opaque"]);expect(rows.every(r=>r.preserveActivity&&r.requireWriteSuccess)).toBe(true);expect(rows.find(r=>r.sessionKey==="legacy")?.patch.authProfileOverride).toBeUndefined();expect(rows.find(r=>r.sessionKey==="managed")?.patch.authProfileOverride).toBe("openai:golem-a");
 });

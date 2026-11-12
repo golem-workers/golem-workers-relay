@@ -159,7 +159,11 @@ try {
  if (!updated) process.exit(3);
  failureExit = 9;
  const enabled = new Set(input.state.members.filter(m => m.enabled).map(m => m.profileId));
- for (const agentId of listAgentIds(input.runtimeConfig)) for (const { sessionKey } of listSessionEntries({ agentId, env: process.env, readConsistency: "latest" })) {
+ // Public listing metadata avoids taking per-session mutation custody for
+ // unrelated history. Older SDKs without entry metadata retain the safe path.
+ for (const agentId of listAgentIds(input.runtimeConfig)) for (const { sessionKey, entry: listedEntry } of listSessionEntries({ agentId, env: process.env, readConsistency: "latest" })) {
+  const listedId = listedEntry?.authProfileOverride;
+  if (listedEntry && (!listedId || !openAiProfiles.has(listedId) && !/^openai(?:-codex)?:/.test(listedId))) continue;
   await patchSessionEntry({ agentId, env: process.env, sessionKey, preserveActivity: true, requireWriteSuccess: true, update: entry => {
    const id = entry.authProfileOverride;
    if (!id || !openAiProfiles.has(id) && !/^openai(?:-codex)?:/.test(id)) return null;
