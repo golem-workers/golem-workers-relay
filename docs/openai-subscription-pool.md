@@ -9,8 +9,8 @@ writer fallback is permitted.
 sequence. Account IDs map to stable `openai:golem-<accountId>` profile IDs. Revision
 and per-account credential version/digest fence stale writes. The durable manifest
 contains metadata/digests only; plaintext credentials are never stored there.
-Pending manifest precedes SDK writes and is retried exactly after an ambiguous
-failure. An applied result follows successful Gateway auth refresh.
+Pending manifest precedes SDK writes. Ambiguous failures require receipt/status
+read-back; an UNKNOWN writer is never blindly replayed. An applied result follows successful Gateway auth refresh.
 
 Runtime SQLite is owned by the **installed public OpenClaw SDK** resolved from the
 active executable, not an invented auth-only DB. The SDK transaction preserves
@@ -100,24 +100,17 @@ v2 with `runScopedFallbacks: false`, `configuredFallbacksForbidden: true` and
 `readOnlyAdmission: true`. Relay accepts only these exact policy shapes; old
 Relay rejects v2 rather than activating an unguarded pool.
 
-For v2, `config.read` plans against a cleared clone without mutating configuration.
-Explicit `codex.auth.pool.sync` (Connect) clears model-assignment fallback lists,
-including nested/subagent/cron assignments, under the ordinary owner/model lock
-and config CAS. This narrowly authorized exception does not change primary,
-Harness, reasoning, catalogs, credentials or unrelated memory/transport/Harness
-fallback policies. Pending intent is persisted before cleanup; credentials are
-written only after `config.get` confirms matching source/applied Gateway hashes
-and an empty model fallback configuration. Pool writes then call the public
-`models.authRefresh {operation:"update",agentId}` for each live `agents.list`
-entry and require `refreshed:true` before acknowledgment. This invalidates shared
-auth ownership as well as auth caches; `models.authStatus {refresh:true}` alone
-can miss newly created shared-store ownership on a running host. No implicit
-runtime update, general normalization or restart is performed. Failed/disabled hot reload leaves the
-receipt pending with no credential effect or success acknowledgment; retry the
-same revision after applying the saved configuration. Stale/conflicting pool
-snapshots refuse before cleanup, and a failed operation never restores an unsafe
-fallback chain. Empty lists are not rewritten. Modern v1 retains authored lists
-and suppresses them per run.
+For v2, read-only preflight and Connect both preserve authored model fallback
+lists and refuse them before credential mutation. An explicit model-settings edit
+must remove incompatible fallbacks; auth-only work never clears that intent.
+Pending auth-route intent is persisted before credential effects. The saved route
+must be observed applied through matching public Gateway config hashes; auth-only
+work never installs/updates components or restarts Gateway. When reload is off,
+`OPENAI_POOL_CONFIG_RUNTIME_PENDING` requires explicit Update/config Sync followed
+by a bounded, explicit retry. Pool writes then call public `models.authRefresh
+{operation:"update",agentId}` for each live `agents.list` entry and require
+`refreshed:true` before acknowledgment. Modern v1 retains authored lists and
+suppresses them per run. Unknown or post-writer outcomes never authorize replay.
 A fallback introduced later is blocked by the channel plugin at run admission.
 Injected cron/session fallback candidates must also match the agent's saved
 primary model, so unsupported overrides cannot escape into another model/API.
@@ -153,18 +146,19 @@ actual Connect recomputes the candidate under the common owner/model lock and
 requires exact CAS-protected transformation equality. Any route change (including
 with a run-scoped v1 guard) must be observed applied by Gateway before credential
 installation; a failure stays pending and is replayable rather than reported ACTIVE.
-Strict v2 additionally clears authored model fallbacks through the existing narrow
-Connect policy. Primary model, reasoning, runtime metadata and unrelated provider,
+Strict v2 refuses authored model fallbacks; their removal requires an explicit
+model-settings action. Primary model, reasoning, runtime metadata and unrelated provider,
 channel/tool and operational settings are preserved.
 
 Generated `config.env` / `env.vars` OpenAI proxy credentials are recognized only
 when **both** the endpoint matches this deployment and the key matches this
 agent's `RELAY_TOKEN`. A foreign key, endpoint, or missing authority is preserved.
-When `gateway.reload.mode=off`, a supported saved/applied hash mismatch triggers
-one auth-route restart with the existing OpenAI service-environment cleanup;
-Gateway reconnection, applied hash equality, and the unchanged loaded guard are
-required before any credential effect. Already-applied Connect/rotation does not
-restart Gateway. This path stays within authorization-only config scope.
+When `gateway.reload.mode=off`, a saved/applied hash mismatch remains a proven
+pre-writer refusal: no auth-only restart or credential effect occurs. After an
+explicit config application, the backend may resume only the exact refused
+operation, same credential/membership intent and freshly validated config fence.
+The Relay advertises `durableAuthorizationResumeVersion: 1`; UNKNOWN effects,
+interrupted writes and changed intent cannot use this path.
 
 ## Explicit API-source exit
 

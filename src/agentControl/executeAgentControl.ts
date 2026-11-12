@@ -1,3 +1,4 @@
+import { readSubscriptionConfigRuntimeState } from "./subscriptionPoolRuntime.js";
 import { AgentControlError } from "./errors.js";
 export { AgentControlError } from "./errors.js";
 import { hasVerifiedSubscriptionRoute } from "./modelSubscriptionRoute.js";
@@ -619,6 +620,8 @@ async function readConfig(configPath: string, gateway: GatewayLike, includeRunti
     })(),
     durableAuthorizationVersion: 1,
     durablePoolAuthorizationVersion: 1,
+    durableAuthorizationResumeVersion: 1,
+    subscriptionConfigRuntimeState: await readSubscriptionConfigRuntimeState(configPath, gateway),
     ownerRuntime: await readOwnerRuntime(configPath, gateway, true),
     configText,
     config,

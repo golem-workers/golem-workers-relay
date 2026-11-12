@@ -15,14 +15,13 @@ export async function waitForSubscriptionConfigApplied(
     ): Promise<unknown>;
   },
   guard: { runScopedFallbacks: boolean } = { runScopedFallbacks: false },
-  restartGateway?: () => Promise<void>,
+  _restartGateway?: () => Promise<void>,
   validateConfig?: (config: Record<string, unknown>) => void,
 ): Promise<void> {
   const deadline = Date.now() + 60_000;
   if ((await fs.readFile(configPath, "utf8")) !== expectedText) throw new Error("CONFIG_CONFLICT");
   const expected: { gateway?: { reload?: { mode?: string } } } = JSON5.parse(expectedText);
   const reloadDisabled = expected.gateway?.reload?.mode === "off";
-  let restarted = false;
   do {
     if ((await fs.readFile(configPath, "utf8")) !== expectedText)
       throw new Error("CONFIG_CONFLICT");
@@ -32,17 +31,12 @@ export async function waitForSubscriptionConfigApplied(
     };
     try {
       state = (await gateway.request("config.get", {}, { timeoutMs: 3000 })) as typeof state;
-    } catch (error) {
-      // Only the restart we initiated grants a bounded reconnect wait.
-      if (!restarted) throw error;
-      await new Promise(resolve => setTimeout(resolve, 100));
-      continue;
+    } catch {
+      throw new SubscriptionPoolError("OPENAI_POOL_CONFIG_RUNTIME_PENDING", "Gateway configuration readiness is unavailable; explicitly apply the saved configuration before retrying. No credential writer was dispatched.");
     }
-    if (!restarted && restartGateway && reloadDisabled && state.valid === true && state.path === configPath &&
+    if (reloadDisabled && state.valid === true && state.path === configPath &&
         state.configRevisionHash && state.appliedConfigHash && state.configRevisionHash !== state.appliedConfigHash) {
-      restarted = true;
-      await restartGateway();
-      continue;
+      throw new SubscriptionPoolError("OPENAI_POOL_CONFIG_RUNTIME_PENDING", "Gateway reload is disabled. Explicitly apply the saved configuration before retrying; auth-only work does not restart Gateway.");
     }
     if (
       state.valid === true &&
@@ -97,4 +91,18 @@ export async function refreshSubscriptionPoolAuth(gateway: {
         "OPENAI_POOL_AUTH_RUNTIME_PENDING: Gateway did not acknowledge post-mutation auth refresh.",
       );
   }
+}
+
+/** Read-only applied-hash evidence independent of optional owner enrollment. */
+export async function readSubscriptionConfigRuntimeState(configPath: string, gateway: {
+  request(method: string, params: Record<string, unknown>, options?: { timeoutMs: number }): Promise<unknown>;
+}): Promise<"applied" | "pending" | "unavailable"> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const value = await Promise.race([gateway.request("config.get", {}, { timeoutMs: 3000 }), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(Error("CONFIG_RUNTIME_TIMEOUT")), 3000); })]);
+    const parsed = z.object({ valid: z.boolean(), path: z.string(), configRevisionHash: z.string().min(1), appliedConfigHash: z.string().min(1) }).safeParse(value);
+    if (!parsed.success) return "unavailable";
+    return parsed.data.valid && parsed.data.path === configPath && parsed.data.configRevisionHash === parsed.data.appliedConfigHash ? "applied" : "pending";
+  } catch { return "unavailable"; }
+  finally { if (timer) clearTimeout(timer); }
 }

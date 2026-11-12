@@ -816,3 +816,5 @@ The loaded Relay advertises `durablePoolAuthorizationVersion: 1` when pool sync 
 Auth-only Connect preserves authored fallback settings. A strict legacy subscription guard refuses configured fallbacks and requires a separate explicit model edit; a confirmed run-scoped guard can preserve configured fallback intent while enforcing subscription-only execution. Relay upgrade and model/Harness configuration remain explicit operations.
 
 Authorization writer failures carry fixed import/store/session stages and allowlisted lock/migration/ownership codes via exit integers; child messages, stderr and credentials never enter API diagnostics.
+
+Proven pre-writer config refusals remain REFUSED and support explicit fingerprint-fenced resume under kernel admission lock. Unknown/post-writer effects never replay. Auth-only configuration checks do not restart Gateway or remove authored fallbacks.
