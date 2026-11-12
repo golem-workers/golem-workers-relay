@@ -29,6 +29,15 @@ describe("durable credential receipts", () => {
     expect((await new AuthorizationReceipts(directory).submit("operation", action, execute)).state).toBe("SUCCEEDED");
     expect(execute).toHaveBeenCalledTimes(1);
   });
+  it("deduplicates pool sync after a caller disconnect and receipt-store restart", async () => {
+    const action = { kind: "codex.auth.pool.sync", revision: 5, members: [{ bundle: { accessToken: "private-pool-token" } }] };
+    const execute = vi.fn(async () => ({ kind: "codex.auth.pool.sync" as const, revision: 5, phase: "applied" as const, members: [] }));
+    await Promise.all(Array.from({length: 34}, () => store.submit("pool_operation", action, execute)));
+    expect(await terminal("pool_operation")).toMatchObject({ state: "SUCCEEDED", result: { kind: "codex.auth.pool.sync", revision: 5 } });
+    await new AuthorizationReceipts(directory).submit("pool_operation", action, execute);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(await fs.readFile(path.join(directory, "pool_operation.json"), "utf8")).not.toContain("private-pool-token");
+  });
   it("does not mistake a read racing with terminal completion for a restarted operation", async () => {
     // Terminal rename precedes directory fsync and release of the executing marker.
     // Wait for the real completion event; observing SUCCEEDED alone races that cleanup.

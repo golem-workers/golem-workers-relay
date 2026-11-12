@@ -1,3 +1,5 @@
+import { AgentControlError } from "../agentControl/errors.js";
+import { RuntimeAuthWriterError } from "../agentControl/runtimeAuthWriter.js";
 import { ModelFenceBusyError } from "../agentControl/modelFence.js";
 import http from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -165,6 +167,34 @@ describe("pushServer", () => {
 
     expect(resp.status).toBe(200);
     expect(seenEvents).toHaveLength(1);
+  });
+
+  it.each([
+    [new AgentControlError("MODEL_VERIFY_MISMATCH", "secret-runtime-output"), 409, "MODEL_VERIFY_MISMATCH"],
+    [new Error("Gateway request timed out: config.get"), 504, "RUNTIME_GATEWAY_TIMEOUT"],
+  ])("preserves safe runtime diagnostic without exposing arbitrary exception text", async (error, status, code) => {
+    const { port } = await startTestPushServer({ port: 0, path: "/relay/messages", relayToken: "token", onMessage: async () => {}, onAgentControl: () => Promise.reject(error) }, servers);
+    const resp = await fetch(`http://127.0.0.1:${port}/relay/messages`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: "Bearer token" },
+      body: JSON.stringify({ messageId: "safe-error", input: { kind: "agent_control", action: { kind: "config.read" } } }),
+    });
+    expect(resp.status).toBe(status);
+    const body = await resp.json();
+    expect(body).toMatchObject({code});
+    expect(JSON.stringify(body)).not.toContain("secret-runtime-output");
+  });
+  it("returns safe typed writer diagnostics without exception contents", async () => {
+    const onAgentControl = vi.fn().mockRejectedValue(new RuntimeAuthWriterError("AUTH_POOL_WRITER_STORE_REFUSED_EXIT_3_NONE", "secret-token and stderr"));
+    const { port } = await startTestPushServer({ port: 0, path: "/relay/messages", relayToken: "token", onMessage: async () => {}, onAgentControl }, servers);
+    const resp = await fetch(`http://127.0.0.1:${port}/relay/messages`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: "Bearer token" },
+      body: JSON.stringify({ messageId: "writer", input: { kind: "agent_control", action: { kind: "codex.auth.clear" } } }),
+    });
+    expect(resp.status).toBe(502);
+    const body = await resp.json();
+    expect(body).toMatchObject({ code: "AUTH_POOL_WRITER_STORE_REFUSED_EXIT_3_NONE", stage: "auth_writer", mutationState: "unknown" });
+    expect(JSON.stringify(body)).not.toContain("secret-token");
+    expect(onAgentControl).toHaveBeenCalledOnce();
   });
 
   it.each([true, false])("only exposes typed pre-mutation model contention: %s", async busy => {

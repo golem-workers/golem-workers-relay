@@ -1,3 +1,5 @@
+import { AgentControlError } from "./errors.js";
+export { AgentControlError } from "./errors.js";
 import { hasVerifiedSubscriptionRoute } from "./modelSubscriptionRoute.js";
 import { exitSubscriptionPool, assertSubscriptionPoolApiRoute } from "./subscriptionPoolExit.js";
 import { prepareSubscriptionPoolConfig } from "./subscriptionPoolConfig.js";
@@ -82,17 +84,6 @@ type ModelSetThinkingDefault = Extract<AgentControlAction, { kind: "model.set" }
 type ModelSetFastMode = Extract<AgentControlAction, { kind: "model.set" }>["fastMode"];
 type ModelSetFallbacks = Extract<AgentControlAction, { kind: "model.set" }>["fallbacks"];
 
-export class AgentControlError extends Error {
-  readonly code: string;
-  readonly details?: Record<string, unknown>;
-
-  constructor(code: string, message: string, details?: Record<string, unknown>, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = "AgentControlError";
-    this.code = code;
-    this.details = details;
-  }
-}
 
 function readThinkingDefault(value: unknown): ModelSetThinkingDefault {
   if (typeof value !== "string") {
@@ -627,6 +618,7 @@ async function readConfig(configPath: string, gateway: GatewayLike, includeRunti
       catch (error) { return { compatible: false, reason: error instanceof SubscriptionPoolError ? error.code : "OPENAI_POOL_ROUTE_UNSUPPORTED" }; }
     })(),
     durableAuthorizationVersion: 1,
+    durablePoolAuthorizationVersion: 1,
     ownerRuntime: await readOwnerRuntime(configPath, gateway, true),
     configText,
     config,

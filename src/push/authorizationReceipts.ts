@@ -80,7 +80,7 @@ export class AuthorizationReceipts {
       logger.info({ operationId: id, state: "RUNNING", event: "authorization_operation" }, "Authorization mutation started");
       try {
         const result = await execute();
-        if (!["codex.auth.clear", "codex.auth.sync"].includes(result.kind)) throw new Error("AUTH_OPERATION_RESULT_INVALID");
+        if (!["codex.auth.clear", "codex.auth.sync", "codex.auth.pool.sync"].includes(result.kind)) throw new Error("AUTH_OPERATION_RESULT_INVALID");
         await this.persist({ ...receipt, state: "SUCCEEDED", result });
         logger.info({ operationId: id, state: "SUCCEEDED", event: "authorization_operation" }, "Authorization mutation completed");
       } catch (error) {
