@@ -5,6 +5,10 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 
+// Cold admission can perform full integrity checks for both shared and agent DBs.
+// Keep a bounded budget, but do not kill a healthy SDK midway through admission.
+const AUTH_WRITER_TIMEOUT_MS = 120_000;
+
 export class RuntimeAuthWriterError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = "RuntimeAuthWriterError"; }
 }
@@ -80,14 +84,14 @@ export async function writeRuntimeAuth(input: {
       stdio: ["pipe", "ignore", "ignore"],
     });
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 30_000);
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, AUTH_WRITER_TIMEOUT_MS);
     child.once("error", () => {
       clearTimeout(timer);
       reject(new RuntimeAuthWriterError("AUTH_WRITER_SPAWN_FAILED", "Unable to start OpenClaw auth writer."));
     });
     child.once("close", (code, signal) => {
       clearTimeout(timer);
-      if (code === 0) resolve();
+      if (code === 0 && !timedOut) resolve();
       else {
         const stage = timedOut ? "TIMEOUT" : code === 2 ? "EXPORT_MISSING" : code === 3 ? "STORE_REFUSED" : "CALLBACK_FAILED";
         const diagnostic = `AUTH_WRITER_${stage}_EXIT_${code ?? "NONE"}_${signal ?? "NONE"}`;
@@ -150,9 +154,18 @@ try {
       env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: path.dirname(configPath), OPENCLAW_AGENT_DIR: path.join(path.dirname(configPath), "agents", "main", "agent") },
       stdio: ["pipe", "ignore", "ignore"],
     });
-    const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, AUTH_WRITER_TIMEOUT_MS);
     child.once("error", () => { clearTimeout(timer); reject(new RuntimeAuthWriterError("AUTH_POOL_WRITER_SPAWN_FAILED", "Unable to start runtime subscription writer.")); });
-    child.once("close", code => { clearTimeout(timer); if (code === 0) resolve(); else reject(new RuntimeAuthWriterError("AUTH_POOL_WRITER_REFUSED", "Runtime subscription writer refused the update; no success acknowledgement was recorded.")); });
+    child.once("close", (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0 && !timedOut) resolve();
+      else {
+        const stage = timedOut ? "TIMEOUT" : code === 2 ? "EXPORT_MISSING" : code === 3 ? "STORE_REFUSED" : "CALLBACK_FAILED";
+        const diagnostic = `AUTH_POOL_WRITER_${stage}_EXIT_${code ?? "NONE"}_${signal ?? "NONE"}`;
+        reject(new RuntimeAuthWriterError(diagnostic, `Runtime subscription writer refused the update (${diagnostic}); no success acknowledgement was recorded.`));
+      }
+    });
     child.stdin.on("error", () => { /* sanitized close result owns failure */ });
     child.stdin.end(JSON.stringify({ ...input, runtimeConfig }));
   });
