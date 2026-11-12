@@ -13,6 +13,17 @@ export class RuntimeAuthWriterError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = "RuntimeAuthWriterError"; }
 }
 
+function writerFailureStage(code: number | null): string {
+  return ({ 2: "EXPORT_MISSING", 3: "STORE_REFUSED", 4: "SDK_IMPORT_FAILED", 5: "SESSION_SDK_IMPORT_FAILED", 6: "SNAPSHOT_SDK_IMPORT_FAILED", 7: "AGENT_SDK_IMPORT_FAILED", 8: "STORE_UPDATE_FAILED", 9: "SESSION_REFRESH_FAILED", 10: "RUNTIME_SNAPSHOT_FAILED", 11: "STORE_LOCK_BUSY", 12: "STORE_LOCKED", 13: "MIGRATION_REQUIRED", 14: "STORE_UNREADABLE", 15: "OWNERSHIP_INVALID" } as Record<number, string>)[code ?? -1] ?? "CALLBACK_FAILED";
+}
+// Only fixed exit integers cross the subprocess boundary. Never forward exception
+// messages, stderr, paths, input bundles or arbitrary runtime error codes.
+const sanitizedWriterCatch = `catch (error) {
+  const known = { SQLITE_BUSY: 11, SQLITE_LOCKED: 12, AUTH_PROFILE_MIGRATION_REQUIRED: 13, AUTH_PROFILE_STORE_UNREADABLE: 14, INVALID_SHARED_AUTH_STORE_OWNERSHIP: 15 };
+  const code = error && typeof error === "object" && typeof error.code === "string" && Object.hasOwn(known, error.code) ? known[error.code] : failureExit;
+  process.exit(code);
+}`;
+
 // Resolve the public SDK from the active executable first. NODE_PATH can still
 // point at an obsolete pnpm global root after an update (backend issue #656).
 // Loading that SDK against the current runtime database can reject its schema.
@@ -42,12 +53,14 @@ export async function resolveRuntimeAuthSdk(): Promise<string> {
 // A separate process isolates runtime caches and state-root environment from the
 // relay. Credentials travel on stdin, never argv, environment, or diagnostic logs.
 const writer = String.raw`
+let failureExit = 4;
 try {
   let raw = "";
   for await (const chunk of process.stdin) raw += chunk;
   const input = JSON.parse(raw);
   const { updateAuthProfileStoreWithLock } = await import(process.argv[1]);
   if (typeof updateAuthProfileStoreWithLock !== "function") process.exit(2);
+  failureExit = 8;
   const updated = await updateAuthProfileStoreWithLock({
     agentDir: process.env.OPENCLAW_AGENT_DIR,
     stateDir: process.env.OPENCLAW_STATE_DIR,
@@ -63,7 +76,7 @@ try {
     },
   });
   process.exit(updated ? 0 : 3);
-} catch { process.exit(1); }
+} ${sanitizedWriterCatch}
 `;
 
 export async function writeRuntimeAuth(input: {
@@ -93,7 +106,7 @@ export async function writeRuntimeAuth(input: {
       clearTimeout(timer);
       if (code === 0 && !timedOut) resolve();
       else {
-        const stage = timedOut ? "TIMEOUT" : code === 2 ? "EXPORT_MISSING" : code === 3 ? "STORE_REFUSED" : "CALLBACK_FAILED";
+        const stage = timedOut ? "TIMEOUT" : writerFailureStage(code);
         const diagnostic = `AUTH_WRITER_${stage}_EXIT_${code ?? "NONE"}_${signal ?? "NONE"}`;
         reject(new RuntimeAuthWriterError(diagnostic, `OpenClaw auth writer refused the update (${diagnostic}); inspect runtime schema ownership and SDK compatibility.`));
       }
@@ -117,17 +130,23 @@ export async function writeRuntimeAuthPool(input: {
   const agentScopeSdk = createRequire(sdk).resolve("openclaw/plugin-sdk/agent-scope-runtime");
   const runtimeConfig: unknown = JSON5.parse(await fs.readFile(configPath, "utf8"));
   const body = `
+let failureExit = 4;
 try {
  let raw = ""; for await (const chunk of process.stdin) raw += chunk;
  const input = JSON.parse(raw);
  const { updateAuthProfileStoreWithLock } = await import(process.argv[1]);
+ failureExit = 5;
  const { listSessionEntries, patchSessionEntry } = await import(process.argv[2]);
+ failureExit = 6;
  const { setRuntimeConfigSnapshot } = await import(process.argv[3]);
+ failureExit = 7;
  const { listAgentIds } = await import(process.argv[4]);
+ failureExit = 10;
  setRuntimeConfigSnapshot(input.runtimeConfig);
  if (typeof listSessionEntries !== "function" || typeof patchSessionEntry !== "function" || typeof listAgentIds !== "function") process.exit(2);
  const openAiProfiles = new Set(input.state.managedProfileIds);
  if (typeof updateAuthProfileStoreWithLock !== "function") process.exit(2);
+ failureExit = 8;
  const updated = await updateAuthProfileStoreWithLock({
   agentDir: process.env.OPENCLAW_AGENT_DIR, stateDir: process.env.OPENCLAW_STATE_DIR,
   sharedStoreWrite: true,
@@ -138,6 +157,7 @@ try {
   },
  });
  if (!updated) process.exit(3);
+ failureExit = 9;
  const enabled = new Set(input.state.members.filter(m => m.enabled).map(m => m.profileId));
  for (const agentId of listAgentIds(input.runtimeConfig)) for (const { sessionKey } of listSessionEntries({ agentId, env: process.env, readConsistency: "latest" })) {
   await patchSessionEntry({ agentId, env: process.env, sessionKey, preserveActivity: true, requireWriteSuccess: true, update: entry => {
@@ -147,7 +167,7 @@ try {
   } });
  }
  process.exit(0);
-} catch { process.exit(1); }
+} ${sanitizedWriterCatch}
 `;
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, ["--input-type=module", "-e", body, pathToFileURL(sdk).href, pathToFileURL(sessionSdk).href, pathToFileURL(snapshotSdk).href, pathToFileURL(agentScopeSdk).href], {
@@ -161,7 +181,7 @@ try {
       clearTimeout(timer);
       if (code === 0 && !timedOut) resolve();
       else {
-        const stage = timedOut ? "TIMEOUT" : code === 2 ? "EXPORT_MISSING" : code === 3 ? "STORE_REFUSED" : "CALLBACK_FAILED";
+        const stage = timedOut ? "TIMEOUT" : writerFailureStage(code);
         const diagnostic = `AUTH_POOL_WRITER_${stage}_EXIT_${code ?? "NONE"}_${signal ?? "NONE"}`;
         reject(new RuntimeAuthWriterError(diagnostic, `Runtime subscription writer refused the update (${diagnostic}); no success acknowledgement was recorded.`));
       }

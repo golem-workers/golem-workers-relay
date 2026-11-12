@@ -59,7 +59,10 @@ it("fails closed when the active runtime lacks its public SDK, without creating 
 it.each([
   ["export const other = true", "EXPORT_MISSING", 2],
   ["export function updateAuthProfileStoreWithLock() { return null }", "STORE_REFUSED", 3],
-  ["export function updateAuthProfileStoreWithLock() { throw new Error('must-never-log-child-secret') }", "CALLBACK_FAILED", 1],
+  ["export function updateAuthProfileStoreWithLock() { throw new Error('must-never-log-child-secret') }", "STORE_UPDATE_FAILED", 8],
+  ["export function updateAuthProfileStoreWithLock() { throw Object.assign(new Error('must-never-log-child-secret'), {code:'SQLITE_BUSY'}) }", "STORE_LOCK_BUSY", 11],
+  ["export function updateAuthProfileStoreWithLock() { throw Object.assign(new Error('must-never-log-child-secret'), {code:'AUTH_PROFILE_MIGRATION_REQUIRED'}) }", "MIGRATION_REQUIRED", 13],
+  ["throw new Error('must-never-log-import-secret')", "SDK_IMPORT_FAILED", 4],
 ])("retains bounded writer stage/exit diagnostics without stdin or stderr: %s", async (source, stage, exit) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "relay-auth-diagnostics-")); roots.push(root);
   const pkg = path.join(root, "node_modules/openclaw");

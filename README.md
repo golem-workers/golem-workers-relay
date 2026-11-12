@@ -814,3 +814,5 @@ Applied OpenAI subscription pools use their loaded admission guard and strict of
 The loaded Relay advertises `durablePoolAuthorizationVersion: 1` when pool sync supports durable operation receipts. Repeated or restarted callers read the same non-secret receipt; an unknown mutation is not automatically replayed. Writer, Gateway timeout and known validation errors expose safe codes, not child stderr/config/credentials.
 
 Auth-only Connect preserves authored fallback settings. A strict legacy subscription guard refuses configured fallbacks and requires a separate explicit model edit; a confirmed run-scoped guard can preserve configured fallback intent while enforcing subscription-only execution. Relay upgrade and model/Harness configuration remain explicit operations.
+
+Authorization writer failures carry fixed import/store/session stages and allowlisted lock/migration/ownership codes via exit integers; child messages, stderr and credentials never enter API diagnostics.
