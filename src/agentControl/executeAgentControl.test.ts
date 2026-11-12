@@ -2473,14 +2473,14 @@ describe("canonical config-sync normalized model fence", () => {
   });
 });
 
-it("preflights strict Connect with fallback cleanup planned but no filesystem mutation",async()=>{
+it("rejects strict Connect fallback read-only without silently planning model changes",async()=>{
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),"pool-preflight-")),configPath=path.join(dir,"openclaw.json");
  const text=JSON.stringify({agents:{defaults:{model:{primary:"openai/model",fallbacks:["paid/other"]}}},models:{providers:{openai:{api:"openai-chatgpt-responses"}}}});
  await fs.writeFile(configPath,text);
  try{
  const request=vi.fn((method:string)=>Promise.resolve(method==="relay-channel.subscriptionGuard.status"?{version:2,runScopedFallbacks:false,configuredFallbacksForbidden:true,readOnlyAdmission:true}:{}));
  const read=await executeAgentControl({configPath,gateway:{request},action:{kind:"config.read"}});
- expect(read).toMatchObject({kind:"config.read",subscriptionPoolCompatibility:{compatible:true},configText:text});
+ expect(read).toMatchObject({kind:"config.read",subscriptionPoolCompatibility:{compatible:false,reason:"OPENAI_POOL_MODEL_FALLBACK_FORBIDDEN"},configText:text});
  expect(await fs.readFile(configPath,"utf8")).toBe(text);expect((await fs.readdir(dir)).sort()).toEqual(["openclaw.json"]);
  }finally{await fs.rm(dir,{recursive:true,force:true});}
 });

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import JSON5 from "json5";
 import { z } from "zod";
-import { assertSubscriptionOnlyConfiguration } from "./openAiSubscriptionPool.js";
+import { SubscriptionPoolError, assertSubscriptionOnlyConfiguration } from "./openAiSubscriptionPool.js";
 
 /** Wait for the actual Gateway snapshot, not just a successful filesystem write. */
 export async function waitForSubscriptionConfigApplied(
@@ -61,7 +61,8 @@ export async function waitForSubscriptionConfigApplied(
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   } while (Date.now() < deadline);
-  throw new Error(
+  throw new SubscriptionPoolError(
+    "OPENAI_POOL_CONFIG_RUNTIME_PENDING",
     "OPENAI_POOL_CONFIG_RUNTIME_PENDING: subscription configuration is saved; Gateway has not applied it. Pool remains pending.",
   );
 }

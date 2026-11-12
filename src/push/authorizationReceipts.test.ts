@@ -31,7 +31,7 @@ describe("durable credential receipts", () => {
   });
   it("deduplicates pool sync after a caller disconnect and receipt-store restart", async () => {
     const action = { kind: "codex.auth.pool.sync", revision: 5, members: [{ bundle: { accessToken: "private-pool-token" } }] };
-    const execute = vi.fn(async () => ({ kind: "codex.auth.pool.sync" as const, revision: 5, phase: "applied" as const, members: [] }));
+    const execute = vi.fn(() => Promise.resolve({ kind: "codex.auth.pool.sync" as const, revision: 5, phase: "applied" as const, members: [] }));
     await Promise.all(Array.from({length: 34}, () => store.submit("pool_operation", action, execute)));
     expect(await terminal("pool_operation")).toMatchObject({ state: "SUCCEEDED", result: { kind: "codex.auth.pool.sync", revision: 5 } });
     await new AuthorizationReceipts(directory).submit("pool_operation", action, execute);
