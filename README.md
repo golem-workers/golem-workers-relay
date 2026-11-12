@@ -808,3 +808,9 @@ Managed model configuration does not set `agents.defaults.contextTokens`; model 
 Runtime auth and subscription-pool SDK writers allow up to 120 seconds for cold shared/agent database integrity admission. Timeout remains an unacknowledged outcome requiring reconciliation; stage/exit diagnostics never include credentials or child stderr.
 
 Applied OpenAI subscription pools use their loaded admission guard and strict official ChatGPT route for `model.verify`, not legacy singleton login-mode classification. Pending/exiting/empty pools, missing persisted subscriptions, custom/direct-auth routes and environment overrides remain blocked. Verification still requires the isolated reply's exact provider/model/harness; route readiness alone is never success.
+
+### Durable subscription-pool authorization
+
+The loaded Relay advertises `durablePoolAuthorizationVersion: 1` when pool sync supports durable operation receipts. Repeated or restarted callers read the same non-secret receipt; an unknown mutation is not automatically replayed. Writer, Gateway timeout and known validation errors expose safe codes, not child stderr/config/credentials.
+
+Auth-only Connect preserves authored fallback settings. A strict legacy subscription guard refuses configured fallbacks and requires a separate explicit model edit; a confirmed run-scoped guard can preserve configured fallback intent while enforcing subscription-only execution. Relay upgrade and model/Harness configuration remain explicit operations.

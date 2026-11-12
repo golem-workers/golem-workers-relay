@@ -1,5 +1,4 @@
 import { isGeneratedSolCatalog, managedOpenAiRelayBaseUrl, normalizeManagedSubscriptionRoute } from "./managedSubscriptionRoute.js";
-import { clearSubscriptionModelFallbacks } from "./subscriptionModelFallbacks.js";
 
 /** Explicit Connect prepares auth routing, not model intent. Only exact platform-
  * generated proxy rows may become ChatGPT routes; authored routes stay intact
@@ -7,12 +6,12 @@ import { clearSubscriptionModelFallbacks } from "./subscriptionModelFallbacks.js
  * by preflight and as the exact allowlist for the CAS/model-fenced writer. */
 export function prepareSubscriptionPoolConfig(
   config: Record<string, unknown>,
-  guard: { runScopedFallbacks: boolean },
+  _guard: { runScopedFallbacks: boolean },
   env: NodeJS.ProcessEnv = process.env,
 ): Record<string, unknown> {
-  const next = guard.runScopedFallbacks
-    ? structuredClone(config)
-    : clearSubscriptionModelFallbacks(config);
+  // Auth-only work preserves authored fallback intent. Strict legacy guards
+  // reject it; an explicit model edit must remove it before Connect.
+  const next = structuredClone(config);
   // Fresh provisioning also injects the exact per-agent Relay token/endpoint
   // pair into Gateway env. These are platform proxy credentials, not a user's
   // OpenAI API key. Never clear either half without exact deployment identity.

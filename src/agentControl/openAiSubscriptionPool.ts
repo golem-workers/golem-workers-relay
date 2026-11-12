@@ -60,7 +60,7 @@ export function subscriptionProfileId(accountId: string): string {
 export function assertNoConfiguredFallbacks(value: unknown): void {
   visitSubscriptionModelFallbacks(value, assignment => {
     if ((Array.isArray(assignment.fallbacks) ? assignment.fallbacks.length > 0 : assignment.fallbacks != null && assignment.fallbacks !== "") || assignment.fallback) {
-      throw new SubscriptionPoolError("OPENAI_POOL_MODEL_FALLBACK_FORBIDDEN", "The loaded strict subscription-pool guard requires empty model fallbacks. Connect clears configured model fallbacks before applying the pool.");
+      throw new SubscriptionPoolError("OPENAI_POOL_MODEL_FALLBACK_FORBIDDEN", "The loaded strict subscription-pool guard requires empty model fallbacks. Remove model fallbacks explicitly before connecting the pool; authorization does not change model settings.");
     }
   });
 }

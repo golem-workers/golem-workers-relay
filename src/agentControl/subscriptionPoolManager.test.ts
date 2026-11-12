@@ -153,73 +153,13 @@ it("preserves an authored fallback chain when the live guard is confirmed separa
   expect((await readSubscriptionPoolState(configPath))?.phase).toBe("applied");
 });
 
-it("clears strict fallback before credentials and keeps other config/model fence unchanged", async () => {
-  const { configPath } = await fixture(["anthropic/paid"]);
-  const { withModelFenceLock, writeModelFence, readModelFence } =
-    await import("./modelFence.js");
-  const { withAuthorizationConfig } =
-    await import("../managed-runtime/runtime-policy.js");
-  const { writeOwnerFencedConfig } = await import("./ownerFence.js");
-  const cfg = JSON.parse(await fs.readFile(configPath, "utf8")) as {
-    agents: {
-      defaults: Record<string, unknown> & {
-        model: { primary: string; fallbacks: string[] };
-      };
-    };
-    [key: string]: unknown;
-  };
-  cfg.agents.defaults.thinkingDefault = "high";
-  cfg.agents.defaults.models = {
-    "openai/gpt-6.1-sol": {
-      agentRuntime: { id: "codex" },
-      params: { fastMode: true },
-    },
-  };
-  cfg.agents.defaults.memorySearch = { fallback: "none" };
-  cfg.plugins = { entries: { codex: { config: { fallback: "openclaw" } } } };
-  cfg.channels = { telegram: { enabled: true } };
-  cfg.env = { KEEP: "synthetic" };
-  await withAuthorizationConfig(configPath, () =>
-    writeOwnerFencedConfig(configPath, JSON.stringify(cfg)),
-  );
-  await withModelFenceLock(configPath, () =>
-    writeModelFence(configPath, {
-      revision: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      predecessor: null,
-      status: "APPLIED",
-      model: "openai/gpt-6.1-sol",
-    }),
-  );
-  const fence = await readModelFence(configPath);
-  const wait = vi.fn(async (text: string) => {
-    expect(JSON.parse(text)).toEqual({
-      ...cfg,
-      agents: {
-        ...cfg.agents,
-        defaults: {
-          ...cfg.agents.defaults,
-          model: { ...cfg.agents.defaults.model, fallbacks: [] },
-        },
-      },
-    });
-    expect((await readSubscriptionPoolState(configPath))?.phase).toBe(
-      "pending",
-    );
-    expect(writer).not.toHaveBeenCalled();
-  });
-  await expect(
-    syncSubscriptionPool({
-      configPath,
-      revision: 1,
-      members,
-      assertRuntimeGuard: () => Promise.resolve({ runScopedFallbacks: false }),
-      waitForConfigApplied: wait,
-      refreshRuntimeAuth: async () => {},
-    }),
-  ).resolves.toMatchObject({ phase: "applied" });
-  expect(wait).toHaveBeenCalledOnce();
-  expect(writer).toHaveBeenCalledOnce();
-  expect(await readModelFence(configPath)).toEqual(fence);
+it("rejects strict fallback before credential/config writes and preserves the entire authored configuration", async () => {
+  const { configPath, text } = await fixture(["anthropic/paid"]);
+  const wait = vi.fn();
+  await expect(syncSubscriptionPool({ configPath, revision: 1, members, assertRuntimeGuard: () => Promise.resolve({ runScopedFallbacks: false }), waitForConfigApplied: wait, refreshRuntimeAuth: async () => {} })).rejects.toMatchObject({code:"OPENAI_POOL_MODEL_FALLBACK_FORBIDDEN"});
+  expect(writer).not.toHaveBeenCalled(); expect(wait).not.toHaveBeenCalled();
+  expect(await fs.readFile(configPath,"utf8")).toBe(text);
+  expect(await readSubscriptionPoolState(configPath)).toBeNull();
 });
 it("syncs a strict pool without rewriting empty fallback settings", async () => {
   const { configPath, text } = await fixture();
@@ -238,7 +178,7 @@ it("syncs a strict pool without rewriting empty fallback settings", async () => 
   expect(await fs.readFile(configPath, "utf8")).toBe(text);
 });
 it("keeps cleanup pending on runtime failure, then reconciles exact replay without restoring fallbacks", async () => {
-  const { configPath } = await fixture(["anthropic/paid"]);
+  const { configPath } = await fixture();
   const base = {
     configPath,
     revision: 3,
@@ -271,7 +211,7 @@ it("keeps cleanup pending on runtime failure, then reconciles exact replay witho
   ).resolves.toMatchObject({ phase: "applied" });
 });
 it("rejects a concurrent edit before credential effects without overwriting it", async () => {
-  const { configPath } = await fixture(["paid/model"]);
+  const { configPath } = await fixture();
   await expect(
     syncSubscriptionPool({
       configPath,
@@ -289,7 +229,7 @@ it("rejects a concurrent edit before credential effects without overwriting it",
   expect((await readSubscriptionPoolState(configPath))?.phase).toBe("pending");
 });
 it("refuses strict sync without runtime verification before any effects", async () => {
-  const { configPath, text } = await fixture(["paid/model"]);
+  const { configPath, text } = await fixture();
   await expect(
     syncSubscriptionPool({
       configPath,
@@ -305,7 +245,7 @@ it("refuses strict sync without runtime verification before any effects", async 
 });
 
 it("stale or invalid enrollment never clears an existing fallback chain", async () => {
-  const { configPath, text } = await fixture(["paid/model"]);
+  const { configPath, text } = await fixture();
   const input = {
     configPath,
     revision: 3,

@@ -6,7 +6,7 @@ const proxy = env.BACKEND_BASE_URL + "/api/v1/relays/openai/v1";
 const generated = () => ({ baseUrl: proxy, models: [], agentRuntime: { id: "openclaw" } });
 const fixture = () => ({
   agents: { defaults: { model: { primary: "openai/gpt-5.6-luna", fallbacks: [] },
-    imageModel: { primary: "openai/gpt-5.4", fallbacks: ["openrouter/paid"] },
+    imageModel: { primary: "openai/gpt-5.4", fallbacks: [] as string[] },
     thinkingDefault: "high", models: { "openai/gpt-5.6-luna": { agentRuntime: { id: "openclaw" }, params: { fastMode: false } } } } },
   models: { providers: { openai: generated(), codex: generated(), other: { baseUrl: "https://keep.test" } } },
   channels: { telegram: { enabled: true } }, tools: { deny: ["exec"] }, env: { KEEP: "untouched" },
@@ -17,11 +17,18 @@ describe("fresh-agent subscription Connect preparation", () => {
     const next = prepareSubscriptionPoolConfig(config, { runScopedFallbacks }, env);
     expect(config).toEqual(before);
     expect(next).toEqual({ ...before,
-      agents: { defaults: { ...before.agents.defaults, imageModel: { ...before.agents.defaults.imageModel, fallbacks: runScopedFallbacks ? ["openrouter/paid"] : [] } } },
+      agents: { defaults: { ...before.agents.defaults, imageModel: { ...before.agents.defaults.imageModel, fallbacks: [] } } },
       models: { providers: { other: before.models.providers.other, openai: { api: "openai-chatgpt-responses", baseUrl: "https://chatgpt.com/backend-api/codex", models: [], agentRuntime: { id: "openclaw" } } } },
     });
     expect(() => assertSubscriptionOnlyConfiguration(next, env, { runScopedFallbacks })).not.toThrow();
     expect(prepareSubscriptionPoolConfig(next, { runScopedFallbacks }, env)).toEqual(next);
+  });
+  it("preserves authored fallback settings and rejects them for a strict legacy guard", () => {
+    const cfg = fixture(); cfg.agents.defaults.imageModel.fallbacks = ["openrouter/paid"];
+    const next = prepareSubscriptionPoolConfig(cfg, { runScopedFallbacks: false }, env);
+    expect((next.agents as typeof cfg.agents).defaults.imageModel.fallbacks).toEqual(["openrouter/paid"]);
+    expect(() => assertSubscriptionOnlyConfiguration(next, env, { runScopedFallbacks: false })).toThrow(/Remove model fallbacks explicitly/);
+    expect(() => assertSubscriptionOnlyConfiguration(next, env, { runScopedFallbacks: true })).not.toThrow();
   });
   it.each([
     { baseUrl: "https://custom.test/v1" }, { apiKey: "synthetic" }, { headers: { custom: "keep" } },
