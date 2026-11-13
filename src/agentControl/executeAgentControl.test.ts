@@ -2516,3 +2516,30 @@ it("preflights fresh native OpenAI proxy routing read-only, before OAuth install
     expect((await fs.readdir(dir)).sort()).toEqual(["openclaw.json"]);
   } finally { vi.unstubAllEnvs(); await fs.rm(dir, { recursive: true, force: true }); }
 });
+
+it("prepares a fresh Sol subscription route through fenced backend bootstrap before auth exists", async () => {
+ const previousBackend = process.env.BACKEND_BASE_URL, previousToken = process.env.RELAY_TOKEN;
+ process.env.BACKEND_BASE_URL = "https://bootstrap.example.test"; process.env.RELAY_TOKEN = "synthetic";
+ const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bootstrap-model-"));
+ const configPath = path.join(dir, "openclaw.json");
+ try {
+  await installFakeSystemctl(); await installFakeOpenclaw();
+  const { ensureNativePiModelCompatibility } = await import("./nativePiModelCompatibility.js");
+  const config = { agents: { defaults: { model: { primary: "openai/gpt-5.6-luna", fallbacks: [] }, models: { "openai/gpt-6.1-sol": {} }, imageModel: { primary: "openai/gpt-5.4", fallbacks: ["openrouter/other"] } } }, models: { providers: { openai: { baseUrl: process.env.BACKEND_BASE_URL + "/api/v1/relays/openai/v1", models: [] } } }, channels: { telegram: { enabled: true } } };
+  ensureNativePiModelCompatibility(config, false, {});
+  await fs.writeFile(configPath, JSON.stringify(config));
+  const action = { kind: "model.set" as const, model: "codex/gpt-6.1-sol", fallbacks: [], subscriptionBootstrap: true as const, fence: { revision: "a1111111-1111-4111-8111-111111111111", predecessor: null } };
+  await expect(executeAgentControlImpl({ configPath, gateway: noopGateway, action })).rejects.toMatchObject({code:"SUBSCRIPTION_BOOTSTRAP_AUTHORITY_REQUIRED"});
+  expect(JSON.parse(await fs.readFile(configPath,"utf8"))).toEqual(config);
+  const result = await executeAgentControlImpl({ configPath, gateway: noopGateway, action, policyAuthority: "backend" });
+  expect(result).toMatchObject({ kind: "model.set", subscriptionBootstrap: true, applied: true });
+  const saved = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;
+  const { assertSubscriptionOnlyConfiguration } = await import("./openAiSubscriptionPool.js");
+  expect(() => assertSubscriptionOnlyConfiguration(saved, process.env, {runScopedFallbacks:false})).not.toThrow();
+  expect(saved.channels).toEqual(config.channels);
+ } finally {
+  if(previousBackend===undefined) delete process.env.BACKEND_BASE_URL; else process.env.BACKEND_BASE_URL=previousBackend;
+  if(previousToken===undefined) delete process.env.RELAY_TOKEN; else process.env.RELAY_TOKEN=previousToken;
+  await fs.rm(dir,{recursive:true,force:true});
+ }
+});

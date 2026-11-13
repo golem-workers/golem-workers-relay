@@ -2,6 +2,7 @@ import { isAuthorizationReadbackOnly } from "./authorizationReconcileContext.js"
 import { readSubscriptionConfigRuntimeState } from "./subscriptionPoolRuntime.js";
 import { AgentControlError } from "./errors.js";
 export { AgentControlError } from "./errors.js";
+import { prepareSubscriptionBootstrap } from "./subscriptionBootstrap.js";
 import { hasVerifiedSubscriptionRoute } from "./modelSubscriptionRoute.js";
 import { exitSubscriptionPool, assertSubscriptionPoolApiRoute } from "./subscriptionPoolExit.js";
 import { prepareSubscriptionPoolConfig } from "./subscriptionPoolConfig.js";
@@ -114,6 +115,7 @@ async function deleteModelVerificationSession(sessionKey: string, remove: () => 
 }
 
 export async function executeAgentControl(input: Parameters<typeof executeAgentControlUnfenced>[0] & { policyAuthority?: "backend" }): Promise<AgentControlResult> {
+  if (input.action.kind === "model.set" && input.action.subscriptionBootstrap && (input.policyAuthority !== "backend" || !input.action.fence || !input.action.model.startsWith("codex/") || input.action.fallbacks.length)) throw new AgentControlError("SUBSCRIPTION_BOOTSTRAP_AUTHORITY_REQUIRED", "Subscription bootstrap requires explicit fenced backend model intent without fallback");
   if (input.action.managedRuntimePolicy && input.policyAuthority !== "backend") throw new AgentControlError("MANAGED_RUNTIME_POLICY_AUTHORITY_REQUIRED", "Only authenticated backend ingress may change managed harness authority");
   if (input.action.managedRuntimePolicy && !input.action.managedRuntimePolicyDigest) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend policy digest is required");
   // Older backends may attach authority even to pairing inventory. Validate
@@ -273,7 +275,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       }
       // Reject an incompatible choice before even persisting fenced intent.
       const { config: source } = await readConfigFile(input.configPath);
-      const candidate = structuredClone(source);
+      let candidate = structuredClone(source);
       const candidateDefaults = ensureRecord(ensureRecord(candidate, "agents"), "defaults");
       const selected = mapStoredModelRef(action.model);
       const fallbacks = action.fallbacks.map(mapStoredModelRef);
@@ -283,6 +285,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       for (const fallback of fallbacks) ensureModelRegistryEntry(candidateDefaults, fallback.modelRef);
       applyModelFastMode(candidateDefaults, selected.modelRef, action.fastMode);
       await applyNativePiModelCompatibility(candidate, input.configPath, [action.model, ...action.fallbacks]);
+      if (action.subscriptionBootstrap) candidate = prepareSubscriptionBootstrap(candidate);
       managedRuntime.normalizeConfig(candidate, policy, context);
       const pending = { ...fence, status: "PENDING" as const, model: action.model };
       await writeModelFence(input.configPath, pending);
@@ -465,6 +468,7 @@ async function executeAgentControlUnfenced(input: {
                 : input.action.kind === "model.set" ? await setModel({
                     configPath: input.configPath,
                     model: input.action.model,
+                    subscriptionBootstrap: input.action.subscriptionBootstrap,
                     fallbacks: input.action.fallbacks,
                     contextTokens: input.action.contextTokens ?? null,
                     thinkingDefault: input.action.thinkingDefault,
@@ -621,6 +625,7 @@ async function readConfig(configPath: string, gateway: GatewayLike, includeRunti
     ownerFenceVersion: 1,
     authorizationConfigVersion: 1,
     subscriptionPoolVersion: 1,
+    subscriptionBootstrapVersion: 1,
     ...(exitCapability ? { subscriptionPoolExitVersion: 1 as const } : {}),
     subscriptionPoolCompatibility: await (async () => {
       try { const guard = await assertRuntimeSubscriptionGuard(gateway); assertSubscriptionOnlyConfiguration(prepareSubscriptionPoolConfig(config, guard), process.env, guard); return { compatible: true }; }
@@ -989,6 +994,7 @@ async function applyNativePiModelCompatibility(
 }
 
 async function setModel(input: {
+  subscriptionBootstrap?: true;
   configPath: string;
   model: string;
   fallbacks: ModelSetFallbacks;
@@ -1001,7 +1007,7 @@ async function setModel(input: {
     .map((item) => item.trim())
     .filter(Boolean);
   const { config } = await readConfigFile(input.configPath);
-  const nextConfig = structuredClone(config);
+  let nextConfig = structuredClone(config);
   const agentsCfg = ensureRecord(nextConfig, "agents");
   const defaultsCfg = ensureRecord(agentsCfg, "defaults");
   const modelCfg = ensureRecord(defaultsCfg, "model");
@@ -1023,10 +1029,12 @@ async function setModel(input: {
     delete defaultsCfg.thinkingDefault;
   }
   await applyNativePiModelCompatibility(nextConfig, input.configPath, [input.model, ...fallbacks]);
+  if (input.subscriptionBootstrap) nextConfig = prepareSubscriptionBootstrap(nextConfig);
   await atomicWriteUtf8(input.configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
   const restart = await restartGatewayService();
   return {
     kind: "model.set",
+    ...(input.subscriptionBootstrap ? { subscriptionBootstrap: true as const } : {}),
     applied: true,
     restarted: true,
     model: input.model,

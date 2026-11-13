@@ -826,3 +826,6 @@ Explicit durable `reconcile` mode is fingerprint-bound to the same UNKNOWN pool 
 Readback-only pool reconciliation accepts the public SDK omission of an empty OpenAI order only when the saved revision has zero enabled members. Nonempty or other-provider order differences still refuse completion; verification never saves the auth store. No new environment setting is required.
 
 Legacy OAuth clear uses the installed public SDK transaction, removes only OpenAI OAuth profiles, preserves API-key/other-provider credentials and skips an already-clear store save. With selected OpenClaw it refreshes runtime auth live without stopping/restarting Gateway; Codex-specific pause behavior is unchanged pending separate runtime acceptance. No new environment setting is required.
+
+### Organization Telegram subscription bootstrap
+New OpenAI-template agents explicitly prepare the managed ChatGPT route and clear model fallback lists before OAuth assignment. Auth-only Connect preserves model intent. Bootstrap requires a fenced backend request and an explicit Relay acknowledgement; authored/custom transport remains rejected. Telegram AUTH reports structured safe assignment error codes, not raw provider messages.
