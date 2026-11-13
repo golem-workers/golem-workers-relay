@@ -125,6 +125,7 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("model.fence.reconcile"), revision: z.string().uuid(), predecessor: z.string().uuid().nullable(), model: z.string().min(1) }),
   z.object({
     kind: z.literal("model.set"),
+    subscriptionBootstrap: z.literal(true).optional(),
     fence: z.object({ revision: z.string().uuid(), predecessor: z.string().uuid().nullable() }).optional(),
     model: z.string().min(1),
     fallbacks: modelFallbacksSchema,
@@ -234,6 +235,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     ownerFenceVersion: z.literal(1).optional(),
     authorizationConfigVersion: z.literal(1).optional(),
     subscriptionPoolVersion: z.literal(1).optional(),
+    subscriptionBootstrapVersion: z.literal(1).optional(),
     subscriptionPoolExitVersion: z.literal(1).optional(),
     subscriptionPoolCompatibility: z.object({ compatible: z.boolean(), reason: z.string().optional() }).optional(),
     durableAuthorizationVersion: z.literal(1).optional(),
@@ -317,6 +319,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("model.set"),
+    subscriptionBootstrap: z.literal(true).optional(),
     applied: z.literal(true),
     restarted: z.literal(true),
     model: z.string().min(1),
