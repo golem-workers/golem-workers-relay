@@ -1,9 +1,11 @@
+import { isAuthorizationReadbackOnly } from "../agentControl/authorizationReconcileContext.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthorizationReceipts } from "./authorizationReceipts.js";
 import { logger } from "../logger.js";
+import { SubscriptionPoolError } from "../agentControl/openAiSubscriptionPool.js";
 import { ModelFenceBusyError } from "../agentControl/modelFence.js";
 
 describe("durable credential receipts", () => {
@@ -15,6 +17,71 @@ describe("durable credential receipts", () => {
     for (let i = 0; i < 100; i++) { const receipt = await store.status(id); if (receipt.state !== "RUNNING") return receipt; await new Promise(resolve => setTimeout(resolve, 5)); }
     throw new Error("receipt did not finish");
   }
+  it("classifies a proven pre-writer config refusal without permitting automatic replay", async () => {
+    const action = { kind: "codex.auth.pool.sync", revision: 5, members: [], managedRuntimeExpectedConfigRevision: "old" };
+    const execute = vi.fn(() => Promise.reject(new SubscriptionPoolError("OPENAI_POOL_CONFIG_RUNTIME_PENDING", "private-runtime-detail")));
+    await store.submit("prewriter", action, execute);
+    expect(await terminal("prewriter")).toMatchObject({ state: "REFUSED", code: "OPENAI_POOL_CONFIG_RUNTIME_PENDING" });
+    await store.submit("prewriter", action, execute);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(await fs.readFile(path.join(directory, "prewriter.json"), "utf8")).not.toContain("private-runtime-detail");
+  });
+  it("resumes only explicit pre-writer refusal with the same credential intent and fresh dispatch fence", async () => {
+    const action = { kind: "codex.auth.pool.sync", revision: 5, members: [{ accountId: "a", credentialVersion: 1 }], managedRuntimeExpectedConfigRevision: "old" };
+    await store.submit("resume", action, () => Promise.reject(new SubscriptionPoolError("OPENAI_POOL_CONFIG_RUNTIME_PENDING", "private")));
+    const previous = await terminal("resume");if (previous.state === "NOT_FOUND") throw Error("missing refusal");
+    const execute = vi.fn(() => Promise.resolve({ kind: "codex.auth.pool.sync" as const, revision: 5, phase: "applied" as const, members: [] }));
+    await expect(store.resume("resume", { ...action, revision: 6 }, previous.fingerprint, execute)).rejects.toThrow("AUTH_OPERATION_CONFLICT");
+    store = new AuthorizationReceipts(directory);
+    await store.resume("resume", { ...action, managedRuntimeExpectedConfigRevision: "new" }, previous.fingerprint, execute);
+    expect(await terminal("resume")).toMatchObject({ state: "SUCCEEDED", resumeCount: 1, previousRefusals: ["OPENAI_POOL_CONFIG_RUNTIME_PENDING"] });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(await fs.readFile(path.join(directory, "resume.json"), "utf8")).not.toContain("private");
+  });
+  it("never resumes unknown or interrupted effects, even under unchanged intent", async () => {
+    const action = { kind: "codex.auth.clear" };
+    await store.submit("unknown", action, () => Promise.reject(Error("failure after write")));
+    const previous = await terminal("unknown");if (previous.state === "NOT_FOUND") throw Error("missing receipt");
+    const execute = vi.fn(() => Promise.resolve({ kind: "codex.auth.clear" as const, applied: true as const }));
+    await expect(store.resume("unknown", action, previous.fingerprint, execute)).rejects.toThrow("AUTH_OPERATION_RESUME_UNSAFE");
+    expect(execute).not.toHaveBeenCalled();
+  });
+  it("allows exact explicit UNKNOWN pool reconciliation only in readback-only scope", async () => {
+    const action = { kind: "codex.auth.pool.sync", revision: 5, members: [{ accountId: "a", credentialVersion: 1 }], managedRuntimeExpectedConfigRevision: "old" };
+    const original = vi.fn(() => Promise.reject(Error("failure after store write")));
+    await store.submit("partial", action, original);
+    const previous = await terminal("partial"); if (previous.state === "NOT_FOUND") throw Error("missing receipt");
+    const reconcile = vi.fn(() => { expect(isAuthorizationReadbackOnly()).toBe(true); return Promise.resolve({ kind: "codex.auth.pool.sync" as const, revision: 5, phase: "applied" as const, members: [] }); });
+    await expect(store.reconcile("partial", { ...action, members: [] }, previous.fingerprint, reconcile)).rejects.toThrow("AUTH_OPERATION_CONFLICT");
+    await expect(store.resume("partial", action, previous.fingerprint, original)).rejects.toThrow("AUTH_OPERATION_RESUME_UNSAFE");
+    store = new AuthorizationReceipts(directory);
+    await store.reconcile("partial", { ...action, managedRuntimeExpectedConfigRevision: "current" }, previous.fingerprint, reconcile);
+    expect(await terminal("partial")).toMatchObject({ state: "SUCCEEDED", reconcileCount: 1, previousUnknownCodes: ["AUTH_OPERATION_OUTCOME_UNKNOWN"] });
+    expect(original).toHaveBeenCalledOnce(); expect(reconcile).toHaveBeenCalledOnce();
+    expect(isAuthorizationReadbackOnly()).toBe(false);
+  });
+  it("retains UNKNOWN on a busy partial-reconcile fence and never enables ordinary writer resume", async () => {
+    const action = { kind: "codex.auth.pool.sync", revision: 5, members: [] };
+    await store.submit("partial_busy", action, () => Promise.reject(Error("partial write")));
+    let previous = await terminal("partial_busy"); if (previous.state === "NOT_FOUND") throw Error("missing receipt");
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await store.reconcile("partial_busy", action, previous.fingerprint, () => Promise.reject(new ModelFenceBusyError()));
+      previous = await terminal("partial_busy"); if (previous.state === "NOT_FOUND") throw Error("missing receipt");
+      expect(previous).toMatchObject({ state: "UNKNOWN", reconcileCount: attempt, code: "AUTH_OPERATION_OUTCOME_UNKNOWN:MODEL_FENCE_BUSY" });
+      await expect(store.resume("partial_busy", action, previous.fingerprint, () => Promise.resolve({ kind: "codex.auth.clear", applied: true }))).rejects.toThrow("AUTH_OPERATION_RESUME_UNSAFE");
+    }
+    await expect(store.reconcile("partial_busy", action, previous.fingerprint, () => Promise.resolve({ kind: "codex.auth.clear", applied: true }))).rejects.toThrow("AUTH_OPERATION_RECONCILE_LIMIT");
+  });
+  it("excludes competing receipt-store instances during resume admission", async () => {
+    const action = { kind: "codex.auth.clear" };
+    await store.submit("race", action, () => Promise.reject(new ModelFenceBusyError()));
+    const previous = await terminal("race");if (previous.state === "NOT_FOUND") throw Error("missing refusal");
+    let finish!: () => void;const gate = new Promise<void>(resolve => { finish = resolve; });
+    const execute = vi.fn(async () => { await gate; return { kind: "codex.auth.clear" as const, applied: true as const }; });
+    await Promise.allSettled(Array.from({length:4}, () => new AuthorizationReceipts(directory).resume("race", action, previous.fingerprint, execute)));
+    expect(execute).toHaveBeenCalledOnce();finish();
+    await vi.waitFor(async () => { expect(await store.status("race")).toMatchObject({ state: "SUCCEEDED" }); });
+  });
   it("acknowledges slow stop promptly, completes after caller loss, and deduplicates concurrent and terminal requests", async () => {
     let finish!: () => void;
     const wait = new Promise<void>(resolve => { finish = resolve; });
@@ -28,6 +95,15 @@ describe("durable credential receipts", () => {
     expect((await terminal()).state).toBe("SUCCEEDED");
     expect((await new AuthorizationReceipts(directory).submit("operation", action, execute)).state).toBe("SUCCEEDED");
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+  it("deduplicates pool sync after a caller disconnect and receipt-store restart", async () => {
+    const action = { kind: "codex.auth.pool.sync", revision: 5, members: [{ bundle: { accessToken: "private-pool-token" } }] };
+    const execute = vi.fn(() => Promise.resolve({ kind: "codex.auth.pool.sync" as const, revision: 5, phase: "applied" as const, members: [] }));
+    await Promise.all(Array.from({length: 34}, () => store.submit("pool_operation", action, execute)));
+    expect(await terminal("pool_operation")).toMatchObject({ state: "SUCCEEDED", result: { kind: "codex.auth.pool.sync", revision: 5 } });
+    await new AuthorizationReceipts(directory).submit("pool_operation", action, execute);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(await fs.readFile(path.join(directory, "pool_operation.json"), "utf8")).not.toContain("private-pool-token");
   });
   it("does not mistake a read racing with terminal completion for a restarted operation", async () => {
     // Terminal rename precedes directory fsync and release of the executing marker.

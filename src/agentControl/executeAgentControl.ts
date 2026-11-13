@@ -1,3 +1,7 @@
+import { isAuthorizationReadbackOnly } from "./authorizationReconcileContext.js";
+import { readSubscriptionConfigRuntimeState } from "./subscriptionPoolRuntime.js";
+import { AgentControlError } from "./errors.js";
+export { AgentControlError } from "./errors.js";
 import { hasVerifiedSubscriptionRoute } from "./modelSubscriptionRoute.js";
 import { exitSubscriptionPool, assertSubscriptionPoolApiRoute } from "./subscriptionPoolExit.js";
 import { prepareSubscriptionPoolConfig } from "./subscriptionPoolConfig.js";
@@ -82,17 +86,6 @@ type ModelSetThinkingDefault = Extract<AgentControlAction, { kind: "model.set" }
 type ModelSetFastMode = Extract<AgentControlAction, { kind: "model.set" }>["fastMode"];
 type ModelSetFallbacks = Extract<AgentControlAction, { kind: "model.set" }>["fallbacks"];
 
-export class AgentControlError extends Error {
-  readonly code: string;
-  readonly details?: Record<string, unknown>;
-
-  constructor(code: string, message: string, details?: Record<string, unknown>, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = "AgentControlError";
-    this.code = code;
-    this.details = details;
-  }
-}
 
 function readThinkingDefault(value: unknown): ModelSetThinkingDefault {
   if (typeof value !== "string") {
@@ -398,6 +391,7 @@ async function executeAgentControlUnfenced(input: {
               : input.action.kind === "codex.auth.pool.sync"
                 ? await syncSubscriptionPool({
                     configPath: input.configPath, revision: input.action.revision,
+                    ...(isAuthorizationReadbackOnly() ? { reconcileOnly: true } : {}),
                     members: input.action.members.map(member => ({
                       accountId: member.accountId, credentialVersion: member.credentialVersion, enabled: member.enabled,
                       credential: { type: "oauth" as const, provider: "openai" as const, access: member.bundle.accessToken, refresh: member.bundle.refreshToken, expires: member.bundle.expiresAtMs, ...(member.bundle.email ? { email: member.bundle.email } : {}), ...(member.bundle.accountId ? { accountId: member.bundle.accountId } : {}), ...(member.bundle.chatgptPlanType ? { chatgptPlanType: member.bundle.chatgptPlanType } : {}) },
@@ -423,7 +417,13 @@ async function executeAgentControlUnfenced(input: {
                     input.gateway,
                   )
               : input.action.kind === "codex.auth.clear"
-                ? await runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(input.configPath, () => clearCodexAuth(input.configPath)))
+                ? (await readManagedRuntimePolicy(input.configPath)).chatHarness === "openclaw"
+                  ? await enqueueCodexAuthMutation(() => withOwnerFenceLock(input.configPath, async () => {
+                      const result = await clearCodexAuth(input.configPath);
+                      await refreshCodexRuntimeAuth(input.gateway);
+                      return result;
+                    }))
+                  : await runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(input.configPath, () => clearCodexAuth(input.configPath)))
               : input.action.kind === "github.auth.configure"
                 ? await configureGitHubAuth(input.action)
               : input.action.kind === "github.oauth.status"
@@ -627,6 +627,10 @@ async function readConfig(configPath: string, gateway: GatewayLike, includeRunti
       catch (error) { return { compatible: false, reason: error instanceof SubscriptionPoolError ? error.code : "OPENAI_POOL_ROUTE_UNSUPPORTED" }; }
     })(),
     durableAuthorizationVersion: 1,
+    durablePoolAuthorizationVersion: 1,
+    durableAuthorizationResumeVersion: 1,
+    durableAuthorizationReconcileVersion: 1,
+    subscriptionConfigRuntimeState: await readSubscriptionConfigRuntimeState(configPath, gateway),
     ownerRuntime: await readOwnerRuntime(configPath, gateway, true),
     configText,
     config,

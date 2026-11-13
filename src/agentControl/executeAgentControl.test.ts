@@ -606,6 +606,21 @@ describe("executeAgentControl Codex login", () => {
     await expect(executeAgentControl({ action: { kind: "gateway.restart" }, configPath, gateway: noopGateway })).resolves.toMatchObject({ restarted: true });
   }, 30_000);
 
+  it("clears OpenClaw OAuth live with an auth refresh and no implicit Gateway stop or restart", async () => {
+    await installFakeOpenclaw();
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-openclaw-live-clear-"));
+    process.env.OPENCLAW_STATE_DIR = root; process.env.HOME = root; process.env.CODEX_HOME = path.join(root, "codex");
+    const configPath = path.join(root, "openclaw.json"), policy = { schemaVersion: 1 as const, revision: 2, chatHarness: "openclaw" as const };
+    const config = { auth: { profiles: { "openai:fixture": { provider: "openai", mode: "oauth" } } }, agents: { defaults: { model: { primary: "openai/gpt-6.1-sol", fallbacks: [] } } } };
+    createManagedRuntimePolicy().normalizeConfig(config, policy, { subscriptionAuth: true });
+    await fs.writeFile(configPath, JSON.stringify(config)); await fs.writeFile(configPath + ".managed-runtime-policy.json", JSON.stringify(policy));
+    const gateway = { request: vi.fn().mockResolvedValue({}) };
+    await expect(executeAgentControl({ action: { kind: "codex.auth.clear" }, configPath, gateway })).resolves.toEqual({ kind: "codex.auth.clear", applied: true });
+    expect(gateway.request).toHaveBeenCalledWith("models.authStatus", { refresh: true }, expect.anything());
+    expect((await readSystemctlCalls(systemctlLogPath)).filter(call => /(?:stop|restart|start) openclaw-gateway/.test(call))).toEqual([]);
+    expect((JSON.parse(await fs.readFile(configPath, "utf8")) as typeof config).agents).toEqual(config.agents);
+  }, 30_000);
+
   it("starts device-code login and reports the verification details", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-login-"));
     const configPath = path.join(tempDir, "openclaw.json");
@@ -1235,7 +1250,7 @@ console.log(JSON.stringify({status: ${JSON.stringify(mode === "failure" ? "error
     else await expect(run).rejects.toMatchObject({ code: "MODEL_VERIFY_FAILED" });
   });
 
-  it.each([0, 16_000])("syncs auth with %i ms runtime latency with only required migration/clear reloads", async (latencyMs) => {
+  it.each([0, 16_000])("syncs auth with %i ms runtime latency and live OpenClaw clear refresh", async (latencyMs) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-relay-codex-auth-sync-"));
     const configPath = path.join(tempDir, "openclaw.json");
     const codexHome = path.join(tempDir, ".codex");
@@ -1409,11 +1424,13 @@ console.log(JSON.stringify({status: ${JSON.stringify(mode === "failure" ? "error
       authProfileOverrideCompactionCount: 3,
     });
 
+    const clearGateway = { request: vi.fn().mockResolvedValue({}) };
     const cleared = await executeAgentControl({
       action: { kind: "codex.auth.clear" },
       configPath,
-      gateway: noopGateway,
+      gateway: clearGateway,
     });
+    expect(clearGateway.request).toHaveBeenCalledWith("models.authStatus", { refresh: true }, expect.anything());
     expect(cleared).toEqual({ kind: "codex.auth.clear", applied: true });
     const clearedSession = JSON.parse(await fs.readFile(sessionsPath, "utf8")) as Record<
       string,
@@ -1432,8 +1449,8 @@ console.log(JSON.stringify({status: ${JSON.stringify(mode === "failure" ? "error
     expect(afterClear).toMatchObject({ state: "not_logged_in" });
     await expect(fs.access(path.join(codexHome, "golem-auth-sync.json"))).rejects.toMatchObject({ code: "ENOENT" });
     const systemctlCalls = await readSystemctlCalls(systemctlLogPath);
-    expect(systemctlCalls.filter((call) => call === "--user stop openclaw-gateway.service")).toHaveLength(1);
-    expect(systemctlCalls.filter((call) => call === "--user restart openclaw-gateway.service")).toHaveLength(1);
+    expect(systemctlCalls.filter((call) => call === "--user stop openclaw-gateway.service")).toHaveLength(0);
+    expect(systemctlCalls.filter((call) => call === "--user restart openclaw-gateway.service")).toHaveLength(0);
   }, 45_000);
 
   it("rolls back persisted Codex auth when live runtime refresh fails", async () => {
@@ -2473,14 +2490,14 @@ describe("canonical config-sync normalized model fence", () => {
   });
 });
 
-it("preflights strict Connect with fallback cleanup planned but no filesystem mutation",async()=>{
+it("rejects strict Connect fallback read-only without silently planning model changes",async()=>{
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),"pool-preflight-")),configPath=path.join(dir,"openclaw.json");
  const text=JSON.stringify({agents:{defaults:{model:{primary:"openai/model",fallbacks:["paid/other"]}}},models:{providers:{openai:{api:"openai-chatgpt-responses"}}}});
  await fs.writeFile(configPath,text);
  try{
  const request=vi.fn((method:string)=>Promise.resolve(method==="relay-channel.subscriptionGuard.status"?{version:2,runScopedFallbacks:false,configuredFallbacksForbidden:true,readOnlyAdmission:true}:{}));
  const read=await executeAgentControl({configPath,gateway:{request},action:{kind:"config.read"}});
- expect(read).toMatchObject({kind:"config.read",subscriptionPoolCompatibility:{compatible:true},configText:text});
+ expect(read).toMatchObject({kind:"config.read",subscriptionPoolCompatibility:{compatible:false,reason:"OPENAI_POOL_MODEL_FALLBACK_FORBIDDEN"},configText:text});
  expect(await fs.readFile(configPath,"utf8")).toBe(text);expect((await fs.readdir(dir)).sort()).toEqual(["openclaw.json"]);
  }finally{await fs.rm(dir,{recursive:true,force:true});}
 });

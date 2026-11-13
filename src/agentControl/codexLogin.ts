@@ -118,11 +118,7 @@ type AuthProfilesStore = {
   profiles: Record<string, OAuthCredential | Record<string, unknown>>;
 };
 
-type AuthProfileStateStore = {
-  version: number;
-  order?: Record<string, string[]>;
-  lastGood?: Record<string, string>;
-};
+
 
 type PendingCodexLogin = {
   state: "pending" | "connected" | "failed";
@@ -451,34 +447,6 @@ async function resolveCodexAuthModes(params: { loginAvailable: boolean; loginMes
   };
 }
 
-function coerceAuthProfileStateStore(value: unknown): AuthProfileStateStore {
-  if (!isRecord(value)) {
-    return { version: 1 };
-  }
-  const order = isRecord(value.order)
-    ? Object.fromEntries(
-        Object.entries(value.order).flatMap(([provider, profileIds]) => {
-          if (!Array.isArray(profileIds)) {
-            return [];
-          }
-          const normalized = profileIds.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-          return normalized.length > 0 ? [[provider, normalized]] : [];
-        }),
-      )
-    : undefined;
-  const lastGood = isRecord(value.lastGood)
-    ? Object.fromEntries(
-        Object.entries(value.lastGood).flatMap(([provider, profileId]) =>
-          typeof profileId === "string" && profileId.trim().length > 0 ? [[provider, profileId]] : [],
-        ),
-      )
-    : undefined;
-  return {
-    version: typeof value.version === "number" ? value.version : 1,
-    ...(order && Object.keys(order).length > 0 ? { order } : {}),
-    ...(lastGood && Object.keys(lastGood).length > 0 ? { lastGood } : {}),
-  };
-}
 
 function parseSqliteJsonCell(value: unknown): unknown {
   if (typeof value !== "string" || value.length === 0) {
@@ -1818,67 +1786,12 @@ function isOpenAiCredential(value: unknown): boolean {
 }
 
 async function clearCodexRuntimeAuthStore(configPath: string): Promise<void> {
-  try {
-    const { DatabaseSync } = await import("node:sqlite");
-    const target = await resolveCodexRuntimeAuthTarget(configPath);
-    const databasePath = target.databasePath;
-    try {
-      await fs.access(databasePath);
-    } catch {
-      return;
-    }
-    const db = new DatabaseSync(databasePath);
-    try {
-      db.exec("PRAGMA busy_timeout = 5000;");
-      if (target.kind === "shared-state") {
-        db.exec("BEGIN IMMEDIATE;");
-        try {
-          const now = Date.now();
-          const storeRow = db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("authProfiles.store") as { value_json?: string } | undefined;
-          if (storeRow?.value_json) {
-            const store = readAuthProfilesStoreFromRaw(parseSqliteJsonCell(storeRow.value_json));
-            store.profiles = Object.fromEntries(Object.entries(store.profiles).filter(([, value]) => !isOpenAiCredential(value)));
-            db.prepare("UPDATE config_machine_state SET value_json = ?, updated_at_ms = ? WHERE state_key = ?").run(JSON.stringify(store), now, "authProfiles.store");
-          }
-          const stateRow = db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?").get("authProfiles.state") as { value_json?: string } | undefined;
-          if (stateRow?.value_json) {
-            const state = coerceAuthProfileStateStore(parseSqliteJsonCell(stateRow.value_json));
-            if (state.order) delete state.order.openai;
-            if (state.lastGood) delete state.lastGood.openai;
-            db.prepare("UPDATE config_machine_state SET value_json = ?, updated_at_ms = ? WHERE state_key = ?").run(JSON.stringify(state), now, "authProfiles.state");
-          }
-          db.exec("COMMIT;");
-        } catch (error) {
-          db.exec("ROLLBACK;");
-          throw error;
-        }
-        return;
-      }
-      const rawStore = db.prepare("SELECT store_json FROM auth_profile_store WHERE store_key = ?").get("primary") as { store_json?: string } | undefined;
-      if (rawStore?.store_json) {
-        const store = readAuthProfilesStoreFromRaw(parseSqliteJsonCell(rawStore.store_json));
-        store.profiles = Object.fromEntries(
-          Object.entries(store.profiles).filter(([, value]) => !isOpenAiCredential(value)),
-        );
-        db.prepare("UPDATE auth_profile_store SET store_json = ?, updated_at = ? WHERE store_key = ?")
-          .run(JSON.stringify(store), Date.now(), "primary");
-      }
-      const rawState = db.prepare("SELECT state_json FROM auth_profile_state WHERE state_key = ?").get("primary") as { state_json?: string } | undefined;
-      if (rawState?.state_json) {
-        const state = coerceAuthProfileStateStore(parseSqliteJsonCell(rawState.state_json));
-        if (state.order) delete state.order.openai;
-        if (state.lastGood) delete state.lastGood.openai;
-        db.prepare("UPDATE auth_profile_state SET state_json = ?, updated_at = ? WHERE state_key = ?")
-          .run(JSON.stringify(state), Date.now(), "primary");
-      }
-    } finally {
-      db.close();
-    }
-  } catch (error) {
-    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
-      throw error;
-    }
-  }
+  const target = await resolveCodexRuntimeAuthTarget(configPath);
+  try { await fs.access(target.databasePath); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  // Public SDK owns store admission, schema, transactional persistence and locks.
+  // Do not update its SQLite tables directly alongside native runtime writers.
+  await writeRuntimeAuth({ configPath, clearOAuth: true });
 }
 
 export async function clearCodexAuth(configPath: string): Promise<CodexAuthClearActionResult> {

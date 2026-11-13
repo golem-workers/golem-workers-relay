@@ -808,3 +808,21 @@ Managed model configuration does not set `agents.defaults.contextTokens`; model 
 Runtime auth and subscription-pool SDK writers allow up to 120 seconds for cold shared/agent database integrity admission. Timeout remains an unacknowledged outcome requiring reconciliation; stage/exit diagnostics never include credentials or child stderr.
 
 Applied OpenAI subscription pools use their loaded admission guard and strict official ChatGPT route for `model.verify`, not legacy singleton login-mode classification. Pending/exiting/empty pools, missing persisted subscriptions, custom/direct-auth routes and environment overrides remain blocked. Verification still requires the isolated reply's exact provider/model/harness; route readiness alone is never success.
+
+### Durable subscription-pool authorization
+
+The loaded Relay advertises `durablePoolAuthorizationVersion: 1` when pool sync supports durable operation receipts. Repeated or restarted callers read the same non-secret receipt; an unknown mutation is not automatically replayed. Writer, Gateway timeout and known validation errors expose safe codes, not child stderr/config/credentials.
+
+Auth-only Connect preserves authored fallback settings. A strict legacy subscription guard refuses configured fallbacks and requires a separate explicit model edit; a confirmed run-scoped guard can preserve configured fallback intent while enforcing subscription-only execution. Relay upgrade and model/Harness configuration remain explicit operations.
+
+Authorization writer failures carry fixed import/store/session stages and allowlisted lock/migration/ownership codes via exit integers; child messages, stderr and credentials never enter API diagnostics.
+
+Proven pre-writer config refusals remain REFUSED and support explicit fingerprint-fenced resume under kernel admission lock. Unknown/post-writer effects never replay. Auth-only configuration checks do not restart Gateway or remove authored fallbacks.
+
+Auth-writer subprocesses inherit the active model and owner kernel-lock descriptions. If Relay dies while a writer is alive, a new config owner remains fenced until that writer exits; closing the parent alone cannot release custody. This does not authorize UNKNOWN replay or prove a partial operation applied. No new configuration is required.
+
+Explicit durable `reconcile` mode is fingerprint-bound to the same UNKNOWN pool intent and advertises `durableAuthorizationReconcileVersion: 1`. It keeps ambiguous/busy outcomes UNKNOWN (never pre-writer REFUSED), has a three-attempt budget, and runs the pool manager in readback-only auth-store mode. The public SDK updater compares the projected store against actual state, returns false without saving when equal, and refuses changed credentials; only SDK-normalized empty/absent access-only refresh fields are equivalent. Session pin cleanup and runtime refresh can then complete the exact pending snapshot. Ordinary submit/resume never replays UNKNOWN. No new environment setting is required.
+
+Readback-only pool reconciliation accepts the public SDK omission of an empty OpenAI order only when the saved revision has zero enabled members. Nonempty or other-provider order differences still refuse completion; verification never saves the auth store. No new environment setting is required.
+
+Legacy OAuth clear uses the installed public SDK transaction, removes only OpenAI OAuth profiles, preserves API-key/other-provider credentials and skips an already-clear store save. With selected OpenClaw it refreshes runtime auth live without stopping/restarting Gateway; Codex-specific pause behavior is unchanged pending separate runtime acceptance. No new environment setting is required.

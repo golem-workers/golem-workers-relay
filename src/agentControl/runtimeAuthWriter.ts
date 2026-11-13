@@ -4,6 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
+import { activeConfigLockDescriptors } from "./ownerFence.js";
 
 // Cold admission can perform full integrity checks for both shared and agent DBs.
 // Keep a bounded budget, but do not kill a healthy SDK midway through admission.
@@ -12,6 +13,17 @@ const AUTH_WRITER_TIMEOUT_MS = 120_000;
 export class RuntimeAuthWriterError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = "RuntimeAuthWriterError"; }
 }
+
+function writerFailureStage(code: number | null): string {
+  return ({ 2: "EXPORT_MISSING", 3: "STORE_REFUSED", 4: "SDK_IMPORT_FAILED", 5: "SESSION_SDK_IMPORT_FAILED", 6: "SNAPSHOT_SDK_IMPORT_FAILED", 7: "AGENT_SDK_IMPORT_FAILED", 8: "STORE_UPDATE_FAILED", 9: "SESSION_REFRESH_FAILED", 10: "RUNTIME_SNAPSHOT_FAILED", 11: "STORE_LOCK_BUSY", 12: "STORE_LOCKED", 13: "MIGRATION_REQUIRED", 14: "STORE_UNREADABLE", 15: "OWNERSHIP_INVALID", 16: "STORE_READBACK_MISMATCH" } as Record<number, string>)[code ?? -1] ?? "CALLBACK_FAILED";
+}
+// Only fixed exit integers cross the subprocess boundary. Never forward exception
+// messages, stderr, paths, input bundles or arbitrary runtime error codes.
+const sanitizedWriterCatch = `catch (error) {
+  const known = { SQLITE_BUSY: 11, SQLITE_LOCKED: 12, AUTH_PROFILE_MIGRATION_REQUIRED: 13, AUTH_PROFILE_STORE_UNREADABLE: 14, INVALID_SHARED_AUTH_STORE_OWNERSHIP: 15 };
+  const code = error && typeof error === "object" && typeof error.code === "string" && Object.hasOwn(known, error.code) ? known[error.code] : failureExit;
+  process.exit(code);
+}`;
 
 // Resolve the public SDK from the active executable first. NODE_PATH can still
 // point at an obsolete pnpm global root after an update (backend issue #656).
@@ -42,20 +54,29 @@ export async function resolveRuntimeAuthSdk(): Promise<string> {
 // A separate process isolates runtime caches and state-root environment from the
 // relay. Credentials travel on stdin, never argv, environment, or diagnostic logs.
 const writer = String.raw`
+let failureExit = 4;
 try {
   let raw = "";
   for await (const chunk of process.stdin) raw += chunk;
   const input = JSON.parse(raw);
   const { updateAuthProfileStoreWithLock } = await import(process.argv[1]);
   if (typeof updateAuthProfileStoreWithLock !== "function") process.exit(2);
+  failureExit = 8;
   const updated = await updateAuthProfileStoreWithLock({
     agentDir: process.env.OPENCLAW_AGENT_DIR,
     stateDir: process.env.OPENCLAW_STATE_DIR,
     sharedStoreWrite: true,
     saveOptions: { syncExternalCli: false, filterExternalAuthProfiles: false },
     updater: (store) => {
-      store.profiles = Object.fromEntries(Object.entries(store.profiles).filter(([, value]) =>
-        !(value.type === "oauth" && (value.provider === "openai" || value.provider === "openai-codex"))));
+      const removed = Object.entries(store.profiles).filter(([, value]) =>
+        value.type === "oauth" && (value.provider === "openai" || value.provider === "openai-codex")).map(([id]) => id);
+      store.profiles = Object.fromEntries(Object.entries(store.profiles).filter(([id]) => !removed.includes(id)));
+      if (input.clearOAuth) {
+        let changed = removed.length > 0;
+        for (const key of ["order", "lastGood"]) if (store[key] && Object.prototype.hasOwnProperty.call(store[key], "openai")) { delete store[key].openai; changed = true; }
+        for (const id of removed) if (store.usageStats) delete store.usageStats[id];
+        return changed;
+      }
       store.profiles[input.profileId] = input.credential;
       store.order = { ...store.order, openai: [input.profileId] };
       store.lastGood = { ...store.lastGood, openai: input.profileId };
@@ -63,25 +84,26 @@ try {
     },
   });
   process.exit(updated ? 0 : 3);
-} catch { process.exit(1); }
+} ${sanitizedWriterCatch}
 `;
 
-export async function writeRuntimeAuth(input: {
-  configPath: string;
-  profileId: string;
-  credential: Record<string, unknown>;
-}): Promise<void> {
+export async function writeRuntimeAuth(input: { configPath: string } & (
+  { profileId: string; credential: Record<string, unknown>; clearOAuth?: false } | { clearOAuth: true }
+)): Promise<void> {
   const sdk = await resolveRuntimeAuthSdk();
   const configPath = path.resolve(input.configPath);
+  const custody = activeConfigLockDescriptors(configPath);
+  const custodyEnv = custody ? { GOLEM_CONFIG_MODEL_FD: "3", GOLEM_CONFIG_OWNER_FD: "4" } : {};
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, ["--input-type=module", "-e", writer, pathToFileURL(sdk).href], {
       env: {
         ...process.env,
+        ...custodyEnv,
         OPENCLAW_CONFIG_PATH: configPath,
         OPENCLAW_STATE_DIR: path.dirname(configPath),
         OPENCLAW_AGENT_DIR: path.join(path.dirname(configPath), "agents", "main", "agent"),
       },
-      stdio: ["pipe", "ignore", "ignore"],
+      stdio: custody ? ["pipe", "ignore", "ignore", custody.model, custody.owner] : ["pipe", "ignore", "ignore"],
     });
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, AUTH_WRITER_TIMEOUT_MS);
@@ -93,13 +115,19 @@ export async function writeRuntimeAuth(input: {
       clearTimeout(timer);
       if (code === 0 && !timedOut) resolve();
       else {
-        const stage = timedOut ? "TIMEOUT" : code === 2 ? "EXPORT_MISSING" : code === 3 ? "STORE_REFUSED" : "CALLBACK_FAILED";
+        const stage = timedOut ? "TIMEOUT" : writerFailureStage(code);
         const diagnostic = `AUTH_WRITER_${stage}_EXIT_${code ?? "NONE"}_${signal ?? "NONE"}`;
         reject(new RuntimeAuthWriterError(diagnostic, `OpenClaw auth writer refused the update (${diagnostic}); inspect runtime schema ownership and SDK compatibility.`));
       }
     });
-    child.stdin.on("error", () => { /* close/error above reports a sanitized failure */ });
-    child.stdin.end(JSON.stringify(input));
+    const stdin = child.stdin;
+    if (!stdin) {
+      clearTimeout(timer); child.kill("SIGKILL");
+      reject(new RuntimeAuthWriterError("AUTH_WRITER_SPAWN_FAILED", "Runtime authorization writer input pipe is unavailable."));
+      return;
+    }
+    stdin.on("error", () => { /* close/error above reports a sanitized failure */ });
+    stdin.end(JSON.stringify(input));
   });
 }
 
@@ -108,6 +136,7 @@ export async function writeRuntimeAuthPool(input: {
   configPath: string;
   state: import("./openAiSubscriptionPool.js").SubscriptionPoolState;
   members: import("./openAiSubscriptionPool.js").SubscriptionPoolMember[];
+  reconcileOnly?: boolean;
 }): Promise<void> {
   const { updateSubscriptionPoolStore } = await import("./openAiSubscriptionPool.js");
   const sdk = await resolveRuntimeAuthSdk();
@@ -117,29 +146,59 @@ export async function writeRuntimeAuthPool(input: {
   const agentScopeSdk = createRequire(sdk).resolve("openclaw/plugin-sdk/agent-scope-runtime");
   const runtimeConfig: unknown = JSON5.parse(await fs.readFile(configPath, "utf8"));
   const body = `
+let failureExit = 4;
 try {
  let raw = ""; for await (const chunk of process.stdin) raw += chunk;
  const input = JSON.parse(raw);
+ const { isDeepStrictEqual } = await import("node:util");
  const { updateAuthProfileStoreWithLock } = await import(process.argv[1]);
+ failureExit = 5;
  const { listSessionEntries, patchSessionEntry } = await import(process.argv[2]);
+ failureExit = 6;
  const { setRuntimeConfigSnapshot } = await import(process.argv[3]);
+ failureExit = 7;
  const { listAgentIds } = await import(process.argv[4]);
+ failureExit = 10;
  setRuntimeConfigSnapshot(input.runtimeConfig);
  if (typeof listSessionEntries !== "function" || typeof patchSessionEntry !== "function" || typeof listAgentIds !== "function") process.exit(2);
  const openAiProfiles = new Set(input.state.managedProfileIds);
  if (typeof updateAuthProfileStoreWithLock !== "function") process.exit(2);
+ failureExit = 8;
  const updated = await updateAuthProfileStoreWithLock({
   agentDir: process.env.OPENCLAW_AGENT_DIR, stateDir: process.env.OPENCLAW_STATE_DIR,
   sharedStoreWrite: true,
   saveOptions: { syncExternalCli: false, filterExternalAuthProfiles: false },
   updater: store => {
    for (const [id, value] of Object.entries(store.profiles)) if (["openai", "openai-codex"].includes(value.provider)) openAiProfiles.add(id);
+   if (input.reconcileOnly) {
+    const actual = structuredClone(store), expected = structuredClone(store);
+    (${updateSubscriptionPoolStore.toString()})(expected, input.state, input.members);
+    // Public SDK readback omits empty refresh fields on access-only profiles.
+    // Nonempty refresh custody, access changes and every other field still differ.
+    for (const view of [actual, expected]) for (const profile of Object.values(view.profiles)) {
+      if (profile && profile.type === "oauth" && profile.refresh === "") delete profile.refresh;
+    }
+    // The SDK omits an empty OpenAI order after removing/disabling the
+    // last managed member. Normalize only this zero-enabled empty form;
+    // nonempty orders and every other provider order remain authoritative.
+    if (!input.state.members.some(member => member.enabled)) for (const view of [actual, expected]) {
+      if (view.order && Array.isArray(view.order.openai) && view.order.openai.length === 0) delete view.order.openai;
+      if (view.order === undefined || view.order && Object.keys(view.order).length === 0) view.order = undefined;
+    }
+    if (!isDeepStrictEqual(expected, actual)) process.exit(16);
+    return false; // Public SDK transaction performs no auth-store save.
+   }
    (${updateSubscriptionPoolStore.toString()})(store, input.state, input.members); return true;
   },
  });
  if (!updated) process.exit(3);
+ failureExit = 9;
  const enabled = new Set(input.state.members.filter(m => m.enabled).map(m => m.profileId));
- for (const agentId of listAgentIds(input.runtimeConfig)) for (const { sessionKey } of listSessionEntries({ agentId, env: process.env, readConsistency: "latest" })) {
+ // Public listing metadata avoids taking per-session mutation custody for
+ // unrelated history. Older SDKs without entry metadata retain the safe path.
+ for (const agentId of listAgentIds(input.runtimeConfig)) for (const { sessionKey, entry: listedEntry } of listSessionEntries({ agentId, env: process.env, readConsistency: "latest" })) {
+  const listedId = listedEntry?.authProfileOverride;
+  if (listedEntry && (!listedId || !openAiProfiles.has(listedId) && !/^openai(?:-codex)?:/.test(listedId))) continue;
   await patchSessionEntry({ agentId, env: process.env, sessionKey, preserveActivity: true, requireWriteSuccess: true, update: entry => {
    const id = entry.authProfileOverride;
    if (!id || !openAiProfiles.has(id) && !/^openai(?:-codex)?:/.test(id)) return null;
@@ -147,12 +206,14 @@ try {
   } });
  }
  process.exit(0);
-} catch { process.exit(1); }
+} ${sanitizedWriterCatch}
 `;
+  const custody = activeConfigLockDescriptors(configPath);
+  const custodyEnv = custody ? { GOLEM_CONFIG_MODEL_FD: "3", GOLEM_CONFIG_OWNER_FD: "4" } : {};
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, ["--input-type=module", "-e", body, pathToFileURL(sdk).href, pathToFileURL(sessionSdk).href, pathToFileURL(snapshotSdk).href, pathToFileURL(agentScopeSdk).href], {
-      env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: path.dirname(configPath), OPENCLAW_AGENT_DIR: path.join(path.dirname(configPath), "agents", "main", "agent") },
-      stdio: ["pipe", "ignore", "ignore"],
+      env: { ...process.env, ...custodyEnv, OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: path.dirname(configPath), OPENCLAW_AGENT_DIR: path.join(path.dirname(configPath), "agents", "main", "agent") },
+      stdio: custody ? ["pipe", "ignore", "ignore", custody.model, custody.owner] : ["pipe", "ignore", "ignore"],
     });
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, AUTH_WRITER_TIMEOUT_MS);
@@ -161,12 +222,18 @@ try {
       clearTimeout(timer);
       if (code === 0 && !timedOut) resolve();
       else {
-        const stage = timedOut ? "TIMEOUT" : code === 2 ? "EXPORT_MISSING" : code === 3 ? "STORE_REFUSED" : "CALLBACK_FAILED";
+        const stage = timedOut ? "TIMEOUT" : writerFailureStage(code);
         const diagnostic = `AUTH_POOL_WRITER_${stage}_EXIT_${code ?? "NONE"}_${signal ?? "NONE"}`;
         reject(new RuntimeAuthWriterError(diagnostic, `Runtime subscription writer refused the update (${diagnostic}); no success acknowledgement was recorded.`));
       }
     });
-    child.stdin.on("error", () => { /* sanitized close result owns failure */ });
-    child.stdin.end(JSON.stringify({ ...input, runtimeConfig }));
+    const stdin = child.stdin;
+    if (!stdin) {
+      clearTimeout(timer); child.kill("SIGKILL");
+      reject(new RuntimeAuthWriterError("AUTH_POOL_WRITER_SPAWN_FAILED", "Runtime authorization writer input pipe is unavailable."));
+      return;
+    }
+    stdin.on("error", () => { /* sanitized close result owns failure */ });
+    stdin.end(JSON.stringify({ ...input, runtimeConfig }));
   });
 }

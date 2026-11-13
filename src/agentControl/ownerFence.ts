@@ -1,5 +1,5 @@
 import { verifyInheritedConfigLocks } from "./inheritedConfigLocks.js";
-import { withModelFenceLock, withIndependentModelFenceLock, readModelFence, isAuthorizedModelSelection } from "./modelFence.js";
+import { withModelFenceLock, activeModelFenceDescriptor, withIndependentModelFenceLock, readModelFence, isAuthorizedModelSelection } from "./modelFence.js";
 import { withManagedRuntimePolicy, commitManagedRuntimePolicy, recheckManagedRuntimePolicy } from "../managed-runtime/runtime-policy.js";
 import { MANAGED_RUNTIME_SOURCE_SHA256, type ManagedRuntimePolicy } from "../managed-runtime/policy.generated.js";
 export { MANAGED_RUNTIME_SOURCE_SHA256 };
@@ -10,7 +10,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
-const context = new AsyncLocalStorage<{ path: string; active: boolean }>();
+const context = new AsyncLocalStorage<{ path: string; active: boolean; descriptors: { model: number; owner: number } }>();
 export function isConfigMutationPath(file: string) { const scope = context.getStore(); return Boolean(scope?.active && scope.path === path.resolve(file)); }
 export function configRevision(text: string) { return createHash("sha256").update(text).digest("hex"); }
 import JSON5 from "json5";
@@ -51,31 +51,40 @@ export async function readOwnerFence(configPath: string): Promise<OwnerFence | n
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 }
 // Kernel flock is released on process death; no age-based lock stealing or
-// persistent mkdir orphan. Holding stdin keeps only this bounded IO lock alive.
+// persistent mkdir orphan. Writer children inherit the same open descriptions.
 export async function withOwnerFenceLock<T>(configPath: string, operation: () => Promise<T>): Promise<T> {
   configPath = path.resolve(configPath);
-  verifyInheritedConfigLocks(fenceBase(configPath));
+  const inherited = verifyInheritedConfigLocks(fenceBase(configPath));
   if (isConfigMutationPath(configPath)) return operation();
   return withModelFenceLock(configPath, async () => {
-  if (verifyInheritedConfigLocks(fenceBase(configPath))) {
-    const scope = { path: configPath, active: true };
+  if (inherited) {
+    const scope = { path: configPath, active: true, descriptors: inherited };
     try { await recheckManagedRuntimePolicy(configPath); return await context.run(scope, operation); } finally { scope.active = false; }
   }
 
   await fs.mkdir(path.dirname(configPath), { recursive: true });
   await fs.mkdir(path.dirname(fenceBase(configPath)), { recursive: true });
-  const lock = spawn("flock", ["-x", "-w", "30", fenceBase(configPath) + ".owner-write.lock", "sh", "-c", "printf ready; cat >/dev/null"], { stdio: ["pipe", "pipe", "pipe"] });
+  const model = activeModelFenceDescriptor(configPath);
+  if (model === null) throw new Error("MODEL_CONFIG_CUSTODY_REQUIRED");
+  const handle = await fs.open(fenceBase(configPath) + ".owner-write.lock", "a+", 0o600);
   try {
     await new Promise<void>((resolve, reject) => {
+      const lock = spawn("flock", ["-x", "-w", "30", "3"], { stdio: ["ignore", "ignore", "ignore", handle.fd] });
       lock.once("error", reject);
-      lock.once("exit", () => reject(new Error("OWNER_CONFIG_LOCK_UNAVAILABLE")));
-      lock.stdout.once("data", () => resolve());
+      lock.once("exit", code => code === 0 ? resolve() : reject(new Error("OWNER_CONFIG_LOCK_UNAVAILABLE")));
     });
-    const scope = { path: configPath, active: true };
+    const scope = { path: configPath, active: true, descriptors: { model, owner: handle.fd } };
     try { await recheckManagedRuntimePolicy(configPath); return await context.run(scope, operation); } finally { scope.active = false; }
-  } finally { lock.stdin.end(); }
+  } finally { await handle.close(); }
   });
 }
+/** Keep kernel custody alive in a writer child if its Relay parent dies. */
+export function activeConfigLockDescriptors(configPath: string): { model: number; owner: number } | null {
+  const scope = context.getStore();
+  if (scope?.active && scope.path === path.resolve(configPath)) return scope.descriptors;
+  return verifyInheritedConfigLocks(fenceBase(path.resolve(configPath)));
+}
+
 /** Async login outlives ingress; acquire independent custody through its full transaction. */
 export function withIndependentOwnerFenceLock<T>(configPath: string, operation: () => Promise<T>, waitSeconds = 0): Promise<T> {
   return context.exit(() => withIndependentModelFenceLock(configPath, () => withOwnerFenceLock(configPath, operation), waitSeconds));

@@ -127,7 +127,7 @@ const transportEventTaskInputSchema = z.object({
 
 const agentControlTaskInputSchema = z.object({
   kind: z.literal("agent_control"),
-  durableOperation: z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{1,160}$/), mode: z.enum(["submit", "status"]) }).optional(),
+  durableOperation: z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{1,160}$/), mode: z.enum(["submit", "status", "resume", "reconcile"]), resumeFrom: z.string().regex(/^[a-f0-9]{64}$/).optional() }).superRefine((value, ctx) => { if (["resume", "reconcile"].includes(value.mode) && !value.resumeFrom) ctx.addIssue({ code: "custom", message: "Resume requires an exact refusal fingerprint" }); }).optional(),
   action: agentControlActionSchema,
 });
 

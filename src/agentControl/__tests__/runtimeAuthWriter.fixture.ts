@@ -5,7 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 export async function legacyRuntimeAuthWriter(input: {
-  configPath: string; profileId: string; credential: Record<string, unknown>;
+  configPath: string; profileId?: string; credential?: Record<string, unknown>; clearOAuth?: boolean;
 }): Promise<void> {
   const root = path.dirname(input.configPath);
   const shared = path.join(root, "state", "openclaw.sqlite");
@@ -21,10 +21,16 @@ export async function legacyRuntimeAuthWriter(input: {
       return row ? JSON.parse(row.value) as Record<string, unknown> : { version: 1 };
     };
     const store = read(false);
-    store.profiles = { ...Object.fromEntries(Object.entries((store.profiles ?? {}) as Record<string, Record<string, unknown>>).filter(([, v]) => !(v.type === "oauth" && ["openai", "openai-codex"].includes(String(v.provider))))), [input.profileId]: input.credential };
+    store.profiles = Object.fromEntries(Object.entries((store.profiles ?? {}) as Record<string, Record<string, unknown>>).filter(([, v]) => !(v.type === "oauth" && ["openai", "openai-codex"].includes(String(v.provider)))));
     const state = read(true);
-    state.order = { ...(state.order as object), openai: [input.profileId] };
-    state.lastGood = { ...(state.lastGood as object), openai: input.profileId };
+    if (input.clearOAuth) {
+      for (const key of ["order", "lastGood"]) if (state[key]) delete (state[key] as Record<string, unknown>).openai;
+    } else {
+      if (!input.profileId || !input.credential) throw new Error("Legacy writer fixture requires a credential or explicit clear");
+      (store.profiles as Record<string, unknown>)[input.profileId] = input.credential;
+      state.order = { ...(state.order as object), openai: [input.profileId] };
+      state.lastGood = { ...(state.lastGood as object), openai: input.profileId };
+    }
     for (const [isState, value] of [[false, store], [true, state]] as const) {
       db.prepare(isShared ? "INSERT OR REPLACE INTO config_machine_state VALUES (?, ?, ?)" : isState ? "INSERT OR REPLACE INTO auth_profile_state VALUES (?, ?, ?)" : "INSERT OR REPLACE INTO auth_profile_store VALUES (?, ?, ?)").run(isShared ? isState ? "authProfiles.state" : "authProfiles.store" : "primary", JSON.stringify(value), Date.now());
     }
