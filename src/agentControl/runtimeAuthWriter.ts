@@ -131,6 +131,7 @@ export async function writeRuntimeAuthPool(input: {
   configPath: string;
   state: import("./openAiSubscriptionPool.js").SubscriptionPoolState;
   members: import("./openAiSubscriptionPool.js").SubscriptionPoolMember[];
+  reconcileOnly?: boolean;
 }): Promise<void> {
   const { updateSubscriptionPoolStore } = await import("./openAiSubscriptionPool.js");
   const sdk = await resolveRuntimeAuthSdk();
@@ -171,6 +172,13 @@ try {
     // Nonempty refresh custody, access changes and every other field still differ.
     for (const view of [actual, expected]) for (const profile of Object.values(view.profiles)) {
       if (profile && profile.type === "oauth" && profile.refresh === "") delete profile.refresh;
+    }
+    // The SDK omits an empty OpenAI order after removing/disabling the
+    // last managed member. Normalize only this zero-enabled empty form;
+    // nonempty orders and every other provider order remain authoritative.
+    if (!input.state.members.some(member => member.enabled)) for (const view of [actual, expected]) {
+      if (view.order && Array.isArray(view.order.openai) && view.order.openai.length === 0) delete view.order.openai;
+      if (view.order === undefined || view.order && Object.keys(view.order).length === 0) view.order = undefined;
     }
     if (!isDeepStrictEqual(expected, actual)) process.exit(16);
     return false; // Public SDK transaction performs no auth-store save.

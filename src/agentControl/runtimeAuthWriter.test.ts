@@ -53,6 +53,36 @@ describe.skipIf(!sdk)("installed OpenClaw public auth SDK (synthetic credentials
     await expect(writeRuntimeAuthPool({ ...input, state: prepareSubscriptionPool(state, 1, changed), members: changed, reconcileOnly: true })).rejects.toMatchObject({ code: "AUTH_POOL_WRITER_STORE_READBACK_MISMATCH_EXIT_16_NONE" });
     expect(inspect(input.root).store).toEqual(before);
   }, 30_000);
+  it.each([false, true])("verifies SDK-normalized empty order after removal/disable (disabled=%s) without a store save", async disabled => {
+    const input = await fixture();
+    await fs.writeFile(input.configPath, JSON.stringify({ agents: { ownership: "explicit", defaults: { systemAgent: { agentId: "main" } }, entries: { main: {} } } }));
+    const { prepareSubscriptionPool } = await import("./openAiSubscriptionPool.js");
+    const member = { accountId: "a", credentialVersion: 1, enabled: true, credential: { ...credential, type: "oauth" as const, provider: "openai" as const } };
+    const first = prepareSubscriptionPool(null, 1, [member]);
+    await writeRuntimeAuthPool({ ...input, state: first, members: [member] });
+    const members = disabled ? [{ ...member, enabled: false }] : [];
+    const empty = prepareSubscriptionPool(first, 2, members);
+    await writeRuntimeAuthPool({ ...input, state: empty, members });
+    const readRow = () => { const db = new DatabaseSync(path.join(input.root, "state/openclaw.sqlite"), { readOnly: true }); try { return db.prepare("SELECT value_json, updated_at_ms FROM config_machine_state WHERE state_key='authProfiles.store'").get(); } finally { db.close(); } };
+    const before = readRow();
+    await writeRuntimeAuthPool({ ...input, state: empty, members, reconcileOnly: true });
+    expect(readRow()).toEqual(before);
+  }, 30_000);
+  it("refuses a nonempty OpenAI order even when the expected pool is empty", async () => {
+    const input = await fixture();
+    await fs.writeFile(input.configPath, JSON.stringify({ agents: { ownership: "explicit", defaults: { systemAgent: { agentId: "main" } }, entries: { main: {} } } }));
+    await writeRuntimeAuth({ ...input, profileId: "openai:key", credential: { type: "api_key", provider: "openai", key: "synthetic" } });
+    const { prepareSubscriptionPool } = await import("./openAiSubscriptionPool.js");
+    const state = prepareSubscriptionPool(null, 1, []);
+    const env = { ...process.env, OPENCLAW_STATE_DIR: input.root, OPENCLAW_CONFIG_PATH: input.configPath, OPENCLAW_AGENT_DIR: path.join(input.root, "agents/main/agent") };
+    await promisify(execFile)(process.execPath, ["--input-type=module", "-e", `
+      const { updateAuthProfileStoreWithLock } = await import(process.argv[1]);
+      await updateAuthProfileStoreWithLock({agentDir:process.env.OPENCLAW_AGENT_DIR,stateDir:process.env.OPENCLAW_STATE_DIR,sharedStoreWrite:true,saveOptions:{syncExternalCli:false,filterExternalAuthProfiles:false},updater(store){store.order={...store.order,openai:["openai:key"]};return true;}});
+    `, pathToFileURL(sdk!).href], { env });
+    const before = inspect(input.root).store;
+    await expect(writeRuntimeAuthPool({ ...input, state, members: [], reconcileOnly: true })).rejects.toMatchObject({ code: "AUTH_POOL_WRITER_STORE_READBACK_MISMATCH_EXIT_16_NONE" });
+    expect(inspect(input.root).store).toEqual(before);
+  }, 30_000);
   it("preserves A, an API key, and another provider when adding B through the installed SDK", async () => {
     const input = await fixture();
     const { prepareSubscriptionPool } = await import("./openAiSubscriptionPool.js");
