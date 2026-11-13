@@ -1,3 +1,4 @@
+import { isAuthorizationReadbackOnly } from "../agentControl/authorizationReconcileContext.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -44,6 +45,32 @@ describe("durable credential receipts", () => {
     const execute = vi.fn(() => Promise.resolve({ kind: "codex.auth.clear" as const, applied: true as const }));
     await expect(store.resume("unknown", action, previous.fingerprint, execute)).rejects.toThrow("AUTH_OPERATION_RESUME_UNSAFE");
     expect(execute).not.toHaveBeenCalled();
+  });
+  it("allows exact explicit UNKNOWN pool reconciliation only in readback-only scope", async () => {
+    const action = { kind: "codex.auth.pool.sync", revision: 5, members: [{ accountId: "a", credentialVersion: 1 }], managedRuntimeExpectedConfigRevision: "old" };
+    const original = vi.fn(() => Promise.reject(Error("failure after store write")));
+    await store.submit("partial", action, original);
+    const previous = await terminal("partial"); if (previous.state === "NOT_FOUND") throw Error("missing receipt");
+    const reconcile = vi.fn(() => { expect(isAuthorizationReadbackOnly()).toBe(true); return Promise.resolve({ kind: "codex.auth.pool.sync" as const, revision: 5, phase: "applied" as const, members: [] }); });
+    await expect(store.reconcile("partial", { ...action, members: [] }, previous.fingerprint, reconcile)).rejects.toThrow("AUTH_OPERATION_CONFLICT");
+    await expect(store.resume("partial", action, previous.fingerprint, original)).rejects.toThrow("AUTH_OPERATION_RESUME_UNSAFE");
+    store = new AuthorizationReceipts(directory);
+    await store.reconcile("partial", { ...action, managedRuntimeExpectedConfigRevision: "current" }, previous.fingerprint, reconcile);
+    expect(await terminal("partial")).toMatchObject({ state: "SUCCEEDED", reconcileCount: 1, previousUnknownCodes: ["AUTH_OPERATION_OUTCOME_UNKNOWN"] });
+    expect(original).toHaveBeenCalledOnce(); expect(reconcile).toHaveBeenCalledOnce();
+    expect(isAuthorizationReadbackOnly()).toBe(false);
+  });
+  it("retains UNKNOWN on a busy partial-reconcile fence and never enables ordinary writer resume", async () => {
+    const action = { kind: "codex.auth.pool.sync", revision: 5, members: [] };
+    await store.submit("partial_busy", action, () => Promise.reject(Error("partial write")));
+    let previous = await terminal("partial_busy"); if (previous.state === "NOT_FOUND") throw Error("missing receipt");
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await store.reconcile("partial_busy", action, previous.fingerprint, () => Promise.reject(new ModelFenceBusyError()));
+      previous = await terminal("partial_busy"); if (previous.state === "NOT_FOUND") throw Error("missing receipt");
+      expect(previous).toMatchObject({ state: "UNKNOWN", reconcileCount: attempt, code: "AUTH_OPERATION_OUTCOME_UNKNOWN:MODEL_FENCE_BUSY" });
+      await expect(store.resume("partial_busy", action, previous.fingerprint, () => Promise.resolve({ kind: "codex.auth.clear", applied: true }))).rejects.toThrow("AUTH_OPERATION_RESUME_UNSAFE");
+    }
+    await expect(store.reconcile("partial_busy", action, previous.fingerprint, () => Promise.resolve({ kind: "codex.auth.clear", applied: true }))).rejects.toThrow("AUTH_OPERATION_RECONCILE_LIMIT");
   });
   it("excludes competing receipt-store instances during resume admission", async () => {
     const action = { kind: "codex.auth.clear" };

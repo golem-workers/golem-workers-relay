@@ -15,7 +15,7 @@ export class RuntimeAuthWriterError extends Error {
 }
 
 function writerFailureStage(code: number | null): string {
-  return ({ 2: "EXPORT_MISSING", 3: "STORE_REFUSED", 4: "SDK_IMPORT_FAILED", 5: "SESSION_SDK_IMPORT_FAILED", 6: "SNAPSHOT_SDK_IMPORT_FAILED", 7: "AGENT_SDK_IMPORT_FAILED", 8: "STORE_UPDATE_FAILED", 9: "SESSION_REFRESH_FAILED", 10: "RUNTIME_SNAPSHOT_FAILED", 11: "STORE_LOCK_BUSY", 12: "STORE_LOCKED", 13: "MIGRATION_REQUIRED", 14: "STORE_UNREADABLE", 15: "OWNERSHIP_INVALID" } as Record<number, string>)[code ?? -1] ?? "CALLBACK_FAILED";
+  return ({ 2: "EXPORT_MISSING", 3: "STORE_REFUSED", 4: "SDK_IMPORT_FAILED", 5: "SESSION_SDK_IMPORT_FAILED", 6: "SNAPSHOT_SDK_IMPORT_FAILED", 7: "AGENT_SDK_IMPORT_FAILED", 8: "STORE_UPDATE_FAILED", 9: "SESSION_REFRESH_FAILED", 10: "RUNTIME_SNAPSHOT_FAILED", 11: "STORE_LOCK_BUSY", 12: "STORE_LOCKED", 13: "MIGRATION_REQUIRED", 14: "STORE_UNREADABLE", 15: "OWNERSHIP_INVALID", 16: "STORE_READBACK_MISMATCH" } as Record<number, string>)[code ?? -1] ?? "CALLBACK_FAILED";
 }
 // Only fixed exit integers cross the subprocess boundary. Never forward exception
 // messages, stderr, paths, input bundles or arbitrary runtime error codes.
@@ -144,6 +144,7 @@ let failureExit = 4;
 try {
  let raw = ""; for await (const chunk of process.stdin) raw += chunk;
  const input = JSON.parse(raw);
+ const { isDeepStrictEqual } = await import("node:util");
  const { updateAuthProfileStoreWithLock } = await import(process.argv[1]);
  failureExit = 5;
  const { listSessionEntries, patchSessionEntry } = await import(process.argv[2]);
@@ -163,6 +164,17 @@ try {
   saveOptions: { syncExternalCli: false, filterExternalAuthProfiles: false },
   updater: store => {
    for (const [id, value] of Object.entries(store.profiles)) if (["openai", "openai-codex"].includes(value.provider)) openAiProfiles.add(id);
+   if (input.reconcileOnly) {
+    const actual = structuredClone(store), expected = structuredClone(store);
+    (${updateSubscriptionPoolStore.toString()})(expected, input.state, input.members);
+    // Public SDK readback omits empty refresh fields on access-only profiles.
+    // Nonempty refresh custody, access changes and every other field still differ.
+    for (const view of [actual, expected]) for (const profile of Object.values(view.profiles)) {
+      if (profile && profile.type === "oauth" && profile.refresh === "") delete profile.refresh;
+    }
+    if (!isDeepStrictEqual(expected, actual)) process.exit(16);
+    return false; // Public SDK transaction performs no auth-store save.
+   }
    (${updateSubscriptionPoolStore.toString()})(store, input.state, input.members); return true;
   },
  });

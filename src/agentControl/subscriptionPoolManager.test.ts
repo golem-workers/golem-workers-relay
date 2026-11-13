@@ -91,6 +91,29 @@ describe("subscription pool durable ack", () => {
     expect(state).not.toContain("synthetic");
     expect(state).not.toContain("refresh");
   });
+  it("reconciles a partial pending snapshot only through no-rewrite verification, never a new credential write", async () => {
+    const { configPath } = await fixture();
+    const input = { configPath, revision: 1, members, assertRuntimeGuard: () => Promise.resolve({ runScopedFallbacks: true }) };
+    await expect(syncSubscriptionPool({ ...input, refreshRuntimeAuth: () => Promise.reject(Error("refresh interrupted")) })).rejects.toThrow("refresh interrupted");
+    writer.mockClear();
+    const refresh = vi.fn(() => Promise.resolve());
+    await expect(syncSubscriptionPool({ ...input, revision: 2, reconcileOnly: true, refreshRuntimeAuth: refresh })).rejects.toMatchObject({ code: "OPENAI_POOL_RECONCILE_CONFLICT" });
+    expect(writer).not.toHaveBeenCalled();
+    await syncSubscriptionPool({ ...input, reconcileOnly: true, refreshRuntimeAuth: refresh });
+    expect(writer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ reconcileOnly: true }));
+    expect(refresh).toHaveBeenCalledOnce();
+    expect((await readSubscriptionPoolState(configPath))?.phase).toBe("applied");
+  });
+  it("keeps a partial snapshot pending when no-rewrite store verification refuses", async () => {
+    const { configPath } = await fixture();
+    const input = { configPath, revision: 1, members, assertRuntimeGuard: () => Promise.resolve({ runScopedFallbacks: true }) };
+    await expect(syncSubscriptionPool({ ...input, refreshRuntimeAuth: () => Promise.reject(Error("refresh interrupted")) })).rejects.toThrow("refresh interrupted");
+    writer.mockRejectedValueOnce(Error("AUTH_POOL_WRITER_STORE_READBACK_MISMATCH"));
+    const refresh = vi.fn(() => Promise.resolve());
+    await expect(syncSubscriptionPool({ ...input, reconcileOnly: true, refreshRuntimeAuth: refresh })).rejects.toThrow("STORE_READBACK_MISMATCH");
+    expect(refresh).not.toHaveBeenCalled();
+    expect((await readSubscriptionPoolState(configPath))?.phase).toBe("pending");
+  });
   it("rejects missing live guard before runtime-store or receipt effects", async () => {
     const { configPath, text } = await fixture(["openai/other"]);
     await expect(

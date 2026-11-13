@@ -92,6 +92,7 @@ export async function syncSubscriptionPool(input: {
   configPath: string;
   revision: number;
   members: SubscriptionPoolMember[];
+  reconcileOnly?: boolean;
   refreshRuntimeAuth: () => Promise<void>;
   assertRuntimeGuard: () => Promise<{ runScopedFallbacks: boolean }>;
   waitForConfigApplied?: (configText: string, guard: { runScopedFallbacks: boolean }) => Promise<void>;
@@ -111,6 +112,13 @@ export async function syncSubscriptionPool(input: {
       input.revision,
       input.members,
     );
+    if (input.reconcileOnly) {
+      if (!previous || previous.revision !== input.revision || !["pending", "applied"].includes(previous.phase) ||
+          !isDeepStrictEqual(previous.members, next.members) || configChanged) {
+        throw new SubscriptionPoolError("OPENAI_POOL_RECONCILE_CONFLICT", "Reconciliation requires the exact saved pending snapshot and applied configuration.");
+      }
+      if (previous.phase === "applied") return previous;
+    }
     // Durable intent before the first credential effect. A failure remains
     // pending instead of overwriting concurrent refreshed tokens on rollback.
     if ((!guard.runScopedFallbacks || configChanged) && !input.waitForConfigApplied)
@@ -118,7 +126,7 @@ export async function syncSubscriptionPool(input: {
         "OPENAI_POOL_GUARD_UPDATE_REQUIRED",
         "Strict pool connection requires runtime configuration verification.",
       );
-    await writeSubscriptionPoolState(input.configPath, next);
+    if (!input.reconcileOnly) await writeSubscriptionPoolState(input.configPath, next);
     let appliedText = configText;
     if (configChanged) {
       appliedText = JSON.stringify(candidate, null, 2) + "\n";
@@ -141,6 +149,7 @@ export async function syncSubscriptionPool(input: {
       configPath: input.configPath,
       state: next,
       members: input.members,
+      ...(input.reconcileOnly ? { reconcileOnly: true } : {}),
     });
     await input.refreshRuntimeAuth();
     const applied = {

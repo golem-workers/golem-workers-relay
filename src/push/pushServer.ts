@@ -283,6 +283,8 @@ export function startPushServer(input: {
           const message = parsed.data;
           const receipt = durable.mode === "status"
             ? await authorizationReceipts.status(durable.id)
+            : durable.mode === "reconcile"
+              ? await authorizationReceipts.reconcile(durable.id, message.input.kind === "agent_control" ? message.input.action : null, durable.resumeFrom!, () => input.onAgentControl!(message))
             : durable.mode === "resume"
               ? await authorizationReceipts.resume(durable.id, message.input.kind === "agent_control" ? message.input.action : null, durable.resumeFrom!, () => input.onAgentControl!(message))
               : await authorizationReceipts.submit(durable.id, message.input.kind === "agent_control" ? message.input.action : null, () => input.onAgentControl!(message));

@@ -1,3 +1,7 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { isAuthorizationReadbackOnly } from "../agentControl/authorizationReconcileContext.js";
 import { AgentControlError } from "../agentControl/errors.js";
 import { RuntimeAuthWriterError } from "../agentControl/runtimeAuthWriter.js";
 import { ModelFenceBusyError } from "../agentControl/modelFence.js";
@@ -18,6 +22,40 @@ describe("pushServer", () => {
       )
     );
     servers.length = 0;
+  });
+
+  it("admits exact explicit partial reconciliation over authenticated HTTP without another writer", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "partial-reconcile-http-"));
+    const previous = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = root;
+    let writes = 0, readbacks = 0;
+    try {
+      const { port } = await startTestPushServer({ port: 0, path: "/relay/messages", relayToken: "token", rateLimitPerSecond: 1000, onMessage: async () => {},
+        onAgentControl: () => {
+          if (!isAuthorizationReadbackOnly()) { writes++; return Promise.reject(new RuntimeAuthWriterError("AUTH_POOL_WRITER_SESSION_REFRESH_FAILED_EXIT_9_NONE", "synthetic-private-detail")); }
+          readbacks++; return Promise.resolve({ kind: "codex.auth.pool.sync" as const, revision: 1, phase: "applied" as const, members: [] });
+        },
+      }, servers);
+      const action = { kind: "codex.auth.pool.sync", revision: 1, members: [] };
+      type ResponseBody = { code?: string; receipt?: { state: string; fingerprint: string; reconcileCount?: number } };
+      const post = async (mode: string, resumeFrom?: string, revision = 1) => {
+        const response = await fetch(`http://127.0.0.1:${port}/relay/messages`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer token" }, body: JSON.stringify({ messageId: "partial", input: { kind: "agent_control", action: mode === "status" ? { kind: "config.read" } : { ...action, revision }, durableOperation: { id: "partial", mode, ...(resumeFrom ? { resumeFrom } : {}) } } }) });
+        return { status: response.status, body: await response.json() as ResponseBody };
+      };
+      expect((await post("submit")).status).toBe(200);
+      let receipt: ResponseBody["receipt"];
+      await vi.waitFor(async () => { receipt = (await post("status")).body.receipt; expect(receipt?.state).toBe("UNKNOWN"); });
+      expect(writes).toBe(1); expect(readbacks).toBe(0);
+      expect((await post("reconcile")).status).toBe(400);
+      expect((await post("reconcile", receipt!.fingerprint, 2)).body.code).toBe("AUTH_OPERATION_CONFLICT");
+      expect((await post("reconcile", receipt!.fingerprint)).status).toBe(200);
+      await vi.waitFor(async () => { expect((await post("status")).body.receipt).toMatchObject({ state: "SUCCEEDED", reconcileCount: 1 }); });
+      await post("submit"); expect(writes).toBe(1); expect(readbacks).toBe(1);
+      expect(await fs.readFile(path.join(root, "relay-authorization-receipts/partial.json"), "utf8")).not.toContain("synthetic-private-detail");
+    } finally {
+      if (previous === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = previous;
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   it("serves health/readiness endpoints", async () => {

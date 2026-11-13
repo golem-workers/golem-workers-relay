@@ -239,6 +239,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     durableAuthorizationVersion: z.literal(1).optional(),
     durablePoolAuthorizationVersion: z.literal(1).optional(),
     durableAuthorizationResumeVersion: z.literal(1).optional(),
+    durableAuthorizationReconcileVersion: z.literal(1).optional(),
     subscriptionConfigRuntimeState: z.enum(["applied", "pending", "unavailable"]).optional(),
     ownerRuntime: z.object({ version: z.literal(1), state: z.enum(["pending", "applied", "unavailable", "unsupported"]), enrolledFence: ownerFenceSchema.nullable(), configRevisionHash: z.string().nullable(), appliedConfigHash: z.string().nullable(), config: jsonRecordSchema.nullable() }).optional(),
   }),

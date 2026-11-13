@@ -1,3 +1,4 @@
+import { isAuthorizationReadbackOnly } from "./authorizationReconcileContext.js";
 import { readSubscriptionConfigRuntimeState } from "./subscriptionPoolRuntime.js";
 import { AgentControlError } from "./errors.js";
 export { AgentControlError } from "./errors.js";
@@ -390,6 +391,7 @@ async function executeAgentControlUnfenced(input: {
               : input.action.kind === "codex.auth.pool.sync"
                 ? await syncSubscriptionPool({
                     configPath: input.configPath, revision: input.action.revision,
+                    ...(isAuthorizationReadbackOnly() ? { reconcileOnly: true } : {}),
                     members: input.action.members.map(member => ({
                       accountId: member.accountId, credentialVersion: member.credentialVersion, enabled: member.enabled,
                       credential: { type: "oauth" as const, provider: "openai" as const, access: member.bundle.accessToken, refresh: member.bundle.refreshToken, expires: member.bundle.expiresAtMs, ...(member.bundle.email ? { email: member.bundle.email } : {}), ...(member.bundle.accountId ? { accountId: member.bundle.accountId } : {}), ...(member.bundle.chatgptPlanType ? { chatgptPlanType: member.bundle.chatgptPlanType } : {}) },
@@ -621,6 +623,7 @@ async function readConfig(configPath: string, gateway: GatewayLike, includeRunti
     durableAuthorizationVersion: 1,
     durablePoolAuthorizationVersion: 1,
     durableAuthorizationResumeVersion: 1,
+    durableAuthorizationReconcileVersion: 1,
     subscriptionConfigRuntimeState: await readSubscriptionConfigRuntimeState(configPath, gateway),
     ownerRuntime: await readOwnerRuntime(configPath, gateway, true),
     configText,

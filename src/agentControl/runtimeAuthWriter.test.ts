@@ -39,6 +39,20 @@ function inspect(root: string, agent = false) {
 }
 
 describe.skipIf(!sdk)("installed OpenClaw public auth SDK (synthetic credentials only)", () => {
+  it("verifies already-written pool credentials without rewriting them and refuses a changed token", async () => {
+    const input = await fixture();
+    await fs.writeFile(input.configPath, JSON.stringify({ agents: { ownership: "explicit", defaults: { systemAgent: { agentId: "main" } }, entries: { main: {} } } }));
+    const { prepareSubscriptionPool } = await import("./openAiSubscriptionPool.js");
+    const members = [{ accountId: "a", credentialVersion: 1, enabled: true, credential: { ...credential, type: "oauth" as const, provider: "openai" as const } }];
+    const state = prepareSubscriptionPool(null, 1, members);
+    await writeRuntimeAuthPool({ ...input, state, members });
+    const before = inspect(input.root).store;
+    await writeRuntimeAuthPool({ ...input, state, members, reconcileOnly: true });
+    expect(inspect(input.root).store).toEqual(before);
+    const changed = [{ ...members[0], credentialVersion: 2, credential: { ...members[0].credential, access: "synthetic-newer-access" } }];
+    await expect(writeRuntimeAuthPool({ ...input, state: prepareSubscriptionPool(state, 1, changed), members: changed, reconcileOnly: true })).rejects.toMatchObject({ code: "AUTH_POOL_WRITER_STORE_READBACK_MISMATCH_EXIT_16_NONE" });
+    expect(inspect(input.root).store).toEqual(before);
+  }, 30_000);
   it("preserves A, an API key, and another provider when adding B through the installed SDK", async () => {
     const input = await fixture();
     const { prepareSubscriptionPool } = await import("./openAiSubscriptionPool.js");
