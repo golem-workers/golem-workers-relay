@@ -818,3 +818,5 @@ Auth-only Connect preserves authored fallback settings. A strict legacy subscrip
 Authorization writer failures carry fixed import/store/session stages and allowlisted lock/migration/ownership codes via exit integers; child messages, stderr and credentials never enter API diagnostics.
 
 Proven pre-writer config refusals remain REFUSED and support explicit fingerprint-fenced resume under kernel admission lock. Unknown/post-writer effects never replay. Auth-only configuration checks do not restart Gateway or remove authored fallbacks.
+
+Auth-writer subprocesses inherit the active model and owner kernel-lock descriptions. If Relay dies while a writer is alive, a new config owner remains fenced until that writer exits; closing the parent alone cannot release custody. This does not authorize UNKNOWN replay or prove a partial operation applied. No new configuration is required.

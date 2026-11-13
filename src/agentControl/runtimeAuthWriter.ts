@@ -4,6 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
+import { activeConfigLockDescriptors } from "./ownerFence.js";
 
 // Cold admission can perform full integrity checks for both shared and agent DBs.
 // Keep a bounded budget, but do not kill a healthy SDK midway through admission.
@@ -86,15 +87,18 @@ export async function writeRuntimeAuth(input: {
 }): Promise<void> {
   const sdk = await resolveRuntimeAuthSdk();
   const configPath = path.resolve(input.configPath);
+  const custody = activeConfigLockDescriptors(configPath);
+  const custodyEnv = custody ? { GOLEM_CONFIG_MODEL_FD: "3", GOLEM_CONFIG_OWNER_FD: "4" } : {};
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, ["--input-type=module", "-e", writer, pathToFileURL(sdk).href], {
       env: {
         ...process.env,
+        ...custodyEnv,
         OPENCLAW_CONFIG_PATH: configPath,
         OPENCLAW_STATE_DIR: path.dirname(configPath),
         OPENCLAW_AGENT_DIR: path.join(path.dirname(configPath), "agents", "main", "agent"),
       },
-      stdio: ["pipe", "ignore", "ignore"],
+      stdio: custody ? ["pipe", "ignore", "ignore", custody.model, custody.owner] : ["pipe", "ignore", "ignore"],
     });
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, AUTH_WRITER_TIMEOUT_MS);
@@ -111,8 +115,14 @@ export async function writeRuntimeAuth(input: {
         reject(new RuntimeAuthWriterError(diagnostic, `OpenClaw auth writer refused the update (${diagnostic}); inspect runtime schema ownership and SDK compatibility.`));
       }
     });
-    child.stdin.on("error", () => { /* close/error above reports a sanitized failure */ });
-    child.stdin.end(JSON.stringify(input));
+    const stdin = child.stdin;
+    if (!stdin) {
+      clearTimeout(timer); child.kill("SIGKILL");
+      reject(new RuntimeAuthWriterError("AUTH_WRITER_SPAWN_FAILED", "Runtime authorization writer input pipe is unavailable."));
+      return;
+    }
+    stdin.on("error", () => { /* close/error above reports a sanitized failure */ });
+    stdin.end(JSON.stringify(input));
   });
 }
 
@@ -173,10 +183,12 @@ try {
  process.exit(0);
 } ${sanitizedWriterCatch}
 `;
+  const custody = activeConfigLockDescriptors(configPath);
+  const custodyEnv = custody ? { GOLEM_CONFIG_MODEL_FD: "3", GOLEM_CONFIG_OWNER_FD: "4" } : {};
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, ["--input-type=module", "-e", body, pathToFileURL(sdk).href, pathToFileURL(sessionSdk).href, pathToFileURL(snapshotSdk).href, pathToFileURL(agentScopeSdk).href], {
-      env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: path.dirname(configPath), OPENCLAW_AGENT_DIR: path.join(path.dirname(configPath), "agents", "main", "agent") },
-      stdio: ["pipe", "ignore", "ignore"],
+      env: { ...process.env, ...custodyEnv, OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: path.dirname(configPath), OPENCLAW_AGENT_DIR: path.join(path.dirname(configPath), "agents", "main", "agent") },
+      stdio: custody ? ["pipe", "ignore", "ignore", custody.model, custody.owner] : ["pipe", "ignore", "ignore"],
     });
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, AUTH_WRITER_TIMEOUT_MS);
@@ -190,7 +202,13 @@ try {
         reject(new RuntimeAuthWriterError(diagnostic, `Runtime subscription writer refused the update (${diagnostic}); no success acknowledgement was recorded.`));
       }
     });
-    child.stdin.on("error", () => { /* sanitized close result owns failure */ });
-    child.stdin.end(JSON.stringify({ ...input, runtimeConfig }));
+    const stdin = child.stdin;
+    if (!stdin) {
+      clearTimeout(timer); child.kill("SIGKILL");
+      reject(new RuntimeAuthWriterError("AUTH_POOL_WRITER_SPAWN_FAILED", "Runtime authorization writer input pipe is unavailable."));
+      return;
+    }
+    stdin.on("error", () => { /* sanitized close result owns failure */ });
+    stdin.end(JSON.stringify({ ...input, runtimeConfig }));
   });
 }
