@@ -2,13 +2,18 @@ import { isDeepStrictEqual } from "node:util";
 import { ensureNativePiModelCompatibility } from "./nativePiModelCompatibility.js";
 import { isGeneratedSolCatalog, managedOpenAiRelayBaseUrl } from "./managedSubscriptionRoute.js";
 import { prepareSubscriptionPoolConfig } from "./subscriptionPoolConfig.js";
-import { assertSubscriptionOnlyConfiguration } from "./openAiSubscriptionPool.js";
+import { assertSubscriptionOnlyConfiguration, SubscriptionPoolError } from "./openAiSubscriptionPool.js";
 import { clearSubscriptionModelFallbacks } from "./subscriptionModelFallbacks.js";
 
 /** Explicit initial model selection, never called by auth-only Connect. Only
  * exact platform-generated catalogs may change transport; custom rows fail closed. */
 export function prepareSubscriptionBootstrap(config: Record<string, unknown>, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
-  const next = clearSubscriptionModelFallbacks(config);
+  const next = prepareSubscriptionPoolConfig(clearSubscriptionModelFallbacks(config), { runScopedFallbacks: false }, env);
+  const configEnv = next.env as Record<string, unknown> | undefined;
+  const profiles = (next.auth as { profiles?: Record<string, {provider?: string; mode?: string}> } | undefined)?.profiles;
+  if ([env, configEnv, configEnv?.vars as Record<string, unknown> | undefined].some(row => row && ["OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY"].some(key => row[key] !== undefined)) || Object.values(profiles ?? {}).some(row => ["openai", "codex", "openai-codex"].includes(row.provider ?? "") && ["api_key", "api-key"].includes(row.mode ?? ""))) {
+    throw new SubscriptionPoolError("OPENAI_POOL_ROUTE_UNSUPPORTED", "Subscription bootstrap cannot replace authored API credential authority.");
+  }
   const provider = (next.models as { providers?: { openai?: Record<string, unknown> } } | undefined)?.providers?.openai;
   const generated: Record<string, unknown> = { agents: { defaults: { models: { "openai/gpt-6.1-sol": {} } } }, models: { providers: { openai: { baseUrl: managedOpenAiRelayBaseUrl(env), models: [] } } } };
   ensureNativePiModelCompatibility(generated, false, {});
