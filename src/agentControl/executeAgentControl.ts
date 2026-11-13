@@ -417,7 +417,13 @@ async function executeAgentControlUnfenced(input: {
                     input.gateway,
                   )
               : input.action.kind === "codex.auth.clear"
-                ? await runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(input.configPath, () => clearCodexAuth(input.configPath)))
+                ? (await readManagedRuntimePolicy(input.configPath)).chatHarness === "openclaw"
+                  ? await enqueueCodexAuthMutation(() => withOwnerFenceLock(input.configPath, async () => {
+                      const result = await clearCodexAuth(input.configPath);
+                      await refreshCodexRuntimeAuth(input.gateway);
+                      return result;
+                    }))
+                  : await runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(input.configPath, () => clearCodexAuth(input.configPath)))
               : input.action.kind === "github.auth.configure"
                 ? await configureGitHubAuth(input.action)
               : input.action.kind === "github.oauth.status"

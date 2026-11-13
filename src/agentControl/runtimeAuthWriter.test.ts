@@ -83,6 +83,18 @@ describe.skipIf(!sdk)("installed OpenClaw public auth SDK (synthetic credentials
     await expect(writeRuntimeAuthPool({ ...input, state, members: [], reconcileOnly: true })).rejects.toMatchObject({ code: "AUTH_POOL_WRITER_STORE_READBACK_MISMATCH_EXIT_16_NONE" });
     expect(inspect(input.root).store).toEqual(before);
   }, 30_000);
+  it("clears only OpenAI OAuth through its SDK owner, preserves API/other-provider credentials and makes repeat clear a no-save", async () => {
+    const input = await fixture();
+    await writeRuntimeAuth({ ...input, profileId: "anthropic:keep", credential: { type: "api_key", provider: "anthropic", key: "synthetic-other" } });
+    await writeRuntimeAuth({ ...input, profileId: "openai:key", credential: { type: "api_key", provider: "openai", key: "synthetic-key" } });
+    await writeRuntimeAuth(input); const before = inspect(input.root);
+    await writeRuntimeAuth({ configPath: input.configPath, clearOAuth: true });
+    const after = inspect(input.root); expect(after.meta).toEqual(before.meta); expect(after.version).toEqual(before.version); expect(after.integrity).toBe("ok");
+    expect(after.store?.profiles[input.profileId]).toBeUndefined(); expect(after.store?.profiles["openai:key"]).toEqual(before.store?.profiles["openai:key"]); expect(after.store?.profiles["anthropic:keep"]).toEqual(before.store?.profiles["anthropic:keep"]);
+    const row = () => { const db = new DatabaseSync(path.join(input.root, "state/openclaw.sqlite"), { readOnly: true }); try { return db.prepare("SELECT value_json, updated_at_ms FROM config_machine_state WHERE state_key='authProfiles.store'").get(); } finally { db.close(); } };
+    const saved = row(); await writeRuntimeAuth({ configPath: input.configPath, clearOAuth: true }); expect(row()).toEqual(saved);
+  }, 30_000);
+
   it("preserves A, an API key, and another provider when adding B through the installed SDK", async () => {
     const input = await fixture();
     const { prepareSubscriptionPool } = await import("./openAiSubscriptionPool.js");

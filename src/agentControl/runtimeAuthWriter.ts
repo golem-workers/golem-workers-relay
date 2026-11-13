@@ -68,8 +68,15 @@ try {
     sharedStoreWrite: true,
     saveOptions: { syncExternalCli: false, filterExternalAuthProfiles: false },
     updater: (store) => {
-      store.profiles = Object.fromEntries(Object.entries(store.profiles).filter(([, value]) =>
-        !(value.type === "oauth" && (value.provider === "openai" || value.provider === "openai-codex"))));
+      const removed = Object.entries(store.profiles).filter(([, value]) =>
+        value.type === "oauth" && (value.provider === "openai" || value.provider === "openai-codex")).map(([id]) => id);
+      store.profiles = Object.fromEntries(Object.entries(store.profiles).filter(([id]) => !removed.includes(id)));
+      if (input.clearOAuth) {
+        let changed = removed.length > 0;
+        for (const key of ["order", "lastGood"]) if (store[key] && Object.prototype.hasOwnProperty.call(store[key], "openai")) { delete store[key].openai; changed = true; }
+        for (const id of removed) if (store.usageStats) delete store.usageStats[id];
+        return changed;
+      }
       store.profiles[input.profileId] = input.credential;
       store.order = { ...store.order, openai: [input.profileId] };
       store.lastGood = { ...store.lastGood, openai: input.profileId };
@@ -80,11 +87,9 @@ try {
 } ${sanitizedWriterCatch}
 `;
 
-export async function writeRuntimeAuth(input: {
-  configPath: string;
-  profileId: string;
-  credential: Record<string, unknown>;
-}): Promise<void> {
+export async function writeRuntimeAuth(input: { configPath: string } & (
+  { profileId: string; credential: Record<string, unknown>; clearOAuth?: false } | { clearOAuth: true }
+)): Promise<void> {
   const sdk = await resolveRuntimeAuthSdk();
   const configPath = path.resolve(input.configPath);
   const custody = activeConfigLockDescriptors(configPath);
