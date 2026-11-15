@@ -125,7 +125,13 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
   // Read config and persisted authority under the same owner lock, including CLI writers.
   const withReadLock = (operation: () => Promise<AgentControlResult>) => (readOnlyPolicy && !diagnosticOnly) || input.action.managedRuntimeExpectedConfigRevision ? withOwnerFenceLock(input.configPath, operation) : operation();
   // All ingress paths and all config writers share this lock, including legacy calls.
-  const withIngressLock = (operation: () => Promise<AgentControlResult>) => diagnosticOnly ? operation() : withModelFenceLock(input.configPath, () => input.action.runtimeInstallActionId ? withOwnerFenceLock(input.configPath, async () => { await assertRuntimeActionNotCancelled(input.action.runtimeInstallActionId!); return operation(); }) : operation());
+  // Durable pool receipts acknowledge admission before execution and deduplicate
+  // caller retries. Wait for short competing config transactions under that same
+  // receipt instead of burning explicit resume attempts on an immediate flock
+  // refusal. Custody and all config/policy checks still precede the writer;
+  // persistent contention remains a proven pre-mutation MODEL_FENCE_BUSY.
+  const ingressWaitSeconds = input.action.kind === "codex.auth.pool.sync" ? 30 : 0;
+  const withIngressLock = (operation: () => Promise<AgentControlResult>) => diagnosticOnly ? operation() : withModelFenceLock(input.configPath, () => input.action.runtimeInstallActionId ? withOwnerFenceLock(input.configPath, async () => { await assertRuntimeActionNotCancelled(input.action.runtimeInstallActionId!); return operation(); }) : operation(), ingressWaitSeconds);
   const authorizationOnly = ["codex.auth.pool.exit", "codex.auth.pool.sync", "codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start", "codex.login.status"].includes(input.action.kind);
   const withConfigScope = async (operation: () => Promise<AgentControlResult>) => {
     if (!authorizationOnly) return operation();
