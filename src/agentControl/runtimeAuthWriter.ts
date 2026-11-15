@@ -15,7 +15,7 @@ export class RuntimeAuthWriterError extends Error {
 }
 
 function writerFailureStage(code: number | null): string {
-  return ({ 2: "EXPORT_MISSING", 3: "STORE_REFUSED", 4: "SDK_IMPORT_FAILED", 5: "SESSION_SDK_IMPORT_FAILED", 6: "SNAPSHOT_SDK_IMPORT_FAILED", 7: "AGENT_SDK_IMPORT_FAILED", 8: "STORE_UPDATE_FAILED", 9: "SESSION_REFRESH_FAILED", 10: "RUNTIME_SNAPSHOT_FAILED", 11: "STORE_LOCK_BUSY", 12: "STORE_LOCKED", 13: "MIGRATION_REQUIRED", 14: "STORE_UNREADABLE", 15: "OWNERSHIP_INVALID", 16: "STORE_READBACK_MISMATCH" } as Record<number, string>)[code ?? -1] ?? "CALLBACK_FAILED";
+  return ({ 2: "EXPORT_MISSING", 3: "STORE_REFUSED", 4: "SDK_IMPORT_FAILED", 5: "SESSION_SDK_IMPORT_FAILED", 6: "SNAPSHOT_SDK_IMPORT_FAILED", 7: "AGENT_SDK_IMPORT_FAILED", 8: "STORE_UPDATE_FAILED", 9: "SESSION_REFRESH_FAILED", 10: "RUNTIME_SNAPSHOT_FAILED", 11: "STORE_LOCK_BUSY", 12: "STORE_LOCKED", 13: "MIGRATION_REQUIRED", 14: "STORE_UNREADABLE", 15: "OWNERSHIP_INVALID", 16: "STORE_READBACK_MISMATCH", 17: "RUNTIME_STORE_CONFLICT", 18: "RUNTIME_STORE_READBACK_MISMATCH" } as Record<number, string>)[code ?? -1] ?? "CALLBACK_FAILED";
 }
 // Only fixed exit integers cross the subprocess boundary. Never forward exception
 // messages, stderr, paths, input bundles or arbitrary runtime error codes.
@@ -151,18 +151,31 @@ try {
  let raw = ""; for await (const chunk of process.stdin) raw += chunk;
  const input = JSON.parse(raw);
  const { isDeepStrictEqual } = await import("node:util");
- const { updateAuthProfileStoreWithLock } = await import(process.argv[1]);
+ const { updateAuthProfileStoreWithLock, ensureAuthProfileStoreAsync, ensureAuthProfileStore } = await import(process.argv[1]);
  failureExit = 5;
  const { listSessionEntries, patchSessionEntry } = await import(process.argv[2]);
  failureExit = 6;
  const { setRuntimeConfigSnapshot } = await import(process.argv[3]);
  failureExit = 7;
- const { listAgentIds } = await import(process.argv[4]);
+ const { listAgentIds, resolveAgentDir } = await import(process.argv[4]);
  failureExit = 10;
  setRuntimeConfigSnapshot(input.runtimeConfig);
  if (typeof listSessionEntries !== "function" || typeof patchSessionEntry !== "function" || typeof listAgentIds !== "function") process.exit(2);
  const openAiProfiles = new Set(input.state.managedProfileIds);
  if (typeof updateAuthProfileStoreWithLock !== "function") process.exit(2);
+ // Shared-owner writes do not include agent-local rows. Admission reads the
+ // composed store, so inspect that same public view before credential effects.
+ const readStore = ensureAuthProfileStoreAsync ?? ensureAuthProfileStore;
+ if (typeof readStore !== "function" || typeof resolveAgentDir !== "function") process.exit(2);
+ const agentDirs = [...new Set([process.env.OPENCLAW_AGENT_DIR, ...listAgentIds(input.runtimeConfig).map(id => resolveAgentDir(input.runtimeConfig, id))])];
+ const readOptions = { readOnly: true, syncExternalCli: false, allowKeychainPrompt: false, config: input.runtimeConfig };
+ failureExit = 17;
+ for (const agentDir of agentDirs) {
+  const store = await readStore(agentDir, readOptions);
+  // Pure preparation rejects unrelated subscriptions without deleting/adopting
+  // them, including expired credentials that still carry refresh custody.
+  (${updateSubscriptionPoolStore.toString()})(structuredClone(store), input.state, input.members);
+ }
  failureExit = 8;
  const updated = await updateAuthProfileStoreWithLock({
   agentDir: process.env.OPENCLAW_AGENT_DIR, stateDir: process.env.OPENCLAW_STATE_DIR,
@@ -192,6 +205,18 @@ try {
   },
  });
  if (!updated) process.exit(3);
+ failureExit = 18;
+ for (const agentDir of agentDirs) {
+  const actual = await readStore(agentDir, readOptions), expected = structuredClone(actual);
+  (${updateSubscriptionPoolStore.toString()})(expected, input.state, input.members);
+  // Compare only pool-owned selection/credentials; public runtime metadata and
+  // unrelated provider state are not part of the shared writer's contract.
+  const project = store => ({
+   profiles: Object.fromEntries(Object.entries(store.profiles).filter(([id, c]) => input.state.managedProfileIds.includes(id) || ["openai", "openai-codex"].includes(c.provider) && ["oauth", "token"].includes(c.type)).map(([id, c]) => [id, { ...c, ...(c.type === "oauth" && !c.refresh ? { refresh: "" } : {}) }])),
+   order: store.order?.openai ?? [], lastGood: store.lastGood?.openai,
+  });
+  if (!isDeepStrictEqual(project(actual), project(expected))) process.exit(18);
+ }
  failureExit = 9;
  const enabled = new Set(input.state.members.filter(m => m.enabled).map(m => m.profileId));
  // Public listing metadata avoids taking per-session mutation custody for
