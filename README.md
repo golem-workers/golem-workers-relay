@@ -829,3 +829,17 @@ Legacy OAuth clear uses the installed public SDK transaction, removes only OpenA
 
 ### Organization Telegram subscription bootstrap
 New OpenAI-template agents explicitly prepare the managed ChatGPT route and clear model fallback lists before OAuth assignment. Auth-only Connect preserves model intent. Bootstrap requires a fenced backend request and an explicit Relay acknowledgement; authored/custom transport remains rejected. Telegram AUTH reports structured safe assignment error codes, not raw provider messages.
+
+### Atomic Relay builds
+`npm run build` requires Python 3 (also used by the updater). It serializes builds,
+compiles with `--noEmitOnError` into a fresh `.relay-builds/generation-*` directory,
+and rejects missing entrypoints or zero-byte JavaScript modules before publication.
+`dist` is atomically switched to a symlink only after success. A failed or killed
+compiler leaves the previous generation untouched; startup still uses `dist/index.js`.
+The one-time legacy-directory migration uses Linux `renameat2(RENAME_EXCHANGE)`
+or macOS `renamex_np(RENAME_SWAP)` and fails closed if unavailable.
+Old generations and the migrated legacy directory (`generation-*.link`) are kept
+for rollback and running processes; do not remove them while referenced by a running
+Relay. Reclaim obsolete generations during stopped-service maintenance. No new
+environment settings or model/auth changes are required.
+Regression checks: `python3 scripts/build-relay.test.py` (also run by `npm test`).
