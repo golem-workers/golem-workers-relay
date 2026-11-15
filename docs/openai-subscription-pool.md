@@ -160,6 +160,17 @@ operation, same credential/membership intent and freshly validated config fence.
 The Relay advertises `durableAuthorizationResumeVersion: 1`; UNKNOWN effects,
 interrupted writes and changed intent cannot use this path.
 
+### Contended Connect admission
+
+A durable `codex.auth.pool.sync` receipt stays RUNNING while waiting up to 30
+seconds for an existing model/config transaction to release kernel custody.
+Repeated requests for that operation remain deduplicated; waiting does not
+consume a resume attempt or start a credential writer. Policy and config CAS
+are rechecked after acquisition. An expired wait remains REFUSED with
+`MODEL_FENCE_BUSY` and requires an explicit saved-operation retry. UNKNOWN
+outcomes are never automatically replayed. Other config mutations retain their
+existing fail-fast model-fence behavior.
+
 ## Explicit API-source exit
 
 Removing the last subscription does **not** opt the agent into paid API/credits.
