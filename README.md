@@ -847,3 +847,10 @@ environment settings or model/auth changes are required.
 Regression checks: `python3 scripts/build-relay.test.py` (also run by `npm test`).
 
 `npm run test:disconnect-supersession` exercises authenticated HTTP ingress with a late Connect4, newer Disconnect5, duplicate receipt and stale revision. It uses real receipt/lock/writer subprocess paths with a synthetic Gateway and public SDK store, preserves config and asserts zero remaining managed profiles. It is not real OAuth or production acceptance.
+Pool sync checks the public runtime's composed auth store for every configured
+agent before credential effects and again before acknowledgement. Shared-store
+success alone is insufficient: agent-local OAuth can shadow or add subscription
+sources. Unrelated subscriptions (including expired profiles with refresh
+custody) cause a fail-closed conflict without deleting or adopting them. An
+operator must explicitly resolve the conflicting local account before retrying;
+model, harness, fallbacks and channel admission remain unchanged.

@@ -104,6 +104,16 @@ describe("subscription pool durable ack", () => {
     expect(refresh).toHaveBeenCalledOnce();
     expect((await readSubscriptionPoolState(configPath))?.phase).toBe("applied");
   });
+  it("verifies an already-applied snapshot on exact reconciliation", async () => {
+    const { configPath } = await fixture();
+    const input = { configPath, revision: 1, members, assertRuntimeGuard: () => Promise.resolve({ runScopedFallbacks: true }), refreshRuntimeAuth: vi.fn(() => Promise.resolve()) };
+    await syncSubscriptionPool(input);
+    writer.mockClear(); input.refreshRuntimeAuth.mockClear();
+    writer.mockRejectedValueOnce(Error("AUTH_POOL_WRITER_RUNTIME_STORE_CONFLICT"));
+    await expect(syncSubscriptionPool({ ...input, reconcileOnly: true })).rejects.toThrow("RUNTIME_STORE_CONFLICT");
+    expect(writer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ reconcileOnly: true }));
+    expect(input.refreshRuntimeAuth).not.toHaveBeenCalled();
+  });
   it("keeps a partial snapshot pending when no-rewrite store verification refuses", async () => {
     const { configPath } = await fixture();
     const input = { configPath, revision: 1, members, assertRuntimeGuard: () => Promise.resolve({ runScopedFallbacks: true }) };

@@ -117,7 +117,8 @@ export async function syncSubscriptionPool(input: {
           !isDeepStrictEqual(previous.members, next.members) || configChanged) {
         throw new SubscriptionPoolError("OPENAI_POOL_RECONCILE_CONFLICT", "Reconciliation requires the exact saved pending snapshot and applied configuration.");
       }
-      if (previous.phase === "applied") return previous;
+      // Applied metadata is not proof that agent-local runtime auth still agrees.
+      // Exact reconciliation must verify the public composed store too.
     }
     // Durable intent before the first credential effect. A failure remains
     // pending instead of overwriting concurrent refreshed tokens on rollback.
