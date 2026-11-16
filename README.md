@@ -811,6 +811,8 @@ Applied OpenAI subscription pools use their loaded admission guard and strict of
 
 ### Durable subscription-pool authorization
 
+Pool syncs are serialized with the runtime auth-store writer and fenced by the persisted pool revision. A newer backend disconnect revision may supersede a pending older revision; late older syncs are rejected, and an in-flight writer must finish before the newer desired set is written. Backend timeouts remain unknown until exact status/receipt reconciliation.
+
 The loaded Relay advertises `durablePoolAuthorizationVersion: 1` when pool sync supports durable operation receipts. Repeated or restarted callers read the same non-secret receipt; an unknown mutation is not automatically replayed. Writer, Gateway timeout and known validation errors expose safe codes, not child stderr/config/credentials.
 
 Auth-only Connect preserves authored fallback settings. A strict legacy subscription guard refuses configured fallbacks and requires a separate explicit model edit; a confirmed run-scoped guard can preserve configured fallback intent while enforcing subscription-only execution. Relay upgrade and model/Harness configuration remain explicit operations.
@@ -843,3 +845,5 @@ for rollback and running processes; do not remove them while referenced by a run
 Relay. Reclaim obsolete generations during stopped-service maintenance. No new
 environment settings or model/auth changes are required.
 Regression checks: `python3 scripts/build-relay.test.py` (also run by `npm test`).
+
+`npm run test:disconnect-supersession` exercises authenticated HTTP ingress with a late Connect4, newer Disconnect5, duplicate receipt and stale revision. It uses real receipt/lock/writer subprocess paths with a synthetic Gateway and public SDK store, preserves config and asserts zero remaining managed profiles. It is not real OAuth or production acceptance.

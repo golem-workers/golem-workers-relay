@@ -25,7 +25,8 @@
     "openclaw:cli": "docker compose --env-file openclaw.env --profile cli run --rm --build openclaw-cli",
     "openclaw:reset": "docker compose --env-file openclaw.env down --remove-orphans && rm -rf .openclaw openclaw-workspace",
     "policy:check": "node scripts/managed-runtime-policy.mjs --check",
-    "policy:generate": "node scripts/managed-runtime-policy.mjs"
+    "policy:generate": "node scripts/managed-runtime-policy.mjs",
+    "test:disconnect-supersession": "npm run build && NODE_USE_ENV_PROXY=0 node scripts/prove-disconnect-supersession.mjs"
   },
   "dependencies": {
     "cron-parser": "^5.10.0",
