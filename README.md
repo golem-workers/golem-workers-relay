@@ -864,19 +864,43 @@ custody) cause a fail-closed conflict without deleting or adopting them. An
 operator must explicitly resolve the conflicting local account before retrying;
 model, harness, fallbacks and channel admission remain unchanged.
 
-Opt-in real Gateway acceptance (install OpenClaw separately; no model credentials
-or model requests required):
+Managed-agent reconnect probe (run only inside a disposable agent created through
+the Golem Workers staging company API, after successful provisioning). Build the
+Relay candidate in an isolated checkout before transferring it; reuse the agent
+dependencies only after verifying exact package-lock equality:
 
 ```sh
-npm run build
-GATEWAY_CLI=/absolute/path/to/openclaw.mjs NODE_USE_ENV_PROXY=0 node scripts/prove-gateway-watchdog.mjs
+WATCHDOG_PLATFORM_CANARY=1 NODE_USE_ENV_PROXY=0 node scripts/prove-gateway-watchdog.mjs
+# Optional restart of that disposable agent's existing user-managed Gateway:
+WATCHDOG_PLATFORM_CANARY=1 WATCHDOG_RESTART_MANAGED_GATEWAY=1 NODE_USE_ENV_PROXY=0 node scripts/prove-gateway-watchdog.mjs
 ```
 
-The script starts a private loopback Gateway with temporary state, delays its
-actual replacement `hello-ok` by 1800ms, injects stale tick/pause history, checks
-exactly one replacement connection and a real `health` RPC, then restarts the
-Gateway process and checks readiness/RPC recovery and stopped-client readiness.
-It does not deploy Relay, exercise fleet Update, or suspend a VM. Optional
-`WATCHDOG_CLIENT_PATH` selects an alternate compiled GatewayClient for a
-counterfactual; `WATCHDOG_MODE=tick|pause` isolates one fault. Temporary state and
-child processes are cleaned up; `WATCHDOG_KEEP_STATE=1` retains private diagnostics.
+The probe reuses the agent's installed Gateway, configuration and provisioned Relay
+identity. It never installs OpenClaw, creates a standalone Gateway or changes its
+configuration. A loopback WebSocket proxy delays the existing Gateway's replacement
+`hello-ok` by 1800ms while injecting stale tick/pause history into the candidate
+client. Each case requires exactly one replacement and a real `health` RPC.
+The optional restart exhausts a bounded RPC reconnect attempt while Gateway is
+stopped, then requires automatic recovery without another start/request. It uses
+the existing `openclaw-gateway.service` user unit;
+`WATCHDOG_GATEWAY_USER_SERVICE=0` selects a system unit when that is the actual
+provisioned layout. Gateway start is attempted in a finally block after a stop.
+`WATCHDOG_CLIENT_PATH` selects an alternate compiled GatewayClient for a negative
+control; `WATCHDOG_MODE=tick|pause` isolates one fault. The probe opens no model
+request and closes its client, timers and proxy on exit.
+
+Staging acceptance additionally requires successful creation through the company
+API, candidate Relay installation on that disposable agent, the standard backend
+Update action and restored managed Relay readiness. Record the agent id, candidate
+revision and terminal operation results. The standalone local-Gateway probe is
+component-level evidence only; it does not satisfy platform-agent acceptance.
+Do not install OpenClaw on dev-api: that host is the staging control plane, not an
+agent. Delete the disposable agent through the same company API after verification.
+
+Procedure and scoped results: [managed-agent staging verification](docs/qa/gateway-watchdog-staging.md).
+
+After the first successful connection, exhausting a bounded RPC reconnect attempt
+does not stop the client or cancel background reconnection. Initial startup still
+fails at its configured limit, requests still reject, and explicit stop still
+cancels recovery. This prevents a long native Update from leaving Relay not-ready
+after Gateway becomes healthy again.

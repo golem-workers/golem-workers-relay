@@ -347,9 +347,11 @@ export class GatewayClient {
       }
     }
 
-    // Ensure the startup path fully tears down its socket/timers before the caller
-    // crashes the relay process and lets systemd restart it.
-    this.stop();
+    // Initial startup failure tears down before the caller restarts the service.
+    // Once connected, a bounded RPC/start attempt must not disable independent
+    // background recovery during a longer Gateway update or restart.
+    if (this.hasConnectedOnce) this.scheduleReconnect();
+    else this.stop();
     throw lastError;
   }
 

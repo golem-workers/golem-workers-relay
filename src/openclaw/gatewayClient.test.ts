@@ -356,6 +356,49 @@ describe("GatewayClient", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("keeps background recovery alive when an RPC exhausts its reconnect attempts", async () => {
+    vi.stubEnv("OPENCLAW_STATE_DIR", `/tmp/gw-relay-recovery-${Date.now()}-${Math.random()}`);
+    let available = true;
+    let socket: WebSocket | undefined;
+    let connected = 0;
+    let disconnected!: () => void;
+    const lost = new Promise<void>((resolve) => { disconnected = resolve; });
+    const { wss, port } = startServer((ws) => {
+      socket = ws;
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "recovery", ts: 1 } }));
+      ws.on("message", (data) => {
+        const frame = JSON.parse(rawDataToString(data)) as { id: string; method: string };
+        if (frame.method !== "connect") return;
+        ws.send(JSON.stringify(available
+          ? { type: "res", id: frame.id, ok: true, payload: {
+              type: "hello-ok", protocol: 3,
+              policy: { tickIntervalMs: 5000, maxPayload: 1, maxBufferedBytes: 1 },
+              server: { version: "x", connId: "recovery" }, snapshot: {}, features: { methods: [], events: [] },
+            } }
+          : { type: "res", id: frame.id, ok: false, error: { code: "UNAVAILABLE", message: "gateway updating" } }));
+      });
+    });
+    const client = new GatewayClient({ url: `ws://127.0.0.1:${port}`, token: "t",
+      startupMaxAttempts: 2, startupRetryDelayMs: 10,
+      onConnectionStateChange: (state) => { if (state.connected) connected++; else disconnected(); },
+    });
+    try {
+      await client.start();
+      available = false;
+      socket!.close(4001, "long update");
+      await lost;
+      await expect(client.request("health", {})).rejects.toThrow("UNAVAILABLE");
+      available = true;
+      // Recovery must happen without a fresh start(), request() or service restart.
+      await vi.waitFor(() => expect(connected).toBe(2), { timeout: 2500, interval: 25 });
+      expect(client.isReady()).toBe(true);
+    } finally {
+      client.stop();
+      for (const peer of wss.clients) peer.terminate();
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+    }
+  });
+
   it("keeps reconnecting when the gateway is temporarily unavailable after a prior connection", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);

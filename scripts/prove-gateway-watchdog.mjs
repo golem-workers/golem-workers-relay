@@ -1,18 +1,26 @@
-// Opt-in real Gateway acceptance: built Relay + GATEWAY_CLI=openclaw.mjs.
-// Private temporary state, ephemeral loopback listeners, no model requests.
+// Managed-agent reconnect regression; no standalone OpenClaw installation or Gateway spawn.
+// Uses a disposable platform-created staging agent. No model requests.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, rm, writeFile, open } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { createServer } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
-assert.ok(process.env.GATEWAY_CLI, 'Set GATEWAY_CLI to installed openclaw.mjs');
-const root = await mkdtemp(join(tmpdir(), 'relay-watchdog-'));
-const previousState = process.env.OPENCLAW_STATE_DIR;
-process.env.OPENCLAW_STATE_DIR = join(root, 'relay');
+// Run only inside a disposable agent created by the Golem Workers staging API.
+// Reuse its installed Gateway, configuration and provisioned Relay identity.
+import 'dotenv/config';
+import { readFile, access } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import JSON5 from 'json5';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+assert.equal(process.env.WATCHDOG_PLATFORM_CANARY, '1', 'Set WATCHDOG_PLATFORM_CANARY=1 only inside the disposable staging agent');
+const state = process.env.OPENCLAW_STATE_DIR || join(homedir(), '.openclaw');
+await access(join(state, 'golem-workers-relay/identity/device.json'));
+const config = JSON5.parse(await readFile(process.env.OPENCLAW_CONFIG_PATH || join(state, 'openclaw.json'), 'utf8'));
+const gatewayUrl = process.env.OPENCLAW_GATEWAY_WS_URL || `ws://127.0.0.1:${config.gateway?.port || 18789}`;
+assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(new URL(gatewayUrl).hostname), 'Gateway must be the agent-local managed Gateway');
+const token = process.env.OPENCLAW_GATEWAY_TOKEN || config.gateway?.auth?.token;
+const password = process.env.OPENCLAW_GATEWAY_PASSWORD || config.gateway?.auth?.password;
 const { GatewayClient } = await import(process.env.WATCHDOG_CLIENT_PATH
   ? pathToFileURL(resolve(process.env.WATCHDOG_CLIENT_PATH)).href
   : '../dist/openclaw/gatewayClient.js');
@@ -22,45 +30,10 @@ async function waitFor(check, label, timeout = 30000) {
   while (Date.now() < end) { if (await check()) return; await delay(30); }
   throw new Error(`Timed out: ${label}`);
 }
-const reservation = createServer();
-reservation.listen(0, '127.0.0.1');
-await once(reservation, 'listening');
-const port = reservation.address().port;
-await new Promise(r => reservation.close(r));
-const config = join(root, 'openclaw.json');
-await writeFile(config, JSON.stringify({ gateway: {
-  mode: 'local', bind: 'loopback', port,
-  auth: { mode: 'token', token: 'isolated-watchdog-acceptance' },
-} }));
-const log = await open(join(root, 'gateway.log'), 'a');
-let gateway, client, proxy, active;
+let client, proxy, active;
 const peers = new Set(), timers = new Set();
-async function startGateway() {
-  gateway = spawn(process.execPath, [resolve(process.env.GATEWAY_CLI), 'gateway', 'run',
-    '--allow-unconfigured', '--bind', 'loopback', '--port', String(port)], {
-    env: { ...process.env, OPENCLAW_STATE_DIR: join(root, 'gateway'),
-      OPENCLAW_CONFIG_PATH: config, OPENCLAW_SKIP_CHANNELS: '1' },
-    stdio: ['ignore', log.fd, log.fd],
-  });
-  await waitFor(async () => {
-    if (gateway.exitCode !== null) throw new Error(`Gateway exited ${gateway.exitCode}; ${root}`);
-    const socket = new WebSocket(`ws://127.0.0.1:${port}`);
-    return new Promise(r => {
-      socket.once('error', () => r(false));
-      socket.once('open', () => { socket.close(); r(true); });
-    });
-  }, 'real Gateway listener', 60000);
-}
-async function stopGateway() {
-  if (!gateway || gateway.exitCode !== null) return;
-  const child = gateway, exit = once(child, 'exit');
-  child.kill('SIGTERM');
-  const kill = setTimeout(() => child.kill('SIGKILL'), 10000);
-  try { await exit; } finally { clearTimeout(kill); }
-}
 let connections = 0, inject = null;
 try {
-  await startGateway();
   proxy = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await once(proxy, 'listening');
   proxy.on('connection', downstream => {
@@ -69,7 +42,7 @@ try {
     peers.add(downstream);
     const mode = inject;
     inject = null;
-    const upstream = new WebSocket(`ws://127.0.0.1:${port}`);
+    const upstream = new WebSocket(gatewayUrl);
     peers.add(upstream);
     downstream.on('error', () => {});
     upstream.on('error', () => downstream.terminate());
@@ -93,7 +66,7 @@ try {
     });
   });
   client = new GatewayClient({ url: `ws://127.0.0.1:${proxy.address().port}`,
-    token: 'isolated-watchdog-acceptance', startupMaxAttempts: 20, startupRetryDelayMs: 500,
+    token, password, startupMaxAttempts: 2, startupRetryDelayMs: 500,
     connectReadyTimeoutMs: 10000 });
   await client.start();
   assert.equal(client.isReady(), true);
@@ -108,12 +81,22 @@ try {
     assert.ok(await client.request('health', {}));
     results.push({ mode, helloDelayMs: 1800, extraConnections: connections - before, ready: true, healthRpc: true });
   }
-  await stopGateway();
-  await waitFor(() => !client.isReady(), 'Gateway stopped');
-  await startGateway();
-  await waitFor(() => client.isReady(), 'reconnect after real Gateway restart');
-  assert.ok(await client.request('health', {}));
-  results.push({ mode: 'real-process-restart', ready: true, healthRpc: true });
+  if (process.env.WATCHDOG_RESTART_MANAGED_GATEWAY === '1') {
+    const unit = process.env.WATCHDOG_GATEWAY_UNIT || 'openclaw-gateway.service';
+    assert.match(unit, /^openclaw-gateway(?:-[a-zA-Z0-9_-]+)?\.service$/);
+    const user = process.env.WATCHDOG_GATEWAY_USER_SERVICE !== '0';
+    const run = promisify(execFile);
+    await run('systemctl', [...(user ? ['--user'] : []), 'stop', unit], { timeout: 30000 });
+    try {
+      await waitFor(() => !client.isReady(), 'managed Gateway stopped');
+      await assert.rejects(client.request('health', {}), undefined, 'RPC must exhaust its bounded reconnect attempts while Gateway is stopped');
+    } finally {
+      await run('systemctl', [...(user ? ['--user'] : []), 'start', unit], { timeout: 60000 });
+    }
+    await waitFor(() => client.isReady(), 'managed Gateway restart', 120000);
+    assert.ok(await client.request('health', {}));
+    results.push({ mode: 'managed-service-restart-after-rpc-exhaustion', startupMaxAttempts: 2, ready: true, healthRpc: true });
+  }
   client.stop();
   assert.equal(client.isReady(), false, 'stop clears readiness');
   console.log(JSON.stringify({ pass: true, results, modelRequests: 0 }));
@@ -122,10 +105,4 @@ try {
   for (const timer of timers) clearTimeout(timer);
   for (const peer of peers) peer.terminate();
   if (proxy) await new Promise(r => proxy.close(r));
-  await stopGateway();
-  await log.close();
-  if (previousState === undefined) delete process.env.OPENCLAW_STATE_DIR;
-  else process.env.OPENCLAW_STATE_DIR = previousState;
-  if (process.env.WATCHDOG_KEEP_STATE === '1') console.error(`Private diagnostics: ${root}`);
-  else await rm(root, { recursive: true, force: true });
 }
