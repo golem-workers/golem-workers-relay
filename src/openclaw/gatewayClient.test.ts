@@ -356,6 +356,49 @@ describe("GatewayClient", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
+  it("keeps background recovery alive when an RPC exhausts its reconnect attempts", async () => {
+    vi.stubEnv("OPENCLAW_STATE_DIR", `/tmp/gw-relay-recovery-${Date.now()}-${Math.random()}`);
+    let available = true;
+    let socket: WebSocket | undefined;
+    let connected = 0;
+    let disconnected!: () => void;
+    const lost = new Promise<void>((resolve) => { disconnected = resolve; });
+    const { wss, port } = startServer((ws) => {
+      socket = ws;
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "recovery", ts: 1 } }));
+      ws.on("message", (data) => {
+        const frame = JSON.parse(rawDataToString(data)) as { id: string; method: string };
+        if (frame.method !== "connect") return;
+        ws.send(JSON.stringify(available
+          ? { type: "res", id: frame.id, ok: true, payload: {
+              type: "hello-ok", protocol: 3,
+              policy: { tickIntervalMs: 5000, maxPayload: 1, maxBufferedBytes: 1 },
+              server: { version: "x", connId: "recovery" }, snapshot: {}, features: { methods: [], events: [] },
+            } }
+          : { type: "res", id: frame.id, ok: false, error: { code: "UNAVAILABLE", message: "gateway updating" } }));
+      });
+    });
+    const client = new GatewayClient({ url: `ws://127.0.0.1:${port}`, token: "t",
+      startupMaxAttempts: 2, startupRetryDelayMs: 10,
+      onConnectionStateChange: (state) => { if (state.connected) connected++; else disconnected(); },
+    });
+    try {
+      await client.start();
+      available = false;
+      socket!.close(4001, "long update");
+      await lost;
+      await expect(client.request("health", {})).rejects.toThrow("UNAVAILABLE");
+      available = true;
+      // Recovery must happen without a fresh start(), request() or service restart.
+      await vi.waitFor(() => expect(connected).toBe(2), { timeout: 2500, interval: 25 });
+      expect(client.isReady()).toBe(true);
+    } finally {
+      client.stop();
+      for (const peer of wss.clients) peer.terminate();
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+    }
+  });
+
   it("keeps reconnecting when the gateway is temporarily unavailable after a prior connection", async () => {
     const tmp = `/tmp/gw-relay-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     vi.stubEnv("OPENCLAW_STATE_DIR", tmp);
@@ -486,6 +529,45 @@ describe("GatewayClient", () => {
 
     client.stop();
     await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+
+  it.each(["tick", "pause"])("does not apply a stale %s watchdog to a slow replacement handshake", async stale => {
+    vi.stubEnv("OPENCLAW_STATE_DIR", `/tmp/gw-generation-${Date.now()}-${Math.random()}`);
+    let connections = 0;
+    let first: WebSocket | undefined;
+    const { wss, port } = startServer(ws => {
+      const generation = ++connections;
+      if (generation === 1) first = ws;
+      ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: `n${generation}`, ts: 1 } }));
+      ws.on("message", data => {
+        const frame = JSON.parse(rawDataToString(data)) as { method: string; id: string };
+        if (frame.method !== "connect") return;
+        setTimeout(() => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: {
+            type: "hello-ok", protocol: 3,
+            policy: { tickIntervalMs: 1000, maxPayload: 1, maxBufferedBytes: 1 },
+            server: { version: "x", connId: `c${generation}` }, snapshot: {}, features: { methods: [], events: [] },
+          } }));
+        }, generation === 1 ? 0 : 1400);
+      });
+    });
+    const client = new GatewayClient({ url: `ws://127.0.0.1:${port}`, token: "t", tickTimeoutMultiplier: 3 });
+    try {
+      await client.start();
+      first!.terminate();
+      await vi.waitFor(() => expect(client.isReady()).toBe(false), { interval: 10 });
+      // Reproduce retained heartbeat state while the new socket is connecting.
+      const internal = client as unknown as { lastTickMs: number; lastTickWatchdogCheckMs: number };
+      internal.lastTickMs = stale === "tick" ? Date.now() - 60_000 : Date.now();
+      internal.lastTickWatchdogCheckMs = stale === "pause" ? Date.now() - 60_000 : Date.now();
+      await vi.waitFor(() => expect(client.isReady()).toBe(true), { timeout: 4000, interval: 20 });
+      expect(connections).toBe(2);
+    } finally {
+      client.stop();
+      for (const ws of wss.clients) ws.terminate();
+      await new Promise<void>(resolve => wss.close(() => resolve()));
+    }
   });
 
   it("uses the configured tick timeout multiplier before closing the socket", async () => {
