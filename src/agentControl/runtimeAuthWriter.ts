@@ -6,9 +6,11 @@ import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { activeConfigLockDescriptors } from "./ownerFence.js";
 
-// Cold admission can perform full integrity checks for both shared and agent DBs.
-// Keep a bounded budget, but do not kill a healthy SDK midway through admission.
-const AUTH_WRITER_TIMEOUT_MS = 120_000;
+// Cold public-SDK admission can scan both shared and agent databases. A healthy
+// multi-GiB agent exceeded 120s during readback-only pool recovery. Keep the same
+// bounded ten-minute budget for single writes, pool writes and reconciliation;
+// never skip SDK integrity/ownership checks or replay an ambiguous mutation.
+const AUTH_WRITER_TIMEOUT_MS = 600_000;
 
 export class RuntimeAuthWriterError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = "RuntimeAuthWriterError"; }

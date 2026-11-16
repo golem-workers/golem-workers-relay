@@ -14,7 +14,13 @@ read-back; an UNKNOWN writer is never blindly replayed. An applied result follow
 
 Runtime SQLite is owned by the **installed public OpenClaw SDK** resolved from the
 active executable, not an invented auth-only DB. The SDK transaction preserves
-unrelated keys/providers and cooldown/usage metadata. Equivalent legacy OAuth
+unrelated keys/providers and cooldown/usage metadata. Single-profile writes, pool
+writes and readback-only recovery share a bounded 10-minute subprocess budget:
+cold integrity admission on a healthy multi-GiB database can exceed 120 seconds.
+Integrity/ownership checks remain SDK-owned. At the deadline Relay kills the
+child and records no success; an ambiguous result still requires exact saved
+readback reconciliation, not automatic credential replay. The longer budget
+applies after a Relay update and does not settle already-pending operations. Equivalent legacy OAuth
 aliases are adopted, not copied into two independently refreshed profiles;
 unassigned unknown OAuth identities reject the operation before mutation.
 Disabled/removed subscriptions are absent from the active auth store. Only the
