@@ -53,9 +53,53 @@ Reconnection observes all agents (including subagents), not only main.
 Backend automatic sleep consumes this same canonical status; process diagnostics
 must not become an independent sleep-only work-status heuristic.
 
-For `relay_channel_v2`, relay startup also checks the installed `relay-channel`
-plugin version against the current plugin repo ref and automatically rebuilds /
-reinstalls the plugin when the installed version is behind.
+For `relay_channel_v2`, Relay runs non-blocking periodic maintenance for the
+already-enabled, npm-managed `@golemworkers/relay-channel` plugin and the standard
+Golem snapshot archive installation. It checks the
+published npm `latest` stable release hourly, with up to five minutes of startup
+and per-check jitter. Newer installed versions are never downgraded. Missing,
+disabled, custom/path and prerelease installations are not changed. The snapshot
+archive is recognized only by matching host-owned install metadata: the exact
+`/root/golem-workers-openclaw-channel-plugin/.artifacts/relay-channel/relay-channel-bundle.tgz`
+source, the global `extensions/relay-channel` install/root, and the package name.
+Other archives are not migrated; a newer-than-npm archive is not downgraded.
+Host `plugins inspect` metadata is used when the list omits install provenance.
+
+The updater shares the platform Update/Doctor install, model and owner kernel
+locks (in that order), defers when Gateway is busy, and uses the native
+`openclaw plugins update @golemworkers/relay-channel@<exact-version>` transaction.
+For the recognized snapshot archive, it performs a one-time native
+`openclaw plugins install --force @golemworkers/relay-channel@<exact-version>`
+replacement instead (archive records cannot be updated by `plugins update`).
+This is a host-managed replacement, never uninstall-then-install; `--force` only
+selects replacement and does not accept capability consent. npm provenance is
+verified after migration. Host install has no dry-run for archive replacement.
+Host compatibility, install policy and existing capability consent remain enforced;
+no automatic capability acceptance, uninstall, enable, config normalization,
+authentication change or OpenClaw upgrade is performed. Runtime plugin activation
+and Gateway health are checked even when the on-disk package version is already
+current. Stale loaded code is repaired without reinstalling or downgrading. A safe
+Gateway restart is requested only if hot activation is absent; it is never forced.
+A busy/unreachable/unsupported host or registry failure cannot prevent Relay startup.
+
+Set `RELAY_CHANNEL_PLUGIN_AUTO_UPDATE_ENABLED=0` to opt out;
+`RELAY_CHANNEL_PLUGIN_UPDATE_INTERVAL_MS` defaults to `3600000` (minimum `60000`),
+and `RELAY_CHANNEL_PLUGIN_UPDATE_INITIAL_JITTER_MS` defaults to `300000`.
+Only local loopback Gateways are maintained. The old plugin Git repository/ref
+settings remain for provisioning; periodic maintenance uses published npm releases.
+
+Maintenance receipts are persisted beside `openclaw.json` as
+`openclaw.json.relay-channel-update.json`, with version, phase and a protected
+configuration hash (no credentials). An interrupted/ambiguous install is not
+blindly repeated: subsequent checks first verify the installed/runtime version.
+An `installing` receipt with the old package still present, configuration drift,
+or an unverified restart requires operator inspection. After confirming no
+installer is running and repairing/validating the current installation/config,
+the operator can remove the receipt to authorize a new attempt. No automatic
+SQLite/config restore or repeated restart storm is attempted. A failed same-version
+archive migration is not considered complete unless npm provenance is confirmed.
+Plugin maintenance never grants conversation/hook access: missing consent or an
+unsupported host still requires a separate Setup/Update before pool Connect.
 
 For `relay_channel_v2` agents, the relay now advertises provider-aware control
 plane capability profiles on the local control plane. The top-level hello frame
@@ -136,7 +180,7 @@ The script:
 - pre-pulls and builds `golem-workers-relay` from `release` by default, or from explicit `RELAY_GIT_REF` when exported before running the script;
 - installs the relay-channel plugin from explicit `RELAY_CHANNEL_PLUGIN_GIT_REF` when exported, otherwise keeps the existing default coupling to the relay ref (`main` -> `main`, everything else -> `release`);
 - applies OpenClaw plugin capability consent only when supported, explicitly confirms the trusted local relay-channel archive, and stops writing retired `plugins.installs` authored config on database-first releases, so noninteractive image preparation works across OpenClaw 2026.7.1 and 2026.8.1+;
-- at runtime, relay also re-checks the installed `relay-channel` package version against the selected plugin repo ref and auto-updates the plugin before opening the relay control plane when the installed version is older;
+- at runtime, Relay periodically checks the published npm release and updates an enabled, npm-managed `relay-channel` installation without blocking the control plane (see maintenance above);
 - resolves latest OpenClaw and official `@openai/codex` versions once, installs them with npm using `/usr/local` as the global prefix and npm-owned `/usr/local/bin/openclaw` and `/usr/local/bin/codex` launchers, writes managed `~/.codex/config.toml`, `~/.codex/auth.json`, and `/usr/local/bin/golem-codex-proxy` files so Codex pins `CODEX_HOME` to `~/.codex`, uses explicit API-key login state, explicit `danger-full-access` / `never` defaults, disabled Codex hooks, and wrapper-level CLI overrides together with the local OpenAI proxy, prepares runtime dependencies (`grammy`, `@grammyjs/runner`, `@grammyjs/transformer-throttler`, `@buape/carbon`, `@larksuiteoapi/node-sdk`, `@slack/bolt` for the current OpenClaw bundled-plugin import bugs), preinstalls `relay-channel` and a compatible independently-revisioned `@openclaw/codex` package through `openclaw plugins install`, preinstalls the curated safe OpenClaw skills used by the agent creation quiz, patches the installed Codex harness default so OpenClaw native hook relay stays disabled, leaves those prepared plugins disabled until backend provisioning wires runtime config, plus full `playwright`; the relay only allows OpenAI `/v1/responses` websocket upgrades while the active OpenClaw model is `codex/*`
 - uses fs-safe default `auto` mode (native when available), without native-mode environment overrides. Preparation removes legacy overrides from login and service environments; Relay startup clears inherited overrides from older snapshots. Compatible native bindings retain guarded filesystem safety on older kernels;
 - configures OpenClaw/Node runtime env (`NODE_OPTIONS` with 2 GiB heap, `NODE_COMPILE_CACHE`, `OPENCLAW_NO_RESPAWN`, `NODE_PATH`);
@@ -685,6 +729,124 @@ unfinished receipt reports `UNKNOWN`; it is never executed again automatically.
 Only a pre-execution kernel-fence refusal reports `REFUSED`. Other failures retain
 unknown custody. Existing runtime/owner/model guards remain in force.
 
+## OpenAI OAuth subscription pools (draft)
+
+See [protocol, custody and qualification boundaries](docs/openai-subscription-pool.md). Backend epic [#841](https://github.com/golem-workers/golem-workers-backend/issues/841) coordinates the feature-gated cross-repository rollout. No API/credits/model fallback.
+
+Subscription pools additionally journal **Relay-observed** per-answer token windows
+and durably deliver idempotent events to backend (backend usage-event migration
+first). Pool counters are cumulative from observation start; ambiguous/recovered
+windows remain unattributed. Native/cron/external Gateway requests are not implied
+coverage. The existing authorization reporter retries delivery; `RELAY_AUTHORIZATION_USAGE_ENABLED=false` also disables the production observation collector. No new environment
+settings or credit/provider fallback. See [pool behavior](docs/openai-subscription-pool.md).
+
+
+Managed pool profiles contain access tokens only and inherit from the shared
+machine auth store into main/nested native agent scopes; refresh tokens remain
+backend-owned. Codex commentary is progress, not transcript-only completion:
+Relay waits for the final reply before releasing or cleaning up its run.
+
+### Subscription usage observation boundary
+
+With authorization usage enabled and a managed subscription pool present, the
+collector also reads settled transcripts through the unchanged public session SDK.
+Configured agents (including persisted native/channel/cron/nested/external sessions)
+are enumerated read-only; active or concurrently changed entries are deferred.
+These additional assistant messages are always UNKNOWN: a current session pin is
+not dispatch-account proof. Observation starts when the durable outbox is first
+created/upgraded, not at the beginning of pre-existing history. Resets/deletions
+before a scan, unconfigured agents, calls without persisted usage, and provider
+retry attempts without separate transcript messages remain outside coverage.
+
+The stable `(sessionId, messageId)` key is shared with Relay windows and retained
+after delivery/restart. A durable per-session scan cursor advances only after a
+complete settled inventory, never from a newer Relay window; the inclusive time
+boundary and immutable IDs preserve equal-timestamp messages. The inventory
+requestId is an observation correlation, not a provider request ID. Inventory fails explicitly above 500 listed sessions or
+2000 eligible messages per scan; the durable observer retains at most 200000 IDs.
+No truncation/reclassification or model request is used to repair these limits.
+Reader failure still permits already-journaled Relay events to drain. This adds
+observation only, not a native-entry-point fallback guard or exact attempt billing.
+
+Pool activation additionally requires a live loaded owned-channel guard on the
+unchanged official OpenClaw >=2026.9.8 with matching channel-plugin/SDK support.
+Hosts before 2026.11.2 use strict mode; >=2026.11.2 uses run-scoped suppression
+with the async public reader, otherwise strict mode. There is no upper version
+cutoff. Explicit setup must provision its supported
+hook consent separately; pool authorization never grants it or installs/repairs a
+plugin. `OPENAI_POOL_GUARD_UPDATE_REQUIRED` is a pre-effect refusal, not permission
+to choose API credits or another model. Authored fallbacks remain on disk but the
+qualified >=2026.11.2 guard replaces each managed run's chain with an empty list.
+Strict capability v2 instead clears configured model fallback lists during explicit
+Connect, using a narrow CAS-protected write and verified Gateway application before
+credentials. Explicit Connect also prepares the subscription auth route for a
+freshly provisioned OpenAI agent: only exact platform-generated empty proxy rows
+(including canonical OpenClaw runtime metadata) may be replaced by the direct
+ChatGPT Responses route. Preflight evaluates the same candidate read-only; the
+mutation uses whole-config CAS and an exact transformation allowlist under the
+owner/model lock, then verifies Gateway application before installing credentials.
+Custom/API-key routes are never silently converted, and a non-OpenAI primary is
+not changed to an OpenAI model. It preserves primary, Harness, reasoning and unrelated settings.
+A failed application stays Pending, never a false success. Every run still forbids
+model fallback; runtime candidates must match the saved primary. Admission remains
+read-only and does not claim run-scoped suppression.
+Unknown/partial capability proofs still fail closed. A foreign
+plain token profile and unsupported Codex user-home/remote bridge are refused.
+See the channel plugin's subscription guard setup contract.
+
+Transcript recovery uses current request/idempotency metadata when the official
+Gateway supplies it. A repeated identical prompt cannot reuse an older keyed
+assistant reply while the current user transcript entry is still pending. Legacy
+unkeyed recovery remains a compatibility path, not a billing or dispatch identity.
+
+Pool removal also clears obsolete OpenAI session pins for every configured agent through the public session-store SDK, preserving transcript/activity metadata. Unsupported session-store/agent-scope SDKs refuse pool mutation rather than updating only the main agent.
+
+Explicit selection of API/credits after a subscription pool now uses a revisioned, Gateway-confirmed pool exit. Removing subscriptions alone never enables API spending. This requires matching Relay and loaded channel-plugin exit capabilities; failed exits remain pending and recover only through the saved model/source operation. See [pool protocol](docs/openai-subscription-pool.md).
+
+Managed model configuration does not set `agents.defaults.contextTokens`; model changes remove any legacy value. The runtime uses the model context window. Legacy relay protocol fields remain accepted for compatibility and return `null`.
+
+Runtime auth and subscription-pool SDK writers, including readback-only reconciliation, allow up to 10 minutes for cold shared/agent database integrity admission. Multi-GiB agent databases can exceed the former 120-second limit even when healthy. SDK integrity/ownership checks are not bypassed. A genuinely stalled child is still killed at the deadline; timeout remains an unacknowledged outcome requiring exact saved-operation reconciliation, never automatic credential replay. Stage/exit diagnostics never include credentials or child stderr. Existing agents receive this budget after updating Relay; this does not automatically repair already-pending authorization operations.
+
+Applied OpenAI subscription pools use their loaded admission guard and strict official ChatGPT route for `model.verify`, not legacy singleton login-mode classification. Pending/exiting/empty pools, missing persisted subscriptions, custom/direct-auth routes and environment overrides remain blocked. Verification still requires the isolated reply's exact provider/model/harness; route readiness alone is never success.
+
+### Durable subscription-pool authorization
+
+Pool syncs are serialized with the runtime auth-store writer and fenced by the persisted pool revision. A newer backend disconnect revision may supersede a pending older revision; late older syncs are rejected, and an in-flight writer must finish before the newer desired set is written. Backend timeouts remain unknown until exact status/receipt reconciliation.
+
+The loaded Relay advertises `durablePoolAuthorizationVersion: 1` when pool sync supports durable operation receipts. Repeated or restarted callers read the same non-secret receipt; an unknown mutation is not automatically replayed. Writer, Gateway timeout and known validation errors expose safe codes, not child stderr/config/credentials.
+
+Auth-only Connect preserves authored fallback settings. A strict legacy subscription guard refuses configured fallbacks and requires a separate explicit model edit; a confirmed run-scoped guard can preserve configured fallback intent while enforcing subscription-only execution. Relay upgrade and model/Harness configuration remain explicit operations.
+
+Authorization writer failures carry fixed import/store/session stages and allowlisted lock/migration/ownership codes via exit integers; child messages, stderr and credentials never enter API diagnostics.
+
+Proven pre-writer config refusals remain REFUSED and support explicit fingerprint-fenced resume under kernel admission lock. Unknown/post-writer effects never replay. Auth-only configuration checks do not restart Gateway or remove authored fallbacks.
+
+Auth-writer subprocesses inherit the active model and owner kernel-lock descriptions. If Relay dies while a writer is alive, a new config owner remains fenced until that writer exits; closing the parent alone cannot release custody. This does not authorize UNKNOWN replay or prove a partial operation applied. No new configuration is required.
+
+Explicit durable `reconcile` mode is fingerprint-bound to the same UNKNOWN pool intent and advertises `durableAuthorizationReconcileVersion: 1`. It keeps ambiguous/busy outcomes UNKNOWN (never pre-writer REFUSED), has a three-attempt budget, and runs the pool manager in readback-only auth-store mode. The public SDK updater compares the projected store against actual state, returns false without saving when equal, and refuses changed credentials; only SDK-normalized empty/absent access-only refresh fields are equivalent. Session pin cleanup and runtime refresh can then complete the exact pending snapshot. Ordinary submit/resume never replays UNKNOWN. No new environment setting is required.
+
+Readback-only pool reconciliation accepts the public SDK omission of an empty OpenAI order only when the saved revision has zero enabled members. Nonempty or other-provider order differences still refuse completion; verification never saves the auth store. No new environment setting is required.
+
+Legacy OAuth clear uses the installed public SDK transaction, removes only OpenAI OAuth profiles, preserves API-key/other-provider credentials and skips an already-clear store save. With selected OpenClaw it refreshes runtime auth live without stopping/restarting Gateway; Codex-specific pause behavior is unchanged pending separate runtime acceptance. No new environment setting is required.
+
+### Organization Telegram subscription bootstrap
+New OpenAI-template agents explicitly prepare the managed ChatGPT route and clear model fallback lists before OAuth assignment. Auth-only Connect preserves model intent. Bootstrap requires a fenced backend request and an explicit Relay acknowledgement; authored/custom transport remains rejected. Telegram AUTH reports structured safe assignment error codes, not raw provider messages.
+
+### Atomic Relay builds
+`npm run build` requires Python 3 (also used by the updater). It serializes builds,
+compiles with `--noEmitOnError` into a fresh `.relay-builds/generation-*` directory,
+and rejects missing entrypoints or zero-byte JavaScript modules before publication.
+`dist` is atomically switched to a symlink only after success. A failed or killed
+compiler leaves the previous generation untouched; startup still uses `dist/index.js`.
+The one-time legacy-directory migration uses Linux `renameat2(RENAME_EXCHANGE)`
+or macOS `renamex_np(RENAME_SWAP)` and fails closed if unavailable.
+Old generations and the migrated legacy directory (`generation-*.link`) are kept
+for rollback and running processes; do not remove them while referenced by a running
+Relay. Reclaim obsolete generations during stopped-service maintenance. No new
+environment settings or model/auth changes are required.
+Regression checks: `python3 scripts/build-relay.test.py` (also run by `npm test`).
+
+`npm run test:disconnect-supersession` exercises authenticated HTTP ingress with a late Connect4, newer Disconnect5, duplicate receipt and stale revision. It uses real receipt/lock/writer subprocess paths with a synthetic Gateway and public SDK store, preserves config and asserts zero remaining managed profiles. It is not real OAuth or production acceptance.
 ### Gateway watchdog socket generations
 
 Heartbeat and runtime-pause watchdog state belongs only to the websocket that

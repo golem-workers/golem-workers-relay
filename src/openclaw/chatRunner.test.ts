@@ -2273,7 +2273,7 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("does not treat transcript assistant tool activity as the final reply", async () => {
+  it.each(["tool-call", "codex-commentary"] as const)("does not treat transcript assistant %s as the final reply", async (kind) => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-transcript-tool-activity-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
 
@@ -2296,6 +2296,15 @@ describe("ChatRunner", () => {
     );
     await fs.writeFile(sessionFile, "", "utf8");
 
+    const intermediateMessage = kind === "codex-commentary" ? {
+      role: "assistant", content: [{ type: "text", text: "Сейчас быстро найду прошлый рацион." }],
+      stopReason: "stop", __openclaw: { mirrorOrigin: "codex-app-server", mirrorIdentity: "thread:turn:commentary:item" },
+    } : {
+      role: "assistant", content: [
+        { type: "text", text: "Сейчас быстро найду прошлый рацион." },
+        { type: "toolCall", name: "read", arguments: { path: "dasha_ration_excel.csv" } },
+      ],
+    };
     let sentMessage: unknown = null;
     const { wss, port } = startServer((ws) => {
       ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
@@ -2333,13 +2342,7 @@ describe("ChatRunner", () => {
                 }),
                 JSON.stringify({
                   type: "message",
-                  message: {
-                    role: "assistant",
-                    content: [
-                      { type: "text", text: "Сейчас быстро найду прошлый рацион." },
-                      { type: "toolCall", name: "read", arguments: { path: "dasha_ration_excel.csv" } },
-                    ],
-                  },
+                  message: intermediateMessage,
                 }),
               ].join("\n") + "\n",
               "utf8"
@@ -2355,13 +2358,7 @@ describe("ChatRunner", () => {
                 }),
                 JSON.stringify({
                   type: "message",
-                  message: {
-                    role: "assistant",
-                    content: [
-                      { type: "text", text: "Сейчас быстро найду прошлый рацион." },
-                      { type: "toolCall", name: "read", arguments: { path: "dasha_ration_excel.csv" } },
-                    ],
-                  },
+                  message: intermediateMessage,
                 }),
                 JSON.stringify({
                   type: "message",
@@ -2519,13 +2516,15 @@ describe("ChatRunner", () => {
     await new Promise<void>((r) => wss.close(() => r()));
   });
 
-  it("recovers a transcript-only reply from OpenClaw gateway history", async () => {
+  it.each([[true, false], [false, false], [false, true]])("waits for current final history (run metadata=%s, delayed user=%s)", async (includeRunId, delayedUser) => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gwr-state-gateway-history-final-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
 
     const sessionKey = "tg:7278830001:gateway-history-final";
     const runId = "run_gateway_history_final";
     let historyCalls = 0;
+    let prematureAborts = 0;
+    let requestKey = "";
     const { wss, port } = startServer((ws) => {
       ws.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "nonce1", ts: 1 } }));
       ws.on("message", (data) => {
@@ -2556,6 +2555,7 @@ describe("ChatRunner", () => {
           return;
         }
         if (frame.type === "req" && frame.method === "chat.send") {
+          requestKey = (frame.params as {idempotencyKey: string}).idempotencyKey;
           ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { runId } }));
           return;
         }
@@ -2569,18 +2569,19 @@ describe("ChatRunner", () => {
               payload: {
                 sessionKey,
                 messages: [
-                  { role: "user", content: "same request" },
+                  { role: "user", content: "same request", ...(delayedUser ? {__openclaw: {idempotencyKey:"old-request:user"}} : {}) },
                   {
                     role: "assistant",
                     content: [{ type: "text", text: "stale reply" }],
-                    __openclaw: { runId: "run_old" },
+                    __openclaw: includeRunId ? { runId: "run_old" } : delayedUser ? {idempotencyKey:"old-request"} : {},
                   },
-                  { role: "user", content: "same request", __openclaw: { idempotencyKey: `${runId}:user` } },
+                  ...(!delayedUser || historyCalls >= 3 ? [{ role: "user", content: "same request", __openclaw: { idempotencyKey: `${delayedUser ? requestKey : runId}:user` } },
                   {
                     role: "assistant",
-                    content: [{ type: "text", text: "fresh gateway-history reply" }],
-                    __openclaw: { runId },
-                  },
+                    content: [{ type: "text", text: historyCalls < 3 ? "Still running a tool" : "fresh gateway-history reply" }],
+                    stopReason: "stop",
+                    __openclaw: { ...(includeRunId ? { runId } : {}), mirrorOrigin: "codex-app-server", mirrorIdentity: `thread:turn:${historyCalls < 3 ? "commentary" : "final_answer"}:item` },
+                  },] : []),
                 ],
               },
             })
@@ -2588,6 +2589,7 @@ describe("ChatRunner", () => {
           return;
         }
         if (frame.type === "req" && frame.method === "chat.abort") {
+          if (historyCalls < 3) prematureAborts += 1;
           ws.send(
             JSON.stringify({
               type: "res",
@@ -2614,16 +2616,17 @@ describe("ChatRunner", () => {
       sessionKey,
       messageText: "same request",
       deliverySystem: "relay_channel_v2",
-      timeoutMs: 4_000,
+      timeoutMs: 2_500,
     });
     expect(result.outcome).toBe("reply");
     if (result.outcome !== "reply") throw new Error("expected reply");
     expect(result.reply.message).toMatchObject({
       role: "assistant",
       content: [{ type: "text", text: "fresh gateway-history reply" }],
-      __openclaw: { runId },
+      __openclaw: includeRunId ? { runId } : {},
     });
-    expect(historyCalls).toBeGreaterThanOrEqual(2);
+    expect(historyCalls).toBeGreaterThanOrEqual(3);
+    expect(prematureAborts).toBe(0);
 
     client.stop();
     await new Promise<void>((r) => wss.close(() => r()));

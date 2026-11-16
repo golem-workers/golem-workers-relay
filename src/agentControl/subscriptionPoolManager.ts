@@ -1,0 +1,163 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import JSON5 from "json5";
+import { z } from "zod";
+import { withAuthorizationConfig } from "../managed-runtime/runtime-policy.js";
+import { isDeepStrictEqual } from "node:util";
+import { withOwnerFenceLock, writeOwnerFencedConfig } from "./ownerFence.js";
+import { prepareSubscriptionPoolConfig } from "./subscriptionPoolConfig.js";
+import { writeRuntimeAuthPool } from "./runtimeAuthWriter.js";
+import {
+  assertSubscriptionOnlyConfiguration,
+  prepareSubscriptionPool,
+  SubscriptionPoolError,
+  type SubscriptionPoolMember,
+  type SubscriptionPoolState,
+} from "./openAiSubscriptionPool.js";
+
+const memberMetadata = z.object({
+  accountId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+  profileId: z.string().min(1),
+  credentialVersion: z.number().int().positive(),
+  enabled: z.boolean(),
+  credentialDigest: z.string().regex(/^[a-f0-9]{64}$/),
+});
+const stateSchema = z.object({
+  version: z.literal(1),
+  revision: z.number().int().positive(),
+  fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  phase: z.enum(["pending", "applied", "exiting", "exited"]),
+  members: z.array(memberMetadata).max(32),
+  managedProfileIds: z.array(z.string().min(1)),
+});
+export function subscriptionPoolStatePath(configPath: string): string {
+  return configPath === "/root/.openclaw/openclaw.json"
+    ? "/var/lib/golem-workers/openai-subscription-pool.json"
+    : configPath + ".golem-openai-pool.json";
+}
+export async function readSubscriptionPoolState(
+  configPath: string,
+): Promise<SubscriptionPoolState | null> {
+  try {
+    return stateSchema.parse(
+      JSON.parse(
+        await fs.readFile(subscriptionPoolStatePath(configPath), "utf8"),
+      ),
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+export async function writeSubscriptionPoolState(
+  configPath: string,
+  state: SubscriptionPoolState,
+): Promise<void> {
+  const target = subscriptionPoolStatePath(configPath);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const temporary = target + "." + randomUUID();
+  const file = await fs.open(temporary, "wx", 0o600);
+  try {
+    await file.writeFile(JSON.stringify(state) + "\n");
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  try {
+    await fs.rename(temporary, target);
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
+  const directory = await fs.open(path.dirname(target), "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
+}
+export async function assertLegacyAuthMutationAllowed(
+  configPath: string,
+): Promise<void> {
+  const state = await readSubscriptionPoolState(configPath);
+  if (state && state.phase !== "exited")
+    throw new SubscriptionPoolError(
+      "OPENAI_POOL_SCOPED_OPERATION_REQUIRED",
+      "This agent has a subscription pool. Use account-scoped authorization operations, not provider-wide replacement/clear.",
+    );
+}
+/** A pending receipt is a high-water mark, not a successful credential ack.
+ * Retrying exactly that snapshot reconciles it; stale operations never undo it. */
+export async function syncSubscriptionPool(input: {
+  configPath: string;
+  revision: number;
+  members: SubscriptionPoolMember[];
+  reconcileOnly?: boolean;
+  refreshRuntimeAuth: () => Promise<void>;
+  assertRuntimeGuard: () => Promise<{ runScopedFallbacks: boolean }>;
+  waitForConfigApplied?: (configText: string, guard: { runScopedFallbacks: boolean }) => Promise<void>;
+}): Promise<SubscriptionPoolState> {
+  return withOwnerFenceLock(input.configPath, async () => {
+    const configText = await fs.readFile(input.configPath, "utf8");
+    const config = z
+      .record(z.string(), z.unknown())
+      .parse(JSON5.parse(configText));
+    const guard = await input.assertRuntimeGuard();
+    const candidate = prepareSubscriptionPoolConfig(config, guard);
+    const configChanged = !isDeepStrictEqual(candidate, config);
+    assertSubscriptionOnlyConfiguration(candidate, process.env, guard);
+    const previous = await readSubscriptionPoolState(input.configPath);
+    const next = prepareSubscriptionPool(
+      previous,
+      input.revision,
+      input.members,
+    );
+    if (input.reconcileOnly) {
+      if (!previous || previous.revision !== input.revision || !["pending", "applied"].includes(previous.phase) ||
+          !isDeepStrictEqual(previous.members, next.members) || configChanged) {
+        throw new SubscriptionPoolError("OPENAI_POOL_RECONCILE_CONFLICT", "Reconciliation requires the exact saved pending snapshot and applied configuration.");
+      }
+      if (previous.phase === "applied") return previous;
+    }
+    // Durable intent before the first credential effect. A failure remains
+    // pending instead of overwriting concurrent refreshed tokens on rollback.
+    if ((!guard.runScopedFallbacks || configChanged) && !input.waitForConfigApplied)
+      throw new SubscriptionPoolError(
+        "OPENAI_POOL_GUARD_UPDATE_REQUIRED",
+        "Strict pool connection requires runtime configuration verification.",
+      );
+    if (!input.reconcileOnly) await writeSubscriptionPoolState(input.configPath, next);
+    let appliedText = configText;
+    if (configChanged) {
+      appliedText = JSON.stringify(candidate, null, 2) + "\n";
+      await withAuthorizationConfig(input.configPath, () =>
+        writeOwnerFencedConfig(input.configPath, appliedText, undefined, {
+          expectedConfigText: configText,
+          subscriptionPoolConnect: guard,
+        }),
+      );
+      appliedText = await fs.readFile(input.configPath, "utf8");
+    }
+    if (!guard.runScopedFallbacks || configChanged) {
+      await input.waitForConfigApplied!(appliedText, guard);
+      if (!isDeepStrictEqual(await input.assertRuntimeGuard(), guard))
+        throw new SubscriptionPoolError("OPENAI_POOL_GUARD_UPDATE_REQUIRED", "Subscription guard changed during configuration application.");
+    }
+    if ((await fs.readFile(input.configPath, "utf8")) !== appliedText)
+      throw new Error("CONFIG_CONFLICT");
+    await writeRuntimeAuthPool({
+      configPath: input.configPath,
+      state: next,
+      members: input.members,
+      ...(input.reconcileOnly ? { reconcileOnly: true } : {}),
+    });
+    await input.refreshRuntimeAuth();
+    const applied = {
+      ...next,
+      phase: "applied" as const,
+      managedProfileIds: next.members.map((m) => m.profileId),
+    };
+    await writeSubscriptionPoolState(input.configPath, applied);
+    return applied;
+  });
+}

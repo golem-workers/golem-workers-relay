@@ -1,5 +1,5 @@
 import { verifyInheritedConfigLocks } from "./inheritedConfigLocks.js";
-import { withModelFenceLock, withIndependentModelFenceLock, readModelFence, isAuthorizedModelSelection } from "./modelFence.js";
+import { withModelFenceLock, activeModelFenceDescriptor, withIndependentModelFenceLock, readModelFence, isAuthorizedModelSelection } from "./modelFence.js";
 import { withManagedRuntimePolicy, commitManagedRuntimePolicy, recheckManagedRuntimePolicy } from "../managed-runtime/runtime-policy.js";
 import { MANAGED_RUNTIME_SOURCE_SHA256, type ManagedRuntimePolicy } from "../managed-runtime/policy.generated.js";
 export { MANAGED_RUNTIME_SOURCE_SHA256 };
@@ -10,7 +10,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
-const context = new AsyncLocalStorage<{ path: string; active: boolean }>();
+const context = new AsyncLocalStorage<{ path: string; active: boolean; descriptors: { model: number; owner: number } }>();
 export function isConfigMutationPath(file: string) { const scope = context.getStore(); return Boolean(scope?.active && scope.path === path.resolve(file)); }
 export function configRevision(text: string) { return createHash("sha256").update(text).digest("hex"); }
 import JSON5 from "json5";
@@ -51,31 +51,40 @@ export async function readOwnerFence(configPath: string): Promise<OwnerFence | n
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 }
 // Kernel flock is released on process death; no age-based lock stealing or
-// persistent mkdir orphan. Holding stdin keeps only this bounded IO lock alive.
+// persistent mkdir orphan. Writer children inherit the same open descriptions.
 export async function withOwnerFenceLock<T>(configPath: string, operation: () => Promise<T>): Promise<T> {
   configPath = path.resolve(configPath);
-  verifyInheritedConfigLocks(fenceBase(configPath));
+  const inherited = verifyInheritedConfigLocks(fenceBase(configPath));
   if (isConfigMutationPath(configPath)) return operation();
   return withModelFenceLock(configPath, async () => {
-  if (verifyInheritedConfigLocks(fenceBase(configPath))) {
-    const scope = { path: configPath, active: true };
+  if (inherited) {
+    const scope = { path: configPath, active: true, descriptors: inherited };
     try { await recheckManagedRuntimePolicy(configPath); return await context.run(scope, operation); } finally { scope.active = false; }
   }
 
   await fs.mkdir(path.dirname(configPath), { recursive: true });
   await fs.mkdir(path.dirname(fenceBase(configPath)), { recursive: true });
-  const lock = spawn("flock", ["-x", "-w", "30", fenceBase(configPath) + ".owner-write.lock", "sh", "-c", "printf ready; cat >/dev/null"], { stdio: ["pipe", "pipe", "pipe"] });
+  const model = activeModelFenceDescriptor(configPath);
+  if (model === null) throw new Error("MODEL_CONFIG_CUSTODY_REQUIRED");
+  const handle = await fs.open(fenceBase(configPath) + ".owner-write.lock", "a+", 0o600);
   try {
     await new Promise<void>((resolve, reject) => {
+      const lock = spawn("flock", ["-x", "-w", "30", "3"], { stdio: ["ignore", "ignore", "ignore", handle.fd] });
       lock.once("error", reject);
-      lock.once("exit", () => reject(new Error("OWNER_CONFIG_LOCK_UNAVAILABLE")));
-      lock.stdout.once("data", () => resolve());
+      lock.once("exit", code => code === 0 ? resolve() : reject(new Error("OWNER_CONFIG_LOCK_UNAVAILABLE")));
     });
-    const scope = { path: configPath, active: true };
+    const scope = { path: configPath, active: true, descriptors: { model, owner: handle.fd } };
     try { await recheckManagedRuntimePolicy(configPath); return await context.run(scope, operation); } finally { scope.active = false; }
-  } finally { lock.stdin.end(); }
+  } finally { await handle.close(); }
   });
 }
+/** Keep kernel custody alive in a writer child if its Relay parent dies. */
+export function activeConfigLockDescriptors(configPath: string): { model: number; owner: number } | null {
+  const scope = context.getStore();
+  if (scope?.active && scope.path === path.resolve(configPath)) return scope.descriptors;
+  return verifyInheritedConfigLocks(fenceBase(path.resolve(configPath)));
+}
+
 /** Async login outlives ingress; acquire independent custody through its full transaction. */
 export function withIndependentOwnerFenceLock<T>(configPath: string, operation: () => Promise<T>, waitSeconds = 0): Promise<T> {
   return context.exit(() => withIndependentModelFenceLock(configPath, () => withOwnerFenceLock(configPath, operation), waitSeconds));
@@ -84,6 +93,9 @@ export function withIndependentOwnerFenceLock<T>(configPath: string, operation: 
 export async function writeOwnerFencedConfig(configPath: string, text: string, incoming?: OwnerFence, options: {
   runtimeInstallActionId?: string;
   operationalPublicPort?: boolean;
+  subscriptionPoolFallbackCleanup?: boolean;
+  subscriptionPoolExitRevision?: number;
+  subscriptionPoolConnect?: { runScopedFallbacks: boolean };
   managedRuntimePolicy?: ManagedRuntimePolicy;
   managedRuntimePolicyDigest?: string;
   expectedConfigText?: string | null;
@@ -106,10 +118,34 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     if (options.expectedRevision !== undefined && (current === undefined || configRevision(current) !== options.expectedRevision)) throw new Error("CONFIG_CONFLICT");
     if (options.expectedConfigText !== undefined && (options.expectedConfigText === null ? current !== undefined : (current === undefined || !isDeepStrictEqual(JSON5.parse(current), JSON5.parse(options.expectedConfigText))))) throw new Error("CONFIG_CONFLICT");
+    if (options.subscriptionPoolFallbackCleanup) {
+      const { clearSubscriptionModelFallbacks } = await import("./subscriptionModelFallbacks.js");
+      if (current === undefined || (options.expectedRevision === undefined && options.expectedConfigText === undefined) ||
+          !isDeepStrictEqual(clearSubscriptionModelFallbacks(object(JSON5.parse(current))), object(JSON5.parse(text)))) throw new Error("MODEL_FENCE_REQUIRED");
+    }
+    if (options.subscriptionPoolConnect) {
+      const { prepareSubscriptionPoolConfig } = await import("./subscriptionPoolConfig.js");
+      if (current === undefined || (options.expectedRevision === undefined && options.expectedConfigText === undefined) ||
+          !isDeepStrictEqual(prepareSubscriptionPoolConfig(object(JSON5.parse(current)), options.subscriptionPoolConnect), object(JSON5.parse(text)))) throw new Error("MODEL_FENCE_REQUIRED");
+    }
     const fence = incoming ?? previous;
     const { normalizeManagedConfigText } = await import("../managed-runtime/runtime-policy.js");
     const normalized = await normalizeManagedConfigText(configPath, text);
     const projected = fence ? projectOwners(normalized, fence) : normalized;
+    // A subsequent model/config writer must not reopen API/model fallback for
+    // an active or ambiguous subscription-only pool. This is validation only.
+    const { readSubscriptionPoolState } = await import("./subscriptionPoolManager.js");
+    const poolState = await readSubscriptionPoolState(configPath);
+    if (options.subscriptionPoolExitRevision !== undefined) {
+      const { prepareSubscriptionPoolExitConfig } = await import("./subscriptionPoolExit.js");
+      if (poolState?.phase !== "exiting" || poolState.revision !== options.subscriptionPoolExitRevision || current === undefined || options.expectedConfigText === undefined ||
+          !isDeepStrictEqual(prepareSubscriptionPoolExitConfig(object(JSON5.parse(current))), object(JSON5.parse(text)))) throw new Error("MODEL_FENCE_REQUIRED");
+    }
+    if (poolState && poolState.phase !== "exited" && options.subscriptionPoolExitRevision === undefined) {
+      const { assertSubscriptionOnlyConfiguration } = await import("./openAiSubscriptionPool.js");
+      assertSubscriptionOnlyConfiguration(object(JSON5.parse(projected)), process.env, options.subscriptionPoolConnect);
+    }
+
     const model = await readModelFence(configPath);
     if (model && !isAuthorizedModelSelection()) {
       const { managedRuntime } = await import("../managed-runtime/runtime-policy.js");
@@ -117,7 +153,19 @@ export async function writeOwnerFencedConfig(configPath: string, text: string, i
       // Canonical synchronization may add policy-owned catalog/runtime metadata.
       // Compare the candidate with the same locked, normalized predecessor;
       // CAS above still compares the actual on-disk bytes, never this projection.
-      const normalizedCurrent = await normalizeManagedConfigText(configPath, current);
+      let normalizedCurrent = await normalizeManagedConfigText(configPath, current);
+      if (options.subscriptionPoolFallbackCleanup) {
+        const { clearSubscriptionModelFallbacks } = await import("./subscriptionModelFallbacks.js");
+        normalizedCurrent = JSON.stringify(clearSubscriptionModelFallbacks(object(JSON5.parse(normalizedCurrent))));
+      }
+      if (options.subscriptionPoolConnect) {
+        const { prepareSubscriptionPoolConfig } = await import("./subscriptionPoolConfig.js");
+        normalizedCurrent = JSON.stringify(prepareSubscriptionPoolConfig(object(JSON5.parse(normalizedCurrent)), options.subscriptionPoolConnect));
+      }
+      if (options.subscriptionPoolExitRevision !== undefined) {
+        const { prepareSubscriptionPoolExitConfig } = await import("./subscriptionPoolExit.js");
+        normalizedCurrent = JSON.stringify(prepareSubscriptionPoolExitConfig(object(JSON5.parse(normalizedCurrent))));
+      }
       if (!isDeepStrictEqual(managedRuntime.protectedRoute(publicPortProjection(JSON5.parse(normalizedCurrent), options.operationalPublicPort)), managedRuntime.protectedRoute(publicPortProjection(JSON5.parse(projected), options.operationalPublicPort)))) throw new Error("MODEL_FENCE_REQUIRED");
     }
     // Retain caller validation semantics. Owner projection itself validates the

@@ -10,7 +10,7 @@ export class ModelFenceBusyError extends Error {
   constructor() { super("MODEL_FENCE_BUSY"); this.name = "ModelFenceBusyError"; }
 }
 
-const lockScope = new AsyncLocalStorage<{ path: string; active: boolean }>();
+const lockScope = new AsyncLocalStorage<{ path: string; active: boolean; fd: number }>();
 const selectionScope = new AsyncLocalStorage<boolean>();
 export function withAuthorizedModelSelection<T>(operation: () => Promise<T>): Promise<T> { return selectionScope.run(true, operation); }
 export function isAuthorizedModelSelection(): boolean { return selectionScope.getStore() === true; }
@@ -31,9 +31,15 @@ export async function withModelFenceLock<T>(configPath: string, work: () => Prom
       child.once("error", reject);
       child.once("exit", code => code === 0 ? resolve() : reject(new ModelFenceBusyError()));
     });
-    const scope = { path: key, active: true };
+    const scope = { path: key, active: true, fd: handle.fd };
     try { return await lockScope.run(scope, work); } finally { scope.active = false; }
   } finally { await handle.close(); }
+}
+
+/** Only an active owning scope may lend its open lock description to a writer. */
+export function activeModelFenceDescriptor(configPath: string): number | null {
+  const scope = lockScope.getStore();
+  return scope?.active && scope.path === path.resolve(configPath) ? scope.fd : null;
 }
 
 /** Detached background work must not borrow the completed request's descriptor. */

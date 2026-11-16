@@ -1,4 +1,7 @@
-import { AuthorizationReceipts } from "./authorizationReceipts.js";
+import { AgentControlError } from "../agentControl/errors.js";
+import { SubscriptionPoolError } from "../agentControl/openAiSubscriptionPool.js";
+import { RuntimeAuthWriterError } from "../agentControl/runtimeAuthWriter.js";
+import { AuthorizationReceipts, AuthorizationReceiptAdmissionError } from "./authorizationReceipts.js";
 import { ModelFenceBusyError } from "../agentControl/modelFence.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import fs from "node:fs/promises";
@@ -274,13 +277,17 @@ export function startPushServer(input: {
         }
         const durable = parsed.data.input.durableOperation;
         if (durable) {
-          if (durable.mode === "submit" && !["codex.auth.clear", "codex.auth.sync"].includes(parsed.data.input.action.kind)) {
+          if (durable.mode !== "status" && !["codex.auth.clear", "codex.auth.sync", "codex.auth.pool.sync"].includes(parsed.data.input.action.kind)) {
             sendJson(res, 400, { code: "AUTH_OPERATION_ACTION_INVALID" }); return;
           }
           const message = parsed.data;
           const receipt = durable.mode === "status"
             ? await authorizationReceipts.status(durable.id)
-            : await authorizationReceipts.submit(durable.id, message.input.kind === "agent_control" ? message.input.action : null, () => input.onAgentControl!(message));
+            : durable.mode === "reconcile"
+              ? await authorizationReceipts.reconcile(durable.id, message.input.kind === "agent_control" ? message.input.action : null, durable.resumeFrom!, () => input.onAgentControl!(message))
+            : durable.mode === "resume"
+              ? await authorizationReceipts.resume(durable.id, message.input.kind === "agent_control" ? message.input.action : null, durable.resumeFrom!, () => input.onAgentControl!(message))
+              : await authorizationReceipts.submit(durable.id, message.input.kind === "agent_control" ? message.input.action : null, () => input.onAgentControl!(message));
           sendJson(res, 200, { accepted: true, receipt }); return;
         }
         const result = await input.onAgentControl(parsed.data);
@@ -338,6 +345,27 @@ export function startPushServer(input: {
       );
       sendJson(res, 200, { accepted: true });
     } catch (error) {
+      if (error instanceof AuthorizationReceiptAdmissionError) {
+        // Admission rejected this request, but the saved operation may already
+        // have written credentials. Never claim a globally undispatched outcome.
+        sendJson(res, 409, { code: error.code, stage: "receipt_admission", mutationState: "unknown", message: "Saved authorization operation cannot be resumed by this request; reconcile its receipt." });
+        return;
+      }
+      if (error instanceof AgentControlError && /^(?:MODEL_|MANAGED_|AUTHORIZATION_|CONFIG_|OPENCLAW_CONFIG_)[A-Z0-9_]+$/.test(error.code) || error instanceof SubscriptionPoolError) {
+        const code = error.code;
+        sendJson(res, 409, { code, stage: "runtime_validation", mutationState: "unknown", message: `Agent authorization/runtime request was rejected (${code}); inspect compatibility and reconcile before retrying.` });
+        return;
+      }
+      if (error instanceof Error && /^Gateway request timed out: (?:config.get|sessions.patch|channels.status|cron.list)$/.test(error.message)) {
+        sendJson(res, 504, { code: "RUNTIME_GATEWAY_TIMEOUT", stage: "gateway", mutationState: "unknown", message: "Gateway did not answer the runtime request within its deadline; reconcile before retrying." });
+        return;
+      }
+      if (error instanceof RuntimeAuthWriterError) {
+        // Only typed, internally generated diagnostics cross this boundary.
+        // Never serialize the child stderr, input bundle or an arbitrary error.
+        sendJson(res, 502, { code: error.code, message: "Runtime authorization writer failed; reconcile the saved operation before retrying.", stage: "auth_writer", mutationState: "unknown" });
+        return;
+      }
       if (error instanceof ModelFenceBusyError) {
         sendJson(res, 409, { code: "MODEL_FENCE_BUSY", message: "Agent model configuration is busy; operation was not started" });
         return;

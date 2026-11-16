@@ -48,6 +48,17 @@ export const codexAuthBundleSchema = z
   })
   .strict();
 export type CodexAuthBundle = z.infer<typeof codexAuthBundleSchema>;
+const subscriptionPoolMemberSchema = z.object({
+  accountId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+  credentialVersion: z.number().int().positive(),
+  enabled: z.boolean(),
+  bundle: codexAuthBundleSchema,
+}).strict();
+const subscriptionPoolSummarySchema = z.object({
+  revision: z.number().int().nonnegative(),
+  phase: z.enum(["pending", "applied", "exiting", "exited"]).nullable(),
+  members: z.array(z.object({ accountId: z.string(), profileId: z.string(), credentialVersion: z.number().int().positive(), enabled: z.boolean() })).max(32),
+});
 const selfNudgeSettingsSchema = z.object({
   enabled: z.boolean(),
   analyzedRecentMessageCount: z.number().int().min(0).max(50),
@@ -114,6 +125,7 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("model.fence.reconcile"), revision: z.string().uuid(), predecessor: z.string().uuid().nullable(), model: z.string().min(1) }),
   z.object({
     kind: z.literal("model.set"),
+    subscriptionBootstrap: z.literal(true).optional(),
     fence: z.object({ revision: z.string().uuid(), predecessor: z.string().uuid().nullable() }).optional(),
     model: z.string().min(1),
     fallbacks: modelFallbacksSchema,
@@ -160,6 +172,9 @@ export const agentControlActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("codex.auth.import"),
     bundle: codexAuthBundleSchema,
   }),
+  z.object({ kind: z.literal("codex.auth.pool.sync"), revision: z.number().int().positive(), members: z.array(subscriptionPoolMemberSchema).max(32) }),
+  z.object({ kind: z.literal("codex.auth.pool.status") }),
+  z.object({ kind: z.literal("codex.auth.pool.exit"), revision: z.number().int().positive() }),
   z.object({
     kind: z.literal("codex.auth.sync"),
     bundleVersion: z.number().int().positive(),
@@ -219,7 +234,15 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     configRevision: z.string().optional(),
     ownerFenceVersion: z.literal(1).optional(),
     authorizationConfigVersion: z.literal(1).optional(),
+    subscriptionPoolVersion: z.literal(1).optional(),
+    subscriptionBootstrapVersion: z.literal(1).optional(),
+    subscriptionPoolExitVersion: z.literal(1).optional(),
+    subscriptionPoolCompatibility: z.object({ compatible: z.boolean(), reason: z.string().optional() }).optional(),
     durableAuthorizationVersion: z.literal(1).optional(),
+    durablePoolAuthorizationVersion: z.literal(1).optional(),
+    durableAuthorizationResumeVersion: z.literal(1).optional(),
+    durableAuthorizationReconcileVersion: z.literal(1).optional(),
+    subscriptionConfigRuntimeState: z.enum(["applied", "pending", "unavailable"]).optional(),
     ownerRuntime: z.object({ version: z.literal(1), state: z.enum(["pending", "applied", "unavailable", "unsupported"]), enrolledFence: ownerFenceSchema.nullable(), configRevisionHash: z.string().nullable(), appliedConfigHash: z.string().nullable(), config: jsonRecordSchema.nullable() }).optional(),
   }),
   z.object({
@@ -296,6 +319,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("model.set"),
+    subscriptionBootstrap: z.literal(true).optional(),
     applied: z.literal(true),
     restarted: z.literal(true),
     model: z.string().min(1),
@@ -390,6 +414,9 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     expiresAtMs: z.number().int().positive(),
     authModes: codexAuthModesSchema,
   }),
+  subscriptionPoolSummarySchema.extend({ kind: z.literal("codex.auth.pool.sync") }),
+  subscriptionPoolSummarySchema.extend({ kind: z.literal("codex.auth.pool.status") }),
+  subscriptionPoolSummarySchema.extend({ kind: z.literal("codex.auth.pool.exit") }),
   z.object({
     kind: z.literal("codex.auth.sync"),
     applied: z.boolean(),

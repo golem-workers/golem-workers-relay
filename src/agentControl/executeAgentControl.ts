@@ -1,3 +1,15 @@
+import { isAuthorizationReadbackOnly } from "./authorizationReconcileContext.js";
+import { readSubscriptionConfigRuntimeState } from "./subscriptionPoolRuntime.js";
+import { AgentControlError } from "./errors.js";
+export { AgentControlError } from "./errors.js";
+import { prepareSubscriptionBootstrap } from "./subscriptionBootstrap.js";
+import { hasVerifiedSubscriptionRoute } from "./modelSubscriptionRoute.js";
+import { exitSubscriptionPool, assertSubscriptionPoolApiRoute } from "./subscriptionPoolExit.js";
+import { prepareSubscriptionPoolConfig } from "./subscriptionPoolConfig.js";
+import { refreshSubscriptionPoolAuth, waitForSubscriptionConfigApplied } from "./subscriptionPoolRuntime.js";
+import { assertRuntimeSubscriptionGuard } from "./subscriptionGuard.js";
+import { assertSubscriptionOnlyConfiguration, SubscriptionPoolError } from "./openAiSubscriptionPool.js";
+import { syncSubscriptionPool, readSubscriptionPoolState, assertLegacyAuthMutationAllowed } from "./subscriptionPoolManager.js";
 import { runIsolatedModelProbe } from "./modelVerificationProbe.js";
 import { readOfflineRuntimeAuth, MANAGED_RUNTIME_SOURCE_SHA256 } from "../managed-runtime/policy.generated.js";
 import { managedRuntime, commitManagedRuntimePolicy, withAuthorizationConfig, withManagedRuntimePolicy, readManagedRuntimePolicy, runtimeContext, normalizeManagedConfigOnDisk, activeManagedConfigPath } from "../managed-runtime/runtime-policy.js";
@@ -75,17 +87,6 @@ type ModelSetThinkingDefault = Extract<AgentControlAction, { kind: "model.set" }
 type ModelSetFastMode = Extract<AgentControlAction, { kind: "model.set" }>["fastMode"];
 type ModelSetFallbacks = Extract<AgentControlAction, { kind: "model.set" }>["fallbacks"];
 
-export class AgentControlError extends Error {
-  readonly code: string;
-  readonly details?: Record<string, unknown>;
-
-  constructor(code: string, message: string, details?: Record<string, unknown>, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = "AgentControlError";
-    this.code = code;
-    this.details = details;
-  }
-}
 
 function readThinkingDefault(value: unknown): ModelSetThinkingDefault {
   if (typeof value !== "string") {
@@ -114,17 +115,24 @@ async function deleteModelVerificationSession(sessionKey: string, remove: () => 
 }
 
 export async function executeAgentControl(input: Parameters<typeof executeAgentControlUnfenced>[0] & { policyAuthority?: "backend" }): Promise<AgentControlResult> {
+  if (input.action.kind === "model.set" && input.action.subscriptionBootstrap && (input.policyAuthority !== "backend" || !input.action.fence || !input.action.model.startsWith("codex/") || input.action.fallbacks.length)) throw new AgentControlError("SUBSCRIPTION_BOOTSTRAP_AUTHORITY_REQUIRED", "Subscription bootstrap requires explicit fenced backend model intent without fallback");
   if (input.action.managedRuntimePolicy && input.policyAuthority !== "backend") throw new AgentControlError("MANAGED_RUNTIME_POLICY_AUTHORITY_REQUIRED", "Only authenticated backend ingress may change managed harness authority");
   if (input.action.managedRuntimePolicy && !input.action.managedRuntimePolicyDigest) throw new AgentControlError("MANAGED_RUNTIME_POLICY_VERSION_MISMATCH", "Backend policy digest is required");
   // Older backends may attach authority even to pairing inventory. Validate
   // that authority below, but never activate it for a read-only list request.
-  const diagnosticOnly = ["config.read", "codex.login.status", "model.fence.read", "modelAssignments.read", "codex.auth.export", "channels.status", "lifecycle.activeRuns", "channelPairing.list", "devicePairing.list"].includes(input.action.kind);
-  const readOnlyPolicy = ["config.read", "codex.login.status", "model.fence.read", "modelAssignments.read", "codex.auth.export", "channels.status", "lifecycle.activeRuns", "managedRuntime.preflight", "channelPairing.list", "devicePairing.list"].includes(input.action.kind);
+  const diagnosticOnly = ["codex.auth.pool.status", "config.read", "codex.login.status", "model.fence.read", "modelAssignments.read", "codex.auth.export", "channels.status", "lifecycle.activeRuns", "channelPairing.list", "devicePairing.list"].includes(input.action.kind);
+  const readOnlyPolicy = ["codex.auth.pool.status", "config.read", "codex.login.status", "model.fence.read", "modelAssignments.read", "codex.auth.export", "channels.status", "lifecycle.activeRuns", "managedRuntime.preflight", "channelPairing.list", "devicePairing.list"].includes(input.action.kind);
   // Read config and persisted authority under the same owner lock, including CLI writers.
   const withReadLock = (operation: () => Promise<AgentControlResult>) => (readOnlyPolicy && !diagnosticOnly) || input.action.managedRuntimeExpectedConfigRevision ? withOwnerFenceLock(input.configPath, operation) : operation();
   // All ingress paths and all config writers share this lock, including legacy calls.
-  const withIngressLock = (operation: () => Promise<AgentControlResult>) => diagnosticOnly ? operation() : withModelFenceLock(input.configPath, () => input.action.runtimeInstallActionId ? withOwnerFenceLock(input.configPath, async () => { await assertRuntimeActionNotCancelled(input.action.runtimeInstallActionId!); return operation(); }) : operation());
-  const authorizationOnly = ["codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start", "codex.login.status"].includes(input.action.kind);
+  // Durable pool receipts acknowledge admission before execution and deduplicate
+  // caller retries. Wait for short competing config transactions under that same
+  // receipt instead of burning explicit resume attempts on an immediate flock
+  // refusal. Custody and all config/policy checks still precede the writer;
+  // persistent contention remains a proven pre-mutation MODEL_FENCE_BUSY.
+  const ingressWaitSeconds = input.action.kind === "codex.auth.pool.sync" ? 30 : 0;
+  const withIngressLock = (operation: () => Promise<AgentControlResult>) => diagnosticOnly ? operation() : withModelFenceLock(input.configPath, () => input.action.runtimeInstallActionId ? withOwnerFenceLock(input.configPath, async () => { await assertRuntimeActionNotCancelled(input.action.runtimeInstallActionId!); return operation(); }) : operation(), ingressWaitSeconds);
+  const authorizationOnly = ["codex.auth.pool.exit", "codex.auth.pool.sync", "codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start", "codex.login.status"].includes(input.action.kind);
   const withConfigScope = async (operation: () => Promise<AgentControlResult>) => {
     if (!authorizationOnly) return operation();
     const current = await readManagedRuntimePolicy(input.configPath);
@@ -148,6 +156,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       const { configText } = await readConfigFile(input.configPath);
       if (configRevision(configText) !== input.action.managedRuntimeExpectedConfigRevision) throw new AgentControlError("CONFIG_CONFLICT", "Configuration changed since managed runtime preflight; prepare the selection again.");
     }
+    if (["codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start"].includes(input.action.kind)) await assertLegacyAuthMutationAllowed(input.configPath);
     const context = await runtimeContext(input.configPath);
     const complete = (result: AgentControlResult): AgentControlResult => result.kind === "config.read" ? ({ ...result, managedRuntimePolicyVersion: 2, managedRuntimePolicy: policy, managedRuntimePolicyDigest: MANAGED_RUNTIME_SOURCE_SHA256 }) : result;
     if (input.action.kind === "managedRuntime.preflight") {
@@ -191,11 +200,11 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
     }
     const state = await readModelFence(input.configPath, !diagnosticOnly);
     const action = input.action;
-    const selection = ["model.set", "modelAssignment.set", "codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start", "codex.login.status"].includes(action.kind) && input.policyAuthority === "backend" && action.managedRuntimePolicy?.schemaVersion === 2;
+    const selection = ["model.set", "modelAssignment.set", "codex.auth.pool.exit", "codex.auth.pool.sync", "codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start", "codex.login.status"].includes(action.kind) && input.policyAuthority === "backend" && action.managedRuntimePolicy?.schemaVersion === 2;
     // Credential writers change stores before their config projection. Reject a
     // legacy/unbound request before stopping service or touching credentials,
     // rather than discovering the model fence midway through an unsafe rollback.
-    if (state && ["codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start"].includes(action.kind) && !selection) {
+    if (state && ["codex.auth.pool.exit", "codex.auth.pool.sync", "codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start"].includes(action.kind) && !selection) {
       throw new AgentControlError("MODEL_FENCE_REQUIRED", "Fenced credential mutations require backend-bound managed authority");
     }
     if (action.kind === "model.verify" && (state || input.statusNudgeRunner)) {
@@ -208,19 +217,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       // OAuth route identity is independent of the native Pi harness. Never
       // interpret openclaw runtime metadata alone as subscription billing proof.
       if (action.model.startsWith("codex/")) {
-        const auth = await getCodexLoginStatus(input.configPath);
-        const providers = ensureOptionalRecord(ensureOptionalRecord(config.models)?.providers);
-        const provider = ensureOptionalRecord(providers?.openai);
-        const modelRow = readUnknownArray(provider?.models).map(ensureOptionalRecord).find(row => row?.id === action.model.slice("codex/".length));
-        const effectiveApi = modelRow?.api ?? provider?.api;
-        const environment = ensureOptionalRecord(config.env);
-        const environmentVars = ensureOptionalRecord(environment?.vars);
-        const hasEnvironmentRoute = [environment, environmentVars, process.env].some(env =>
-          env && ["OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY"].some(key => env[key] !== undefined));
-        if ((effectiveApi !== undefined && effectiveApi !== "openai-chatgpt-responses") || hasEnvironmentRoute || auth.state !== "connected" || !auth.authModes?.openaiLogin.active ||
-            !await hasPersistedChatGptSubscription(input.configPath) ||
-            await hasPersistedOpenAiApiKey(input.configPath) ||
-            await hasChatGptRouteOverrides(input.configPath)) {
+        if (!await hasVerifiedSubscriptionRoute(input.configPath, config, action.model, input.gateway)) {
           throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Native subscription route is not active");
         }
       }
@@ -284,7 +281,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       }
       // Reject an incompatible choice before even persisting fenced intent.
       const { config: source } = await readConfigFile(input.configPath);
-      const candidate = structuredClone(source);
+      let candidate = structuredClone(source);
       const candidateDefaults = ensureRecord(ensureRecord(candidate, "agents"), "defaults");
       const selected = mapStoredModelRef(action.model);
       const fallbacks = action.fallbacks.map(mapStoredModelRef);
@@ -294,6 +291,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       for (const fallback of fallbacks) ensureModelRegistryEntry(candidateDefaults, fallback.modelRef);
       applyModelFastMode(candidateDefaults, selected.modelRef, action.fastMode);
       await applyNativePiModelCompatibility(candidate, input.configPath, [action.model, ...action.fallbacks]);
+      if (action.subscriptionBootstrap) candidate = prepareSubscriptionBootstrap(candidate);
       managedRuntime.normalizeConfig(candidate, policy, context);
       const pending = { ...fence, status: "PENDING" as const, model: action.model };
       await writeModelFence(input.configPath, pending);
@@ -399,6 +397,28 @@ async function executeAgentControlUnfenced(input: {
                 ? await exportCodexAuthBundle(input.configPath)
               : input.action.kind === "codex.auth.import"
                 ? await importCodexAuthWithGatewayPaused(input.configPath, input.action)
+              : input.action.kind === "codex.auth.pool.sync"
+                ? await syncSubscriptionPool({
+                    configPath: input.configPath, revision: input.action.revision,
+                    ...(isAuthorizationReadbackOnly() ? { reconcileOnly: true } : {}),
+                    members: input.action.members.map(member => ({
+                      accountId: member.accountId, credentialVersion: member.credentialVersion, enabled: member.enabled,
+                      credential: { type: "oauth" as const, provider: "openai" as const, access: member.bundle.accessToken, refresh: member.bundle.refreshToken, expires: member.bundle.expiresAtMs, ...(member.bundle.email ? { email: member.bundle.email } : {}), ...(member.bundle.accountId ? { accountId: member.bundle.accountId } : {}), ...(member.bundle.chatgptPlanType ? { chatgptPlanType: member.bundle.chatgptPlanType } : {}) },
+                    })),
+                    refreshRuntimeAuth: () => refreshSubscriptionPoolAuth(input.gateway),
+                    assertRuntimeGuard: () => assertRuntimeSubscriptionGuard(input.gateway),
+                    waitForConfigApplied: (text, guard) => waitForSubscriptionConfigApplied(input.configPath, text, input.gateway, guard, async () => { await withCleanOpenAiGatewayEnvironment(() => restartGatewayService()); }),
+                  }).then(state => ({ kind: "codex.auth.pool.sync" as const, revision: state.revision, phase: state.phase, members: state.members }))
+              : input.action.kind === "codex.auth.pool.exit"
+                ? await (async (action: Extract<AgentControlAction, { kind: "codex.auth.pool.exit" }>) => { await assertRuntimeSubscriptionGuard(input.gateway, true); return exitSubscriptionPool({
+                    configPath: input.configPath, revision: action.revision,
+                    refreshRuntimeAuth: () => refreshSubscriptionPoolAuth(input.gateway),
+                    waitForConfigApplied: text => waitForSubscriptionConfigApplied(input.configPath, text, input.gateway, { runScopedFallbacks: false }, async () => { await withCleanOpenAiGatewayEnvironment(() => restartGatewayService()); }, config => {
+                      assertSubscriptionPoolApiRoute(config);
+                    }),
+                  }); })(input.action).then(state => ({ kind: "codex.auth.pool.exit" as const, revision: state.revision, phase: state.phase, members: state.members }))
+              : input.action.kind === "codex.auth.pool.status"
+                ? await readSubscriptionPoolState(input.configPath).then(state => ({ kind: "codex.auth.pool.status" as const, revision: state?.revision ?? 0, phase: state?.phase ?? null, members: state?.members ?? [] }))
               : input.action.kind === "codex.auth.sync"
                 ? await syncCodexAuthWithoutGatewayRestart(
                     input.configPath,
@@ -406,7 +426,13 @@ async function executeAgentControlUnfenced(input: {
                     input.gateway,
                   )
               : input.action.kind === "codex.auth.clear"
-                ? await runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(input.configPath, () => clearCodexAuth(input.configPath)))
+                ? (await readManagedRuntimePolicy(input.configPath)).chatHarness === "openclaw"
+                  ? await enqueueCodexAuthMutation(() => withOwnerFenceLock(input.configPath, async () => {
+                      const result = await clearCodexAuth(input.configPath);
+                      await refreshCodexRuntimeAuth(input.gateway);
+                      return result;
+                    }))
+                  : await runCodexAuthMutationWithGatewayPaused(() => withOwnerFenceLock(input.configPath, () => clearCodexAuth(input.configPath)))
               : input.action.kind === "github.auth.configure"
                 ? await configureGitHubAuth(input.action)
               : input.action.kind === "github.oauth.status"
@@ -448,6 +474,7 @@ async function executeAgentControlUnfenced(input: {
                 : input.action.kind === "model.set" ? await setModel({
                     configPath: input.configPath,
                     model: input.action.model,
+                    subscriptionBootstrap: input.action.subscriptionBootstrap,
                     fallbacks: input.action.fallbacks,
                     contextTokens: input.action.contextTokens ?? null,
                     thinkingDefault: input.action.thinkingDefault,
@@ -595,13 +622,26 @@ async function sendStatusNudge(input: {
 async function readConfig(configPath: string, gateway: GatewayLike, includeRuntimeAuthContext = false): Promise<AgentControlResult> {
   const { configText, config } = await readConfigFile(configPath);
   const auth = includeRuntimeAuthContext ? readOfflineRuntimeAuth(configPath) : undefined;
+  let exitCapability = false;
+  try { await assertRuntimeSubscriptionGuard(gateway, true); exitCapability = true; } catch { /* Old loaded plugins must not start pool exit. */ }
   return {
     kind: "config.read",
     ...(auth ? { runtimeAuthContext: { version: 1 as const, subscriptionAuth: Boolean(auth.subscriptionAuth), apiKeyAuth: Boolean(auth.apiKeyAuth) } } : {}),
     configRevision: configRevision(configText),
     ownerFenceVersion: 1,
     authorizationConfigVersion: 1,
+    subscriptionPoolVersion: 1,
+    subscriptionBootstrapVersion: 1,
+    ...(exitCapability ? { subscriptionPoolExitVersion: 1 as const } : {}),
+    subscriptionPoolCompatibility: await (async () => {
+      try { const guard = await assertRuntimeSubscriptionGuard(gateway); assertSubscriptionOnlyConfiguration(prepareSubscriptionPoolConfig(config, guard), process.env, guard); return { compatible: true }; }
+      catch (error) { return { compatible: false, reason: error instanceof SubscriptionPoolError ? error.code : "OPENAI_POOL_ROUTE_UNSUPPORTED" }; }
+    })(),
     durableAuthorizationVersion: 1,
+    durablePoolAuthorizationVersion: 1,
+    durableAuthorizationResumeVersion: 1,
+    durableAuthorizationReconcileVersion: 1,
+    subscriptionConfigRuntimeState: await readSubscriptionConfigRuntimeState(configPath, gateway),
     ownerRuntime: await readOwnerRuntime(configPath, gateway, true),
     configText,
     config,
@@ -960,6 +1000,7 @@ async function applyNativePiModelCompatibility(
 }
 
 async function setModel(input: {
+  subscriptionBootstrap?: true;
   configPath: string;
   model: string;
   fallbacks: ModelSetFallbacks;
@@ -972,7 +1013,7 @@ async function setModel(input: {
     .map((item) => item.trim())
     .filter(Boolean);
   const { config } = await readConfigFile(input.configPath);
-  const nextConfig = structuredClone(config);
+  let nextConfig = structuredClone(config);
   const agentsCfg = ensureRecord(nextConfig, "agents");
   const defaultsCfg = ensureRecord(agentsCfg, "defaults");
   const modelCfg = ensureRecord(defaultsCfg, "model");
@@ -987,24 +1028,24 @@ async function setModel(input: {
     ensureAllowedModelEntry(defaultsCfg, fallbackModel.modelRef);
   }
   applyModelFastMode(defaultsCfg, storedPrimaryModel.modelRef, input.fastMode);
-  if (typeof input.contextTokens === "number" && Number.isFinite(input.contextTokens) && input.contextTokens > 0) {
-    defaultsCfg.contextTokens = Math.floor(input.contextTokens);
-  }
+  delete defaultsCfg.contextTokens;
   if (typeof input.thinkingDefault === "string" && input.thinkingDefault.trim()) {
     defaultsCfg.thinkingDefault = input.thinkingDefault;
   } else if (input.thinkingDefault === null) {
     delete defaultsCfg.thinkingDefault;
   }
   await applyNativePiModelCompatibility(nextConfig, input.configPath, [input.model, ...fallbacks]);
+  if (input.subscriptionBootstrap) nextConfig = prepareSubscriptionBootstrap(nextConfig);
   await atomicWriteUtf8(input.configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
   const restart = await restartGatewayService();
   return {
     kind: "model.set",
+    ...(input.subscriptionBootstrap ? { subscriptionBootstrap: true as const } : {}),
     applied: true,
     restarted: true,
     model: input.model,
     fallbacks,
-    contextTokens: input.contextTokens,
+    contextTokens: null,
     thinkingDefault: readThinkingDefault(defaultsCfg.thinkingDefault),
     fastMode: readModelFastMode(defaultsCfg, storedPrimaryModel.modelRef),
     activeState: restart.activeState,
@@ -1192,9 +1233,7 @@ async function setModelAssignment(input: {
   if (input.purpose === "main") {
     applyModelFastMode(defaultsCfg, storedPrimaryModel.modelRef, input.fastMode);
   }
-  if (input.purpose === "main" && typeof input.contextTokens === "number" && Number.isFinite(input.contextTokens) && input.contextTokens > 0) {
-    defaultsCfg.contextTokens = Math.floor(input.contextTokens);
-  }
+  delete defaultsCfg.contextTokens;
   if (input.purpose === "main" && typeof input.thinkingDefault === "string" && input.thinkingDefault.trim()) {
     defaultsCfg.thinkingDefault = input.thinkingDefault;
   } else if (input.purpose === "main" && input.thinkingDefault === null) {
@@ -1210,7 +1249,7 @@ async function setModelAssignment(input: {
     purpose: input.purpose,
     primary: input.primary,
     fallback: input.fallback,
-    contextTokens: input.contextTokens,
+    contextTokens: null,
     thinkingDefault: input.purpose === "main" ? readThinkingDefault(defaultsCfg.thinkingDefault) : null,
     fastMode: input.purpose === "main"
       ? readModelFastMode(defaultsCfg, storedPrimaryModel.modelRef)

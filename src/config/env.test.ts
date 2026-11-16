@@ -354,3 +354,11 @@ it("loads legacy relay environments without an additional server identity key", 
   expect(loadRelayConfig({ ...base, RELAY_SERVER_ID: "../obsolete-agent" }).relayToken).toBe(legacy.relayToken);
   expect(loadRelayConfig({ ...base, RELAY_SERVER_ID: "obsolete-agent" })).not.toHaveProperty("serverId");
 });
+
+it("loads bounded periodic plugin updater settings and retains opt-out", () => {
+  const base = { RELAY_TOKEN: "t", BACKEND_BASE_URL: "https://example.com" };
+  expect(loadRelayConfig(base).relayChannel.plugin).toMatchObject({ autoUpdateEnabled: true, updateIntervalMs: 3_600_000, updateInitialJitterMs: 300_000 });
+  expect(loadRelayConfig({ ...base, RELAY_CHANNEL_PLUGIN_AUTO_UPDATE_ENABLED: "0", RELAY_CHANNEL_PLUGIN_UPDATE_INTERVAL_MS: "60000", RELAY_CHANNEL_PLUGIN_UPDATE_INITIAL_JITTER_MS: "0" }).relayChannel.plugin).toMatchObject({ autoUpdateEnabled: false, updateIntervalMs: 60_000, updateInitialJitterMs: 0 });
+  expect(() => loadRelayConfig({ ...base, RELAY_CHANNEL_PLUGIN_UPDATE_INTERVAL_MS: "0" })).toThrow();
+  expect(() => loadRelayConfig({ ...base, RELAY_CHANNEL_PLUGIN_UPDATE_INITIAL_JITTER_MS: "300001" })).toThrow();
+});

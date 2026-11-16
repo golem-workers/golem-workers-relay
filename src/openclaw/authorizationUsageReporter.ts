@@ -229,6 +229,7 @@ function buildPayload(input: {
 
 export function createAuthorizationUsageReporter(input: {
   enabled: boolean;
+  flushSubscriptionUsage?: () => Promise<void>;
   intervalMs: number;
   lookbackDays: number;
   gateway: GatewayUsageReader;
@@ -250,6 +251,7 @@ export function createAuthorizationUsageReporter(input: {
     state.running = true;
     state.lastAttemptAtMs = Date.now();
     try {
+      await input.flushSubscriptionUsage?.();
       const observedAt = new Date();
       const periodEnd = observedAt;
       const periodStart = new Date(observedAt.getTime() - input.lookbackDays * 86_400_000);

@@ -1,0 +1,211 @@
+# Subscription-only OAuth pools (draft, epic backend #841)
+
+`config.read` advertises `subscriptionPoolVersion: 1` and the current
+`subscriptionPoolCompatibility` predicate. The backend must require both before
+recording membership intent. Older runtimes fail closed; no legacy singleton
+writer fallback is permitted.
+
+`codex.auth.pool.sync` is a full ordered membership snapshot, not an add-then-clear
+sequence. Account IDs map to stable `openai:golem-<accountId>` profile IDs. Revision
+and per-account credential version/digest fence stale writes. The durable manifest
+contains metadata/digests only; plaintext credentials are never stored there.
+Pending manifest precedes SDK writes. Ambiguous failures require receipt/status
+read-back; an UNKNOWN writer is never blindly replayed. An applied result follows successful Gateway auth refresh.
+
+Runtime SQLite is owned by the **installed public OpenClaw SDK** resolved from the
+active executable, not an invented auth-only DB. The SDK transaction preserves
+unrelated keys/providers and cooldown/usage metadata. Single-profile writes, pool
+writes and readback-only recovery share a bounded 10-minute subprocess budget:
+cold integrity admission on a healthy multi-GiB database can exceed 120 seconds.
+Integrity/ownership checks remain SDK-owned. At the deadline Relay kills the
+child and records no success; an ambiguous result still requires exact saved
+readback reconciliation, not automatic credential replay. The longer budget
+applies after a Relay update and does not settle already-pending operations. Equivalent legacy OAuth
+aliases are adopted, not copied into two independently refreshed profiles;
+unassigned unknown OAuth identities reject the operation before mutation.
+Disabled/removed subscriptions are absent from the active auth store. Only the
+backend holds the shared refresh token; runtime copies are access-only and
+`copyToAgents: true` so the shared machine store is visible to main/nested native
+agent scopes. Refresh material never leaves backend custody. Main-agent session pins are cleared/reclassified through
+the public session SDK without changing session history/activity.
+
+A qualified explicit `openai-chatgpt-responses` route is required. Do not change
+Harness/model/reasoning during auth. Reject direct provider API auth overrides,
+unqualified/custom endpoints and outer-model fallbacks. Stored API keys and other
+providers are preserved but cannot become candidates on this route. Empty or
+exhausted pool is an error, never API/credits/provider/model fallback.
+
+Manifest presence fences legacy provider-wide writers, even after last-member
+removal. Do not delete it to bypass policy. An explicit pool-exit workflow is not
+part of this draft. Public-SDK local store/session preservation and fresh nested
+store inheritance are tested. Attended dev-api qualification additionally proved
+real native/Codex A/B, shared refresh/fanout, refresh racing removal, tool-effect
+exactly-once, controlled exhaustion before dispatch and lossless flag-off reconcile.
+See the backend's `docs/architecture/openai-subscription-pool-attended.md` in PR #852.
+
+These controlled observed windows are not guaranteed per-attempt usage telemetry.
+Nested inference, native/cron/external completeness and the broader provider
+lifecycle matrix remain release gates. Public model/LLM hooks do not expose actual
+OAuth-profile selection; never infer it from preferred membership order.
+
+## Observed token journal and automatic-pin recovery
+
+`ChatRunner` inspects only managed main-agent automatic pins before dispatch. An
+unavailable/removed/disabled pin is cleared through the installed public SDK under
+session-ID/profile/source CAS. Explicit user pins, foreign profiles and healthy
+pins are not touched. Session identity, activity and transcript remain intact;
+OpenClaw still chooses the next eligible subscription. Its session-init conflict
+can require the existing bounded retry (before model execution); no history reset,
+model/Harness change, blind tool replay or new API/credit fallback is added.
+
+Before/after public session/transcript observations feed a durable mode-0600
+`golem-subscription-usage.json` journal under the OpenClaw state directory. It stores
+only bounded metadata/counters, never prompts or OAuth credentials. Delivery uses
+`POST /api/v1/relays/authorization-usage-events`; backend migration must land first.
+Normal completion flushes immediately; the existing enabled authorization reporter
+also retries the outbox. Existing `RELAY_AUTHORIZATION_USAGE_ENABLED=false` disables
+both this production collector and the aggregate reporter; reenabling it allows
+the durable outbox to replay. Eligibility/pin safety is independent of usage opt-out.
+Backend failures do not change the chat outcome.
+
+The method is `SESSION_WINDOW`, not guaranteed per-dispatch billing attribution.
+Only one new assistant usage row in a successful, nonoverlapping observed window
+receives its final session profile. Ambiguous/failed/recovered windows are UNKNOWN.
+Stable transcript message IDs deduplicate all retries, including acknowledgments
+lost after backend commit. In-flight membership changes cannot relabel an old
+reply from current pool order. External/native/cron requests outside `ChatRunner`
+and pre-collector history are not claimed as covered. Long/unreadable transcripts
+or unavailable SDKs fail observation explicitly; they never invent zero usage.
+The exact dispatched-profile telemetry contract remains a separate upstream need.
+
+
+Before dispatch Relay also requires at least one enabled, managed OpenAI OAuth
+profile without a model-applicable cooldown/disable/block. API-key profiles do not
+satisfy this condition, even if substituted under a managed profile name. If every
+subscription is unavailable, `OPENAI_SUBSCRIPTIONS_EXHAUSTED` is raised before
+`chat.send`. This deliberately prevents the installed runtime's least-cooled
+probe behavior; it is not an API/model fallback or an auth-store rewrite.
+
+
+## Codex progress is not turn completion
+
+Standalone Codex commentary records may contain text and `stopReason: stop` while
+an app-server tool is still running. Transcript and Gateway-history recovery
+exclude explicitly marked commentary (including Codex mirror identity metadata).
+Only a final assistant reply can release the queue or trigger transcript-completion
+cleanup; progress text must never cause a running tool to be aborted/replayed.
+
+
+## Official >=2026.9.8 continuous compatibility
+
+The loaded plugin, not a version string inferred by Relay, supplies the live
+capability. Existing v1 means `runScopedFallbacks: true` and
+`readOnlyAdmission: true` (qualified official >=2026.11.2 with async SDK). The
+strict adapter (>=2026.9.8 and <2026.11.2, or newer sync-only SDK) uses
+v2 with `runScopedFallbacks: false`, `configuredFallbacksForbidden: true` and
+`readOnlyAdmission: true`. Relay accepts only these exact policy shapes; old
+Relay rejects v2 rather than activating an unguarded pool.
+
+For v2, read-only preflight and Connect both preserve authored model fallback
+lists and refuse them before credential mutation. An explicit model-settings edit
+must remove incompatible fallbacks; auth-only work never clears that intent.
+Pending auth-route intent is persisted before credential effects. The saved route
+must be observed applied through matching public Gateway config hashes; auth-only
+work never installs/updates components or restarts Gateway. When reload is off,
+`OPENAI_POOL_CONFIG_RUNTIME_PENDING` requires explicit Update/config Sync followed
+by a bounded, explicit retry. Pool writes then call public `models.authRefresh
+{operation:"update",agentId}` for each live `agents.list` entry and require
+`refreshed:true` before acknowledgment. Modern v1 retains authored lists and
+suppresses them per run. Unknown or post-writer outcomes never authorize replay.
+A fallback introduced later is blocked by the channel plugin at run admission.
+Injected cron/session fallback candidates must also match the agent's saved
+primary model, so unsupported overrides cannot escape into another model/API.
+
+The post-mutation refresh RPC exists in all 18 audited stable packages from
+2026.9.8 through 2026.11.2, as do the applied config hash fields in `config.get`.
+The plugin prefers the async reader when available, otherwise the synchronous
+public auth SDK, with `readOnly: true`,
+`syncExternalCli: false`, `allowKeychainPrompt: false`. It emits explicit
+`pass`/`block` decisions in both modes. Strict mode does not
+claim suppression of the outer fallback chain. No OpenClaw code changes are
+needed. The plugin admits continuous >=2026.9.8, with no upper version cutoff;
+unknown versions or missing required SDK/hooks still fail closed. This is not a
+guarantee against future upstream SDK/hook incompatibilities. Real installed
+9.8 SDK tests cover pool A/B,
+unrelated key/provider and session metadata preservation; the plugin's isolated
+Gateway qualification covers synthetic A/429-to-B native dispatch and exhaustion.
+Synthetic transport is not a claim of real OAuth native/Codex acceptance.
+
+### Fresh-agent Connect routing
+
+The pool preflight and explicit Connect share `prepareSubscriptionPoolConfig`.
+They recognize only the exact generated OpenAI/Codex proxy provider rows for this
+Relay's `BACKEND_BASE_URL`, with an empty catalog and optional exact canonical
+OpenClaw runtime metadata. Connect can replace this auth route with direct
+`openai-chatgpt-responses` without selecting a model or changing its Harness.
+Explicit API/custom routes, credentials, unknown provider fields and foreign
+proxy endpoints remain authoritative and fail closed when incompatible. No
+component installation or general config normalization is performed.
+
+Preflight prepares a clone without writing config, auth stores or receipts. The
+actual Connect recomputes the candidate under the common owner/model lock and
+requires exact CAS-protected transformation equality. Any route change (including
+with a run-scoped v1 guard) must be observed applied by Gateway before credential
+installation; a failure stays pending and is replayable rather than reported ACTIVE.
+Strict v2 refuses authored model fallbacks; their removal requires an explicit
+model-settings action. Primary model, reasoning, runtime metadata and unrelated provider,
+channel/tool and operational settings are preserved.
+
+Generated `config.env` / `env.vars` OpenAI proxy credentials are recognized only
+when **both** the endpoint matches this deployment and the key matches this
+agent's `RELAY_TOKEN`. A foreign key, endpoint, or missing authority is preserved.
+When `gateway.reload.mode=off`, a saved/applied hash mismatch remains a proven
+pre-writer refusal: no auth-only restart or credential effect occurs. After an
+explicit config application, the backend may resume only the exact refused
+operation, same credential/membership intent and freshly validated config fence.
+The Relay advertises `durableAuthorizationResumeVersion: 1`; UNKNOWN effects,
+interrupted writes and changed intent cannot use this path.
+
+### Contended Connect admission
+
+A durable `codex.auth.pool.sync` receipt stays RUNNING while waiting up to 30
+seconds for an existing model/config transaction to release kernel custody.
+Repeated requests for that operation remain deduplicated; waiting does not
+consume a resume attempt or start a credential writer. Policy and config CAS
+are rechecked after acquisition. An expired wait remains REFUSED with
+`MODEL_FENCE_BUSY` and requires an explicit saved-operation retry. UNKNOWN
+outcomes are never automatically replayed. Other config mutations retain their
+existing fail-fast model-fence behavior.
+
+## Explicit API-source exit
+
+Removing the last subscription does **not** opt the agent into paid API/credits.
+An explicit main-model API choice or company `GOLEM_CREDITS` /
+`ORGANIZATION_PROVIDER` selection uses the coordinated `codex.auth.pool.exit`
+protocol. Relay advertises `subscriptionPoolExitVersion: 1` only when the live
+loaded plugin acknowledges `poolExitVersion: 1`; missing components fail before
+exit effects and require a separate setup/update.
+
+The existing durable selection lock reserves a disabled pool at the next revision.
+Relay persists `exiting`, removes only pool-owned OAuth via the public SDK,
+restores the exact platform-owned OpenAI Responses proxy endpoint and per-agent
+proxy identity, and confirms the actual Gateway config before writing `exited`.
+Saved bytes are CAS-checked; Gateway's redacted credentials are not compared to
+plaintext tokens. No selected model/Harness/reasoning or authored endpoint/key is
+silently replaced. Custom routing refuses with no config overwrite.
+
+Only an exact empty `exited` receipt releases plugin admission. An interrupted
+exit stays fail-closed and replays its exact revision. Backend acknowledges the
+revision and retires assignments only after the matching runtime receipt; normal
+model/source activation and inference verification must still succeed. API source
+activation is not implied by an exit acknowledgment. Stale syncs cannot resurrect
+an exited pool; a subsequent explicit Connect uses a higher revision and
+recreates the subscription route. Disabled pending exits recover through the
+saved source/model operation, never ordinary empty pool sync.
+
+API activation keeps the existing signed, short-lived server/model/revision
+verification grant. Both Chat Completions and OpenAI Responses are supported;
+Responses accepts only the current authored user input (or its adjacent known
+data-only native context), not older conversation markers. The grant is stripped
+and replaced with a fixed no-tools probe capped at 512 output tokens before
+dispatch. Ordinary requests remain blocked while the source is Pending.

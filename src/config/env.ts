@@ -100,6 +100,8 @@ const envSchema = z.object({
   RELAY_CHANNEL_DATA_PLANE_HOST: z.string().min(1).optional(),
   RELAY_CHANNEL_DATA_PLANE_PORT: z.coerce.number().int().min(1).max(65535).optional(),
   RELAY_CHANNEL_PLUGIN_AUTO_UPDATE_ENABLED: envBooleanSchema.optional(),
+  RELAY_CHANNEL_PLUGIN_UPDATE_INTERVAL_MS: z.coerce.number().int().min(60_000).max(86_400_000).optional(),
+  RELAY_CHANNEL_PLUGIN_UPDATE_INITIAL_JITTER_MS: z.coerce.number().int().min(0).max(300_000).optional(),
   RELAY_CHANNEL_PLUGIN_REPO_DIR: z.string().min(1).optional(),
   RELAY_CHANNEL_PLUGIN_REPO_URL: z.string().min(1).optional(),
   RELAY_CHANNEL_PLUGIN_GIT_REF: z.string().min(1).optional(),
@@ -249,6 +251,8 @@ export type RelayConfig = {
     dataPlanePort: number;
     plugin: {
       autoUpdateEnabled: boolean;
+      updateIntervalMs: number;
+      updateInitialJitterMs: number;
       repoDir: string;
       repoUrl: string;
       gitRef: string;
@@ -431,6 +435,8 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
       dataPlanePort: parsed.RELAY_CHANNEL_DATA_PLANE_PORT ?? 43_130,
       plugin: {
         autoUpdateEnabled: parsed.RELAY_CHANNEL_PLUGIN_AUTO_UPDATE_ENABLED ?? true,
+        updateIntervalMs: parsed.RELAY_CHANNEL_PLUGIN_UPDATE_INTERVAL_MS ?? 3_600_000,
+        updateInitialJitterMs: parsed.RELAY_CHANNEL_PLUGIN_UPDATE_INITIAL_JITTER_MS ?? 300_000,
         repoDir: parsed.RELAY_CHANNEL_PLUGIN_REPO_DIR ?? "/root/golem-workers-openclaw-channel-plugin",
         repoUrl:
           parsed.RELAY_CHANNEL_PLUGIN_REPO_URL ??
@@ -560,6 +566,8 @@ export function buildRelayConfigForTest(overrides: Partial<RelayConfig>): RelayC
       dataPlanePort: 43_130,
       plugin: {
         autoUpdateEnabled: true,
+        updateIntervalMs: 3_600_000,
+        updateInitialJitterMs: 300_000,
         repoDir: "/root/golem-workers-openclaw-channel-plugin",
         repoUrl: "https://github.com/golem-workers/golem-workers-openclaw-channel-plugin.git",
         gitRef: "release",

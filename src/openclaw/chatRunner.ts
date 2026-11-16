@@ -1,3 +1,5 @@
+import type { SubscriptionUsageCollector } from "./subscriptionUsage.js";
+import { readSubscriptionRuntime } from "./subscriptionRuntime.js";
 import { GatewayClient } from "./gatewayClient.js";
 import { type ChatEvent, chatEventSchema, type EventFrame } from "./protocol.js";
 import { promises as fs } from "node:fs";
@@ -287,7 +289,7 @@ function maybeApplyTransportRecoveryNote(message: GatewayChatMessage, enabled: b
 function readLatestUserFacingMessage(events: ChatEvent[]): unknown {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const message = events[i]?.message;
-    if (message !== undefined && extractTextFromMessage(message)) {
+    if (message !== undefined && !messageIsNonterminalAssistant(message) && extractTextFromMessage(message)) {
       return message;
     }
   }
@@ -323,6 +325,16 @@ function extractTextFromMessage(message: unknown): string | null {
     })
     .filter((part): part is string => typeof part === "string");
   return parts.length > 0 ? parts.join("\n") : null;
+}
+
+// Codex mirrors commentary as standalone assistant text with stopReason=stop.
+// That record is progress, not proof that its app-server turn/tools have settled.
+function messageIsNonterminalAssistant(message: unknown): boolean {
+  if (!isPlainObject(message)) return false;
+  if (message.phase === "commentary" || message.channel === "commentary" || message.channel === "analysis") return true;
+  const metadata = isPlainObject(message.__openclaw) ? message.__openclaw : null;
+  return metadata?.mirrorOrigin === "codex-app-server" &&
+    typeof metadata.mirrorIdentity === "string" && metadata.mirrorIdentity.includes(":commentary:");
 }
 
 function messageContainsToolActivity(message: unknown): boolean {
@@ -607,7 +619,7 @@ async function readLatestAssistantMessageFromResolvedSessionTranscript(input: {
     const role = readMessageRole(candidate);
     if (role === "user") break;
     if (role !== "assistant") continue;
-    if (messageContainsToolActivity(candidate)) continue;
+    if (messageContainsToolActivity(candidate) || messageIsNonterminalAssistant(candidate)) continue;
     if (!extractTextFromMessage(candidate)) continue;
     latestAssistantMessage = candidate;
   }
@@ -626,10 +638,18 @@ function readMessageRunId(message: unknown): string | null {
     : null;
 }
 
+function readMessageRequestKey(message: unknown): string | null {
+  if (!isPlainObject(message)) return null;
+  const metadata = isPlainObject(message.__openclaw) ? message.__openclaw : {};
+  const key = message.idempotencyKey ?? metadata.idempotencyKey;
+  return typeof key === "string" && key.length > 0 ? key : null;
+}
+
 function readLatestAssistantMessageFromGatewayHistory(input: {
   history: unknown;
   requestMessage: GatewayChatMessage;
   runId: string;
+  requestKey?: string;
 }): unknown {
   if (!isPlainObject(input.history)) {
     return undefined;
@@ -645,7 +665,7 @@ function readLatestAssistantMessageFromGatewayHistory(input: {
       const candidate = messages[index];
       if (readMessageRole(candidate) !== "assistant") continue;
       if (readMessageRunId(candidate) !== input.runId) continue;
-      if (messageContainsToolActivity(candidate)) continue;
+      if (messageContainsToolActivity(candidate) || messageIsNonterminalAssistant(candidate)) continue;
       if (!extractTextFromMessage(candidate)) continue;
       return candidate;
     }
@@ -654,10 +674,17 @@ function readLatestAssistantMessageFromGatewayHistory(input: {
 
   const requestText = normalizeComparableText(extractTextFromMessage(input.requestMessage));
   if (!requestText) return undefined;
+  const requestKeys = new Set([input.runId, input.requestKey].filter((key): key is string => !!key));
+  const matchesRequestKey = (key: string) => requestKeys.has(key) || (key.endsWith(":user") && requestKeys.has(key.slice(0, -5)));
+  const hasRequestMetadata = messages.some(message => readMessageRequestKey(message) !== null);
   let matchingUserIndex = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const candidate = messages[index];
     if (readMessageRole(candidate) !== "user") continue;
+    const key = readMessageRequestKey(candidate);
+    // Identical prompts are not identities. Once the host exposes a request
+    // key, never recover an earlier answer while the current user row is late.
+    if (hasRequestMetadata && (!key || !matchesRequestKey(key))) continue;
     const candidateText = extractTextFromMessage(candidate);
     if (candidateText && matchesTranscriptUserMessage(candidateText, requestText)) {
       matchingUserIndex = index;
@@ -672,7 +699,9 @@ function readLatestAssistantMessageFromGatewayHistory(input: {
     const role = readMessageRole(candidate);
     if (role === "user") break;
     if (role !== "assistant") continue;
-    if (messageContainsToolActivity(candidate)) continue;
+    const key = readMessageRequestKey(candidate);
+    if (key && !matchesRequestKey(key)) continue;
+    if (messageContainsToolActivity(candidate) || messageIsNonterminalAssistant(candidate)) continue;
     if (!extractTextFromMessage(candidate)) continue;
     latestAssistantMessage = candidate;
   }
@@ -878,6 +907,7 @@ export class ChatRunner {
   private runSessionByRunId = new Map<string, string>();
   private runEventsByRunId = new Map<string, ChatEvent[]>();
   private runTraceByRunId = new Map<string, { backendMessageId: string }>();
+  private runRequestKeyByRunId = new Map<string, string>();
   private runTraceCleanupTimersByRunId = new Map<string, NodeJS.Timeout>();
   private activeRunByTaskId = new Map<string, { runId: string; sessionKey: string }>();
   private sessionMaintenanceLock: Promise<void> | null = null;
@@ -897,6 +927,7 @@ export class ChatRunner {
   constructor(
     private readonly gateway: GatewayClient,
     opts?: {
+      subscriptionUsage?: SubscriptionUsageCollector;
       devLogEnabled?: boolean;
       devLogTextMaxLen?: number;
       transcriptCompletionSettleMs?: number;
@@ -918,6 +949,7 @@ export class ChatRunner {
       }) => void | Promise<void>;
     }
   ) {
+    this.subscriptionUsage = opts?.subscriptionUsage;
     this.devLogEnabled = opts?.devLogEnabled ?? false;
     this.devLogTextMaxLen = opts?.devLogTextMaxLen ?? 200;
     this.transcriptCompletionSettleMs = Math.max(
@@ -953,6 +985,7 @@ export class ChatRunner {
     this.onRunStarted = opts?.onRunStarted;
   }
 
+  private readonly subscriptionUsage?: SubscriptionUsageCollector;
   private readonly onRunCompleted?: (runId: string, reason: string) => void;
   private readonly onRunStarted?: (input: {
     taskId: string;
@@ -1057,6 +1090,7 @@ export class ChatRunner {
       history,
       requestMessage: input.requestMessage,
       runId: input.runId,
+      requestKey: this.runRequestKeyByRunId.get(input.runId),
     });
     return await restoreReplyDeliveryMetadata({ message, sessionKey: input.sessionKey, runId: input.runId });
   }
@@ -1386,6 +1420,7 @@ export class ChatRunner {
     this.clearRunTraceCleanupTimer(runId);
     const timer = setTimeout(() => {
       this.runTraceByRunId.delete(runId);
+      this.runRequestKeyByRunId.delete(runId);
       this.runTraceCleanupTimersByRunId.delete(runId);
       if (this.devLogEnabled) {
         logger.debug({ runId, reason }, "Released retained OpenClaw run trace");
@@ -1406,6 +1441,21 @@ export class ChatRunner {
     timeoutMs: number;
     onActivity?: (activity: ChatRunActivity) => void;
   }): Promise<{ result: ChatRunResult; openclawMeta: OpenclawChatMeta }> {
+    let observation: string | null = null;
+    try { observation = await this.subscriptionUsage?.begin(input.sessionKey) ?? null; }
+    catch { logger.warn("Subscription usage observation unavailable; request will not be attributed"); }
+    let succeeded = false;
+    try {
+      const result = await this.runChatTaskCore(input);
+      succeeded = result.result.outcome === "reply";
+      return result;
+    } finally {
+      try { await this.subscriptionUsage?.finish(observation, succeeded); await this.subscriptionUsage?.flush(); }
+      catch { logger.warn("Subscription usage observation retained for recovery"); }
+    }
+  }
+
+  private async runChatTaskCore(input: Parameters<ChatRunner["runChatTask"]>[0]): Promise<{ result: ChatRunResult; openclawMeta: OpenclawChatMeta }> {
     try {
     await this.waitForSessionMaintenance();
     let baseMessageText: string;
@@ -1486,6 +1536,8 @@ export class ChatRunner {
           attempt,
           retryKeySuffix,
         });
+        const subscriptionState = await readSubscriptionRuntime({ sessionKey: input.sessionKey, prepare: true });
+        if (subscriptionState?.clearedAutoPin) logger.info({event: "subscription_auto_pin_released", sessionKey: input.sessionKey}, "Released unavailable automatic subscription pin");
         const payload = await this.gateway.request("chat.send", {
           sessionKey: input.sessionKey,
           message: attemptMessage,
@@ -1505,6 +1557,7 @@ export class ChatRunner {
             openclawMeta: { method: "chat.send" },
           };
         }
+        this.runRequestKeyByRunId.set(runId, idempotencyKey);
         this.registerRunTrace(runId, { sessionKey: input.sessionKey, backendMessageId: input.taskId });
         this.activeRunByTaskId.set(input.taskId, { runId, sessionKey: input.sessionKey });
         await this.onRunStarted?.({
