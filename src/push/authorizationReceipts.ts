@@ -11,6 +11,24 @@ export class AuthorizationReceiptAdmissionError extends Error {
   constructor(readonly code: string) { super(code); }
 }
 
+const GUARD_REFUSAL = "OPENAI_POOL_GUARD_UPDATE_REQUIRED";
+const UNKNOWN_GUARD = "AUTH_OPERATION_OUTCOME_UNKNOWN:" + GUARD_REFUSAL;
+const RECONCILE_CONFLICT = "AUTH_OPERATION_OUTCOME_UNKNOWN:OPENAI_POOL_RECONCILE_CONFLICT";
+
+/** Old Relays marked a live guard refusal UNKNOWN although pool.sync checks it
+ * before invoking the credential writer. Only a complete, untruncated lineage
+ * of that original refusal followed by readback conflicts proves no dispatch.
+ * Never infer this from an older pool revision, elapsed time or a later guard
+ * failure encountered while reconciling a genuinely ambiguous write. */
+function isLegacyPoolGuardRefusal(receipt: AuthorizationReceipt): boolean {
+  if (receipt.state !== "UNKNOWN") return false;
+  const count = receipt.reconcileCount ?? 0;
+  const history = receipt.previousUnknownCodes ?? [];
+  if (!Number.isInteger(count) || count < 0 || count > 3 || history.length !== count) return false;
+  const lineage = [...history, receipt.code];
+  return lineage[0] === UNKNOWN_GUARD && lineage.slice(1).every(code => code === RECONCILE_CONFLICT);
+}
+
 export type AuthorizationReceipt = {
   operationId: string;
   fingerprint: string;
@@ -92,8 +110,16 @@ export class AuthorizationReceipts {
       if (previous.state === "SUCCEEDED") return previous;
       if (reconcileOnly) {
         if (previous.state !== "UNKNOWN" || !action || typeof action !== "object" || !("kind" in action) || action.kind !== "codex.auth.pool.sync") throw new AuthorizationReceiptAdmissionError("AUTH_OPERATION_RECONCILE_UNSAFE");
+        // Reclassify the exact legacy intent without executing even readback.
+        // A subsequent, separately authorized resume rechecks the live guard.
+        if (isLegacyPoolGuardRefusal(previous)) {
+          if (previous.fingerprint !== resumeFrom) throw new AuthorizationReceiptAdmissionError("AUTH_OPERATION_RESUME_STALE");
+          const refused: AuthorizationReceipt = { ...previous, state: "REFUSED", code: GUARD_REFUSAL };
+          await this.persist(refused);
+          return refused;
+        }
         if ((previous.reconcileCount ?? 0) >= 3) throw new AuthorizationReceiptAdmissionError("AUTH_OPERATION_RECONCILE_LIMIT");
-      } else if (previous.state !== "REFUSED" || !["OPENAI_POOL_CONFIG_RUNTIME_PENDING", "MODEL_FENCE_BUSY"].includes(previous.code ?? "")) throw new AuthorizationReceiptAdmissionError("AUTH_OPERATION_RESUME_UNSAFE");
+      } else if (previous.state !== "REFUSED" || !["OPENAI_POOL_CONFIG_RUNTIME_PENDING", "MODEL_FENCE_BUSY", GUARD_REFUSAL].includes(previous.code ?? "")) throw new AuthorizationReceiptAdmissionError("AUTH_OPERATION_RESUME_UNSAFE");
       if (previous.fingerprint !== resumeFrom) throw new AuthorizationReceiptAdmissionError("AUTH_OPERATION_RESUME_STALE");
       if (!reconcileOnly && (previous.resumeCount ?? 0) >= 3) throw new AuthorizationReceiptAdmissionError("AUTH_OPERATION_RESUME_LIMIT");
     } else if (previous.state !== "NOT_FOUND") {
@@ -119,8 +145,9 @@ export class AuthorizationReceipts {
         logger.info({ operationId: id, mode: reconcileOnly ? "reconcile" : "mutate", state: "SUCCEEDED", event: "authorization_operation" }, "Authorization mutation completed");
       } catch (error) {
         const configPending = error instanceof SubscriptionPoolError && error.code === "OPENAI_POOL_CONFIG_RUNTIME_PENDING";
-        const refused = !reconcileOnly && (error instanceof ModelFenceBusyError || configPending);
-        const code = configPending && !reconcileOnly ? "OPENAI_POOL_CONFIG_RUNTIME_PENDING" : refused ? "MODEL_FENCE_BUSY" : "AUTH_OPERATION_OUTCOME_UNKNOWN";
+        const guardRefusal = !reconcileOnly && action && typeof action === "object" && "kind" in action && action.kind === "codex.auth.pool.sync" && error instanceof SubscriptionPoolError && error.code === GUARD_REFUSAL;
+        const refused = !reconcileOnly && (error instanceof ModelFenceBusyError || configPending || guardRefusal);
+        const code = guardRefusal ? GUARD_REFUSAL : configPending && !reconcileOnly ? "OPENAI_POOL_CONFIG_RUNTIME_PENDING" : refused ? "MODEL_FENCE_BUSY" : "AUTH_OPERATION_OUTCOME_UNKNOWN";
         const runtimeCode = error instanceof ModelFenceBusyError ? "MODEL_FENCE_BUSY" : error && typeof error === "object" && "code" in error && typeof error.code === "string" && /^[A-Z][A-Z0-9_]{0,95}$/.test(error.code) ? error.code : undefined;
         await this.persist({ ...receipt, state: refused ? "REFUSED" : "UNKNOWN", code: runtimeCode && !refused ? code + ":" + runtimeCode : code });
         logger.warn({ operationId: id, mode: reconcileOnly ? "reconcile" : "mutate", state: refused ? "REFUSED" : "UNKNOWN", code, runtimeCode, event: "authorization_operation" }, "Authorization mutation requires reconciliation");
