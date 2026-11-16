@@ -863,3 +863,20 @@ sources. Unrelated subscriptions (including expired profiles with refresh
 custody) cause a fail-closed conflict without deleting or adopting them. An
 operator must explicitly resolve the conflicting local account before retrying;
 model, harness, fallbacks and channel admission remain unchanged.
+
+Opt-in real Gateway acceptance (install OpenClaw separately; no model credentials
+or model requests required):
+
+```sh
+npm run build
+GATEWAY_CLI=/absolute/path/to/openclaw.mjs NODE_USE_ENV_PROXY=0 node scripts/prove-gateway-watchdog.mjs
+```
+
+The script starts a private loopback Gateway with temporary state, delays its
+actual replacement `hello-ok` by 1800ms, injects stale tick/pause history, checks
+exactly one replacement connection and a real `health` RPC, then restarts the
+Gateway process and checks readiness/RPC recovery and stopped-client readiness.
+It does not deploy Relay, exercise fleet Update, or suspend a VM. Optional
+`WATCHDOG_CLIENT_PATH` selects an alternate compiled GatewayClient for a
+counterfactual; `WATCHDOG_MODE=tick|pause` isolates one fault. Temporary state and
+child processes are cleaned up; `WATCHDOG_KEEP_STATE=1` retains private diagnostics.
