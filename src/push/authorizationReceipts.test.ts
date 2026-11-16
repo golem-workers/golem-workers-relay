@@ -38,6 +38,51 @@ describe("durable credential receipts", () => {
     expect(execute).toHaveBeenCalledOnce();
     expect(await fs.readFile(path.join(directory, "resume.json"), "utf8")).not.toContain("private");
   });
+  it("keeps a guard refusal pre-writer and permits only an explicit exact resume", async () => {
+    const action = { kind: "codex.auth.pool.sync", revision: 4, members: [{ accountId: "a", credentialVersion: 15 }] };
+    await store.submit("guard", action, () => Promise.reject(new SubscriptionPoolError("OPENAI_POOL_GUARD_UPDATE_REQUIRED", "private")));
+    const previous = await terminal("guard");
+    expect(previous).toMatchObject({ state: "REFUSED", code: "OPENAI_POOL_GUARD_UPDATE_REQUIRED" });
+    if (previous.state === "NOT_FOUND") throw Error("missing");
+    const writer = vi.fn(() => Promise.resolve({ kind: "codex.auth.pool.sync" as const, revision: 4, phase: "applied" as const, members: [] }));
+    await store.submit("guard", action, writer); expect(writer).not.toHaveBeenCalled();
+    await expect(store.resume("guard", { ...action, revision: 5 }, previous.fingerprint, writer)).rejects.toThrow("AUTH_OPERATION_CONFLICT");
+    await store.resume("guard", action, previous.fingerprint, writer);
+    expect(await terminal("guard")).toMatchObject({ state: "SUCCEEDED", resumeCount: 1 });
+    await store.submit("guard", action, writer); expect(writer).toHaveBeenCalledOnce();
+  });
+  it.each([0, 1, 2, 3])("recovers a complete legacy guard lineage with %i readback conflicts without executing", async count => {
+    const action = { kind: "codex.auth.pool.sync", revision: 4, members: [{ accountId: "a", credentialVersion: 15 }] };
+    await store.submit("legacy", action, () => Promise.reject(Error("seed")));
+    const seed = await terminal("legacy"); if (seed.state === "NOT_FOUND") throw Error("missing");
+    const guard = "AUTH_OPERATION_OUTCOME_UNKNOWN:OPENAI_POOL_GUARD_UPDATE_REQUIRED";
+    const conflict = "AUTH_OPERATION_OUTCOME_UNKNOWN:OPENAI_POOL_RECONCILE_CONFLICT";
+    await fs.writeFile(path.join(directory, "legacy.json"), JSON.stringify({ ...seed, state: "UNKNOWN", code: count ? conflict : guard, reconcileCount: count, previousUnknownCodes: count ? [guard, ...Array<string>(count - 1).fill(conflict)] : [] }));
+    const execute = vi.fn(() => Promise.resolve({ kind: "codex.auth.pool.sync" as const, revision: 4, phase: "applied" as const, members: [] }));
+    await expect(store.reconcile("legacy", action, "b".repeat(64), execute)).rejects.toThrow("AUTH_OPERATION_RESUME_STALE");
+    await expect(store.reconcile("legacy", { ...action, members: [] }, seed.fingerprint, execute)).rejects.toThrow("AUTH_OPERATION_CONFLICT");
+    await store.reconcile("legacy", action, seed.fingerprint, execute);
+    expect(await terminal("legacy")).toMatchObject({ state: "REFUSED", code: "OPENAI_POOL_GUARD_UPDATE_REQUIRED" });
+    expect(execute).not.toHaveBeenCalled();
+    store = new AuthorizationReceipts(directory);
+    await store.resume("legacy", action, seed.fingerprint, execute);
+    expect(await terminal("legacy")).toMatchObject({ state: "SUCCEEDED", resumeCount: 1 });
+    expect(execute).toHaveBeenCalledOnce();
+  });
+  it.each([
+    { reconcileCount: 1, previousUnknownCodes: ["AUTH_OPERATION_OUTCOME_UNKNOWN"] },
+    { reconcileCount: 2, previousUnknownCodes: ["AUTH_OPERATION_OUTCOME_UNKNOWN:OPENAI_POOL_GUARD_UPDATE_REQUIRED"] },
+    { reconcileCount: 4, previousUnknownCodes: Array<string>(3).fill("AUTH_OPERATION_OUTCOME_UNKNOWN:OPENAI_POOL_GUARD_UPDATE_REQUIRED") },
+  ])("does not infer no dispatch from an incomplete or ambiguous legacy history %j", async history => {
+    const action = { kind: "codex.auth.pool.sync", revision: 4, members: [] };
+    await store.submit("ambiguous_guard", action, () => Promise.reject(Error("ambiguous")));
+    const seed = await terminal("ambiguous_guard"); if (seed.state === "NOT_FOUND") throw Error("missing");
+    await fs.writeFile(path.join(directory, "ambiguous_guard.json"), JSON.stringify({ ...seed, ...history, code: "AUTH_OPERATION_OUTCOME_UNKNOWN:OPENAI_POOL_RECONCILE_CONFLICT" }));
+    const execute = vi.fn(() => Promise.reject(new SubscriptionPoolError("OPENAI_POOL_GUARD_UPDATE_REQUIRED", "later readback guard refusal")));
+    if (history.reconcileCount >= 3) await expect(store.reconcile("ambiguous_guard", action, seed.fingerprint, execute)).rejects.toThrow("AUTH_OPERATION_RECONCILE_LIMIT");
+    else { await store.reconcile("ambiguous_guard", action, seed.fingerprint, execute); expect(await terminal("ambiguous_guard")).toMatchObject({ state: "UNKNOWN" }); }
+    await expect(store.resume("ambiguous_guard", action, seed.fingerprint, execute)).rejects.toThrow("AUTH_OPERATION_RESUME_UNSAFE");
+  });
   it("never resumes unknown or interrupted effects, even under unchanged intent", async () => {
     const action = { kind: "codex.auth.clear" };
     await store.submit("unknown", action, () => Promise.reject(Error("failure after write")));

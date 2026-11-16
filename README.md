@@ -805,11 +805,13 @@ Explicit selection of API/credits after a subscription pool now uses a revisione
 
 Managed model configuration does not set `agents.defaults.contextTokens`; model changes remove any legacy value. The runtime uses the model context window. Legacy relay protocol fields remain accepted for compatibility and return `null`.
 
-Runtime auth and subscription-pool SDK writers allow up to 120 seconds for cold shared/agent database integrity admission. Timeout remains an unacknowledged outcome requiring reconciliation; stage/exit diagnostics never include credentials or child stderr.
+Runtime auth and subscription-pool SDK writers, including readback-only reconciliation, allow up to 10 minutes for cold shared/agent database integrity admission. Multi-GiB agent databases can exceed the former 120-second limit even when healthy. SDK integrity/ownership checks are not bypassed. A genuinely stalled child is still killed at the deadline; timeout remains an unacknowledged outcome requiring exact saved-operation reconciliation, never automatic credential replay. Stage/exit diagnostics never include credentials or child stderr. Existing agents receive this budget after updating Relay; this does not automatically repair already-pending authorization operations.
 
 Applied OpenAI subscription pools use their loaded admission guard and strict official ChatGPT route for `model.verify`, not legacy singleton login-mode classification. Pending/exiting/empty pools, missing persisted subscriptions, custom/direct-auth routes and environment overrides remain blocked. Verification still requires the isolated reply's exact provider/model/harness; route readiness alone is never success.
 
 ### Durable subscription-pool authorization
+
+Pool syncs are serialized with the runtime auth-store writer and fenced by the persisted pool revision. A newer backend disconnect revision may supersede a pending older revision; late older syncs are rejected, and an in-flight writer must finish before the newer desired set is written. Backend timeouts remain unknown until exact status/receipt reconciliation.
 
 The loaded Relay advertises `durablePoolAuthorizationVersion: 1` when pool sync supports durable operation receipts. Repeated or restarted callers read the same non-secret receipt; an unknown mutation is not automatically replayed. Writer, Gateway timeout and known validation errors expose safe codes, not child stderr/config/credentials.
 
@@ -844,6 +846,7 @@ Relay. Reclaim obsolete generations during stopped-service maintenance. No new
 environment settings or model/auth changes are required.
 Regression checks: `python3 scripts/build-relay.test.py` (also run by `npm test`).
 
+`npm run test:disconnect-supersession` exercises authenticated HTTP ingress with a late Connect4, newer Disconnect5, duplicate receipt and stale revision. It uses real receipt/lock/writer subprocess paths with a synthetic Gateway and public SDK store, preserves config and asserts zero remaining managed profiles. It is not real OAuth or production acceptance.
 Pool sync checks the public runtime's composed auth store for every configured
 agent before credential effects and again before acknowledgement. Shared-store
 success alone is insufficient: agent-local OAuth can shadow or add subscription
