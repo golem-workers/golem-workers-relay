@@ -805,7 +805,7 @@ Explicit selection of API/credits after a subscription pool now uses a revisione
 
 Managed model configuration does not set `agents.defaults.contextTokens`; model changes remove any legacy value. The runtime uses the model context window. Legacy relay protocol fields remain accepted for compatibility and return `null`.
 
-Runtime auth and subscription-pool SDK writers allow up to 120 seconds for cold shared/agent database integrity admission. Timeout remains an unacknowledged outcome requiring reconciliation; stage/exit diagnostics never include credentials or child stderr.
+Runtime auth and subscription-pool SDK writers, including readback-only reconciliation, allow up to 10 minutes for cold shared/agent database integrity admission. Multi-GiB agent databases can exceed the former 120-second limit even when healthy. SDK integrity/ownership checks are not bypassed. A genuinely stalled child is still killed at the deadline; timeout remains an unacknowledged outcome requiring exact saved-operation reconciliation, never automatic credential replay. Stage/exit diagnostics never include credentials or child stderr. Existing agents receive this budget after updating Relay; this does not automatically repair already-pending authorization operations.
 
 Applied OpenAI subscription pools use their loaded admission guard and strict official ChatGPT route for `model.verify`, not legacy singleton login-mode classification. Pending/exiting/empty pools, missing persisted subscriptions, custom/direct-auth routes and environment overrides remain blocked. Verification still requires the isolated reply's exact provider/model/harness; route readiness alone is never success.
 
