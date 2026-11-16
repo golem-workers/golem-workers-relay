@@ -855,3 +855,11 @@ heartbeat timestamps; callbacks also verify socket identity and completed hello.
 A delayed replacement handshake is governed by its own bounded connect deadline,
 not by the previous connection's stale heartbeat after VM hibernation. No new
 configuration is needed, and normal tick-timeout/runtime-pause recovery remains.
+
+Pool sync checks the public runtime's composed auth store for every configured
+agent before credential effects and again before acknowledgement. Shared-store
+success alone is insufficient: agent-local OAuth can shadow or add subscription
+sources. Unrelated subscriptions (including expired profiles with refresh
+custody) cause a fail-closed conflict without deleting or adopting them. An
+operator must explicitly resolve the conflicting local account before retrying;
+model, harness, fallbacks and channel admission remain unchanged.

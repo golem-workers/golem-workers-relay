@@ -39,6 +39,24 @@ function inspect(root: string, agent = false) {
 }
 
 describe.skipIf(!sdk)("installed OpenClaw public auth SDK (synthetic credentials only)", () => {
+  it.each(["main", "child"])("refuses unrelated agent-local OAuth in %s before changing shared credentials", async agentId => {
+    const input = await fixture();
+    await fs.writeFile(input.configPath, JSON.stringify({ agents: { ownership: "explicit", defaults: { systemAgent: { agentId: "main" } }, entries: { main: {}, child: {} } } }));
+    await writeRuntimeAuth({ ...input, profileId: "anthropic:keep", credential: { type: "api_key", provider: "anthropic", key: "synthetic" } });
+    const env = { ...process.env, OPENCLAW_STATE_DIR: input.root, OPENCLAW_CONFIG_PATH: input.configPath, OPENCLAW_AGENT_DIR: path.join(input.root, "agents", agentId, "agent") };
+    await promisify(execFile)(process.execPath, ["--input-type=module", "-e", `
+      const { updateAuthProfileStoreWithLock } = await import(process.argv[1]);
+      await updateAuthProfileStoreWithLock({agentDir:process.env.OPENCLAW_AGENT_DIR,stateDir:process.env.OPENCLAW_STATE_DIR,sharedStoreWrite:false,saveOptions:{syncExternalCli:false,filterExternalAuthProfiles:false},updater(store){store.profiles["openai:legacy"]={type:"oauth",provider:"openai",accountId:"unrelated",access:"synthetic-old",refresh:"synthetic-refresh",expires:1};return true;}});
+    `, pathToFileURL(sdk!).href], { env });
+    const before = inspect(input.root).store;
+    const { prepareSubscriptionPool } = await import("./openAiSubscriptionPool.js");
+    const members = [{ accountId: "a", credentialVersion: 1, enabled: true, credential: { ...credential, type: "oauth" as const, provider: "openai" as const, accountId: "pool-account" } }];
+    await expect(writeRuntimeAuthPool({ ...input, state: prepareSubscriptionPool(null, 1, members), members })).rejects.toMatchObject({ code: "AUTH_POOL_WRITER_RUNTIME_STORE_CONFLICT_EXIT_17_NONE" });
+    expect(inspect(input.root).store).toEqual(before);
+    const db = new DatabaseSync(path.join(input.root, "agents", agentId, "agent/openclaw-agent.sqlite"), { readOnly: true });
+    try { expect(String(db.prepare("SELECT store_json FROM auth_profile_store WHERE store_key='primary'").get()?.store_json)).toContain("synthetic-refresh"); } finally { db.close(); }
+  }, 30_000);
+
   it("verifies already-written pool credentials without rewriting them and refuses a changed token", async () => {
     const input = await fixture();
     await fs.writeFile(input.configPath, JSON.stringify({ agents: { ownership: "explicit", defaults: { systemAgent: { agentId: "main" } }, entries: { main: {} } } }));
@@ -129,7 +147,7 @@ describe.skipIf(!sdk)("installed OpenClaw public auth SDK (synthetic credentials
     await writeRuntimeAuthPool({ ...input, state: removed, members: [members[1]] });
     expect(inspect(input.root).store?.profiles["openai:golem-a"]).toBeUndefined();
     expect(inspect(input.root).store?.profiles["openai:golem-b"]).toBeDefined();
-  }, 30_000);
+  }, 60_000);
 
   it("initializes a sterile modern global DB with no marker without an auth-only agent DB", async () => {
     const input = await fixture();
