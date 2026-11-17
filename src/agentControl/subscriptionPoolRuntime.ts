@@ -63,6 +63,8 @@ export async function waitForSubscriptionConfigApplied(
 
 /** Public post-mutation refresh invalidates shared-auth ownership as well as caches.
  * authStatus refresh is an inventory refresh and misses newly created ownership. */
+export const SUBSCRIPTION_RUNTIME_REFRESH_BUDGET_MS = 120_000;
+
 export async function refreshSubscriptionPoolAuth(gateway: {
   request(
     method: string,
@@ -70,26 +72,34 @@ export async function refreshSubscriptionPoolAuth(gateway: {
     options?: { timeoutMs: number },
   ): Promise<unknown>;
 }): Promise<void> {
+  const deadline = Date.now() + SUBSCRIPTION_RUNTIME_REFRESH_BUDGET_MS;
+  const request = async (method: string, params: Record<string, unknown>) => {
+    const timeoutMs = deadline - Date.now();
+    if (timeoutMs <= 0) throw new SubscriptionPoolError("OPENAI_POOL_AUTH_RUNTIME_PENDING", "Runtime refresh acknowledgement budget exhausted; reconcile the saved operation without replaying credentials.");
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        gateway.request(method, params, { timeoutMs }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Runtime refresh deadline")), timeoutMs); }),
+      ]);
+    } catch {
+      throw new SubscriptionPoolError("OPENAI_POOL_AUTH_RUNTIME_PENDING", "Gateway did not acknowledge runtime refresh; reconcile the saved operation without replaying credentials.");
+    } finally { if (timer) clearTimeout(timer); }
+  };
   const roster = z
     .object({
       agents: z
         .array(z.object({ id: z.string().regex(/^[A-Za-z0-9_-]+$/) }))
         .min(1),
     })
-    .parse(await gateway.request("agents.list", {}, { timeoutMs: 3000 }));
+    .parse(await request("agents.list", {}));
   for (const agentId of new Set(roster.agents.map((agent) => agent.id))) {
-    const result = await gateway.request(
-      "models.authRefresh",
-      { operation: "update", agentId },
-      { timeoutMs: 10000 },
-    );
+    const result = await request("models.authRefresh", { operation: "update", agentId });
     if (
       z.object({ refreshed: z.literal(true) }).safeParse(result).success !==
       true
     )
-      throw new Error(
-        "OPENAI_POOL_AUTH_RUNTIME_PENDING: Gateway did not acknowledge post-mutation auth refresh.",
-      );
+      throw new SubscriptionPoolError("OPENAI_POOL_AUTH_RUNTIME_PENDING", "Gateway did not acknowledge post-mutation auth refresh.");
   }
 }
 

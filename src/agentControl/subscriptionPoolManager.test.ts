@@ -55,7 +55,7 @@ describe("subscription pool durable ack", () => {
         members,
         refreshRuntimeAuth: () => Promise.reject(new Error("offline")),
       }),
-    ).rejects.toThrow("offline");
+    ).rejects.toMatchObject({ code: "OPENAI_POOL_AUTH_RUNTIME_PENDING" });
     expect((await readSubscriptionPoolState(configPath))?.phase).toBe(
       "pending",
     );
@@ -89,12 +89,13 @@ describe("subscription pool durable ack", () => {
       "utf8",
     );
     expect(state).not.toContain("synthetic");
-    expect(state).not.toContain("refresh");
+    expect((await readSubscriptionPoolState(configPath))?.completionStage).toBe("runtime_acknowledged");
   });
   it("reconciles a partial pending snapshot only through no-rewrite verification, never a new credential write", async () => {
     const { configPath } = await fixture();
     const input = { configPath, revision: 1, members, assertRuntimeGuard: () => Promise.resolve({ runScopedFallbacks: true }) };
-    await expect(syncSubscriptionPool({ ...input, refreshRuntimeAuth: () => Promise.reject(Error("refresh interrupted")) })).rejects.toThrow("refresh interrupted");
+    await expect(syncSubscriptionPool({ ...input, refreshRuntimeAuth: () => Promise.reject(Error("refresh interrupted")) })).rejects.toMatchObject({ code: "OPENAI_POOL_AUTH_RUNTIME_PENDING" });
+    expect(await readSubscriptionPoolState(configPath)).toMatchObject({ phase: "pending", completionStage: "credentials_verified" });
     writer.mockClear();
     const refresh = vi.fn(() => Promise.resolve());
     await expect(syncSubscriptionPool({ ...input, revision: 2, reconcileOnly: true, refreshRuntimeAuth: refresh })).rejects.toMatchObject({ code: "OPENAI_POOL_RECONCILE_CONFLICT" });
@@ -117,7 +118,7 @@ describe("subscription pool durable ack", () => {
   it("keeps a partial snapshot pending when no-rewrite store verification refuses", async () => {
     const { configPath } = await fixture();
     const input = { configPath, revision: 1, members, assertRuntimeGuard: () => Promise.resolve({ runScopedFallbacks: true }) };
-    await expect(syncSubscriptionPool({ ...input, refreshRuntimeAuth: () => Promise.reject(Error("refresh interrupted")) })).rejects.toThrow("refresh interrupted");
+    await expect(syncSubscriptionPool({ ...input, refreshRuntimeAuth: () => Promise.reject(Error("refresh interrupted")) })).rejects.toMatchObject({ code: "OPENAI_POOL_AUTH_RUNTIME_PENDING" });
     writer.mockRejectedValueOnce(Error("AUTH_POOL_WRITER_STORE_READBACK_MISMATCH"));
     const refresh = vi.fn(() => Promise.resolve());
     await expect(syncSubscriptionPool({ ...input, reconcileOnly: true, refreshRuntimeAuth: refresh })).rejects.toThrow("STORE_READBACK_MISMATCH");

@@ -904,3 +904,6 @@ does not stop the client or cancel background reconnection. Initial startup stil
 fails at its configured limit, requests still reject, and explicit stop still
 cancels recovery. This prevents a long native Update from leaving Relay not-ready
 after Gateway becomes healthy again.
+
+## Subscription runtime completion
+Pool credential writes and runtime acknowledgements have separate durable completion stages. Runtime refresh shares a bounded 120-second budget across configured agents; backend apply acknowledgement remains bounded at 15 minutes. An uncertain saved pool is reconciled under exact revision/member/credential fingerprint custody without replaying credentials, including one final bounded attempt for previously parked outcomes. No new environment variable is required.
