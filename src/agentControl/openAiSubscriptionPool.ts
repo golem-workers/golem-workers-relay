@@ -23,6 +23,7 @@ export type SubscriptionPoolState = {
   revision: number;
   fingerprint: string;
   phase: "pending" | "applied" | "exiting" | "exited";
+  completionStage?: "credentials_verified" | "runtime_acknowledged";
   members: Array<{
     accountId: string;
     profileId: string;

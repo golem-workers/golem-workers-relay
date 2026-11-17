@@ -28,6 +28,7 @@ const stateSchema = z.object({
   revision: z.number().int().positive(),
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   phase: z.enum(["pending", "applied", "exiting", "exited"]),
+  completionStage: z.enum(["credentials_verified", "runtime_acknowledged"]).optional(),
   members: z.array(memberMetadata).max(32),
   managedProfileIds: z.array(z.string().min(1)),
 });
@@ -152,10 +153,13 @@ export async function syncSubscriptionPool(input: {
       members: input.members,
       ...(input.reconcileOnly ? { reconcileOnly: true } : {}),
     });
-    await input.refreshRuntimeAuth();
+    await writeSubscriptionPoolState(input.configPath, { ...next, completionStage: "credentials_verified" });
+    try { await input.refreshRuntimeAuth(); }
+    catch { throw new SubscriptionPoolError("OPENAI_POOL_AUTH_RUNTIME_PENDING", "Credentials verified; runtime acknowledgement is pending. Reconcile the exact saved operation without credential replay."); }
     const applied = {
       ...next,
       phase: "applied" as const,
+      completionStage: "runtime_acknowledged" as const,
       managedProfileIds: next.members.map((m) => m.profileId),
     };
     await writeSubscriptionPoolState(input.configPath, applied);
