@@ -1564,7 +1564,8 @@ function buildChatSendOriginRoute(input: {
   if (telegram) {
     return {
       originatingChannel: "relay-channel",
-      originatingTo: formatTelegramOriginTo(telegram),
+      // Keep the host plugin distinct from the inner transport provider.
+      originatingTo: `relay-channel:${formatTelegramOriginTo(telegram)}`,
     };
   }
 
@@ -1574,7 +1575,7 @@ function buildChatSendOriginRoute(input: {
   if (whatsAppPersonal) {
     return {
       originatingChannel: "relay-channel",
-      originatingTo: `whatsapp_personal:${whatsAppPersonal.chatId}`,
+      originatingTo: `relay-channel:whatsapp_personal:${whatsAppPersonal.chatId}`,
     };
   }
 

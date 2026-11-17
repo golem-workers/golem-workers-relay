@@ -910,3 +910,17 @@ Pool credential writes and runtime acknowledgements have separate durable comple
 
 ### Proven subscription store-preflight recovery
 An exact `AUTH_POOL_WRITER_RUNTIME_STORE_CONFLICT_EXIT_17_NONE` refusal occurs before credential writes. After repairing the local runtime-store conflict, an operator may explicitly resume the same saved intent, preserving the original fingerprint and retry limit. Legacy UNKNOWN receipts may be reclassified without execution only with a complete (at most three reconciliations) lineage starting with this exact preflight refusal and containing only that refusal or readback-only EXIT_16 mismatches. Missing/truncated histories, interrupted writes, post-write EXIT_18 and all other UNKNOWN outcomes remain readback-only. Relay and backend support must both be present; updating one is not fleet recovery.
+
+### Host-facing managed messenger targets
+
+Relay passes `originatingChannel: "relay-channel"` and a namespaced target such
+as `relay-channel:telegram:<chatId>` (or `relay-channel:telegram:group:<chatId>`)
+to OpenClaw. The outer namespace selects the plugin; the inner provider is kept
+for Relay transport dispatch. Bare `telegram:` targets collide with the native
+Telegram plugin during shared message-tool prefix validation.
+
+Deploy the companion relay-channel plugin namespace support **before** this
+Relay change. Verify a newly created dev agent by asking it through the real
+Telegram test login to generate an HTML report and send the `.html` document.
+Require a Telegram message ID and download/content verification; an ordinary
+text reply, model promise, or direct Bot API send is not attachment acceptance.
