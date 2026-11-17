@@ -907,3 +907,6 @@ after Gateway becomes healthy again.
 
 ## Subscription runtime completion
 Pool credential writes and runtime acknowledgements have separate durable completion stages. Runtime refresh shares a bounded 120-second budget across configured agents; backend apply acknowledgement remains bounded at 15 minutes. An uncertain saved pool is reconciled under exact revision/member/credential fingerprint custody without replaying credentials, including one final bounded attempt for previously parked outcomes. No new environment variable is required.
+
+### Proven subscription store-preflight recovery
+An exact `AUTH_POOL_WRITER_RUNTIME_STORE_CONFLICT_EXIT_17_NONE` refusal occurs before credential writes. After repairing the local runtime-store conflict, an operator may explicitly resume the same saved intent, preserving the original fingerprint and retry limit. Legacy UNKNOWN receipts may be reclassified without execution only with a complete (at most three reconciliations) lineage starting with this exact preflight refusal and containing only that refusal or readback-only EXIT_16 mismatches. Missing/truncated histories, interrupted writes, post-write EXIT_18 and all other UNKNOWN outcomes remain readback-only. Relay and backend support must both be present; updating one is not fleet recovery.
