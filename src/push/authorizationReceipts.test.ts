@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthorizationReceipts } from "./authorizationReceipts.js";
+import { RuntimeAuthWriterError } from "../agentControl/runtimeAuthWriter.js";
 import { logger } from "../logger.js";
 import { SubscriptionPoolError } from "../agentControl/openAiSubscriptionPool.js";
 import { ModelFenceBusyError } from "../agentControl/modelFence.js";
@@ -82,6 +83,54 @@ describe("durable credential receipts", () => {
     if (history.reconcileCount >= 3) await expect(store.reconcile("ambiguous_guard", action, seed.fingerprint, execute)).rejects.toThrow("AUTH_OPERATION_RECONCILE_LIMIT");
     else { await store.reconcile("ambiguous_guard", action, seed.fingerprint, execute); expect(await terminal("ambiguous_guard")).toMatchObject({ state: "UNKNOWN" }); }
     await expect(store.resume("ambiguous_guard", action, seed.fingerprint, execute)).rejects.toThrow("AUTH_OPERATION_RESUME_UNSAFE");
+  });
+  it("keeps a runtime-store preflight conflict retryable only under explicit exact authority", async () => {
+    const action = { kind: "codex.auth.pool.sync", revision: 4, members: [] };
+    const code = "AUTH_POOL_WRITER_RUNTIME_STORE_CONFLICT_EXIT_17_NONE";
+    await store.submit("preflight", action, () => Promise.reject(new RuntimeAuthWriterError(code, "private")));
+    const seed = await terminal("preflight"); if (seed.state === "NOT_FOUND") throw Error("missing");
+    expect(seed).toMatchObject({ state: "REFUSED", code });
+    const writer = vi.fn(() => Promise.resolve({ kind: "codex.auth.pool.sync" as const, revision: 4, phase: "applied" as const, members: [] }));
+    await store.submit("preflight", action, writer); expect(writer).not.toHaveBeenCalled();
+    await expect(store.resume("preflight", { ...action, revision: 5 }, seed.fingerprint, writer)).rejects.toThrow("AUTH_OPERATION_CONFLICT");
+    await store.resume("preflight", action, seed.fingerprint, writer);
+    expect(await terminal("preflight")).toMatchObject({ state: "SUCCEEDED", resumeCount: 1 });
+    expect(writer).toHaveBeenCalledOnce();
+  });
+  it.each([0, 1, 2, 3])("reclassifies complete preflight-only legacy lineage count=%i without executing", async count => {
+    const action = { kind: "codex.auth.pool.sync", revision: 4, members: [] };
+    await store.submit("preflight_legacy", action, () => Promise.reject(Error("seed")));
+    const seed = await terminal("preflight_legacy"); if (seed.state === "NOT_FOUND") throw Error("missing");
+    const code = "AUTH_POOL_WRITER_RUNTIME_STORE_CONFLICT_EXIT_17_NONE", initial = "AUTH_OPERATION_OUTCOME_UNKNOWN:" + code;
+    const mismatch = "AUTH_OPERATION_OUTCOME_UNKNOWN:AUTH_POOL_WRITER_STORE_READBACK_MISMATCH_EXIT_16_NONE";
+    await fs.writeFile(path.join(directory, "preflight_legacy.json"), JSON.stringify({ ...seed, code: count ? mismatch : initial, reconcileCount: count, previousUnknownCodes: count ? [initial, ...Array<string>(count - 1).fill(initial)] : [] }));
+    const execute = vi.fn(() => Promise.resolve({ kind: "codex.auth.pool.sync" as const, revision: 4, phase: "applied" as const, members: [] }));
+    await store.reconcile("preflight_legacy", action, seed.fingerprint, execute);
+    expect(await terminal("preflight_legacy")).toMatchObject({ state: "REFUSED", code }); expect(execute).not.toHaveBeenCalled();
+    await store.resume("preflight_legacy", action, seed.fingerprint, execute);
+    expect(await terminal("preflight_legacy")).toMatchObject({ state: "SUCCEEDED", resumeCount: 1 });
+  });
+  it.each(["AUTH_POOL_WRITER_RUNTIME_STORE_READBACK_MISMATCH_EXIT_18_NONE", "AUTH_POOL_WRITER_STORE_UPDATE_FAILED_EXIT_8_NONE", "AUTH_POOL_WRITER_TIMEOUT"])("keeps post-write/ambiguous %s UNKNOWN", async code => {
+    const action = { kind: "codex.auth.pool.sync", revision: 4, members: [] };
+    await store.submit("ambiguous_writer", action, () => Promise.reject(new RuntimeAuthWriterError(code, "private")));
+    const seed = await terminal("ambiguous_writer"); expect(seed.state).toBe("UNKNOWN");
+    if (seed.state === "NOT_FOUND") throw Error("missing");
+    await expect(store.resume("ambiguous_writer", action, seed.fingerprint, vi.fn())).rejects.toThrow("AUTH_OPERATION_RESUME_UNSAFE");
+  });
+  it.each([
+    { count: 1, history: ["AUTH_OPERATION_OUTCOME_UNKNOWN"] },
+    { count: 2, history: ["AUTH_OPERATION_OUTCOME_UNKNOWN:AUTH_POOL_WRITER_RUNTIME_STORE_CONFLICT_EXIT_17_NONE"] },
+    { count: 4, history: Array<string>(3).fill("AUTH_OPERATION_OUTCOME_UNKNOWN:AUTH_POOL_WRITER_RUNTIME_STORE_CONFLICT_EXIT_17_NONE") },
+    { count: 1, history: ["AUTH_OPERATION_OUTCOME_UNKNOWN:AUTH_POOL_WRITER_RUNTIME_STORE_READBACK_MISMATCH_EXIT_18_NONE"] },
+  ])("does not reclassify incomplete or post-write store history %j", async ({ count, history }) => {
+    const action = { kind: "codex.auth.pool.sync", revision: 4, members: [] };
+    await store.submit("unsafe_store", action, () => Promise.reject(Error("seed")));
+    const seed = await terminal("unsafe_store"); if (seed.state === "NOT_FOUND") throw Error("missing");
+    await fs.writeFile(path.join(directory, "unsafe_store.json"), JSON.stringify({ ...seed, reconcileCount: count, previousUnknownCodes: history, code: "AUTH_OPERATION_OUTCOME_UNKNOWN:AUTH_POOL_WRITER_STORE_READBACK_MISMATCH_EXIT_16_NONE" }));
+    const execute = vi.fn(() => Promise.reject(new RuntimeAuthWriterError("AUTH_POOL_WRITER_RUNTIME_STORE_CONFLICT_EXIT_17_NONE", "later refusal")));
+    if (count >= 3) await expect(store.reconcile("unsafe_store", action, seed.fingerprint, execute)).rejects.toThrow("AUTH_OPERATION_RECONCILE_LIMIT");
+    else { await store.reconcile("unsafe_store", action, seed.fingerprint, execute); expect(await terminal("unsafe_store")).toMatchObject({ state: "UNKNOWN" }); }
+    await expect(store.resume("unsafe_store", action, seed.fingerprint, execute)).rejects.toThrow("AUTH_OPERATION_RESUME_UNSAFE");
   });
   it("never resumes unknown or interrupted effects, even under unchanged intent", async () => {
     const action = { kind: "codex.auth.clear" };
