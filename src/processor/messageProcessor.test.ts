@@ -152,7 +152,7 @@ describe("createMessageProcessor", () => {
       expect.objectContaining({
         originRoute: {
           originatingChannel: "relay-channel",
-          originatingTo: "telegram:123",
+          originatingTo: "relay-channel:telegram:123",
         },
       })
     );
@@ -637,7 +637,7 @@ describe("createMessageProcessor", () => {
       expect.objectContaining({
         originRoute: {
           originatingChannel: "relay-channel",
-          originatingTo: "telegram:group:-5292069601",
+          originatingTo: "relay-channel:telegram:group:-5292069601",
         },
       })
     );
@@ -1430,7 +1430,7 @@ describe("createMessageProcessor", () => {
         timeoutMs: 2_000,
         originRoute: {
           originatingChannel: "relay-channel",
-          originatingTo: "telegram:123",
+          originatingTo: "relay-channel:telegram:123",
         },
       })
     );
