@@ -1,8 +1,8 @@
 # Initial subscription bootstrap: model-fence contention
 
-> Follow-up status: Canary billing is repaired. Component regressions and full
-> code suites pass; full original Sol/Codex creation remains **not passed**.
-> See the final follow-up outcome for the exact account/model and runtime limits.
+> Final paid-account follow-up: full Sol/high/fast=false/Codex creation **SUCCESS**
+> at 2026-11-20 06:01:42 UTC on the user-approved Plus identity. Component and
+> full code suites pass. See the chronological follow-ups and attestation limits below.
 
 ## Defect and scope
 
@@ -198,3 +198,61 @@ caused the earlier model or config errors.
 - Canonical dev-api backend was not replaced; production stayed unchanged.
   Both PRs remain draft pending full target-model acceptance with a suitable
   dev authorization and continuously attested candidate runtime.
+
+## Corrected test-account scope — user message 54040
+
+The user clarified that subscription tests must use only `7453635@gmail.com`
+(Plus) and `belbix@golemworkers.com` (Pro); other subscriptions were cancelled.
+Both identities were found CONNECTED in production metadata. The earlier
+Canary/free inventory was dev-only and did not establish that suitable test
+subscriptions were unavailable.
+
+At the user's direction both exact accounts were registered on dev-api using
+protected SSH-to-SSH streaming and canonical credential finalization, with
+identity/schema checks and an organization audit event. No plaintext credential
+file was persisted, no tokens were emitted, and production bindings were not
+modified. The production source credentials were not refreshed. Dev account IDs:
+Plus `cmwokbsl00000z0octe10odwm`; Pro `cmwokbsmc0002z0ocy8nn1jlx`. Both
+registered CONNECTED at version 1. Legacy Canary/free is not approved for tests.
+
+A fresh full original Sol/high/fast-false/no-fallback/Codex creation was admitted
+on the approved Plus account: task `cmwokda9w0007lrocmccad811`, disposable server
+`cmwokd9z70002lroct7jjs9oh`. The Pro account is available but not substituted
+automatically into that immutable creation.
+
+
+## Paid-account acceptance — final result
+
+The earlier missing-account limitation was resolved after user message 54040:
+only `7453635@gmail.com` (Plus) and `belbix@golemworkers.com` (Pro) are approved
+for these tests. Both were registered on dev using protected credential transfer
+and canonical credential finalization; production bindings were not changed.
+The legacy free fixture is not acceptance evidence for either paid account.
+
+- Disposable `cmwokd9z70002lroct7jjs9oh`; task `cmwokda9w0007lrocmccad811`.
+- Plus dev identity `cmwokbsl00000z0octe10odwm`; no account fallback or model substitution.
+- Terminal task **SUCCESS**, complete, no error, at `2026-11-20T06:01:42.127Z`.
+- Full creation includes the real model verification, not just model-list/catalog.
+- Independent DB verification at 06:39 UTC: `currentModel=codex/gpt-6.1-sol`,
+  `harnessOverride=codex`, harness revision 3, no pending transition; pool revision
+  1/applied 1, Plus assignment ACTIVE with credential version 1, no pool error.
+- Runtime attestation during initial route bootstrap at 05:58:35: Sol, high,
+  fast=false, no fallbacks; Relay `89e1db3e7cfd297f2a18331513d86738f7edf07b`,
+  compiled module SHA256 `d675cfb200fa8c12e2f511d034c033189a84488b876cd7477a73433d5855bb56`.
+- Final runtime hash was not independently re-read: the VM had automatically
+  hibernated by 06:39 and SSH refused. This is successful functional creation
+  with attested candidate ingress, not a claim of continuous binary attestation.
+- `NOTIFICATION_NO_ROUTE` after SUCCESS concerns the synthetic owner's messenger
+  notification, not creation or model verification.
+
+Local sanitized evidence: `full-creation-paid.log`, `paid-route-verify.log`,
+`paid-success-verify.log`; earlier chronological failures above remain historical,
+not the final acceptance outcome. Pro was registered as the second authorized
+fixture but was not used for this Plus acceptance run.
+
+Final cleanup independently audited at 06:40 UTC: paid disposable deletion
+SUCCEEDED, provider success, server DELETED; all four earlier full-run
+disposables also DELETED. Task-only template ARCHIVED version 6. Both approved
+Plus/Pro fixtures remain CONNECTED version 1. Canary billing ACTIVE, overdue 0,
+creation allowed. Shared dev backend remains `3ed457609c4109e2b3f0b09b7882c5ff54492818`,
+`gwb` active. No production rollout was performed.
