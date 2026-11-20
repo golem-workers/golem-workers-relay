@@ -2517,7 +2517,7 @@ it("preflights fresh native OpenAI proxy routing read-only, before OAuth install
   } finally { vi.unstubAllEnvs(); await fs.rm(dir, { recursive: true, force: true }); }
 });
 
-it("prepares a fresh Sol subscription route through fenced backend bootstrap before auth exists", async () => {
+it.each([false, true])("prepares a fresh Sol subscription route through fenced backend bootstrap before auth exists (competing writer: %s)", async competingWriter => {
  const previousBackend = process.env.BACKEND_BASE_URL, previousToken = process.env.RELAY_TOKEN;
  process.env.BACKEND_BASE_URL = "https://bootstrap.example.test"; process.env.RELAY_TOKEN = "synthetic";
  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bootstrap-model-"));
@@ -2531,7 +2531,17 @@ it("prepares a fresh Sol subscription route through fenced backend bootstrap bef
   const action = { kind: "model.set" as const, model: "codex/gpt-6.1-sol", fallbacks: [], subscriptionBootstrap: true as const, fence: { revision: "a1111111-1111-4111-8111-111111111111", predecessor: null } };
   await expect(executeAgentControlImpl({ configPath, gateway: noopGateway, action })).rejects.toMatchObject({code:"SUBSCRIPTION_BOOTSTRAP_AUTHORITY_REQUIRED"});
   expect(JSON.parse(await fs.readFile(configPath,"utf8"))).toEqual(config);
-  const result = await executeAgentControlImpl({ configPath, gateway: noopGateway, action, policyAuthority: "backend" });
+  const { spawn } = await import("node:child_process");
+  const holder = competingWriter ? spawn("flock", ["-x", configPath + ".model-fence.lock", "sh", "-c", "printf ready; cat >/dev/null"], { stdio: ["pipe", "pipe", "pipe"] }) : null;
+  if (holder) await new Promise<void>((resolve, reject) => { holder.once("error", reject); holder.stdout.once("data", () => resolve()); });
+  const release = holder ? setTimeout(() => holder.stdin.end(), 150) : null;
+  let result;
+  try {
+    result = await executeAgentControlImpl({ configPath, gateway: noopGateway, action, policyAuthority: "backend" });
+  } finally {
+    if (release) clearTimeout(release);
+    if (holder) { holder.stdin.end(); if (holder.exitCode === null) await new Promise<void>(resolve => holder.once("exit", () => resolve())); }
+  }
   expect(result).toMatchObject({ kind: "model.set", subscriptionBootstrap: true, applied: true });
   const saved = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;
   const { assertSubscriptionOnlyConfiguration } = await import("./openAiSubscriptionPool.js");

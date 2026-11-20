@@ -924,3 +924,7 @@ Relay change. Verify a newly created dev agent by asking it through the real
 Telegram test login to generate an HTML report and send the `.html` document.
 Require a Telegram message ID and download/content verification; an ordinary
 text reply, model promise, or direct Bot API send is not attachment acceptance.
+
+### Initial creation model-fence contention
+
+Initial authenticated subscription-route bootstrap waits up to 30 seconds for the existing model fence; config revision and predecessor checks still run after acquisition. Persistent contention remains MODEL_FENCE_BUSY; ordinary model/config writes remain fail-fast. No environment setting disables or extends this admission bound.

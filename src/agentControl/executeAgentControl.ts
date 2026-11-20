@@ -130,7 +130,11 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
   // receipt instead of burning explicit resume attempts on an immediate flock
   // refusal. Custody and all config/policy checks still precede the writer;
   // persistent contention remains a proven pre-mutation MODEL_FENCE_BUSY.
-  const ingressWaitSeconds = input.action.kind === "codex.auth.pool.sync" ? 30 : 0;
+  // Initial route preparation races short post-provisioning config writers too.
+  // Only the authenticated, fenced bootstrap may wait; the same config CAS and
+  // model predecessor checks still run after custody has actually been acquired.
+  const subscriptionBootstrap = input.action.kind === "model.set" && input.action.subscriptionBootstrap === true;
+  const ingressWaitSeconds = input.action.kind === "codex.auth.pool.sync" || subscriptionBootstrap ? 30 : 0;
   const withIngressLock = (operation: () => Promise<AgentControlResult>) => diagnosticOnly ? operation() : withModelFenceLock(input.configPath, () => input.action.runtimeInstallActionId ? withOwnerFenceLock(input.configPath, async () => { await assertRuntimeActionNotCancelled(input.action.runtimeInstallActionId!); return operation(); }) : operation(), ingressWaitSeconds);
   const authorizationOnly = ["codex.auth.pool.exit", "codex.auth.pool.sync", "codex.auth.import", "codex.auth.sync", "codex.auth.set", "codex.auth.clear", "codex.login.start", "codex.login.status"].includes(input.action.kind);
   const withConfigScope = async (operation: () => Promise<AgentControlResult>) => {

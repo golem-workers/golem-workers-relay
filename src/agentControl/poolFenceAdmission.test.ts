@@ -118,3 +118,31 @@ it("resumes a saved pre-writer refusal once, without changing operation or membe
   expect(await terminal(f.store, "existing_saved_2")).toMatchObject({ operationId: "existing_saved_2", state: "SUCCEEDED", resumeCount: 1, result: { revision: 2 } });
   expect(writer).toHaveBeenCalledOnce();
 });
+
+// The creation route bootstrap has no credentials yet, but still shares custody
+// with post-provisioning writers. Waiting must never weaken its config CAS.
+it("rechecks initial-bootstrap config CAS after a competing writer releases custody", async () => {
+  const f = await fixture(); const holder = await hold(f.configPath);
+  const action = { kind: "model.set" as const, model: "codex/gpt-6.1-sol", fallbacks: [], subscriptionBootstrap: true as const,
+    fence: { revision: "bootstrap", predecessor: null }, managedRuntimeExpectedConfigRevision: configRevision(f.text) };
+  let settled = false;
+  const result = executeAgentControl({ configPath: f.configPath, action, policyAuthority: "backend", gateway: { request: () => Promise.reject(Error("unexpected RPC")) } }).catch((error: unknown) => error).finally(() => { settled = true; });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  expect(settled).toBe(false);
+  await fs.writeFile(f.configPath, '{"authored":"new"}'); holder.stdin.end();
+  expect(await result).toMatchObject({ code: "CONFIG_CONFLICT" });
+  expect(await fs.readFile(f.configPath, "utf8")).toBe('{"authored":"new"}');
+  expect(writer).not.toHaveBeenCalled();
+});
+it("bounds initial-bootstrap contention without changing config or stealing the model lock", async () => {
+  const f = await fixture(); await hold(f.configPath);
+  const action = { kind: "model.set" as const, model: "codex/gpt-6.1-sol", fallbacks: [], subscriptionBootstrap: true as const, fence: { revision: "bootstrap", predecessor: null } };
+  await expect(executeAgentControl({ configPath: f.configPath, action, policyAuthority: "backend", gateway: { request: () => Promise.reject(Error("unexpected RPC")) } })).rejects.toThrow("MODEL_FENCE_BUSY");
+  expect(await fs.readFile(f.configPath, "utf8")).toBe(f.text);
+  expect(writer).not.toHaveBeenCalled();
+}, 40000);
+it("keeps ordinary model selections fail-fast while creation bootstrap has bounded admission", async () => {
+  const f = await fixture(); await hold(f.configPath);
+  await expect(executeAgentControl({ configPath: f.configPath, action: { kind: "model.set", model: "codex/gpt-6.1-sol", fallbacks: [] }, gateway: { request: () => Promise.resolve({}) } })).rejects.toThrow("MODEL_FENCE_BUSY");
+  expect(await fs.readFile(f.configPath, "utf8")).toBe(f.text);
+});
