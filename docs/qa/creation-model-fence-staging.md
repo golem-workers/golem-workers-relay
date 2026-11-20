@@ -76,3 +76,14 @@ check stopped activation before restart. The original symlink was restored;
 actual generated files were then staged as an immutable generation and switched
 atomically. The daemon's installed module checksum matched the tested candidate.
 This failed packaging attempt is not counted as a successful activation.
+
+## Fixture retirement
+
+After preserving the independent read-back, the task-owned disposable was
+retired through the company deletion service with verified native backup:
+request **SUCCEEDED**, provider delete success, backend **DELETED** at
+2026-11-20 04:42:08 UTC. The blocked Canary draft had already been soft-deleted
+before any VM provision, and its task-only template is **ARCHIVED**. No task VM
+or candidate daemon remains running. The normal deletion-notification attempt
+failed after the disposable Relay forward was gone; this did not change the
+independently confirmed deletion outcome.
