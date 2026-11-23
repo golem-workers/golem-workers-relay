@@ -585,6 +585,7 @@ config.read reports owner-fence version 1, disk revision and fresh Gateway effec
 This is eventual config delivery, not a provider lifecycle protocol or continuously leased Gateway. No ExecStart wrapper, automatic wake, stop-before-grant, fleet enrollment or snapshot guarantee. An unavailable Gateway cannot certify revocation; residual wildcard/imported authority is not complete denial.
 
 Model verification requires Gateway runtime metadata (`resolved.agentRuntime.id`) and independently checks the historical inference producer (`entry.agentHarnessId`). Pairing inventory reads do not activate or persist incoming managed policy; approval operations retain mutation fences.
+`model.verify` waits up to 30 seconds for the shared model lock so startup plugin maintenance after a cold Gateway restart cannot cause an immediate false creation failure. Persistent contention still returns `MODEL_FENCE_BUSY` before inference; config CAS, model/runtime identity, zero-fallback validation and disposable-session cleanup remain unchanged. Ordinary model/config mutations retain fail-fast admission.
 
 ### Nonsecret runtime-auth proof for shared backend Update/Sync
 

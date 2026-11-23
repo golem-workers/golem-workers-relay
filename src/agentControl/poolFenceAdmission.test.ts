@@ -7,6 +7,7 @@ import { AuthorizationReceipts } from "../push/authorizationReceipts.js";
 import { executeAgentControl } from "./executeAgentControl.js";
 import { configRevision } from "./ownerFence.js";
 import { withModelFenceLock } from "./modelFence.js";
+import * as probeTransport from "./modelVerificationProbe.js";
 
 // Only the credential transaction is synthetic; ingress, kernel custody and
 // durable receipt admission/deduplication are the production implementations.
@@ -21,6 +22,7 @@ afterEach(async () => {
   for (const holder of holders.splice(0)) { holder.stdin?.end(); holder.kill(); }
   await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })));
   writer.mockReset();
+  vi.restoreAllMocks();
 });
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "pool-fence-admission-")); roots.push(root);
@@ -146,3 +148,52 @@ it("keeps ordinary model selections fail-fast while creation bootstrap has bound
   await expect(executeAgentControl({ configPath: f.configPath, action: { kind: "model.set", model: "codex/gpt-6.1-sol", fallbacks: [] }, gateway: { request: () => Promise.resolve({}) } })).rejects.toThrow("MODEL_FENCE_BUSY");
   expect(await fs.readFile(f.configPath, "utf8")).toBe(f.text);
 });
+
+it("waits for a startup config writer before verifying the selected model exactly once", async () => {
+  const f = await fixture();
+  const text = JSON.stringify({ agents: { defaults: { model: { primary: "openrouter/example", fallbacks: [] } } } });
+  await fs.writeFile(f.configPath, text);
+  const holder = await hold(f.configPath);
+  const probe = vi.spyOn(probeTransport, "runIsolatedModelProbe").mockImplementation(request => Promise.resolve({
+    status: "ok", result: { payloads: [{ text: request.messageText.split(" ")[2].slice(0, -1) }],
+      meta: { agentMeta: { provider: "openrouter", model: "example", agentHarnessId: "openclaw" } } },
+  }));
+  const gateway = { request: vi.fn(() => Promise.resolve({
+    resolved: { modelProvider: "openrouter", model: "example", agentRuntime: { id: "openclaw", source: "model" } },
+    entry: { modelProvider: "openrouter", model: "example", agentHarnessId: "openclaw" },
+  })) };
+  let settled = false;
+  const result = executeAgentControl({ configPath: f.configPath, action: { kind: "model.verify", model: "openrouter/example" },
+    gateway, statusNudgeRunner: { runChatTask: () => Promise.reject(Error("unexpected chat task")) },
+  }).catch((error: unknown) => error).finally(() => { settled = true; });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  expect(settled).toBe(false);
+  expect(probe).not.toHaveBeenCalled(); expect(gateway.request).not.toHaveBeenCalled();
+  holder.stdin.end();
+  expect(await result).toMatchObject({ kind: "model.verify", verified: true, model: "openrouter/example" });
+  expect(probe).toHaveBeenCalledOnce();
+  expect(await fs.readFile(f.configPath, "utf8")).toBe(text);
+});
+
+it("rechecks verification config CAS after waiting and never probes a changed selection", async () => {
+  const f = await fixture(); const holder = await hold(f.configPath);
+  const gateway = { request: vi.fn(() => Promise.reject(Error("unexpected RPC"))) };
+  let settled = false;
+  const result = executeAgentControl({ configPath: f.configPath,
+    action: { kind: "model.verify", model: "openrouter/example", managedRuntimeExpectedConfigRevision: configRevision(f.text) }, gateway,
+  }).catch((error: unknown) => error).finally(() => { settled = true; });
+  await new Promise(resolve => setTimeout(resolve, 100)); expect(settled).toBe(false);
+  await fs.writeFile(f.configPath, '{"authored":"new"}'); holder.stdin.end();
+  expect(await result).toMatchObject({ code: "CONFIG_CONFLICT" });
+  expect(gateway.request).not.toHaveBeenCalled();
+  expect(await fs.readFile(f.configPath, "utf8")).toBe('{"authored":"new"}');
+});
+
+it("bounds verification contention without stealing custody or starting inference", async () => {
+  const f = await fixture(); await hold(f.configPath);
+  const gateway = { request: vi.fn(() => Promise.reject(Error("unexpected RPC"))) };
+  await expect(executeAgentControl({ configPath: f.configPath, action: { kind: "model.verify", model: "openrouter/example" }, gateway })).rejects.toThrow("MODEL_FENCE_BUSY");
+  expect(gateway.request).not.toHaveBeenCalled();
+  expect(await fs.readFile(f.configPath, "utf8")).toBe(f.text);
+  expect(writer).not.toHaveBeenCalled();
+}, 40000);
