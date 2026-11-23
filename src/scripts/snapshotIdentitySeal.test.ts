@@ -32,7 +32,7 @@ config = {'gateway': {'auth': {'mode': 'token', 'token': secret, 'password': sec
 index = {'version': 1, 'installRecords': records, 'plugins': [{'id': name, 'sourceAdmissions': [secret]} for name in records], 'diagnostics': [secret], 'workspaceDir': secret, 'generatedAtMs': 999, 'refreshReason': 'bake'}
 (s / 'plugins').mkdir()
 (s / 'plugins/installs.json').write_text(json.dumps(index))
-for name in ('openclaw.json.bak', 'openclaw.json.bak.1', 'openclaw.json.last-good', 'config-journal-fingerprint.key', 'identity/device.json', 'agents/main/agent/secret', 'credentials/auth.json', 'future-runtime/secret', 'state/old.sqlite', 'state/old.sqlite-wal', 'state/old.sqlite-shm', 'state/old.sqlite-journal', 'plugins/runtime-secret', 'workspace/IDENTITY.md', 'workspace/memory/private.md', 'cache/private'):
+for name in ('openclaw.json.bak', 'openclaw.json.bak.1', 'openclaw.json.last-good', 'config-journal-fingerprint.key', 'identity/device.json', 'agents/main/agent/secret', 'credentials/auth.json', 'client/credentials.sqlite', 'future-runtime/secret', 'state/old.sqlite', 'state/old.sqlite-wal', 'state/old.sqlite-shm', 'state/old.sqlite-journal', 'plugins/runtime-secret', 'workspace/IDENTITY.md', 'workspace/memory/private.md', 'cache/private'):
     file = s / name
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(secret)
