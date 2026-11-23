@@ -1863,6 +1863,11 @@ if machine_state.parent.exists():
     fsync(machine_state.parent)
 print(json.dumps({'sealed': True, 'database': 'fresh schema plus plugin provenance only' if db.exists() else 'legacy config provenance', 'workspace': 'skills only'}))
 SEAL_PY
+  # Native cutover requires a matching local companion even when it contains no
+  # device identity or tokens. Bootstrap it only after the fresh-only state seal.
+  set_step "openclaw_snapshot_client_credentials_bootstrap"
+  node "${RELAY_REPO_DIR}/scripts/bootstrap-snapshot-client-credentials.mjs" \
+    /root/.openclaw "${OPENCLAW_PACKAGE_DIR}"
   rm -rf /tmp/openclaw
   sync
 
