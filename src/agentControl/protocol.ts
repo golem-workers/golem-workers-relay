@@ -236,6 +236,7 @@ export const agentControlResultSchema = z.discriminatedUnion("kind", [
     authorizationConfigVersion: z.literal(1).optional(),
     subscriptionPoolVersion: z.literal(1).optional(),
     subscriptionBootstrapVersion: z.literal(1).optional(),
+    subscriptionBootstrapHarnessVersion: z.literal(1).optional(),
     subscriptionPoolExitVersion: z.literal(1).optional(),
     subscriptionPoolCompatibility: z.object({ compatible: z.boolean(), reason: z.string().optional() }).optional(),
     durableAuthorizationVersion: z.literal(1).optional(),

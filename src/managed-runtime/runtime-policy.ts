@@ -47,14 +47,14 @@ async function persistPolicy(configPath: string, incoming: ManagedRuntimePolicy)
 }
 /** Called inside model/owner mutation locks. Incoming authority is carried by the
  * authenticated backend action, never by arbitrary OpenClaw config text. */
-export async function withManagedRuntimePolicy<T>(configPath: string, incoming: ManagedRuntimePolicy | undefined, operation: () => Promise<T>, options?: { allowMissingAuth?: boolean }): Promise<T> {
+export async function withManagedRuntimePolicy<T>(configPath: string, incoming: ManagedRuntimePolicy | undefined, operation: () => Promise<T>, options?: { allowMissingAuth?: boolean; subscriptionBootstrap?: boolean }): Promise<T> {
   const inherited = scope.getStore();
   return scope.run({ configPath: "", policy: managedRuntime.defaultPolicy }, async () => {
     const current = inherited?.configPath === path.resolve(configPath) ? inherited.policy : await readManagedRuntimePolicy(configPath);
     // First scoped authority comes from authenticated backend ingress. Subsequent
     // authority must retain that server binding and monotonic revision counters.
     const policy = incoming ? managedRuntime.acceptPolicy(current, incoming) : current;
-    return scope.run({ configPath: path.resolve(configPath), policy, allowMissingAuth: (options?.allowMissingAuth === true || (options === undefined && inherited?.configPath === path.resolve(configPath) && inherited.allowMissingAuth === true)) && current.chatHarness === "codex" && JSON.stringify(current) === JSON.stringify(policy) }, operation);
+    return scope.run({ configPath: path.resolve(configPath), policy, allowMissingAuth: options?.subscriptionBootstrap === true && policy.chatHarness === "codex" || (options?.allowMissingAuth === true || (options === undefined && inherited?.configPath === path.resolve(configPath) && inherited.allowMissingAuth === true)) && current.chatHarness === "codex" && JSON.stringify(current) === JSON.stringify(policy) }, operation);
   });
 }
 export async function runtimeContext(configPath: string): Promise<RuntimeContext> {

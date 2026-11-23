@@ -928,3 +928,5 @@ text reply, model promise, or direct Bot API send is not attachment acceptance.
 ### Initial creation model-fence contention
 
 Initial authenticated subscription-route bootstrap waits up to 30 seconds for the existing model fence; config revision and predecessor checks still run after acquisition. Persistent contention remains MODEL_FENCE_BUSY; ordinary model/config writes remain fail-fast. No environment setting disables or extends this admission bound.
+
+Fenced backend subscription bootstrap advertises `subscriptionBootstrapHarnessVersion: 1` and may prepare the final Codex harness before OAuth exists. This narrowly scoped configuration preparation does not admit inference, paid fallback, unfenced callers or ordinary unauthenticated harness changes.

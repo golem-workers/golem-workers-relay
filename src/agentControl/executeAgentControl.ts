@@ -334,7 +334,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
     // fences delayed older account changes; it does not normalize OpenClaw config.
     if (authorizationOnly && !readOnlyPolicy) await withOwnerFenceLock(input.configPath, () => commitManagedRuntimePolicy(input.configPath));
     return complete(result);
-  }, { allowMissingAuth: ["codex.auth.clear", "gateway.restart"].includes(input.action.kind) }))));
+  }, { allowMissingAuth: ["codex.auth.clear", "gateway.restart"].includes(input.action.kind), subscriptionBootstrap: input.action.kind === "model.set" && input.action.subscriptionBootstrap === true && input.policyAuthority === "backend" && Boolean(input.action.fence) }))));
 }
 
 async function executeAgentControlUnfenced(input: {
@@ -636,6 +636,7 @@ async function readConfig(configPath: string, gateway: GatewayLike, includeRunti
     authorizationConfigVersion: 1,
     subscriptionPoolVersion: 1,
     subscriptionBootstrapVersion: 1,
+    subscriptionBootstrapHarnessVersion: 1,
     ...(exitCapability ? { subscriptionPoolExitVersion: 1 as const } : {}),
     subscriptionPoolCompatibility: await (async () => {
       try { const guard = await assertRuntimeSubscriptionGuard(gateway); assertSubscriptionOnlyConfiguration(prepareSubscriptionPoolConfig(config, guard), process.env, guard); return { compatible: true }; }
