@@ -1,0 +1,15 @@
+{
+  "name": "@golemworkers/spreadsheets",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "xlsx": "file:vendor/xlsx-0.20.3.tgz"
+  },
+  "scripts": {
+    "test": "node --test tests/*.check.cjs"
+  }
+}

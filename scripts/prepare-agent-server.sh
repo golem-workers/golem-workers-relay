@@ -38,7 +38,6 @@ OPENCLAW_SAFE_SKILL_SPECS=(
   "@steipete/github"
   "@matrixy/agent-browser-clawdbot"
   "@ivangdavila/word-docx"
-  "@ivangdavila/excel-xlsx"
   "@ivangdavila/powerpoint-pptx"
   "@steipete/markdown-converter"
   "@ivangdavila/data-analysis"
@@ -49,6 +48,7 @@ OPENCLAW_SAFE_SKILL_SPECS=(
   "@steipete/notion"
   "@lamelas/himalaya"
 )
+SPREADSHEET_BUNDLE_SHA256="e9d5addfb34ca8206ec862bb62cc355ebecb8abde4452e139b8a095a555d89b6"
 RUN_OPENCLAW_ONBOARD=1
 APT_SOURCES_LIST="/etc/apt/sources.list"
 UBUNTU_SUITE="${UBUNTU_SUITE:-noble}"
@@ -708,6 +708,10 @@ main() {
     iptables \
     ufw \
     python3 \
+    python3-uno \
+    python3-openpyxl \
+    python3-pil \
+    libreoffice-calc \
     python3-pip \
     sqlite3 \
     util-linux \
@@ -1387,6 +1391,10 @@ if (hasEnabledCodexNativeHookRelayDefault(installDir)) {
 console.log(`codex prepared: ${installDir}`)
 console.log(patchedFiles.length > 0 ? `codex native hook relay disabled in: ${patchedFiles.join(", ")}` : "codex native hook relay already disabled")
 NODE
+
+  set_step "spreadsheet_tools"
+  printf '%s  %s\n' "${SPREADSHEET_BUNDLE_SHA256}" "${RELAY_REPO_DIR}/skills/golem-spreadsheets/manifest.sha256" | sha256sum --check -
+  bash "${RELAY_REPO_DIR}/scripts/install-spreadsheet-tools.sh"
 
   set_step "openclaw_safe_skills_preinstall"
   preinstall_openclaw_safe_skills

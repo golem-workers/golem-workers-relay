@@ -10,7 +10,7 @@
     "build": "npm run policy:check && python3 scripts/build-relay.py",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "test": "npm run policy:check && python3 scripts/build-relay.test.py && vitest run",
+    "test": "npm run policy:check && python3 scripts/build-relay.test.py && npm run test:spreadsheets && vitest run",
     "test:subscription-sequences": "npm run build && node scripts/prove-subscription-action-sequences.mjs",
     "test:transport": "vitest run src/openclaw/chatRunner.test.ts src/relayChannel/transportDeliveryTracker.test.ts src/relayChannel/transportStateMachineFuzz.test.ts src/relayChannel/controlPlane.integration.test.ts src/relayChannel/telegramTransport.test.ts src/processor/messageProcessor.test.ts src/push/pushServer.test.ts",
     "test:e2e": "vitest run -c vitest.e2e.config.ts --reporter=verbose",
@@ -26,7 +26,8 @@
     "openclaw:reset": "docker compose --env-file openclaw.env down --remove-orphans && rm -rf .openclaw openclaw-workspace",
     "policy:check": "node scripts/managed-runtime-policy.mjs --check",
     "policy:generate": "node scripts/managed-runtime-policy.mjs",
-    "test:disconnect-supersession": "npm run build && NODE_USE_ENV_PROXY=0 node scripts/prove-disconnect-supersession.mjs"
+    "test:disconnect-supersession": "npm run build && NODE_USE_ENV_PROXY=0 node scripts/prove-disconnect-supersession.mjs",
+    "test:spreadsheets": "python3 scripts/check-spreadsheet-bundle.py && npm ci --prefix skills/golem-spreadsheets --ignore-scripts --no-audit --no-fund && node --test skills/golem-spreadsheets/tests/*.check.cjs"
   },
   "dependencies": {
     "cron-parser": "^5.10.0",

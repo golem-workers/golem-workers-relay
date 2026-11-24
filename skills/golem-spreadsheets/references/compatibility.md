@@ -1,0 +1,14 @@
+# Compatibility and fidelity contract
+
+Versioned engines: vendored SheetJS CE 0.20.3, Apache-2.0, official CDN tarball with SHA-256 and npm integrity lock; LibreOffice from the Ubuntu snapshot distribution. No Windows/Excel worker is provisioned. File-format compatibility does not prove execution in every historical Excel application/version.
+
+- XLSX/XLSM/XLTX/XLTM (Excel 2007+): read, create, cell edit, conversion. Default edits preserve untouched package bytes; VBA/objects are not executed or rewritten. New formulas request recalculation on open. Signed, protected and shared/array-formula edits fail closed. Full arbitrary visual/structural editing is not promised.
+- XLS BIFF8 (Excel 97–2003/2004): read, data write. Use LibreOffice for formulas; whole-book rewriting may change advanced objects, so retain the input and acknowledge fidelity trade-offs.
+- XLS BIFF5 (Excel 5/95), BIFF4, BIFF3, BIFF2 (Excel 2.x–4.x): read and basic data output. Writer support is narrower than parser support. BIFF2–4 are single-sheet; BIFF2–5 have 16384-row/256-column limits. Non-Latin text and formula writes may be rejected by verification. Use BIFF8/XLSX when the legacy engine cannot represent the requested content; never silently switch the user's requested format.
+- Pre-standard Excel 2007 Beta 2 XLSB dialect: rejected on invalid decoded sheet metadata; LibreOffice may also lose sheets, which is rejected. This is a retained negative fixture, not supported coverage.
+- XLSB (Excel 2007+ BIFF12): read and data-only creation/rewriting. The CE writer does not preserve formulas. Formula-bearing XLSB output is rejected, not claimed supported. LibreOffice imports but does not export XLSB; native Excel is required for unsupported formula-preserving XLSB writes and is currently unavailable.
+- ODS/FODS, Excel 2003 XML (XLML): read/write data and supported formulas; full application-specific objects/layout are not guaranteed.
+- CSV/TSV/UTF-16 TXT/HTML: single-sheet interchange. No macros/formatting/multiple-sheet preservation. The verifier rejects type/leading-zero/encoding changes. Formula-bearing export may need an explicitly requested values-only projection prepared separately; the tool never silently removes formulas.
+- Password-encrypted, corrupt, unsupported, or expansion-limit inputs: return a concrete error; do not create a misleading output. Protection is not permission to bypass it.
+
+Large data: input cap 100 MiB, OOXML expanded cap 256 MiB and 10000 ZIP members, read output capped by requested rows. These are operational bounds, not every file size supported. Never claim “all formats/all versions” from generated round trips alone. The retained test report distinguishes independently authored fixtures, generated format probes, formula semantics, package preservation and real application checks.
