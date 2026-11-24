@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Pin every deployed skill/tool byte into the snapshot preparation fingerprint."""
-import hashlib,pathlib,re,sys
+"""Pin every deployed runtime byte into the snapshot preparation fingerprint."""
+import hashlib,pathlib,re,sys,os
 root=pathlib.Path(__file__).resolve().parent.parent
-skill=root/'skills/golem-spreadsheets'
-files=[skill/'SKILL.md',skill/'package.json',skill/'package-lock.json']
-for folder in ['scripts','references','vendor']:
+skill=root/'tools/golem-spreadsheets'
+files=[skill/'package.json',skill/'package-lock.json',root/'scripts/install-spreadsheet-tools.sh',root/'scripts/prepare-spreadsheet-runtime.sh']
+for folder in ['scripts','vendor']:
     files += [p for p in (skill/folder).rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc']
-manifest=''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.relative_to(skill).as_posix()+'\n' for p in sorted(files))
+manifest=''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+pathlib.Path(os.path.relpath(p,skill)).as_posix()+'\n' for p in sorted(files))
 pin=hashlib.sha256(manifest.encode()).hexdigest();prepare=root/'scripts/prepare-agent-server.sh';script=prepare.read_text()
 if sys.argv[1:]==['--write']:
     (skill/'manifest.sha256').write_text(manifest)

@@ -1,7 +1,7 @@
 name: Spreadsheet files
 on:
   pull_request:
-    paths: ['skills/golem-spreadsheets/**', 'scripts/*spreadsheet*', 'scripts/prepare-agent-server.sh', '.github/workflows/spreadsheet-files.yml']
+    paths: ['tools/golem-spreadsheets/**', 'scripts/*spreadsheet*', 'src/scripts/spreadsheetSnapshot.test.ts', 'scripts/prepare-agent-server.sh', '.github/workflows/spreadsheet-files.yml']
   workflow_dispatch:
 jobs:
   files:

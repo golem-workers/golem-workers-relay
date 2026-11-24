@@ -345,23 +345,22 @@ test("rich specifications cannot be silently downgraded by data writer", () => {
     /openpyxl/,
   );
 });
-test("installer exposes a working tool and skill in isolated paths without touching the input", () => {
+test("runtime installer exposes a working tool without managing backend skill files", () => {
   const root = path.resolve(__dirname, "../../..");
   const runtime = file("runtime with spaces"),
-    skills = file("installed skills"),
     bin = file("bin");
   cp.execFileSync(
     "bash",
     [
       path.join(root, "scripts/install-spreadsheet-tools.sh"),
       runtime,
-      skills,
       bin,
     ],
     { env: process.env },
   );
   assert.ok(fs.lstatSync(runtime).isSymbolicLink());
-  assert.ok(fs.existsSync(path.join(skills, "golem-spreadsheets/SKILL.md")));
+  assert.equal(fs.existsSync(path.join(runtime, "SKILL.md")), false);
+  assert.equal(fs.existsSync(path.join(runtime, "references")), false);
   const cli = path.join(bin, "golem-spreadsheet");
   const result = JSON.parse(
     cp.execFileSync(cli, ["inspect", file("independent.xls")], {
@@ -443,4 +442,23 @@ test("ZIP expansion cap and same-file aliases are rejected before writing", () =
       ]),
     /original/i,
   );
+});
+
+test("runtime self-check exercises installed engines and formula calculation", () => {
+  const result = run(["self-check"]);
+  assert.equal(result.runtimeContract, 1);
+  assert.equal(result.verified, true);
+  assert.equal(result.formulasRecalculated, true);
+  assert.ok(result.checks.includes("libreoffice-uno-recalculate"));
+});
+
+test("runtime self-check fails when a required Python engine is missing", () => {
+  const spawn = cp.spawnSync;
+  try {
+    cp.spawnSync = function(command, ...args) {
+      if (command === "/usr/bin/python3") return {status: 1, stdout: "", stderr: "missing openpyxl"};
+      return spawn.call(this, command, ...args);
+    };
+    assert.throws(() => run(["self-check"]), /missing openpyxl/);
+  } finally { cp.spawnSync = spawn; }
 });

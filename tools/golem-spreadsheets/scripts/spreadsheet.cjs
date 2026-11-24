@@ -364,11 +364,34 @@ function python(script, request) {
     );
   return JSON.parse(r.stdout);
 }
+function selfCheck() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gw-sheet-selfcheck-"));
+  try {
+    const spec = path.join(dir, "spec.json");
+    fs.writeFileSync(spec, JSON.stringify({sheets: [{name: "Данные", rows: [["Код", "Количество", "Итого"], ["00123", 2, {formula: "B2*3"}]], styles: {A1: {font: {bold: true}}}}]}));
+    const created = path.join(dir, "created.xlsx");
+    run(["create", created, "--spec", spec, "--engine", "openpyxl"]);
+    const changes = path.join(dir, "changes.json");
+    fs.writeFileSync(changes, JSON.stringify([{sheet: "Данные", cell: "B2", value: 4}]));
+    const edited = path.join(dir, "edited.xlsx");
+    run(["edit", created, edited, "--changes", changes]);
+    const calculated = path.join(dir, "calculated.xlsx");
+    run(["recalculate", edited, calculated, "--allow-lossy"]);
+    const cells = run(["read", calculated]).cells;
+    if (cells.A2.value !== "00123" || cells.B2.value !== 4 || cells.C2.value !== 12 || cells.C2.formula !== "B2*3")
+      fail("RUNTIME_SELF_CHECK", "Spreadsheet runtime round trip or recalculation failed");
+    return {runtimeContract: 1, verified: true, checks: ["openpyxl-create", "ooxml-edit", "libreoffice-uno-recalculate", "sheetjs-read", "unicode-and-leading-zeros"], formulasRecalculated: true};
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
+}
 function run(argv) {
   const p = args(argv),
     [cmd, input, output] = p._;
+  if (cmd === "self-check") return selfCheck();
   if (cmd === "capabilities")
     return {
+      runtimeContract: 1,
       engine: "SheetJS " + X.version,
       formats: FORMATS,
       packageEdit: ["xlsx", "xlsm", "xltx", "xltm"],
@@ -383,7 +406,7 @@ function run(argv) {
   if (!input)
     fail(
       "USAGE",
-      "Commands: capabilities | inspect FILE | read FILE [--sheet NAME --range A1:D10] | create OUTPUT --spec JSON | edit INPUT OUTPUT --changes JSON | convert INPUT OUTPUT --format FORMAT --allow-lossy | recalculate INPUT OUTPUT --allow-lossy",
+      "Commands: self-check | capabilities | inspect FILE | read FILE [--sheet NAME --range A1:D10] | create OUTPUT --spec JSON | edit INPUT OUTPUT --changes JSON | convert INPUT OUTPUT --format FORMAT --allow-lossy | recalculate INPUT OUTPUT --allow-lossy",
     );
   if (cmd === "create") {
     if (!p.spec) fail("ARGUMENT", "--spec is required");
