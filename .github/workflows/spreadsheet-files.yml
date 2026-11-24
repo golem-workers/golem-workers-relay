@@ -1,0 +1,17 @@
+name: Spreadsheet files
+on:
+  pull_request:
+    paths: ['tools/golem-spreadsheets/**', 'scripts/*spreadsheet*', 'src/scripts/spreadsheetSnapshot.test.ts', 'scripts/prepare-agent-server.sh', '.github/workflows/spreadsheet-files.yml']
+  workflow_dispatch:
+jobs:
+  files:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.1
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-calc python3-uno python3-openpyxl python3-pil python3-xlrd python3-xlwt
+      - run: npm ci
+      - run: npm run test:spreadsheets

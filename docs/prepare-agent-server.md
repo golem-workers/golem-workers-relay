@@ -168,3 +168,11 @@ Notes:
 - This gets the onboarding step close to the expected server shape (`openrouter` auth, LAN bind, port `18789`, token auth, daemon install), but backend provisioning still applies the remaining server-specific config such as `env.OPENROUTER_BASE_URL`, extra tool/browser settings, Telegram defaults, and Control UI allowed origins.
 
 Root user npm config persists the `/usr/local` prefix across non-interactive/login shells. Managed Linux runtime uses npm only; `NODE_PATH` points at `npm root -g` for CJS, while missing companion imports use package-local links and import checks. No pnpm binary or shim is installed. Rebuild provider OpenClaw snapshots and select new `activeSnapshotId` after a coordinated backend/Relay release. Existing agents migrate through backend Reinstall (#714), preserving data/settings and rebinding native service/runtime pin. Do not run this snapshot preparation script on existing agents for migration. Hermes and desktop connector builds remain outside this migration.
+
+## Spreadsheet runtime versus canonical skill
+
+The shared `scripts/prepare-spreadsheet-runtime.sh` installs Ubuntu dependencies (LibreOffice Calc, python3-uno/openpyxl/pil/xlrd, DejaVu fonts, poppler-utils) and the vendored CLI from `tools/golem-spreadsheets`. The dependency installer and runtime are included in the prepare fingerprint. The isolated-generation installer must pass a real create/edit/recalculate/reread self-check before activating the runtime. The separately generated Hermes image uses this same shared installer from an immutable Relay commit, with its manifest verified before executing it.
+
+Canonical `golem-spreadsheets/SKILL.md` and references belong to backend `src/agent-roles/default-assets/golem-spreadsheets`, not Relay. Backend defaults include them for all OpenClaw roles without quiz selection; Hermes bootstrap writes them to `.hermes/skills`. Per-agent provisioning runs `golem-spreadsheet self-check` without apt/npm installs. A missing/broken runtime fails provisioning with a snapshot-rebuild diagnostic instead of advertising an unusable skill.
+
+Rollout requires the coordinated backend/Relay release and rebuilt/selected OpenClaw and Hermes base images. Updating source alone does not update deployed agents or already selected snapshots. Do not run the fresh-host prepare script on an existing agent.

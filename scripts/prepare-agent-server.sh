@@ -38,7 +38,6 @@ OPENCLAW_SAFE_SKILL_SPECS=(
   "@steipete/github"
   "@matrixy/agent-browser-clawdbot"
   "@ivangdavila/word-docx"
-  "@ivangdavila/excel-xlsx"
   "@ivangdavila/powerpoint-pptx"
   "@steipete/markdown-converter"
   "@ivangdavila/data-analysis"
@@ -49,6 +48,7 @@ OPENCLAW_SAFE_SKILL_SPECS=(
   "@steipete/notion"
   "@lamelas/himalaya"
 )
+SPREADSHEET_BUNDLE_SHA256="3734d772b5eb484ec06a8f8765716bc2f8385db644a6199708c0921bdd3a2d3d"
 RUN_OPENCLAW_ONBOARD=1
 APT_SOURCES_LIST="/etc/apt/sources.list"
 UBUNTU_SUITE="${UBUNTU_SUITE:-noble}"
@@ -1387,6 +1387,10 @@ if (hasEnabledCodexNativeHookRelayDefault(installDir)) {
 console.log(`codex prepared: ${installDir}`)
 console.log(patchedFiles.length > 0 ? `codex native hook relay disabled in: ${patchedFiles.join(", ")}` : "codex native hook relay already disabled")
 NODE
+
+  set_step "spreadsheet_tools"
+  printf '%s  %s\n' "${SPREADSHEET_BUNDLE_SHA256}" "${RELAY_REPO_DIR}/tools/golem-spreadsheets/manifest.sha256" | sha256sum --check -
+  bash "${RELAY_REPO_DIR}/scripts/prepare-spreadsheet-runtime.sh"
 
   set_step "openclaw_safe_skills_preinstall"
   preinstall_openclaw_safe_skills
