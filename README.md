@@ -31,6 +31,13 @@ The relay also reports the current OpenClaw connectivity state back to backend:
 - keeps retrying with backoff when a restarting gateway temporarily rejects a reconnect
 - sends `CONNECTED` immediately after the gateway connection is restored
 
+Enterprise `model.verify` gives each pre/post-inference `sessions.patch` metadata
+request a bounded 60-second response budget. Gateway readiness/hello does not
+prewarm the session handler: a successful cold patch on OpenClaw 2026.11.3 was
+observed at 16,882 ms. This does not change generic RPC/HTTP deadlines, retry
+model or inference, relax model/runtime identity or zero-fallback checks, or
+change abort/delete cleanup. An unanswered metadata request still fails closed.
+
 Model assignment writes keep a non-empty `agents.defaults.modelPolicy.allow`
 list synchronized with the selected primary and fallback models. Missing or
 empty allow-lists remain unrestricted.

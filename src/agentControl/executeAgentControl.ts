@@ -83,6 +83,11 @@ type StatusNudgeRunner = {
 };
 
 type ModelAssignmentPurpose = Extract<AgentControlAction, { kind: "modelAssignment.set" }>["purpose"];
+// The session handler is lazy-loaded after Gateway reconnect. A production
+// 2026.11.3 cold patch succeeded in 16,882ms, beyond the generic 15s RPC limit.
+// Give metadata checks their own finite budget; do not replay patch or inference.
+const MODEL_VERIFY_SESSION_RPC_TIMEOUT_MS = 60_000;
+
 type ModelSetThinkingDefault = Extract<AgentControlAction, { kind: "model.set" }>["thinkingDefault"];
 type ModelSetFastMode = Extract<AgentControlAction, { kind: "model.set" }>["fastMode"];
 type ModelSetFallbacks = Extract<AgentControlAction, { kind: "model.set" }>["fallbacks"];
@@ -241,7 +246,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
       let completed = false;
       try {
         // Do not override model: prove current runtime defaults and actual runtime identity.
-        const before = await input.gateway.request("sessions.patch", { key: sessionKey }, { timeoutMs: 15_000 }) as ProbeResponse;
+        const before = await input.gateway.request("sessions.patch", { key: sessionKey }, { timeoutMs: MODEL_VERIFY_SESSION_RPC_TIMEOUT_MS }) as ProbeResponse;
         if (identity(before.resolved?.modelProvider, before.resolved?.model, before.resolved?.agentRuntime) !== action.model) {
           throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Runtime default model differs from selected model");
         }
@@ -249,7 +254,7 @@ export async function executeAgentControl(input: Parameters<typeof executeAgentC
           sessionKey, sessionId: before.entry?.sessionId, verificationGrant: action.verificationGrant,
         });
         // Session usage records the provider/model actually used, including fallback drift.
-        const after = await input.gateway.request("sessions.patch", { key: sessionKey }, { timeoutMs: 15_000 }) as ProbeResponse;
+        const after = await input.gateway.request("sessions.patch", { key: sessionKey }, { timeoutMs: MODEL_VERIFY_SESSION_RPC_TIMEOUT_MS }) as ProbeResponse;
         if (identity(after.entry?.modelProvider, after.entry?.model, after.resolved?.agentRuntime) !== action.model || (after.entry?.agentHarnessId !== managedRuntime.expectedRuntime(config, action.model.replace(/^(?:codex|openai-codex)\//, "openai/"), "main", policy, context))) {
           throw new AgentControlError("MODEL_VERIFY_MISMATCH", "Inference used another provider/model or runtime");
         }
