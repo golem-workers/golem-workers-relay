@@ -1,3 +1,4 @@
+import { readCompleteLifecycleSessionSnapshot } from "./agentLifecycle/sessionSnapshot.js";
 import { createPluginUpdateScheduler } from "./relayChannel/pluginUpdateScheduler.js";
 import { createSubscriptionUsageCollector } from "./openclaw/subscriptionUsage.js";
 import { recoverGatewayConnection } from "./managed-runtime/gatewayRecovery.js";
@@ -190,15 +191,15 @@ async function main(): Promise<void> {
     },
     querySessionStates: async () => {
       if (!gateway) throw new Error("OpenClaw gateway is not initialized");
-      return gateway.request("sessions.list", { limit: 200 }, { timeoutMs: 5_000 });
+      return readCompleteLifecycleSessionSnapshot((params) =>
+        gateway!.request("sessions.list", params, { timeoutMs: 5_000 }),
+      );
     },
     queryActiveRuns: async () => {
       if (!gateway) throw new Error("OpenClaw gateway is not initialized");
       return readOpenClawActiveRuns(
-        await gateway.request(
-          "sessions.list",
-          { limit: 200 },
-          { timeoutMs: 5_000 },
+        await readCompleteLifecycleSessionSnapshot((params) =>
+          gateway!.request("sessions.list", params, { timeoutMs: 5_000 }),
         ),
       );
     },

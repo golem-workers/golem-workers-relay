@@ -62,6 +62,8 @@ export function createAgentLifecycleRelay(input: {
   let connectionRevision = 0;
   let statusRevision = 0;
   const trackedRuns = new Map<string, AgentLifecycleActiveRun>();
+  // Two independent, complete observations; never use event age as evidence.
+  const missingRuns = new Map<string, AgentLifecycleActiveRun>();
   const track = (
     run:
       | AgentLifecycleActiveRun
@@ -74,6 +76,7 @@ export function createAgentLifecycleRelay(input: {
         },
   ): void => {
     statusRevision += 1;
+    missingRuns.delete(run.runId);
     for (const [key, old] of trackedRuns) {
       if (old.sessionId === run.sessionId && old.agentId === run.agentId) {
         // Invalidate in-flight session evidence, but retain other tracked runs.
@@ -110,8 +113,11 @@ export function createAgentLifecycleRelay(input: {
           revision !== connectionRevision ||
           !current?.registered ||
           !result.payloadValid
-        )
+        ) {
+          missingRuns.clear();
           return;
+        }
+        if (!result.complete) missingRuns.clear();
         let changed = false;
         // A missing start is a lifecycle defect too: publish it here so all
         // consumers (including UI and sleep) observe the same RUNNING status.
@@ -143,6 +149,48 @@ export function createAgentLifecycleRelay(input: {
               s.sessionId === run.sessionId &&
               (!run.agentId || s.agentId === run.agentId),
           );
+          if (matches.length === 0) {
+            const verifiablyAbsent =
+              result.complete &&
+              observedRevision === statusRevision &&
+              !result.sessions.some((session) =>
+                session.activeRunIds.includes(run.runId),
+              );
+            if (!verifiablyAbsent) {
+              missingRuns.delete(run.runId);
+              continue;
+            }
+            if (missingRuns.get(run.runId) !== run) {
+              missingRuns.set(run.runId, run);
+              continue;
+            }
+            // A removed/reset session cannot supply a terminal badge. Close its
+            // *run* as cancelled, not completed; new runs remain independent.
+            const event = encoder.observe(
+              openClawLifecycleAdapter,
+              {
+                event: "lifecycle",
+                phase: "end",
+                aborted: true,
+                livenessState: "runtime_run_disappeared",
+              },
+              {
+                serverId: current.serverId,
+                ...run,
+                sourceGeneration: current.sourceGeneration,
+                occurredAt: now().toISOString(),
+                origin: "RECONCILIATION",
+              },
+            );
+            if (event) {
+              await input.outbox.enqueue(event);
+              trackedRuns.delete(run.runId);
+              changed = true;
+            }
+            missingRuns.delete(run.runId);
+            continue;
+          }
+          missingRuns.delete(run.runId);
           if (matches.length !== 1) continue;
           const session = matches[0];
           // Missing/ambiguous sessions and genuine pauses are NOT completion evidence.
@@ -185,6 +233,7 @@ export function createAgentLifecycleRelay(input: {
       });
       await serial;
     } catch (error) {
+      missingRuns.clear();
       logger.warn(
         {
           event: "agent_lifecycle_status_poll_failed",
@@ -314,6 +363,7 @@ export function createAgentLifecycleRelay(input: {
         status: run.status,
       }));
       trackedRuns.clear();
+      missingRuns.clear();
       const corrections = planAgentLifecycleReconciliation({
         checkpoint,
         observed,
@@ -555,6 +605,7 @@ export function createAgentLifecycleRelay(input: {
 
     handleGatewayConnectionStateChange(state) {
       if (state.connected === connected) return;
+      missingRuns.clear();
       connected = state.connected;
       connectionRevision += 1;
       if (statusTimer) clearTimeout(statusTimer);

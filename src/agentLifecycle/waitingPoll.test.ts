@@ -73,6 +73,77 @@ function payload(status: string, extra = {}) {
 }
 
 describe("local WAITING reconciliation", () => {
+  it.each(["RUNNING", "WAITING"] as const)(
+    "cancels orphaned %s after two complete observations, never reports success",
+    async (status) => {
+      vi.useFakeTimers();
+      const f = fixture(vi.fn<() => Promise<unknown>>(), [{ ...run, status }]);
+      await f.relay.flush();
+      f.query.mockResolvedValue({
+        sessions: [],
+        lifecycleSnapshotComplete: true,
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(f.events).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(
+        f.events.map((e) => [e.runId, e.status, e.diagnostics?.reasonCode]),
+      ).toEqual([[run.runId, "CANCELLED", "runtime_run_disappeared"]]);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(f.events).toHaveLength(1);
+    },
+  );
+  it("does not bridge a read failure between missing-run observations", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    await f.relay.flush();
+    f.query.mockResolvedValue({
+      sessions: [],
+      lifecycleSnapshotComplete: true,
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    f.query.mockRejectedValueOnce(new Error("read failed"));
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.events).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.events.map((e) => e.status)).toEqual(["CANCELLED"]);
+  });
+  it("cancels only the orphan while preserving a concurrent replacement run", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    await f.relay.flush();
+    f.query.mockResolvedValue({
+      lifecycleSnapshotComplete: true,
+      sessions: [
+        {
+          key: "agent:main:replacement",
+          sessionId: "replacement-session",
+          agentId: "main",
+          hasActiveRun: true,
+          activeRunIds: ["replacement-run"],
+          status: "running",
+        },
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(f.events.map((e) => [e.runId, e.status])).toEqual([
+      ["replacement-run", "RUNNING"],
+      [run.runId, "CANCELLED"],
+    ]);
+  });
+  it("retains a matched WAITING pause in a complete inventory", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    await f.relay.flush();
+    f.query.mockResolvedValue({
+      ...payload("running"),
+      lifecycleSnapshotComplete: true,
+    });
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(f.events).toEqual([]);
+  });
+
   afterEach(() => vi.useRealTimers());
   it("publishes a missed start from active session status, including a subagent", async () => {
     vi.useFakeTimers();
