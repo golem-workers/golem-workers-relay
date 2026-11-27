@@ -52,6 +52,7 @@ describe("agent lifecycle exceptional reconciliation", () => {
       }),
     ).toEqual({
       payloadValid: true,
+      complete: false,
       sessionCount: 1,
       activeSessionCount: 0,
       activeRunIdCount: 0,
@@ -71,6 +72,7 @@ describe("agent lifecycle exceptional reconciliation", () => {
     });
     expect(describeOpenClawActiveRunsPayload({ invalid: true })).toEqual({
       payloadValid: false,
+      complete: false,
       sessionCount: 0,
       activeSessionCount: 0,
       activeRunIdCount: 0,

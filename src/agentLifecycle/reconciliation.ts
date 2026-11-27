@@ -36,6 +36,7 @@ const sessionsPayloadSchema = z
 
 export type OpenClawActiveRunsDiagnostics = Readonly<{
   payloadValid: boolean;
+  complete: boolean;
   sessionCount: number;
   activeSessionCount: number;
   activeRunIdCount: number;
@@ -69,6 +70,7 @@ export function describeOpenClawActiveRunsPayload(
   if (!parsed.success) {
     return {
       payloadValid: false,
+      complete: false,
       sessionCount: 0,
       activeSessionCount: 0,
       activeRunIdCount: 0,
@@ -92,6 +94,13 @@ export function describeOpenClawActiveRunsPayload(
   });
   return {
     payloadValid: true,
+    complete:
+      (parsed.data as Record<string, unknown>).lifecycleSnapshotComplete ===
+        true &&
+      parsed.data.sessions.every(
+        (s) =>
+          typeof s.hasActiveRun === "boolean" && Array.isArray(s.activeRunIds),
+      ),
     sessionCount: sessions.length,
     activeSessionCount: sessions.filter(
       (session) => session.hasActiveRun === true,

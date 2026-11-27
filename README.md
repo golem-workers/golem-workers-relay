@@ -47,8 +47,10 @@ tokens, and environment values never leave guest.
 Agent work status is published through the lifecycle stream, not inferred from
 persistent process presence. Local status verification tracks both RUNNING and
 WAITING runs and repairs missed terminal events only after explicit terminal
-session evidence with no active run. Missing/ambiguous sessions or failed reads
-never mean completion. Newer live events invalidate in-flight observations.
+session evidence with no active run. A run absent from two consecutive complete
+session inventories is cancelled with `runtime_run_disappeared`, never marked
+completed. Ambiguous/partial inventories and failed reads cannot cancel it.
+Newer live events invalidate in-flight observations.
 Reconnection observes all agents (including subagents), not only main.
 Backend automatic sleep consumes this same canonical status; process diagnostics
 must not become an independent sleep-only work-status heuristic.
@@ -550,24 +552,25 @@ repair/restart/refresh and rollback; the isolated
 model probe uses a 90-second model deadline, 120-second process deadline and
 150-second backend request deadline. No new environment settings are required.
 
-### Waiting-session reconciliation
+### Active-session reconciliation
 
-While lifecycle runs are `WAITING`, Relay checks the local Gateway's
-`sessions.list` every 30 seconds. Unchanged observations produce no backend
-requests. Explicit `done`, `failed`, `timeout`, or `killed` status for the same
-session, with no active run, is published through the lifecycle outbox once.
-Live events continue to handle resumption and approval changes; a newer live
-event wins over an in-flight poll. Polling stops on Gateway disconnect and when
-no waiting runs remain, and resumes from the backend checkpoint on reconnect.
+Relay checks local Gateway session state every 30 seconds for both RUNNING and
+WAITING runs, and discovers missed starts even when its local tracker is empty.
+The collector reads all pages, including archived/global/unknown sessions and
+subagents, and rejects missing metadata, duplicates or changing totals.
+Unchanged observations produce no backend requests. Explicit `done`, `failed`,
+`timeout`, or `killed` for the exact inactive session is published once.
 
-Missing sessions (including those outside the 200-row list window), unknown
-status, failed requests, or active runs are not evidence of completion. Those
-cases remain waiting for a subsequent observation; there is no age-based expiry.
+Deletion/recreation can remove the original session identity before Relay sees
+its terminal event. After two consecutive complete successful inventories with
+that session absent and no matching active run ID anywhere, Relay publishes
+CANCELLED (`runtime_run_disappeared`) for that exact old run, not COMPLETED.
+A matched WAITING session remains protected; new replacement runs have their
+own identities and are not cancelled with the old run. Partial/failed reads,
+unknown run flags and live-event races invalidate orphan evidence. No age-based
+expiry, model probe or process-presence heuristic is used. Polling pauses on
+Gateway disconnect and restores tracked runs from backend on reconnect.
 
-Waiting runs are tracked independently by run identity. A later turn in the same
-session does not discard an older wait; verified terminal session state closes
-all retained waits. Live activity invalidates in-flight evidence for that session.
-Backend checkpoint recovery also retains multiple waits from the same session.
 ## Managed agent harness
 
 Model assignments and OpenAI OAuth provisioning select the native OpenClaw (Pi)
