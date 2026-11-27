@@ -65,3 +65,16 @@ inventory rejection. Existing live-event race and terminal guards retained.
 Build and lint passed. Full Vitest and wrapper/cleanup results are recorded below.
 
 No production deployment or merge is implied by this dev acceptance.
+
+Final code validation (same TypeScript/module content as commit `5006905`):
+- `npm run build`: exit 0; `npm run lint`: exit 0.
+- `npx vitest run`: 102 files passed; 1098 tests passed, 5 skipped;
+  136.52 seconds. Lifecycle subset: 79 passed.
+- `npm test` wrapper was attempted separately: build-script tests passed;
+  spreadsheet stage could not complete on this host because system LibreOffice
+  Python UNO is unavailable (initially openpyxl/xlwt were also missing; those
+  were supplied in a task-private PYTHONPATH). This wrapper is **not** reported
+  green. No spreadsheet/product code or system Python installation was changed.
+- Disposable deletion request settled SUCCEEDED at 03:19:27 UTC. Fresh dev
+  backend GET returned 404/SERVER_NOT_FOUND, and provider inventory returned no
+  matching VM. Existing synthetic organization/template were preserved.
