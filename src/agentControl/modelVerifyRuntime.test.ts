@@ -97,7 +97,9 @@ it("does not substitute selected runtime for required subscription proof", async
 });
 it.each([false, true])("retries only disposable-session cleanup CAS, preserving mismatch=%s", async mismatch => {
   const f = await fixture("codex");
-  if (mismatch) f.after.entry.model = "gpt-6-other";
+  // Use another catalog-eligible model so this case isolates mismatch/cleanup,
+  // not rejection of an unreviewed model by the canonical catalog.
+  if (mismatch) f.after.entry.model = "gpt-6-sol";
   const request = f.gateway.request.getMockImplementation();
   if (!request) throw new Error("fixture request missing");
   let deletions = 0;
