@@ -8,7 +8,19 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const canonical = path.join(root, 'packages/managed-runtime-policy/src/policy.ts');
 const sourcePath = fs.existsSync(canonical) ? canonical : path.join(root, 'vendor/managed-runtime-policy/policy.ts');
-const source = fs.readFileSync(sourcePath, 'utf8');
+const rawSource = fs.readFileSync(sourcePath, 'utf8');
+const catalogPath = path.join(path.dirname(sourcePath), 'openai-model-catalog.json');
+const catalogText = fs.readFileSync(catalogPath, 'utf8');
+const catalog = JSON.parse(catalogText);
+if (catalog.schemaVersion !== 1 || !catalog.models || !catalog.aliases) throw new Error('Invalid canonical model catalog');
+for (const [id, row] of Object.entries(catalog.models)) {
+  if (!id.trim() || !['tokens', 'duration', 'video'].includes(row.pricing?.kind)) throw new Error('Invalid catalog pricing: ' + id);
+  if (row.capabilities && (typeof row.capabilities.codex !== 'boolean' || typeof row.capabilities.reasoning !== 'boolean' || typeof row.capabilities.fastMode !== 'boolean' || !Array.isArray(row.capabilities.reasoningLevels) || row.capabilities.reasoningLevels.some(level => !['off','minimal','low','medium','high','xhigh','max','adaptive'].includes(level)))) throw new Error('Invalid catalog capabilities: ' + id);
+}
+for (const target of Object.values(catalog.aliases)) if (!catalog.models[target]) throw new Error('Unknown catalog alias target');
+const marker = '/*__MODEL_CATALOG__*/ { schemaVersion: 1, models: {}, aliases: {} }';
+if (!rawSource.includes(marker)) throw new Error('Model catalog embedding marker missing');
+const source = rawSource.replace(marker, JSON.stringify(catalog));
 const testSource = fs.readFileSync(path.join(path.dirname(sourcePath), 'policy.contract.test.ts'), 'utf8');
 const testOutput = '// GENERATED canonical contract tests. DO NOT EDIT.\n' + testSource;
 const testTarget = path.join(root, 'src/managed-runtime/policy.contract.test.ts');
@@ -115,7 +127,8 @@ if (syncIndex >= 0) {
   const relay = path.resolve(process.argv[syncIndex + 1]);
   fs.writeFileSync(path.join(relay, 'managed-runtime-policy.lock.json'), JSON.stringify(manifest, null, 2) + '\n');
   const vendor = path.join(relay, 'vendor/managed-runtime-policy'); fs.mkdirSync(vendor, { recursive: true });
-  fs.writeFileSync(path.join(vendor, 'policy.ts'), source);
+  fs.writeFileSync(path.join(vendor, 'policy.ts'), rawSource);
+  fs.writeFileSync(path.join(vendor, 'openai-model-catalog.json'), catalogText);
   fs.writeFileSync(path.join(vendor, 'policy.contract.test.ts'), testSource);
   fs.writeFileSync(path.join(vendor, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
   fs.copyFileSync(fileURLToPath(import.meta.url), path.join(relay, 'scripts/managed-runtime-policy.mjs'));
@@ -125,5 +138,5 @@ if (syncIndex >= 0) {
   fs.writeFileSync(path.join(relay, 'scripts/managed-runtime-normalize.mjs'), cli);
 }
 const upstreamIndex = process.argv.indexOf('--verify-upstream');
-if (upstreamIndex >= 0 && fs.readFileSync(path.resolve(process.argv[upstreamIndex + 1]), 'utf8') !== source) throw new Error('Vendored policy differs from canonical release source');
+if (upstreamIndex >= 0 && fs.readFileSync(path.resolve(process.argv[upstreamIndex + 1]), 'utf8') !== rawSource) throw new Error('Vendored policy differs from canonical release source');
 console.log('Managed runtime canonical SHA256: ' + sha256);

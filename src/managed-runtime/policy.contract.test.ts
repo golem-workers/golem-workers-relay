@@ -245,3 +245,30 @@ describe("subscription transport across model selections", () => {
     expect(config).not.toHaveProperty("models.providers.openai.api");
   });
 });
+
+it("enables a future model in UI metadata and both runtimes by adding only catalog data", () => {
+  const catalog = structuredClone(engine.modelCatalog);
+  catalog.models["future-conversation-v9"] = {
+    pricing: { kind: "tokens", text: { inputUsdPer1M: 3, outputUsdPer1M: 9 } },
+    capabilities: { codex: true, reasoning: true, reasoningLevels: ["low", "high"], fastMode: false },
+    nativeDefinition: { name: "Future Conversation", reasoning: true, input: ["text"], contextWindow: 128000 },
+  };
+  const nextEngine = createManagedRuntimePolicy(catalog);
+  const ref = "openai/future-conversation-v9";
+  const make = () => ({ auth: { profiles: { login: { provider: "openai", mode: "oauth" } } }, agents: { defaults: { model: { primary: ref }, models: { [ref]: {} } } } });
+  expect(engine.codexCompatibility(make(), ref).supported).toBe(false);
+  for (const policy of [native, codex]) {
+    const config = make(), remote = make();
+    nextEngine.normalizeConfig(config, policy);
+    runInNewContext(MANAGED_RUNTIME_FACTORY_SOURCE + "createManagedRuntimePolicy(catalog).normalizeConfig(config, policy);", { catalog, config: remote, policy, URL });
+    expect(remote).toEqual(config);
+    expect(config.agents.defaults.models[ref]).toMatchObject({ agentRuntime: { id: policy.chatHarness } });
+    expect(config).toMatchObject({ models: { providers: { openai: { api: "openai-chatgpt-responses", models: [{ id: "future-conversation-v9", contextWindow: 128000, cost: { input: 3, output: 9 } }] } } } });
+  }
+  expect(nextEngine.catalogModel(ref)?.capabilities).toEqual(catalog.models["future-conversation-v9"].capabilities);
+  expect(nextEngine.needsAuthContext(make(), native)).toBe(true);
+});
+
+it.each(["gpt-image-2", "gpt-realtime", "sora-2", "text-embedding-3-small", "gpt-99-unreviewed"])("does not infer conversational support from the name %s", model => {
+  expect(engine.codexCompatibility(fixture(), "openai/" + model).supported).toBe(false);
+});

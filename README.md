@@ -955,3 +955,15 @@ Sol-only routing for subsequent model choices without replacing credentials,
 model/owner fences, or explicitly authored API endpoints. Ship the matching backend
 policy digest before retrying model selections; no fleet configuration is changed
 merely by publishing this code.
+
+### Shared OpenAI model catalog
+The backend owns `packages/managed-runtime-policy/src/openai-model-catalog.json`.
+Relay receives the exact catalog in `vendor/managed-runtime-policy/openai-model-catalog.json`
+via the policy distributor, never a separately maintained list. The catalog drives
+Codex conversational eligibility and optional native definitions. Prices, aliases,
+reasoning preferences and Fast Mode sent to UI use the same backend source.
+Catalog content participates in the managed-runtime digest; stale generated copies
+fail `policy:check`. Only backend distribution may update this pin. Add models in
+the canonical JSON, regenerate/sync, and ship matching backend/Relay artifacts.
+Catalog updates are not hot-reloaded and do not prove per-account entitlement;
+authentication, endpoint, purpose and owner fences are still checked at apply.
