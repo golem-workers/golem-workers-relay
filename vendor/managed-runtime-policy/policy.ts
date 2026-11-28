@@ -6,7 +6,10 @@ export type AgentManagedRuntimePolicy = { schemaVersion: 2; serverId: string; gl
 export type ManagedRuntimePolicy = GlobalManagedRuntimePolicy | AgentManagedRuntimePolicy;
 /** Missing credentials are permitted only during disconnect/startup convergence, never readiness proofs. */
 export type RuntimeContext = { allowMissingAuth?: boolean; env?: Record<string, unknown>; subscriptionAuth?: boolean; apiKeyAuth?: boolean; params?: Record<string, unknown>; scopeModels?: Record<string, unknown>; scope?: Record<string, unknown> };
-export function createManagedRuntimePolicy() {
+export type ManagedModelCapabilities = { codex: boolean; reasoning: boolean; reasoningLevels: string[]; fastMode: boolean };
+export type ManagedModelCatalog = { schemaVersion: number; models: Record<string, { pricing: Record<string, unknown>; curated?: boolean; purposes?: string[]; capabilities?: ManagedModelCapabilities; nativeDefinition?: Record<string, unknown> }>; aliases: Record<string, string> };
+// Data is embedded by the distributor, including in self-contained remote consumers.
+export function createManagedRuntimePolicy(modelCatalog: ManagedModelCatalog = /*__MODEL_CATALOG__*/ { schemaVersion: 1, models: {}, aliases: {} }) {
   type Row = Record<string, unknown>;
   const record = (value: unknown): Row | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Row : undefined;
   const ensure = (parent: Row, key: string): Row => record(parent[key]) ?? (parent[key] = {}) as Row;
@@ -82,11 +85,15 @@ export function createManagedRuntimePolicy() {
   function hasPreparedApiKey(config: Row, ref: string, context: RuntimeContext = {}): boolean {
     return route(config, ref, context).preparedApiKey;
   }
+  function catalogModel(model: string) {
+    const id = model.trim().toLowerCase().replace(/^(openai|codex|openai-codex)\//, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
+    return modelCatalog.models[modelCatalog.aliases[id] ?? id];
+  }
   function codexCompatibility(config: Row, ref: string, context: RuntimeContext = {}): { supported: boolean; reason?: string } {
     const info = route(config, ref, context);
     const deny = (reason: string) => ({ supported: false, reason });
     if (!["openai", "codex", "openai-codex"].includes(info.provider)) return deny("provider does not support Codex");
-    if (!/^(?:gpt-(?:4|5|6)(?:[.-]|$)|o[134](?:[-.]|$)|chatgpt-)/i.test(info.model) || /(?:image|embedding|audio|tts|transcrib|realtime|sora)/i.test(info.model)) return deny("model is not an eligible conversational/image-understanding model");
+    if (!catalogModel(info.model)?.capabilities?.codex) return deny("model is not an eligible conversational/image-understanding model");
     if (info.overrides) return deny("authored request transport overrides cannot be reproduced by Codex");
     try {
       if (typeof info.baseUrl !== "string") return deny("invalid provider endpoint");
@@ -111,33 +118,57 @@ export function createManagedRuntimePolicy() {
     if (!result.supported) throw new Error(`MANAGED_CODEX_INCOMPATIBLE: ${ref} (${purpose}): ${result.reason}`);
     return "codex";
   }
-  /** Sol catalog augmentation never replaces authored transport/auth or injects an API
-   * into an authored endpoint without an explicit API contract. */
-  function ensureSolCompatibility(config: Row, subscriptionRoute = false, context: RuntimeContext = {}): void {
-    const defaults = record(record(config.agents)?.defaults);
-    const catalog = record(defaults?.models);
-    if (!record(catalog?.["openai/gpt-6.1-sol"])) return;
-    const provider = ensure(ensure(ensure(config, "models"), "providers"), "openai");
-    provider.agentRuntime ??= { id: "openclaw" };
-    const models: unknown[] = Array.isArray(provider.models) ? provider.models : [];
-    provider.models = models;
-    let model = models.map(record).find(row => row?.id === "gpt-6.1-sol");
-    if (!model) { model = { id: "gpt-6.1-sol" }; models.push(model); }
-    const env = environment(config, context);
-    const hasAuthoredRoute = [provider, model, record(record(config.providers)?.openai) ?? {}].some(row => ["api", "baseUrl", "apiKey", "auth", "headers"].some(key => row[key] !== undefined)) || env.OPENAI_BASE_URL !== undefined;
-    const values: Row = { name: "GPT-6.1-Sol", reasoning: true, input: ["text", "image"], contextWindow: 272000, cost: { input: 2, output: 10 }, agentRuntime: { id: "openclaw" } };
-    const apiKeyIntent = Boolean(context.apiKeyAuth || env.OPENAI_API_KEY !== undefined || env.CODEX_API_KEY !== undefined || profiles(config).some(row => ["openai", "codex", "openai-codex"].includes(String(row.provider)) && ["api_key", "api-key"].includes(String(row.mode))));
-    if (!hasAuthoredRoute) values.api = subscriptionRoute && !apiKeyIntent ? "openai-chatgpt-responses" : "openai-responses";
-    for (const [key, value] of Object.entries(values)) if (model[key] === undefined) model[key] = value;
+  /** Catalog augmentation is fill-only; authored routes and definitions win. */
+  function ensureCatalogCompatibility(config: Row, subscriptionRoute = false, context: RuntimeContext = {}): void {
+    const catalog = record(record(record(config.agents)?.defaults)?.models);
+    for (const ref of Object.keys(catalog ?? {})) {
+      if (!ref.startsWith("openai/")) continue;
+      const definition = catalogModel(ref);
+      if (!definition?.nativeDefinition) continue;
+      const provider = ensure(ensure(ensure(config, "models"), "providers"), "openai");
+      provider.agentRuntime ??= { id: "openclaw" };
+      const models: unknown[] = Array.isArray(provider.models) ? provider.models : [];
+      provider.models = models;
+      const id = modelParts(ref).model;
+      let model = models.map(record).find(row => row?.id === id);
+      if (!model) { model = { id }; models.push(model); }
+      const env = environment(config, context);
+      const hasAuthoredRoute = [provider, model, record(record(config.providers)?.openai) ?? {}].some(row => ["api", "baseUrl", "apiKey", "auth", "headers"].some(key => row[key] !== undefined)) || env.OPENAI_BASE_URL !== undefined;
+      const textPricing = record(definition.pricing.text);
+      const values: Row = { ...definition.nativeDefinition, ...(textPricing ? { cost: { input: textPricing.inputUsdPer1M, output: textPricing.outputUsdPer1M } } : {}), agentRuntime: { id: "openclaw" } };
+      const apiKeyIntent = Boolean(context.apiKeyAuth || env.OPENAI_API_KEY !== undefined || env.CODEX_API_KEY !== undefined || profiles(config).some(row => ["openai", "codex", "openai-codex"].includes(String(row.provider)) && ["api_key", "api-key"].includes(String(row.mode))));
+      if (!hasAuthoredRoute) values.api = subscriptionRoute && !apiKeyIntent ? "openai-chatgpt-responses" : "openai-responses";
+      for (const [key, value] of Object.entries(values)) if (model[key] === undefined) model[key] = value;
+    }
+  }
+  /** Persist the subscription default already resolved from target auth. A
+   * Sol-only catalog historically made just Sol explicit, leaving newly selected
+   * models implicit and rejected by the subscription pool's strict writer.
+   * Never turn API-key intent, custom endpoints or authored auth into OAuth. */
+  function ensureSubscriptionTransport(config: Row, scopes: Row[], context: RuntimeContext): void {
+    const provider = record(record(record(config.models)?.providers)?.openai);
+    const legacy = record(record(config.providers)?.openai);
+    if ([provider, legacy].some(row => row && ["api", "baseUrl", "apiKey", "auth", "headers", "authHeader", "request"].some(key => row[key] !== undefined))) return;
+    const defaults = record(record(config.agents)?.defaults) ?? {};
+    const eligible = scopes.some(scope => assignmentRefs(scope.model ?? defaults.model).some(ref => {
+      if (!ref.startsWith("openai/")) return false;
+      const scoped = { ...context, scope, scopeModels: record(scope.models) };
+      const info = route(config, ref, scoped);
+      return info.hasSubscription && !info.hasApiKey && info.api === "openai-chatgpt-responses" && codexCompatibility(config, ref, scoped).supported;
+    }));
+    if (eligible) ensure(ensure(ensure(config, "models"), "providers"), "openai").api = "openai-chatgpt-responses";
   }
   function needsAuthContext(config: Row, policy: ManagedRuntimePolicy): boolean {
     if (policy.chatHarness === "codex") return true;
     const catalog = record(record(record(config.agents)?.defaults)?.models);
-    if (!record(catalog?.["openai/gpt-6.1-sol"])) return false;
     const provider = record(record(record(config.models)?.providers)?.openai) ?? {};
-    const model = (Array.isArray(provider.models) ? provider.models as unknown[] : []).map(record).find(row => row?.id === "gpt-6.1-sol") ?? {};
-    return [provider, model, record(record(config.providers)?.openai) ?? {}].every(row => ["api", "baseUrl", "apiKey", "auth", "headers"].every(key => row[key] === undefined));
+    return Object.keys(catalog ?? {}).some(ref => {
+      if (!ref.startsWith("openai/") || !catalogModel(ref)?.nativeDefinition) return false;
+      const model = (Array.isArray(provider.models) ? provider.models as unknown[] : []).map(record).find(row => row?.id === modelParts(ref).model) ?? {};
+      return [provider, model, record(record(config.providers)?.openai) ?? {}].every(row => ["api", "baseUrl", "apiKey", "auth", "headers"].every(key => row[key] === undefined));
+    });
   }
+
   function assignmentRefs(value: unknown): string[] {
     const row = record(value);
     return (typeof value === "string" ? [value] : row ? [row.primary, ...(Array.isArray(row.fallbacks) ? row.fallbacks as unknown[] : []), row.fallback] : []).filter((ref): ref is string => typeof ref === "string" && Boolean(ref.trim())).map(ref => ref.trim());
@@ -151,8 +182,9 @@ export function createManagedRuntimePolicy() {
     if (next.models === undefined && !originalScopes.some(row => Object.keys(row).some(key => key === "models" || key === "model" || key.endsWith("Model")))) return;
     const agents = ensure(next, "agents"), defaults = ensure(agents, "defaults"), catalog = ensure(defaults, "models");
     const subscription = Boolean(context.subscriptionAuth || profiles(next).some(row => row.mode === "oauth" && ["openai", "codex", "openai-codex"].includes(String(row.provider))));
-    ensureSolCompatibility(next, subscription, context);
+    ensureCatalogCompatibility(next, subscription, context);
     const scopes = [defaults, ...(Array.isArray(agents.list) ? agents.list : []).map(record).filter((row): row is Row => Boolean(row)), ...Object.values(record(agents.entries) ?? {}).map(record).filter((row): row is Row => Boolean(row))];
+    ensureSubscriptionTransport(next, scopes, context);
     const uses = new Map<string, Set<string>>();
     const keys: Record<string, string> = { model: "main", imageModel: "image", pdfModel: "pdf", imageGenerationModel: "imageGeneration", videoGenerationModel: "videoGeneration", musicGenerationModel: "musicGeneration", embeddingModel: "embedding", audioTranscriptionModel: "audioTranscription" };
     for (const scope of scopes) for (const [key, purpose] of Object.entries({ ...Object.fromEntries(Object.keys({ ...defaults, ...scope }).filter(key => key.endsWith("Model")).map(key => [key, "auxiliary"])), ...keys })) for (const ref of assignmentRefs(scope[key] ?? (scope === defaults ? undefined : defaults[key]))) {
@@ -236,7 +268,7 @@ export function createManagedRuntimePolicy() {
     }
     check(config, expected);
   }
-  return { defaultPolicy, parsePolicy, assertPolicyServer, resolveAgentPolicy, acceptPolicy, policyFromEnvironment, hasPreparedApiKey, codexCompatibility, isSubscriptionRoute, expectedRuntime, ensureSolCompatibility, needsAuthContext, normalizeConfig, protectedRoute, assertRuntimeMetadata };
+  return { modelCatalog, catalogModel, defaultPolicy, parsePolicy, assertPolicyServer, resolveAgentPolicy, acceptPolicy, policyFromEnvironment, hasPreparedApiKey, codexCompatibility, isSubscriptionRoute, expectedRuntime, ensureCatalogCompatibility, ensureSolCompatibility: ensureCatalogCompatibility, needsAuthContext, normalizeConfig, protectedRoute, assertRuntimeMetadata };
 }
 
 /** Read-only offline auth proof. Shared machine ownership excludes stale agent JSON. */

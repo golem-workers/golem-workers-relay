@@ -1,4 +1,5 @@
-function createManagedRuntimePolicy() {
+// Data is embedded by the distributor, including in self-contained remote consumers.
+function createManagedRuntimePolicy(modelCatalog = JSON.parse("{\"schemaVersion\":1,\"aliases\":{\"gpt-5-chat-latest\":\"gpt-5\",\"gpt-5-codex\":\"gpt-5\",\"gpt-5.1-chat-latest\":\"gpt-5.1\",\"gpt-5.1-codex\":\"gpt-5.1\",\"gpt-5.1-codex-max\":\"gpt-5.1\",\"gpt-5.1-codex-mini\":\"gpt-5-mini\",\"gpt-5.2-chat-latest\":\"gpt-5.2\",\"gpt-5.2-codex\":\"gpt-5.2\",\"gpt-5.3-chat-latest\":\"gpt-5.3\",\"gpt-5.3-codex\":\"gpt-5.3\",\"gpt-realtime-1.5\":\"gpt-realtime\"},\"models\":{\"gpt-4-turbo\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-4.1\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-4.1-mini\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-4.1-nano\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5-mini\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5-nano\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5-pro\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5-search-api\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5.1\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5.2\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5.2-pro\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5.3\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5.4\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5.4-mini\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5.4-nano\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5.4-pro\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5.5\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5.5-pro\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5.6-luna\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5.6-terra\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-5.6-sol\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-6-astra\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-6-sol\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-6-luna\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-6.1-sol\":{\"pricing\":{\"kind\":\"tokens\",\"text\":{\"inputUsdPer1M\":2,\"cachedInputUsdPer1M\":0.1,\"cacheWriteInputUsdPer1M\":2.5,\"outputUsdPer1M\":10},\"longContext\":{\"inputTokenThreshold\":272000,\"inputMultiplier\":2,\"outputMultiplier\":1.5}},\"capabilities\":{\"codex\":true},\"nativeDefinition\":{\"name\":\"GPT-6.1-Sol\",\"reasoning\":true,\"input\":[\"text\",\"image\"],\"contextWindow\":272000}},\"gpt-6.1-terra\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-6.2-astra\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"gpt-6.2-sol\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"o1\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"o1-pro\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"o3\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"o3-mini\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"o3-pro\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"o4-mini\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"o3-deep-research\":{\"pricing\":{},\"capabilities\":{\"codex\":true}},\"o4-mini-deep-research\":{\"pricing\":{},\"capabilities\":{\"codex\":true}}}}")) {
     const record = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
     const ensure = (parent, key) => record(parent[key]) ?? (parent[key] = {});
     const defaultPolicy = { schemaVersion: 1, revision: 1, chatHarness: "openclaw" };
@@ -90,12 +91,16 @@ function createManagedRuntimePolicy() {
     function hasPreparedApiKey(config, ref, context = {}) {
         return route(config, ref, context).preparedApiKey;
     }
+    function catalogModel(model) {
+        const id = model.trim().toLowerCase().replace(/^(openai|codex|openai-codex)\//, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
+        return modelCatalog.models[modelCatalog.aliases[id] ?? id];
+    }
     function codexCompatibility(config, ref, context = {}) {
         const info = route(config, ref, context);
         const deny = (reason) => ({ supported: false, reason });
         if (!["openai", "codex", "openai-codex"].includes(info.provider))
             return deny("provider does not support Codex");
-        if (!/^(?:gpt-(?:4|5|6)(?:[.-]|$)|o[134](?:[-.]|$)|chatgpt-)/i.test(info.model) || /(?:image|embedding|audio|tts|transcrib|realtime|sora)/i.test(info.model))
+        if (!catalogModel(info.model)?.capabilities?.codex)
             return deny("model is not an eligible conversational/image-understanding model");
         if (info.overrides)
             return deny("authored request transport overrides cannot be reproduced by Codex");
@@ -133,41 +138,68 @@ function createManagedRuntimePolicy() {
             throw new Error(`MANAGED_CODEX_INCOMPATIBLE: ${ref} (${purpose}): ${result.reason}`);
         return "codex";
     }
-    /** Sol catalog augmentation never replaces authored transport/auth or injects an API
-     * into an authored endpoint without an explicit API contract. */
-    function ensureSolCompatibility(config, subscriptionRoute = false, context = {}) {
-        const defaults = record(record(config.agents)?.defaults);
-        const catalog = record(defaults?.models);
-        if (!record(catalog?.["openai/gpt-6.1-sol"]))
-            return;
-        const provider = ensure(ensure(ensure(config, "models"), "providers"), "openai");
-        provider.agentRuntime ??= { id: "openclaw" };
-        const models = Array.isArray(provider.models) ? provider.models : [];
-        provider.models = models;
-        let model = models.map(record).find(row => row?.id === "gpt-6.1-sol");
-        if (!model) {
-            model = { id: "gpt-6.1-sol" };
-            models.push(model);
+    /** Catalog augmentation is fill-only; authored routes and definitions win. */
+    function ensureCatalogCompatibility(config, subscriptionRoute = false, context = {}) {
+        const catalog = record(record(record(config.agents)?.defaults)?.models);
+        for (const ref of Object.keys(catalog ?? {})) {
+            if (!ref.startsWith("openai/"))
+                continue;
+            const definition = catalogModel(ref);
+            if (!definition?.nativeDefinition)
+                continue;
+            const provider = ensure(ensure(ensure(config, "models"), "providers"), "openai");
+            provider.agentRuntime ??= { id: "openclaw" };
+            const models = Array.isArray(provider.models) ? provider.models : [];
+            provider.models = models;
+            const id = modelParts(ref).model;
+            let model = models.map(record).find(row => row?.id === id);
+            if (!model) {
+                model = { id };
+                models.push(model);
+            }
+            const env = environment(config, context);
+            const hasAuthoredRoute = [provider, model, record(record(config.providers)?.openai) ?? {}].some(row => ["api", "baseUrl", "apiKey", "auth", "headers"].some(key => row[key] !== undefined)) || env.OPENAI_BASE_URL !== undefined;
+            const textPricing = record(definition.pricing.text);
+            const values = { ...definition.nativeDefinition, ...(textPricing ? { cost: { input: textPricing.inputUsdPer1M, output: textPricing.outputUsdPer1M } } : {}), agentRuntime: { id: "openclaw" } };
+            const apiKeyIntent = Boolean(context.apiKeyAuth || env.OPENAI_API_KEY !== undefined || env.CODEX_API_KEY !== undefined || profiles(config).some(row => ["openai", "codex", "openai-codex"].includes(String(row.provider)) && ["api_key", "api-key"].includes(String(row.mode))));
+            if (!hasAuthoredRoute)
+                values.api = subscriptionRoute && !apiKeyIntent ? "openai-chatgpt-responses" : "openai-responses";
+            for (const [key, value] of Object.entries(values))
+                if (model[key] === undefined)
+                    model[key] = value;
         }
-        const env = environment(config, context);
-        const hasAuthoredRoute = [provider, model, record(record(config.providers)?.openai) ?? {}].some(row => ["api", "baseUrl", "apiKey", "auth", "headers"].some(key => row[key] !== undefined)) || env.OPENAI_BASE_URL !== undefined;
-        const values = { name: "GPT-6.1-Sol", reasoning: true, input: ["text", "image"], contextWindow: 272000, cost: { input: 2, output: 10 }, agentRuntime: { id: "openclaw" } };
-        const apiKeyIntent = Boolean(context.apiKeyAuth || env.OPENAI_API_KEY !== undefined || env.CODEX_API_KEY !== undefined || profiles(config).some(row => ["openai", "codex", "openai-codex"].includes(String(row.provider)) && ["api_key", "api-key"].includes(String(row.mode))));
-        if (!hasAuthoredRoute)
-            values.api = subscriptionRoute && !apiKeyIntent ? "openai-chatgpt-responses" : "openai-responses";
-        for (const [key, value] of Object.entries(values))
-            if (model[key] === undefined)
-                model[key] = value;
+    }
+    /** Persist the subscription default already resolved from target auth. A
+     * Sol-only catalog historically made just Sol explicit, leaving newly selected
+     * models implicit and rejected by the subscription pool's strict writer.
+     * Never turn API-key intent, custom endpoints or authored auth into OAuth. */
+    function ensureSubscriptionTransport(config, scopes, context) {
+        const provider = record(record(record(config.models)?.providers)?.openai);
+        const legacy = record(record(config.providers)?.openai);
+        if ([provider, legacy].some(row => row && ["api", "baseUrl", "apiKey", "auth", "headers", "authHeader", "request"].some(key => row[key] !== undefined)))
+            return;
+        const defaults = record(record(config.agents)?.defaults) ?? {};
+        const eligible = scopes.some(scope => assignmentRefs(scope.model ?? defaults.model).some(ref => {
+            if (!ref.startsWith("openai/"))
+                return false;
+            const scoped = { ...context, scope, scopeModels: record(scope.models) };
+            const info = route(config, ref, scoped);
+            return info.hasSubscription && !info.hasApiKey && info.api === "openai-chatgpt-responses" && codexCompatibility(config, ref, scoped).supported;
+        }));
+        if (eligible)
+            ensure(ensure(ensure(config, "models"), "providers"), "openai").api = "openai-chatgpt-responses";
     }
     function needsAuthContext(config, policy) {
         if (policy.chatHarness === "codex")
             return true;
         const catalog = record(record(record(config.agents)?.defaults)?.models);
-        if (!record(catalog?.["openai/gpt-6.1-sol"]))
-            return false;
         const provider = record(record(record(config.models)?.providers)?.openai) ?? {};
-        const model = (Array.isArray(provider.models) ? provider.models : []).map(record).find(row => row?.id === "gpt-6.1-sol") ?? {};
-        return [provider, model, record(record(config.providers)?.openai) ?? {}].every(row => ["api", "baseUrl", "apiKey", "auth", "headers"].every(key => row[key] === undefined));
+        return Object.keys(catalog ?? {}).some(ref => {
+            if (!ref.startsWith("openai/") || !catalogModel(ref)?.nativeDefinition)
+                return false;
+            const model = (Array.isArray(provider.models) ? provider.models : []).map(record).find(row => row?.id === modelParts(ref).model) ?? {};
+            return [provider, model, record(record(config.providers)?.openai) ?? {}].every(row => ["api", "baseUrl", "apiKey", "auth", "headers"].every(key => row[key] === undefined));
+        });
     }
     function assignmentRefs(value) {
         const row = record(value);
@@ -183,8 +215,9 @@ function createManagedRuntimePolicy() {
             return;
         const agents = ensure(next, "agents"), defaults = ensure(agents, "defaults"), catalog = ensure(defaults, "models");
         const subscription = Boolean(context.subscriptionAuth || profiles(next).some(row => row.mode === "oauth" && ["openai", "codex", "openai-codex"].includes(String(row.provider))));
-        ensureSolCompatibility(next, subscription, context);
+        ensureCatalogCompatibility(next, subscription, context);
         const scopes = [defaults, ...(Array.isArray(agents.list) ? agents.list : []).map(record).filter((row) => Boolean(row)), ...Object.values(record(agents.entries) ?? {}).map(record).filter((row) => Boolean(row))];
+        ensureSubscriptionTransport(next, scopes, context);
         const uses = new Map();
         const keys = { model: "main", imageModel: "image", pdfModel: "pdf", imageGenerationModel: "imageGeneration", videoGenerationModel: "videoGeneration", musicGenerationModel: "musicGeneration", embeddingModel: "embedding", audioTranscriptionModel: "audioTranscription" };
         for (const scope of scopes)
@@ -311,7 +344,7 @@ function createManagedRuntimePolicy() {
         }
         check(config, expected);
     }
-    return { defaultPolicy, parsePolicy, assertPolicyServer, resolveAgentPolicy, acceptPolicy, policyFromEnvironment, hasPreparedApiKey, codexCompatibility, isSubscriptionRoute, expectedRuntime, ensureSolCompatibility, needsAuthContext, normalizeConfig, protectedRoute, assertRuntimeMetadata };
+    return { modelCatalog, catalogModel, defaultPolicy, parsePolicy, assertPolicyServer, resolveAgentPolicy, acceptPolicy, policyFromEnvironment, hasPreparedApiKey, codexCompatibility, isSubscriptionRoute, expectedRuntime, ensureCatalogCompatibility, ensureSolCompatibility: ensureCatalogCompatibility, needsAuthContext, normalizeConfig, protectedRoute, assertRuntimeMetadata };
 }
 /** Read-only offline auth proof. Shared machine ownership excludes stale agent JSON. */
 function readOfflineRuntimeAuth(configPath) {
