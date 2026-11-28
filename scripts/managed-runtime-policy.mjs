@@ -15,6 +15,7 @@ const catalog = JSON.parse(catalogText);
 if (catalog.schemaVersion !== 1 || !catalog.models || !catalog.aliases) throw new Error('Invalid canonical model catalog');
 for (const [id, row] of Object.entries(catalog.models)) {
   if (!id.trim() || !['tokens', 'duration', 'video'].includes(row.pricing?.kind)) throw new Error('Invalid catalog pricing: ' + id);
+  if (row.purposes && (!Array.isArray(row.purposes) || row.purposes.some(purpose => !['main','image','pdf','imageGeneration','videoGeneration','musicGeneration'].includes(purpose)))) throw new Error('Invalid model purposes: ' + id);
   if (row.capabilities && (typeof row.capabilities.codex !== 'boolean' || typeof row.capabilities.reasoning !== 'boolean' || typeof row.capabilities.fastMode !== 'boolean' || !Array.isArray(row.capabilities.reasoningLevels) || row.capabilities.reasoningLevels.some(level => !['off','minimal','low','medium','high','xhigh','max','adaptive'].includes(level)))) throw new Error('Invalid catalog capabilities: ' + id);
 }
 for (const target of Object.values(catalog.aliases)) if (!catalog.models[target]) throw new Error('Unknown catalog alias target');

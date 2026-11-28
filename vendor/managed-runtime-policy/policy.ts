@@ -7,7 +7,7 @@ export type ManagedRuntimePolicy = GlobalManagedRuntimePolicy | AgentManagedRunt
 /** Missing credentials are permitted only during disconnect/startup convergence, never readiness proofs. */
 export type RuntimeContext = { allowMissingAuth?: boolean; env?: Record<string, unknown>; subscriptionAuth?: boolean; apiKeyAuth?: boolean; params?: Record<string, unknown>; scopeModels?: Record<string, unknown>; scope?: Record<string, unknown> };
 export type ManagedModelCapabilities = { codex: boolean; reasoning: boolean; reasoningLevels: string[]; fastMode: boolean };
-export type ManagedModelCatalog = { schemaVersion: number; models: Record<string, { pricing: Record<string, unknown>; curated?: boolean; capabilities?: ManagedModelCapabilities; nativeDefinition?: Record<string, unknown> }>; aliases: Record<string, string> };
+export type ManagedModelCatalog = { schemaVersion: number; models: Record<string, { pricing: Record<string, unknown>; curated?: boolean; purposes?: string[]; capabilities?: ManagedModelCapabilities; nativeDefinition?: Record<string, unknown> }>; aliases: Record<string, string> };
 // Data is embedded by the distributor, including in self-contained remote consumers.
 export function createManagedRuntimePolicy(modelCatalog: ManagedModelCatalog = /*__MODEL_CATALOG__*/ { schemaVersion: 1, models: {}, aliases: {} }) {
   type Row = Record<string, unknown>;

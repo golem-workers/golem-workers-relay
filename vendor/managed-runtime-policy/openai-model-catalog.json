@@ -9,7 +9,12 @@
           "cachedInputUsdPer1M": 0.5,
           "outputUsdPer1M": 30
         }
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-4-turbo": {
       "pricing": {
@@ -32,7 +37,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-4.1": {
       "pricing": {
@@ -56,7 +66,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-4.1-mini": {
       "pricing": {
@@ -80,7 +95,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-4.1-nano": {
       "pricing": {
@@ -104,7 +124,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-4o": {
       "pricing": {
@@ -114,7 +139,12 @@
           "cachedInputUsdPer1M": 1.25,
           "outputUsdPer1M": 10
         }
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-4o-mini": {
       "pricing": {
@@ -124,7 +154,12 @@
           "cachedInputUsdPer1M": 0.075,
           "outputUsdPer1M": 0.6
         }
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-4o-search-preview": {
       "pricing": {
@@ -134,7 +169,12 @@
           "outputUsdPer1M": 10
         },
         "requestUsd": 0.025
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5": {
       "pricing": {
@@ -158,7 +198,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5-mini": {
       "pricing": {
@@ -182,7 +227,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5-nano": {
       "pricing": {
@@ -206,7 +256,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5-pro": {
       "pricing": {
@@ -229,7 +284,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5-search-api": {
       "pricing": {
@@ -254,7 +314,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5.1": {
       "pricing": {
@@ -278,7 +343,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5.2": {
       "pricing": {
@@ -302,7 +372,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5.2-pro": {
       "pricing": {
@@ -325,7 +400,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5.3": {
       "pricing": {
@@ -349,7 +429,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5.4": {
       "pricing": {
@@ -378,7 +463,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5.4-mini": {
       "pricing": {
@@ -402,7 +492,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5.4-nano": {
       "pricing": {
@@ -426,7 +521,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5.4-pro": {
       "pricing": {
@@ -454,7 +554,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5.5": {
       "pricing": {
@@ -483,7 +588,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5.5-pro": {
       "pricing": {
@@ -511,7 +621,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5.6-luna": {
       "pricing": {
@@ -542,7 +657,12 @@
         ],
         "fastMode": true
       },
-      "curated": true
+      "curated": true,
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5.6-terra": {
       "pricing": {
@@ -572,7 +692,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-5.6-sol": {
       "pricing": {
@@ -602,7 +727,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-6-astra": {
       "pricing": {
@@ -632,7 +762,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-6-sol": {
       "pricing": {
@@ -662,7 +797,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-6-luna": {
       "pricing": {
@@ -692,7 +832,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-6.1-sol": {
       "pricing": {
@@ -731,7 +876,12 @@
           "image"
         ],
         "contextWindow": 272000
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-6.1-terra": {
       "pricing": {
@@ -761,7 +911,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-6.2-astra": {
       "pricing": {
@@ -791,7 +946,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "gpt-6.2-sol": {
       "pricing": {
@@ -821,7 +981,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "o1": {
       "pricing": {
@@ -845,7 +1010,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "o1-pro": {
       "pricing": {
@@ -868,7 +1038,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "o3": {
       "pricing": {
@@ -892,7 +1067,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "o3-mini": {
       "pricing": {
@@ -916,7 +1096,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "o3-pro": {
       "pricing": {
@@ -939,7 +1124,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "o4-mini": {
       "pricing": {
@@ -963,7 +1153,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "o3-deep-research": {
       "pricing": {
@@ -987,7 +1182,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "o4-mini-deep-research": {
       "pricing": {
@@ -1011,7 +1211,12 @@
           "max"
         ],
         "fastMode": true
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "text-embedding-3-small": {
       "pricing": {
@@ -1020,7 +1225,8 @@
           "inputUsdPer1M": 0.02,
           "outputUsdPer1M": 0
         }
-      }
+      },
+      "purposes": []
     },
     "text-embedding-3-large": {
       "pricing": {
@@ -1029,7 +1235,8 @@
           "inputUsdPer1M": 0.13,
           "outputUsdPer1M": 0
         }
-      }
+      },
+      "purposes": []
     },
     "text-embedding-ada-002": {
       "pricing": {
@@ -1038,7 +1245,8 @@
           "inputUsdPer1M": 0.1,
           "outputUsdPer1M": 0
         }
-      }
+      },
+      "purposes": []
     },
     "gpt-4o-transcribe": {
       "pricing": {
@@ -1050,7 +1258,8 @@
         "audio": {
           "inputUsdPer1M": 2.5
         }
-      }
+      },
+      "purposes": []
     },
     "gpt-4o-mini-transcribe": {
       "pricing": {
@@ -1062,7 +1271,8 @@
         "audio": {
           "inputUsdPer1M": 1.25
         }
-      }
+      },
+      "purposes": []
     },
     "gpt-4o-mini-tts": {
       "pricing": {
@@ -1073,13 +1283,15 @@
         "audio": {
           "outputUsdPer1M": 12
         }
-      }
+      },
+      "purposes": []
     },
     "whisper-1": {
       "pricing": {
         "kind": "duration",
         "usdPerSecond": 0.0001
-      }
+      },
+      "purposes": []
     },
     "gpt-realtime": {
       "pricing": {
@@ -1098,7 +1310,8 @@
           "inputUsdPer1M": 5,
           "cachedInputUsdPer1M": 0.5
         }
-      }
+      },
+      "purposes": []
     },
     "gpt-realtime-2": {
       "pricing": {
@@ -1117,7 +1330,8 @@
           "inputUsdPer1M": 5,
           "cachedInputUsdPer1M": 0.5
         }
-      }
+      },
+      "purposes": []
     },
     "gpt-realtime-2.1": {
       "pricing": {
@@ -1136,7 +1350,8 @@
           "inputUsdPer1M": 5,
           "cachedInputUsdPer1M": 0.5
         }
-      }
+      },
+      "purposes": []
     },
     "gpt-realtime-mini": {
       "pricing": {
@@ -1155,7 +1370,8 @@
           "inputUsdPer1M": 0.8,
           "cachedInputUsdPer1M": 0.08
         }
-      }
+      },
+      "purposes": []
     },
     "gpt-realtime-2.1-mini": {
       "pricing": {
@@ -1174,19 +1390,22 @@
           "inputUsdPer1M": 0.8,
           "cachedInputUsdPer1M": 0.08
         }
-      }
+      },
+      "purposes": []
     },
     "gpt-realtime-translate": {
       "pricing": {
         "kind": "duration",
         "usdPerSecond": 0.0005666666666666667
-      }
+      },
+      "purposes": []
     },
     "gpt-realtime-whisper": {
       "pricing": {
         "kind": "duration",
         "usdPerSecond": 0.00028333333333333335
-      }
+      },
+      "purposes": []
     },
     "gpt-image-1": {
       "pricing": {
@@ -1200,7 +1419,10 @@
           "cachedInputUsdPer1M": 2.5,
           "outputUsdPer1M": 40
         }
-      }
+      },
+      "purposes": [
+        "imageGeneration"
+      ]
     },
     "gpt-image-1-mini": {
       "pricing": {
@@ -1214,7 +1436,10 @@
           "cachedInputUsdPer1M": 0.25,
           "outputUsdPer1M": 8
         }
-      }
+      },
+      "purposes": [
+        "imageGeneration"
+      ]
     },
     "gpt-image-1.5": {
       "pricing": {
@@ -1229,7 +1454,10 @@
           "cachedInputUsdPer1M": 2,
           "outputUsdPer1M": 32
         }
-      }
+      },
+      "purposes": [
+        "imageGeneration"
+      ]
     },
     "gpt-image-2": {
       "pricing": {
@@ -1243,7 +1471,11 @@
           "cachedInputUsdPer1M": 2,
           "outputUsdPer1M": 30
         }
-      }
+      },
+      "purposes": [
+        "imageGeneration"
+      ],
+      "curated": true
     },
     "gpt-image-2.5-sunburst": {
       "pricing": {
@@ -1257,7 +1489,10 @@
           "cachedInputUsdPer1M": 2,
           "outputUsdPer1M": 30
         }
-      }
+      },
+      "purposes": [
+        "imageGeneration"
+      ]
     },
     "gpt-image-2.5-flare": {
       "pricing": {
@@ -1271,7 +1506,10 @@
           "cachedInputUsdPer1M": 2,
           "outputUsdPer1M": 30
         }
-      }
+      },
+      "purposes": [
+        "imageGeneration"
+      ]
     },
     "gpt-image-2.6-flare": {
       "pricing": {
@@ -1285,7 +1523,10 @@
           "cachedInputUsdPer1M": 2,
           "outputUsdPer1M": 30
         }
-      }
+      },
+      "purposes": [
+        "imageGeneration"
+      ]
     },
     "gpt-image-2.6-sunburst": {
       "pricing": {
@@ -1299,7 +1540,10 @@
           "cachedInputUsdPer1M": 2,
           "outputUsdPer1M": 30
         }
-      }
+      },
+      "purposes": [
+        "imageGeneration"
+      ]
     },
     "chatgpt-image-latest": {
       "pricing": {
@@ -1314,17 +1558,29 @@
           "cachedInputUsdPer1M": 2,
           "outputUsdPer1M": 32
         }
-      }
+      },
+      "purposes": [
+        "main",
+        "image",
+        "pdf"
+      ]
     },
     "sora-2": {
       "pricing": {
         "kind": "video"
-      }
+      },
+      "purposes": [
+        "videoGeneration"
+      ],
+      "curated": true
     },
     "sora-2-pro": {
       "pricing": {
         "kind": "video"
-      }
+      },
+      "purposes": [
+        "videoGeneration"
+      ]
     }
   },
   "aliases": {
