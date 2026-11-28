@@ -1769,7 +1769,7 @@ describe("executeAgentControl model set", () => {
       const cfg = { auth: { order: { openai: ["openai:test"] } }, agents: { defaults: { [assignment]: { primary: "openai/gpt-5.4" } } }, models: { providers: { openai: row, codex: row } } };
       await executeAgentControl({ action: { kind: "config.apply", configText: JSON.stringify(cfg) }, configPath, gateway: noopGateway });
       const after = JSON.parse(await fs.readFile(configPath, "utf8")) as { models: { providers: Record<string, unknown> }; auth: unknown };
-      expect(after.models.providers).toEqual({ openai: { api: "openai-chatgpt-responses", agentRuntime: { id: "openclaw" } } });
+      expect(after.models.providers).toEqual(assignment === "model" ? { openai: { api: "openai-chatgpt-responses", agentRuntime: { id: "openclaw" } } } : {});
       expect(after.auth).toEqual(cfg.auth);
       expect(await fs.readFile(dbPath)).toEqual(before);
     } finally {
