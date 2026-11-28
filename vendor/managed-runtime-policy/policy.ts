@@ -163,7 +163,7 @@ export function createManagedRuntimePolicy(modelCatalog: ManagedModelCatalog = /
     const catalog = record(record(record(config.agents)?.defaults)?.models);
     const provider = record(record(record(config.models)?.providers)?.openai) ?? {};
     return Object.keys(catalog ?? {}).some(ref => {
-      if (!ref.startsWith("openai/") || !catalogModel(ref)?.capabilities?.codex) return false;
+      if (!ref.startsWith("openai/") || !catalogModel(ref)?.nativeDefinition) return false;
       const model = (Array.isArray(provider.models) ? provider.models as unknown[] : []).map(record).find(row => row?.id === modelParts(ref).model) ?? {};
       return [provider, model, record(record(config.providers)?.openai) ?? {}].every(row => ["api", "baseUrl", "apiKey", "auth", "headers"].every(key => row[key] === undefined));
     });
