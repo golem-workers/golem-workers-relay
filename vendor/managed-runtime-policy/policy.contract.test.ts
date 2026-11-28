@@ -203,3 +203,44 @@ it("does not model-fence compaction/budgets but protects every conversational ro
   config.models.providers.openai.baseUrl = "https://proxy.test/v1";
   expect(() => engine.normalizeConfig(config, codex, { ...context, allowMissingAuth: true })).toThrow("MANAGED_CODEX_INCOMPATIBLE");
  });
+
+
+describe("subscription transport across model selections", () => {
+  const models = ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-astra", "gpt-6-luna"];
+  const auth = { env: {}, subscriptionAuth: true, apiKeyAuth: false };
+  function legacy(model: string) {
+    const config: Record<string, unknown> = { agents: { defaults: { model: { primary: "openai/" + model, fallbacks: [] }, models: { [ref]: {}, ["openai/" + model]: {} } } } };
+    engine.ensureSolCompatibility(config, true, auth);
+    return config;
+  }
+  it.each(models)("makes %s explicit from a legacy Sol-only subscription catalog in both harnesses", model => {
+    for (const policy of [native, codex]) {
+      const direct = legacy(model), remote = structuredClone(direct);
+      engine.normalizeConfig(direct, policy, auth);
+      runInNewContext(MANAGED_RUNTIME_FACTORY_SOURCE + "createManagedRuntimePolicy().normalizeConfig(config, policy, auth);", { config: remote, policy, auth, URL });
+      expect(remote).toEqual(direct);
+      expect(direct).toHaveProperty("models.providers.openai.api", "openai-chatgpt-responses");
+      const once = structuredClone(direct); engine.normalizeConfig(direct, policy, auth); expect(direct).toEqual(once);
+    }
+  });
+  it.each([
+    { api: "openai-responses" }, { baseUrl: "https://custom.test/v1" },
+    { apiKey: "fixture-ref" }, { auth: "api-key" }, { headers: { "x-custom": "retained" } },
+  ])("never replaces authored provider routing %j", route => {
+    const config = legacy("gpt-6.2-sol");
+    Object.assign((config.models as {providers: {openai: object}}).providers.openai, route);
+    const provider = structuredClone((config.models as {providers: {openai: object}}).providers.openai);
+    engine.normalizeConfig(config, native, auth);
+    expect((config.models as {providers: {openai: object}}).providers.openai).toMatchObject(provider);
+    if (!("api" in route)) expect(config).not.toHaveProperty("models.providers.openai.api");
+  });
+  it.each([
+    { env: {}, subscriptionAuth: false, apiKeyAuth: false },
+    { env: {}, subscriptionAuth: true, apiKeyAuth: true },
+    { env: { OPENAI_API_KEY: "fixture-only" }, subscriptionAuth: true },
+    { env: { OPENAI_BASE_URL: "https://custom.test/v1" }, subscriptionAuth: true },
+  ])("does not infer provider subscription transport from missing/mixed/custom auth %j", context => {
+    const config = legacy("gpt-6.2-sol"); engine.normalizeConfig(config, native, context);
+    expect(config).not.toHaveProperty("models.providers.openai.api");
+  });
+});

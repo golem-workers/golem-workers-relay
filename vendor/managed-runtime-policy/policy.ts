@@ -130,6 +130,23 @@ export function createManagedRuntimePolicy() {
     if (!hasAuthoredRoute) values.api = subscriptionRoute && !apiKeyIntent ? "openai-chatgpt-responses" : "openai-responses";
     for (const [key, value] of Object.entries(values)) if (model[key] === undefined) model[key] = value;
   }
+  /** Persist the subscription default already resolved from target auth. A
+   * Sol-only catalog historically made just Sol explicit, leaving newly selected
+   * models implicit and rejected by the subscription pool's strict writer.
+   * Never turn API-key intent, custom endpoints or authored auth into OAuth. */
+  function ensureSubscriptionTransport(config: Row, scopes: Row[], context: RuntimeContext): void {
+    const provider = record(record(record(config.models)?.providers)?.openai);
+    const legacy = record(record(config.providers)?.openai);
+    if ([provider, legacy].some(row => row && ["api", "baseUrl", "apiKey", "auth", "headers", "authHeader", "request"].some(key => row[key] !== undefined))) return;
+    const defaults = record(record(config.agents)?.defaults) ?? {};
+    const eligible = scopes.some(scope => assignmentRefs(scope.model ?? defaults.model).some(ref => {
+      if (!ref.startsWith("openai/")) return false;
+      const scoped = { ...context, scope, scopeModels: record(scope.models) };
+      const info = route(config, ref, scoped);
+      return info.hasSubscription && !info.hasApiKey && info.api === "openai-chatgpt-responses" && codexCompatibility(config, ref, scoped).supported;
+    }));
+    if (eligible) ensure(ensure(ensure(config, "models"), "providers"), "openai").api = "openai-chatgpt-responses";
+  }
   function needsAuthContext(config: Row, policy: ManagedRuntimePolicy): boolean {
     if (policy.chatHarness === "codex") return true;
     const catalog = record(record(record(config.agents)?.defaults)?.models);
@@ -153,6 +170,7 @@ export function createManagedRuntimePolicy() {
     const subscription = Boolean(context.subscriptionAuth || profiles(next).some(row => row.mode === "oauth" && ["openai", "codex", "openai-codex"].includes(String(row.provider))));
     ensureSolCompatibility(next, subscription, context);
     const scopes = [defaults, ...(Array.isArray(agents.list) ? agents.list : []).map(record).filter((row): row is Row => Boolean(row)), ...Object.values(record(agents.entries) ?? {}).map(record).filter((row): row is Row => Boolean(row))];
+    ensureSubscriptionTransport(next, scopes, context);
     const uses = new Map<string, Set<string>>();
     const keys: Record<string, string> = { model: "main", imageModel: "image", pdfModel: "pdf", imageGenerationModel: "imageGeneration", videoGenerationModel: "videoGeneration", musicGenerationModel: "musicGeneration", embeddingModel: "embedding", audioTranscriptionModel: "audioTranscription" };
     for (const scope of scopes) for (const [key, purpose] of Object.entries({ ...Object.fromEntries(Object.keys({ ...defaults, ...scope }).filter(key => key.endsWith("Model")).map(key => [key, "auxiliary"])), ...keys })) for (const ref of assignmentRefs(scope[key] ?? (scope === defaults ? undefined : defaults[key]))) {

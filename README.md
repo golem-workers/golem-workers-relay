@@ -947,3 +947,11 @@ Provider snapshots include the `golem-spreadsheet` command and Ubuntu engines, n
 Developer validation prerequisites: `apt-get install libreoffice-calc python3-uno python3-openpyxl python3-pil python3-xlrd python3-xlwt`, then `npm ci --prefix tools/golem-spreadsheets --ignore-scripts` and `npm run test:spreadsheets`. The full `npm test` runs these tests. Independent Apache POI fixtures and openpyxl/xlwt-generated files check VBA/package preservation, old signatures, strict OOXML, encodings, date systems, real formula calculation and rejected loss cases.
 
 An explicit deployment to an existing agent can run `bash scripts/install-spreadsheet-tools.sh [runtime-path] [bin-directory]` after installing the documented runtime dependencies. Installation uses isolated generations and an atomic symlink switch; it does not write skills, restart OpenClaw or modify agent configuration. It runs `golem-spreadsheet self-check` before activation and once installed (create → edit → LibreOffice recalculation → reread, including Cyrillic and leading zeros). Backend provisioning repeats the self-check and fails if the selected snapshot is missing dependencies; it never downloads engines/OS packages during per-agent provisioning. Future snapshots receive the same source installer. Updating this repository alone does not deploy to existing agents. After modifying deployed spreadsheet resources, run `python3 scripts/check-spreadsheet-bundle.py --write`; this pins the runtime and installer bytes into the prepare-script fingerprint so the canonical updater detects runtime changes; backend skill updates follow backend asset provisioning. Tests reject a stale bundle pin.
+
+Subscription model changes use the backend's pinned managed-runtime policy to
+persist an explicit ChatGPT Responses provider transport when target subscription
+credentials are present without API-key/custom-route intent. This repairs legacy
+Sol-only routing for subsequent model choices without replacing credentials,
+model/owner fences, or explicitly authored API endpoints. Ship the matching backend
+policy digest before retrying model selections; no fleet configuration is changed
+merely by publishing this code.

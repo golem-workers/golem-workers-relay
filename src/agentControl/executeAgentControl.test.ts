@@ -1769,7 +1769,7 @@ describe("executeAgentControl model set", () => {
       const cfg = { auth: { order: { openai: ["openai:test"] } }, agents: { defaults: { [assignment]: { primary: "openai/gpt-5.4" } } }, models: { providers: { openai: row, codex: row } } };
       await executeAgentControl({ action: { kind: "config.apply", configText: JSON.stringify(cfg) }, configPath, gateway: noopGateway });
       const after = JSON.parse(await fs.readFile(configPath, "utf8")) as { models: { providers: Record<string, unknown> }; auth: unknown };
-      expect(after.models.providers).toEqual({});
+      expect(after.models.providers).toEqual({ openai: { api: "openai-chatgpt-responses", agentRuntime: { id: "openclaw" } } });
       expect(after.auth).toEqual(cfg.auth);
       expect(await fs.readFile(dbPath)).toEqual(before);
     } finally {
@@ -2557,3 +2557,41 @@ it.each((["openclaw", "codex"] as const).flatMap(harness => [false, true].map(co
   await fs.rm(dir,{recursive:true,force:true});
  }
 });
+
+it.each(["openclaw", "codex"] as const)("changes all seven GPT-6 subscription models from a Sol-only catalog under %s", async harness => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "subscription-model-matrix-"));
+  const configPath = path.join(dir, "openclaw.json");
+  process.env.OPENCLAW_STATE_DIR = dir; process.env.HOME = dir; process.env.CODEX_HOME = path.join(dir, "codex");
+  delete process.env.OPENAI_API_KEY;
+  try {
+    const systemctlLog = await installFakeSystemctl(); await installFakeOpenclaw();
+    const engine = createManagedRuntimePolicy();
+    const config = { agents: { defaults: { model: { primary: "openai/gpt-6.1-sol", fallbacks: [] }, models: { "openai/gpt-6.1-sol": {} }, thinkingDefault: "high" } }, channels: { telegram: { enabled: true } } };
+    engine.ensureSolCompatibility(config, true, { env: {}, subscriptionAuth: true, apiKeyAuth: false });
+    const credentials = JSON.stringify({ version: 1, profiles: { "openai:fixture": { type: "oauth", provider: "openai", access: "synthetic", refresh: "synthetic", expires: Date.now() + 600_000 } } });
+    await fs.writeFile(path.join(dir, "auth-profiles.json"), credentials);
+    await fs.writeFile(configPath, JSON.stringify(config));
+    const poolText = JSON.stringify({ version: 1, revision: 1, fingerprint: "a".repeat(64), phase: "applied", members: [], managedProfileIds: [] });
+    await fs.writeFile(configPath + ".golem-openai-pool.json", poolText);
+    const policy = engine.resolveAgentPolicy(engine.defaultPolicy, { serverId: "matrix-fixture", harnessOverride: harness, revision: 1 });
+    let predecessor: string | null = null;
+    const models = ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-astra", "gpt-6-luna"];
+    for (const [index, model] of models.entries()) {
+      const before = await fs.readFile(configPath, "utf8");
+      const preflight = await executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "managedRuntime.preflight", model: "codex/" + model, fallbacks: [], managedRuntimePolicy: policy } });
+      expect(await fs.readFile(configPath, "utf8")).toBe(before);
+      const revision = `b1111111-1111-4111-8111-${String(index).padStart(12, "0")}`;
+      await expect(executeAgentControl({ configPath, gateway: noopGateway, action: { kind: "model.set", model: "codex/" + model, fallbacks: [], thinkingDefault: "high", fastMode: false, fence: { revision, predecessor }, managedRuntimePolicy: policy, ...(preflight.kind === "managedRuntime.preflight" ? { managedRuntimeExpectedConfigRevision: preflight.configRevision } : {}) } })).resolves.toMatchObject({ kind: "model.set", applied: true, model: "codex/" + model });
+      const written = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;
+      const { assertSubscriptionOnlyConfiguration } = await import("./openAiSubscriptionPool.js");
+      expect(() => assertSubscriptionOnlyConfiguration(written, {}, { runScopedFallbacks: false })).not.toThrow();
+      expect(written).toHaveProperty("agents.defaults.model.primary", "openai/" + model);
+      expect(written).toHaveProperty(["agents", "defaults", "models", "openai/" + model, "agentRuntime", "id"], harness);
+      expect(written.channels).toEqual(config.channels);
+      expect(await fs.readFile(path.join(dir, "auth-profiles.json"), "utf8")).toBe(credentials);
+      expect(await fs.readFile(configPath + ".golem-openai-pool.json", "utf8")).toBe(poolText);
+      predecessor = revision;
+    }
+    expect((await readSystemctlCalls(systemctlLog)).filter(call => call === "--user restart openclaw-gateway.service")).toHaveLength(7);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+}, 60_000);
